@@ -1,0 +1,80 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "astro-tools"
+version = "0.1.0"
+description = "CollimationTool and GuideTool: shared astrotool_core plus two PySide6 desktop apps."
+requires-python = ">=3.13"
+dependencies = [
+    "numpy>=1.26",
+    "astropy>=6.0",
+    "PySide6>=6.7",
+    "onstep-adapter @ https://github.com/tschoenfelder/OnStepAdapter/releases/download/v0.3.4/onstep_adapter-0.3.4-py3-none-any.whl",
+    "smarttscope-live-analysis @ git+https://github.com/tschoenfelder/SmartTScopeLiveAnalysis.git@v0.1.0",
+]
+
+[project.optional-dependencies]
+# Vendored ToupTek SDK wheel path goes here once sourced for this project,
+# mirroring smart_telescope's resources/camera_adapter sync workflow.
+touptek = []
+dev = [
+    "pytest>=8.0",
+    "pytest-cov>=5.0",
+    "pytest-mock>=3.15",
+    "ruff>=0.4",
+    "mypy>=1.10",
+    "import-linter>=2.0",
+]
+
+[project.scripts]
+collimation-tool = "collimation_tool.main:main"
+guide-tool = "guide_tool.main:main"
+
+[tool.setuptools.packages.find]
+where = ["packages", "apps"]
+include = ["astrotool_core*", "collimation_tool*", "guide_tool*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "--cov=packages/astrotool_core --cov=apps/collimation_tool --cov=apps/guide_tool --cov-report=term-missing --cov-fail-under=80"
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "ANN"]
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+ignore_missing_imports = true
+
+[tool.importlinter]
+root_packages = ["astrotool_core", "collimation_tool", "guide_tool"]
+
+[[tool.importlinter.contracts]]
+name = "core never imports the apps"
+type = "forbidden"
+source_modules = ["astrotool_core"]
+forbidden_modules = ["collimation_tool", "guide_tool"]
+
+# The two contracts below name specific submodules (touptek_adapter.py,
+# indi_adapter.py, roi_tracker.py) that don't exist yet as of Stage 0 —
+# import-linter requires a contract's modules to actually resolve. Add each
+# back in as its file is created (Stage 2/3 per PLAN.md) rather than leaving
+# it broken in the meantime.
+#
+# [[tool.importlinter.contracts]]
+# name = "adapters never import a UI toolkit"
+# type = "forbidden"
+# source_modules = ["astrotool_core.camera.touptek_adapter", "astrotool_core.mount.indi_adapter"]
+# forbidden_modules = ["PySide6"]
+#
+# [[tool.importlinter.contracts]]
+# name = "roi_tracker never touches the mount"
+# type = "forbidden"
+# source_modules = ["astrotool_core.target.roi_tracker"]
+# forbidden_modules = ["astrotool_core.mount"]
