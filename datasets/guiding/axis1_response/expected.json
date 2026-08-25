@@ -1,0 +1,15 @@
+{
+  "pulse_ms": 500,
+  "responses": {
+    "AXIS1_POSITIVE": {
+      "dx_px": 20.0,
+      "dy_px": 0.0,
+      "px_per_ms": 0.04
+    },
+    "AXIS1_NEGATIVE": {
+      "dx_px": -20.0,
+      "dy_px": 0.0,
+      "px_per_ms": 0.04
+    }
+  }
+}

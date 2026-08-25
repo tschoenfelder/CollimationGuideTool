@@ -260,3 +260,24 @@ happens rather than all at once up front.
   needs a rolling history that doesn't exist before any lock target has
   ever been acquired.
 - Stage: 3
+
+## Stage 4
+
+### packages/astrotool_core/mount/axis_calibration.py — `calibrate_axis`, `calibrate_axes`, `AxisResponse`, `CalibrationMatrix`
+- Source: new, no analog (smart_telescope never automated guide
+  calibration; it's done by eye/external tooling there).
+- Change: n/a. Deliberately has zero dependency on `astrotool_core.camera`
+  or `astrotool_core.target` — how "the current position" is measured is
+  injected as a `measure: Callable[[], tuple[float, float]]` callback, so
+  the module is testable with nothing more than a `MountPort` and a plain
+  function. In practice (see the golden-master test) the caller wires
+  `measure` to a camera capture + `detect_sources` + `RoiTracker`, but
+  `axis_calibration.py` itself never imports either.
+- Verified: `tests/integration/test_axis_calibration_replay.py` replays
+  `datasets/guiding/axis1_response/` and `axis2_response/` through
+  `calibrate_axes` (measured via a `RoiTracker`, re-acquired fresh at each
+  "before" step — a deliberate large commanded pulse isn't something a
+  live-guiding lock tolerance should be expected to track through in one
+  `update()` call) and reproduces the expected px/ms response matrix
+  within tolerance (Stage 4's "done when" gate).
+- Stage: 4
