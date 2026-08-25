@@ -1,0 +1,20 @@
+{
+  "states": [
+    "LOCKED",
+    "LOST",
+    "SEARCHING",
+    "REACQUIRED"
+  ],
+  "errors": [
+    {
+      "error_x": 2.0,
+      "error_y": 1.0
+    },
+    null,
+    null,
+    {
+      "error_x": 30.0,
+      "error_y": 10.0
+    }
+  ]
+}

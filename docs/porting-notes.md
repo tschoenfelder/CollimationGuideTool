@@ -403,3 +403,91 @@ solely in service of that deferred pathway.
   this project's CollimationTool has no automated "find a star via GoTo"
   phase — the user must already have a star in frame before starting.
 - Stage: 5
+
+## Stage 6
+
+### apps/guide_tool/domain/guide_error.py — `GuideError`, `compute_guide_error`
+- Source: `domain/guiding.py::GuideMeasurement`
+- Change: pared down significantly. Fields that duplicated what
+  `RoiTracker.TrackingResult`/`PointSource` already carry (the raw pixel
+  centroid measurement, peak/background/noise/saturated/fwhm_px) are
+  dropped — this module only computes the *error* relative to an
+  established target, on top of the tracker's own position.
+  `GuideCentroidEstimator` (`services/guide_measurement.py`'s windowed
+  pixel-level centroid/SNR/saturation measurement) is not ported at all:
+  confirmed during research to duplicate `astrotool_core.target.
+  detect_sources`, the same redundancy already avoided for
+  `star_detection.py` in Stage 1/5. `GuideFrame` (frame identity/timing
+  metadata) is also not ported — `StreamController.MailboxFrame` already
+  covers the same fields (sequence, captured_at_monotonic, dropped_before).
+- Stage: 6
+
+### apps/guide_tool/domain/guiding_state.py — `GuideSourceHealth`, `GuideSourceState`, `source_state_from_error`
+- Source: `domain/guiding.py` (`GuideSourceHealth`, `GuideSourceState`),
+  `services/guide_measurement.py::source_state_from_measurement`
+- Change: the multi-camera role-selection concept (`GuideSourceSelector`,
+  primary/fallback across smart_telescope's main/guide/oag cameras) is
+  dropped entirely — not ported, no trimmed replacement — since this
+  project's GuideTool assumes a single guide camera, consistent with
+  Stage 3's `StreamController` dropping the same "role" concept. No
+  `role` field on `GuideSourceState` as a result. Uses `enum.StrEnum`
+  per Stage 5's established convention.
+- Stage: 6
+
+### apps/guide_tool/domain/drift_estimator.py — `DriftEstimator`
+- Source: new — extracted from the inline `error_history`/`rms_px`
+  rolling-window calculation in `services/guiding_service.py::_loop`
+  (no closer existing analog found, as PLAN.md asked to check).
+- Stage: 6
+
+### apps/guide_tool/domain/correction_model.py — `WouldGuidePulse`, `GuideCorrectionConfig`, `compute_would_pulses`
+- Source: `services/guide_measurement.py::MeasureOnlyGuideController`
+- Change: redesigned to consume Stage 4's `CalibrationMatrix`
+  (`duration_ms = |error_px| * aggressiveness / measured_px_per_ms`)
+  instead of a fixed `ms_per_px` rate guess, and to target `MountAxis`/
+  `AxisDirection` instead of "ra"/"dec" + "n"/"s"/"e"/"w" strings.
+  Direction is picked by the calibration's *measured* sign (same
+  `_direction_opposing` reasoning as `collimation_tool.application.
+  recenter_policy`) — independently re-implemented here rather than
+  imported, since `guide_tool` must never depend on `collimation_tool`.
+  `deadband_px`/`max_pulse_ms`/`min_pulse_ms`/`aggressiveness` port
+  verbatim; `ra_only` renamed `axis2_enabled` (inverted sense, matches
+  the new axis-agnostic naming).
+- Stage: 6
+
+### apps/guide_tool/application/correction_policy.py — `GuideCorrectionPolicy`
+- Source: new (written fresh, not ported) — a deliberately thin wrapper
+  that only calls `MountPort.pulse_axis` for pulses `correction_model.
+  compute_would_pulses` already decided on. Kept as a separate class from
+  `CollimationRecenterPolicy` per the architecture doc's dependency
+  rationale — a change to guiding's correction loop can't leak into
+  collimation's recentering, or vice versa.
+- Stage: 6
+
+### apps/guide_tool/application/calibration_controller.py — `run_calibration`
+- Source: new — wires `astrotool_core.mount.axis_calibration.
+  calibrate_axes` to a `measure` callback built from `CameraPort` +
+  `detect_sources` + `RoiTracker`, the same composition Stage 4's
+  golden-master test (`tests/integration/test_axis_calibration_replay.py`)
+  demonstrated, promoted to reusable application-layer orchestration.
+- Stage: 6
+
+### apps/guide_tool/application/guide_controller.py — `GuideController`, `GuidingStatus`
+- Source: `services/guiding_service.py::GuidingService`
+- Change: trimmed to a single guide camera (no `GuideSourceSelector` —
+  see `guiding_state.py`'s note above) and built on `astrotool_core.
+  acquisition.StreamController` + `astrotool_core.target.{detect_sources,
+  select_target, RoiTracker}` instead of `ManagedCamera` +
+  `GuideCentroidEstimator`. `pause_pulses`/`resume_pulses`/`rebaseline`
+  port near-verbatim (still meaningful single-camera session controls).
+  Sends pulses through the new `GuideCorrectionPolicy` instead of calling
+  `mount.guide()` directly.
+- Verified: `tests/integration/test_guide_lost_star_replay.py` replays
+  `datasets/guiding/lost_star/` through `detect_sources` + `RoiTracker` +
+  `compute_guide_error` (bypassing the threaded loop for determinism, same
+  reasoning as Stage 3's `test_roi_tracker_replay.py`) and reproduces the
+  `[LOCKED, LOST, SEARCHING, REACQUIRED]` sequence plus matching guide
+  errors within tolerance (Stage 6's "done when" gate — proves the
+  RoiTracker core built in Stage 3 for CollimationTool is genuinely
+  shared with GuideTool).
+- Stage: 6
