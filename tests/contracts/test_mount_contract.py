@@ -1,18 +1,24 @@
 """Shared MountPort contract — every mount adapter must satisfy this.
 
-Stage 2 factories: no_mount_factory, fake_mount_factory. indi_mount_factory
-(skipif-guarded, real hardware) joins this parametrization in Stage 3.
+no_mount_factory / fake_mount_factory run hardware-free. indi_mount_factory
+is real-hardware and skipif-guarded — no OnStep mount/serial port is
+present in this Windows dev environment (set ASTROTOOL_ONSTEP_PORT to
+exercise it against real hardware).
 """
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 
 import pytest
 from astrotool_core.mount import AxisDirection, MountAxis, MountPort, NoMountAdapter
+from astrotool_core.mount.indi_adapter import IndiMountAdapter
 from astrotool_core.testing.fake_mount import FakeMountAdapter
 
 MountFactory = Callable[[], MountPort]
+
+_ONSTEP_PORT = os.environ.get("ASTROTOOL_ONSTEP_PORT")
 
 
 def no_mount_factory() -> MountPort:
@@ -23,7 +29,20 @@ def fake_mount_factory() -> MountPort:
     return FakeMountAdapter()
 
 
+def indi_mount_factory() -> MountPort:
+    assert _ONSTEP_PORT is not None
+    return IndiMountAdapter(_ONSTEP_PORT)
+
+
 MOUNT_FACTORIES = [no_mount_factory, fake_mount_factory]
+REAL_MOUNT_FACTORIES = [
+    pytest.param(
+        indi_mount_factory,
+        marks=pytest.mark.skipif(
+            _ONSTEP_PORT is None, reason="ASTROTOOL_ONSTEP_PORT not set — no OnStep mount available"
+        ),
+    ),
+]
 
 
 @pytest.mark.parametrize("mount_factory", MOUNT_FACTORIES)
@@ -74,3 +93,16 @@ def test_fake_mount_connect_failure_raises_connection_error() -> None:
     mount = FakeMountAdapter(fail_connect=True)
     with pytest.raises(ConnectionError):
         mount.connect()
+
+
+@pytest.mark.parametrize("mount_factory", REAL_MOUNT_FACTORIES)
+def test_real_indi_mount_capabilities_and_status(mount_factory: MountFactory) -> None:
+    mount = mount_factory()
+    mount.connect()
+    try:
+        caps = mount.capabilities()
+        assert caps.supports_pulse_guiding is True
+        status = mount.status()
+        assert status.connected is True
+    finally:
+        mount.disconnect()

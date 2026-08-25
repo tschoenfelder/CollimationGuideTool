@@ -4,6 +4,7 @@ Adapters know how to move an axis; they never decide whether or how
 much to move it — that is app-specific policy.
 """
 
+from astrotool_core.mount.indi_adapter import IndiMountAdapter
 from astrotool_core.mount.no_mount import NoMountAdapter
 from astrotool_core.mount.port import (
     AxisDirection,
@@ -17,6 +18,7 @@ from astrotool_core.mount.port import (
 __all__ = [
     "AxisDirection",
     "CommandResult",
+    "IndiMountAdapter",
     "MountAxis",
     "MountCapabilities",
     "MountPort",

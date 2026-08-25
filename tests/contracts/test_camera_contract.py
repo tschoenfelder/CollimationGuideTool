@@ -1,17 +1,20 @@
 """Shared CameraPort contract — every camera adapter must satisfy this.
 
-Stage 2 factories: fake_camera_factory, fake_touptek_factory (both
-hardware-free). replay_camera_factory / touptek_camera_factory join this
-parametrization in Stage 3 once those adapters exist.
+fake_camera_factory / fake_touptek_factory / replay_camera_factory run
+hardware-free. touptek_camera_factory is real-hardware and skipif-guarded —
+no toupcam SDK/camera is present in this Windows dev environment.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
 
+import numpy as np
 import pytest
 from astrotool_core.camera import CameraPort
 from astrotool_core.camera.fake_camera import FakeCamera
+from astrotool_core.camera.replay_camera import ReplayCamera
+from astrotool_core.camera.touptek_adapter import TouptekCameraAdapter
 from astrotool_core.testing.fake_touptek import FakeTouptekCamera
 
 CameraFactory = Callable[[], CameraPort]
@@ -25,7 +28,31 @@ def fake_touptek_factory() -> CameraPort:
     return FakeTouptekCamera()
 
 
-CAMERA_FACTORIES = [fake_camera_factory, fake_touptek_factory]
+def replay_camera_factory() -> CameraPort:
+    return ReplayCamera.from_arrays([np.full((64, 64), 500.0, dtype=np.float32)])
+
+
+def touptek_camera_factory() -> CameraPort:
+    return TouptekCameraAdapter()
+
+
+def _toupcam_sdk_available() -> bool:
+    try:
+        import toupcam  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+CAMERA_FACTORIES = [fake_camera_factory, fake_touptek_factory, replay_camera_factory]
+REAL_CAMERA_FACTORIES = [
+    pytest.param(
+        touptek_camera_factory,
+        marks=pytest.mark.skipif(
+            not _toupcam_sdk_available(), reason="toupcam SDK not installed in this environment"
+        ),
+    ),
+]
 
 
 @pytest.mark.parametrize("camera_factory", CAMERA_FACTORIES)
@@ -70,7 +97,7 @@ def test_abort_capture_is_safe_to_call_when_idle(camera_factory: CameraFactory) 
     camera.abort_capture()  # must not raise
 
 
-@pytest.mark.parametrize("camera_factory", CAMERA_FACTORIES)
+@pytest.mark.parametrize("camera_factory", [fake_camera_factory, fake_touptek_factory])
 def test_connect_failure_raises_connection_error(camera_factory: CameraFactory) -> None:
     if camera_factory is fake_camera_factory:
         camera: CameraPort = FakeCamera(fail_connect=True)
@@ -78,3 +105,15 @@ def test_connect_failure_raises_connection_error(camera_factory: CameraFactory) 
         camera = FakeTouptekCamera(fail_connect=True)
     with pytest.raises(ConnectionError):
         camera.connect()
+
+
+@pytest.mark.parametrize("camera_factory", REAL_CAMERA_FACTORIES)
+def test_real_touptek_connect_then_capture(camera_factory: CameraFactory) -> None:
+    camera = camera_factory()
+    camera.connect()
+    try:
+        frame = camera.capture(0.1)
+        assert frame.height > 0
+        assert frame.width > 0
+    finally:
+        camera.disconnect()

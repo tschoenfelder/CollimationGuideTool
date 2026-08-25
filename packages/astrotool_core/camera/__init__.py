@@ -11,6 +11,8 @@ from astrotool_core.camera.capabilities import (
 )
 from astrotool_core.camera.fake_camera import FakeCamera
 from astrotool_core.camera.port import CameraPort, CaptureAbortedError
+from astrotool_core.camera.replay_camera import ReplayCamera
+from astrotool_core.camera.touptek_adapter import TouptekCameraAdapter
 from astrotool_core.frames import Frame
 
 __all__ = [
@@ -21,4 +23,6 @@ __all__ = [
     "ConversionGain",
     "FakeCamera",
     "Frame",
+    "ReplayCamera",
+    "TouptekCameraAdapter",
 ]

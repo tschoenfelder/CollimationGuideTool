@@ -54,6 +54,7 @@ ignore_missing_imports = true
 
 [tool.importlinter]
 root_packages = ["astrotool_core", "collimation_tool", "guide_tool"]
+include_external_packages = true
 
 [[tool.importlinter.contracts]]
 name = "core never imports the apps"
@@ -61,20 +62,14 @@ type = "forbidden"
 source_modules = ["astrotool_core"]
 forbidden_modules = ["collimation_tool", "guide_tool"]
 
-# The two contracts below name specific submodules (touptek_adapter.py,
-# indi_adapter.py, roi_tracker.py) that don't exist yet as of Stage 0 —
-# import-linter requires a contract's modules to actually resolve. Add each
-# back in as its file is created (Stage 2/3 per PLAN.md) rather than leaving
-# it broken in the meantime.
-#
-# [[tool.importlinter.contracts]]
-# name = "adapters never import a UI toolkit"
-# type = "forbidden"
-# source_modules = ["astrotool_core.camera.touptek_adapter", "astrotool_core.mount.indi_adapter"]
-# forbidden_modules = ["PySide6"]
-#
-# [[tool.importlinter.contracts]]
-# name = "roi_tracker never touches the mount"
-# type = "forbidden"
-# source_modules = ["astrotool_core.target.roi_tracker"]
-# forbidden_modules = ["astrotool_core.mount"]
+[[tool.importlinter.contracts]]
+name = "adapters never import a UI toolkit"
+type = "forbidden"
+source_modules = ["astrotool_core.camera.touptek_adapter", "astrotool_core.mount.indi_adapter"]
+forbidden_modules = ["PySide6"]
+
+[[tool.importlinter.contracts]]
+name = "roi_tracker never touches the mount"
+type = "forbidden"
+source_modules = ["astrotool_core.target.roi_tracker"]
+forbidden_modules = ["astrotool_core.mount"]

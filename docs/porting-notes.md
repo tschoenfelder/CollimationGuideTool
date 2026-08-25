@@ -148,3 +148,115 @@ happens rather than all at once up front.
 - Change: ported near-verbatim; `connect()` raises instead of returning
   `bool`.
 - Stage: 2
+
+## Stage 3
+
+### packages/astrotool_core/session/session_context.py — `SessionContext`
+- Source: `smart_telescope/services/section_logger.py` (`SectionLogger`)
+- Change: dropped the hardcoded 12-entry `LOG_SECTIONS` tuple (smart_telescope-
+  specific names like "goto", "click_to_center") — sections are created
+  lazily on first `get_logger()` call instead, since astrotool_core has no
+  opinion on what sections either app needs.
+- Stage: 3
+
+### packages/astrotool_core/session/event_log.py — `EventLogger`, `EventRecord`
+- Source: `smart_telescope/services/service_call_logger.py`
+  (`ServiceCallLogger`), `smart_telescope/domain/service_call_log.py`
+  (`ServiceCallRecord`)
+- Change: renamed to drop the "service call" framing (this module logs any
+  operation, not specifically a "service" invocation); `.call()` ->
+  `.event()`.
+- Stage: 3
+
+### packages/astrotool_core/session/frame_recorder.py — `save_frame`, `make_filename`
+- Source: `smart_telescope/services/diagnostic_frame_store.py`
+  (`DiagnosticFrameStore.save_frame`, `_make_filename`)
+- Change: dropped RA/Dec/tracking/optical-train-id headers and the
+  retention-cleanup machinery — MountStatus (Stage 2's trimmed MountPort)
+  no longer carries a sky position, so those headers were never available
+  to populate; retention cleanup is an app/deployment-level policy this
+  shared recorder doesn't need an opinion on.
+- Stage: 3
+
+### packages/astrotool_core/testing/replay_dataset.py — `load_frames`, `load_expected`, `discover_fits_paths`
+- Source: `smart_telescope/adapters/replay/camera.py`
+  (`ReplayCamera.from_directory`'s FITS-discovery logic)
+- Change: separated the pure loading/discovery logic from any CameraPort —
+  `camera/replay_camera.py` wraps this as the actual adapter.
+- Stage: 3
+
+### packages/astrotool_core/camera/replay_camera.py — `ReplayCamera`
+- Source: `smart_telescope/adapters/replay/camera.py` (`ReplayCamera` +
+  `ReplayCameraAdapter`)
+- Change: merged the two source classes (disk-backed, in-memory-array-backed)
+  into one class with two classmethod constructors (`from_directory`,
+  `from_arrays`), matching this project's one-adapter-file-per-role layout.
+- Stage: 3
+
+### packages/astrotool_core/camera/touptek_adapter.py — `TouptekCameraAdapter`
+- Source: `smart_telescope/adapters/touptek/managed.py` (`SmartTouptekCamera`)
+- Change: trimmed to what a single-camera tool needs (connect/capture/
+  exposure/gain/black-level/conversion-gain/temperature/descriptor).
+  Dropped entirely: TEC/cooling control, filter-wheel control, the
+  multi-"role" camera-selector/conflict-validation machinery
+  (`validate_unique_camera_roles`), setup profiles, and capture priming —
+  all smart_telescope-specific concerns with their own real complexity
+  that would need a separate characterization pass, out of scope for
+  collimation/guiding. `_detect_pixel_shift` and the `EnumV2()`-once-per-
+  process guard are ported byte-for-byte and characterization-tested
+  (`tests/core/camera/test_touptek_adapter_characterization.py`) before
+  being touched, per CONTRIBUTING.md.
+- Stage: 3
+
+### packages/astrotool_core/mount/indi_adapter.py — `IndiMountAdapter`
+- Source: wraps `onstep_adapter.client.OnStepClient` (new shim, following
+  the same discipline as smart_telescope's `adapters/onstep/mount.py`
+  shim, but not a port of it — that file's ~550 lines are almost entirely
+  goto/park/align/safety-preflight machinery this project's MountPort
+  doesn't expose at all, per the Stage 2 trim).
+- Change: n/a (new). Maps `MountAxis`/`AxisDirection` to the upstream
+  `guide(direction: "n"|"s"|"e"|"w", duration_ms)` pulse primitive.
+- Stage: 3
+
+### packages/astrotool_core/acquisition/stream_controller.py — `StreamController`, `FrameMailbox`
+- Source: `smart_telescope/services/managed_camera.py` (`ManagedCamera`,
+  `FrameMailbox`)
+- Change: renamed `ManagedCamera` -> `StreamController`; dropped the
+  `role` concept (smart_telescope's main/guide/oag multi-camera setup —
+  neither app here needs more than one camera role) in favor of a plain
+  `name` used only for thread naming.
+- Stage: 3
+
+### packages/astrotool_core/acquisition/single_capture.py, acquisition_state.py
+- Source: new, no analog (smart_telescope calls `CameraPort.capture()`
+  directly at each call site with ad hoc error handling; there was no
+  shared single-shot wrapper to port).
+- Stage: 3
+
+### packages/astrotool_core/target/roi_tracker.py — `RoiTracker`, `TrackingState`
+- Source: new, no analog (TDD). See the module's own docstring: built on
+  direct nearest-neighbor-to-last-known-position matching rather than
+  `smarttscope_live_analysis.temporal.track_sources`/
+  `classify_temporal_tracks` as PLAN.md originally sketched — those solve
+  batch multi-frame linking + persistent/transient classification across
+  a whole star field (for exposure/gain recommendations), a different
+  problem than real-time single-target reacquisition. The library
+  dependency is still valuable for `target/detector.py`'s underlying
+  `analyze_frame()` star detection; this deviation is about the
+  frame-to-frame *linking* step only.
+- Verified: `tests/core/target/test_roi_tracker.py` reproduces the
+  architecture doc's own example transition sequence
+  `[LOCKED, LOCKED, LOST, SEARCHING, REACQUIRED]`, and
+  `tests/integration/test_roi_tracker_replay.py` reproduces it again
+  end-to-end through a real `ReplayCamera` + `detect_sources()` pipeline
+  against `datasets/collimation/mono_adjustment_shift/` (Stage 3's "done
+  when" gate).
+- Stage: 3
+
+### packages/astrotool_core/target/roi_selector.py — `select_target`
+- Source: new, no analog. Single-frame heuristic (brightest non-donut
+  source, preferring `detector.py`'s "normal_star" classification) rather
+  than a literal multi-frame "persistent" check — a persistence check
+  needs a rolling history that doesn't exist before any lock target has
+  ever been acquired.
+- Stage: 3
