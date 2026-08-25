@@ -281,3 +281,125 @@ happens rather than all at once up front.
   `update()` call) and reproduces the expected px/ms response matrix
   within tolerance (Stage 4's "done when" gate).
 - Stage: 4
+
+## Stage 5
+
+Scope decision (asked and confirmed before starting): only the rough
+(donut-based) collimation pathway + focus search are ported this stage.
+The Tri-Bahtinov mask fine-collimation pathway — `fine_collimation_advisor.py`,
+`spike_smoother.py`, `contradiction_detector.py`, mask-sector mapping, and
+the FSM states `INSTALL_TRIBAHTINOV`/`MAP_MASK_SECTORS`/`FINE_FOCUS`/
+`MEASURE_SPIKES`/`GUIDE_FINE_COLLIMATION`/`MASKLESS_VALIDATION` — is
+deferred to a later stage. `spike_smoother.py` and `contradiction_detector.py`
+were never read; `domain/bahtinov.py`, `spike_detection.py`, and
+`spike_decomposition.py` (the underlying spike-analysis math the deferred
+advisor sits on top of) also were not ported this stage, since they exist
+solely in service of that deferred pathway.
+
+### apps/collimation_tool/domain/collimation_measurement.py — `Point2D`, `CircleEllipseFit`, `ReferenceCenterCalibration`, stretch/geometry-fit utilities, `DonutMeasurement`, `DonutAnalyzer`
+- Source: `domain/collimation/models.py` (geometry primitives),
+  `domain/collimation/processing/{stretch,geometry_fits,donut_detection}.py`
+- Change: near-verbatim port (all 3 source files were already pure NumPy +
+  dataclasses, zero smart_telescope-specific coupling). Only mechanical
+  change: takes `astrotool_core.frames.AnalysisPlane` (`.mono`/`.width`/
+  `.height`) wherever the source took its own `ProcessedFrame`.
+- Stage: 5
+
+### apps/collimation_tool/domain/symmetry_analysis.py — `ObstructionResult`, `detect_obstruction`
+- Source: `domain/collimation/processing/obstruction_detection.py`
+- Change: same `AnalysisPlane`-for-`ProcessedFrame` swap; otherwise verbatim.
+- Stage: 5
+
+### apps/collimation_tool/domain/focus_metric.py — `FocusQuality`, `classify_focus_quality`, `mean_fwhm_px`
+- Source: new, no direct 1:1 port. Reuses the excellent/good/poor
+  threshold logic from `services/collimation/fwhm_focus.py`'s
+  `FWHMFocusController._quality()`, but built on
+  `astrotool_core.target.PointSource.fwhm_x`/`fwhm_y` (from
+  `smarttscope-live-analysis`'s own moment-based FWHM estimator) instead
+  of porting `processing/star_detection.py`'s separate radial-profile
+  FWHM estimator (`_estimate_fwhm`) — that file is redundant with
+  `astrotool_core.target.detect_sources`/`select_target` entirely and was
+  not ported (confirmed during Stage 5 research: it duplicates exactly
+  what those already do, just with a different heuristic set).
+- Stage: 5
+
+### apps/collimation_tool/domain/collimation_state.py — enums, `CollimationRecommendation`, `ScrewCalibration`, `CollimationAdvisor`, `ScrewResponseLearner`, `CollimationState` FSM
+- Source: `domain/collimation/models.py` (enums, `CollimationRecommendation`,
+  `ScrewCalibration`), `services/collimation/collimation_advisor.py`
+  (`CollimationAdvisor`), `services/collimation/screw_mapper.py`
+  (`ScrewResponseLearner`), a trimmed subset of `services/collimation/
+  state_machine.py`'s 20-state FSM.
+- Change: `CollimationAdvisor`/`ScrewResponseLearner` ported verbatim
+  (pure decision logic, zero hardware coupling — placed here rather than
+  a 6th domain file, since PLAN.md's domain file list was fixed at 5).
+  The FSM is trimmed to 13 states covering only rough-collimation + focus
+  (dropped: `SELECT_STAR`/`SLEW_TO_STAR` — the new MountPort has no goto
+  — and the whole Tri-Bahtinov branch, per this stage's scope decision).
+  `TurnDirection`/`AdjustmentSize`/`CollimationState` use `enum.StrEnum`
+  (Python 3.11+) instead of the source's `class X(str, Enum)` spelling.
+- Stage: 5
+
+### apps/collimation_tool/application/focus_controller.py — `FocusSearcher`, `FocusSearchResult`
+- Source: `services/collimation/{focus_search,fwhm_focus}.py`
+- Change: **consolidated two near-duplicate hill-climbers into one.**
+  `focus_search.py`'s probe step tested only one direction and assumed
+  the untested direction was "good" when the first move didn't improve —
+  a shortcut that existed specifically to avoid wasting a measurement
+  when a soft focuser limit blocked one direction.
+  `astrotool_core.focus.FocuserPort` has no soft-limit-detection surface
+  at all (`move()` returns `None`; nothing reports a clamped/rejected
+  relative move), so that shortcut has nothing to guard against here.
+  Ported `fwhm_focus.py`'s cleaner, symmetric-probe algorithm (tests both
+  directions, plus a backlash-elimination final-approach-direction
+  correction) once, and use it for both the rough (post-defocus) and
+  final-refocus roles the two source files split apart.
+- Stage: 5
+
+### apps/collimation_tool/application/recenter_policy.py — `CollimationRecenterPolicy`, `RecenterConfig`, `MountCorrectionResult`
+- Source: `services/collimation/mount_centering.py::PulseCenterer` +
+  `domain/collimation/config.py::MountCenteringConfig`
+- Change: **redesigned, not a literal port** — the old implementation
+  derived pulse duration from a theoretical sidereal-rate constant
+  (`pixel_scale_arcsec` + a guide-rate fraction) and called the old
+  MountPort's `guide(direction: str, duration_ms)` using an assumed
+  image-orientation sign convention (`dx>0 -> "w"`, `dy>0 -> "n"`). The
+  new MountPort only has `pulse_axis(axis, direction, duration_ms)`;
+  rather than reintroduce sidereal-rate arithmetic or an assumed
+  orientation, this policy uses Stage 4's empirically measured
+  `CalibrationMatrix` directly: `duration_ms = |offset_component_px| /
+  measured_px_per_ms`, and picks whichever `AxisDirection`'s calibrated
+  response actually opposes the measured error by its measured sign.
+  Tolerance/settle/divergence-guard fields (`fine_tolerance_px`,
+  `rough_tolerance_px`, `max_pulse_ms`, `settle_ms`, `max_iterations`,
+  `max_diverge_count`) port near-verbatim from `MountCenteringConfig`,
+  including the exact 10%-growth divergence-detection rule and its
+  decay-not-reset counter. One deliberate behavior change: a rejected
+  pulse now aborts immediately (`"pulse_rejected"`) instead of being
+  silently ignored — the original never checked `guide()`'s returned bool.
+- Stage: 5
+
+### apps/collimation_tool/application/collimation_controller.py — `adjust_exposure`, `run_auto_exposure`, `CollimationController`
+- Source: `services/collimation/assistant.py::CollimationAssistant`
+  (`_handle_auto_exposure`'s formula; `_handle_measure_donut`'s
+  measure-then-advise decision shape)
+- Change: **not a background-thread session runner.** The source's
+  `CollimationAssistant` owns a threaded FSM-driving loop plus session
+  report/archive building and cross-app guiding coordination (pausing a
+  separate `GuidingService` around mount moves) — all dropped. This
+  project has no cross-app guiding coordination to begin with (GuideTool
+  is a fully separate app), and report/archive building is a UI/session
+  concern for a later stage, not domain/application logic.
+  `CollimationController` instead exposes plain synchronous methods
+  (`measure_and_advise`, `record_screw_adjustment`) that a UI (Stage 7) or
+  test calls explicitly — session-flow orchestration (when to transition
+  `CollimationStateMachine`) is left to the caller. `adjust_exposure`'s
+  formula (target 80% of full well, 10% tolerance, exposure scaled by
+  `target/max(fraction, 0.01)`, clamped to [0.001s, 30s]) is ported
+  verbatim from `_handle_auto_exposure`.
+- Not ported from `assistant.py` (confirmed during research, genuinely
+  can't port, not just deferred): `_handle_slew_to_star`/`_handle_acquire_star`'s
+  `mount.goto(ra, dec)`/`mount.enable_tracking()`/RA-Dec polling — the new
+  MountPort has no goto/slew/RA-Dec surface at all. Practical implication:
+  this project's CollimationTool has no automated "find a star via GoTo"
+  phase — the user must already have a star in frame before starting.
+- Stage: 5

@@ -93,6 +93,50 @@ def bayer_star_field_image(
     return mosaic_from_rgb(rgb, pattern)
 
 
+def donut_image(
+    shape: tuple[int, int],
+    *,
+    outer_center: tuple[float, float],
+    outer_radius: float,
+    inner_center: tuple[float, float],
+    inner_radius: float,
+    peak: float,
+    background: float = 100.0,
+) -> np.ndarray:
+    """Render a float32 mono image of a defocused-star donut (ring with a dark hole).
+
+    ``outer_center``/``outer_radius`` describe the bright outer ring;
+    ``inner_center``/``inner_radius`` describe the dark inner hole
+    (secondary-mirror shadow) — offsetting ``inner_center`` from
+    ``outer_center`` simulates a collimation error.
+    """
+    height, width = shape
+    yy, xx = np.indices((height, width), dtype=np.float32)
+    outer_dist = np.hypot(xx - outer_center[0], yy - outer_center[1])
+    inner_dist = np.hypot(xx - inner_center[0], yy - inner_center[1])
+    ring = (outer_dist <= outer_radius) & (inner_dist >= inner_radius)
+    image = np.full((height, width), background, dtype=np.float32)
+    image[ring] += peak
+    return image
+
+
+def with_shadow(
+    image: np.ndarray,
+    *,
+    center: tuple[float, float],
+    radius: float,
+    depth: float,
+) -> np.ndarray:
+    """Return a copy of ``image`` with a circular shadow (darkened disk) added."""
+    height, width = image.shape
+    yy, xx = np.indices((height, width), dtype=np.float32)
+    dist = np.hypot(xx - center[0], yy - center[1])
+    mask = dist <= radius
+    out = image.copy()
+    out[mask] -= depth
+    return out
+
+
 def make_frame(
     pixels: np.ndarray,
     *,

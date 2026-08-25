@@ -8,10 +8,12 @@ from astrotool_core.testing.fake_touptek import FakeTouptekCamera
 from astrotool_core.testing.frame_factory import (
     StarSpec,
     bayer_star_field_image,
+    donut_image,
     make_frame,
     single_star_image,
     star_field_image,
     with_hot_pixels,
+    with_shadow,
 )
 from astrotool_core.testing.replay_dataset import (
     discover_fits_paths,
@@ -25,10 +27,12 @@ __all__ = [
     "StarSpec",
     "bayer_star_field_image",
     "discover_fits_paths",
+    "donut_image",
     "load_expected",
     "load_frames",
     "make_frame",
     "single_star_image",
     "star_field_image",
     "with_hot_pixels",
+    "with_shadow",
 ]
