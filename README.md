@@ -8,6 +8,7 @@ logging.
 - Architecture and rationale: [`collimation-guidetool-architektur.md`](collimation-guidetool-architektur.md)
 - Implementation plan and staged build order: [`PLAN.md`](PLAN.md)
 - Contribution/change-safety rules: [`CONTRIBUTING.md`](CONTRIBUTING.md)
+- Installing and upgrading on a Raspberry Pi: [`install.md`](install.md)
 
 ## Status
 
