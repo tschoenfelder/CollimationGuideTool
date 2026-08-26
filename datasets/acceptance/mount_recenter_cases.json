@@ -1,0 +1,49 @@
+{
+  "schema_version": 1,
+  "frame_center_px": [120.0, 120.0],
+  "donut": {
+    "outer_radius_px": 50.0,
+    "inner_radius_px": 20.0,
+    "peak_adu": 3000.0,
+    "background_adu": 100.0,
+    "bit_depth": 16
+  },
+  "motion_model": {
+    "AXIS1_POSITIVE": {"dx_px_per_ms": 0.04, "dy_px_per_ms": 0.0},
+    "AXIS1_NEGATIVE": {"dx_px_per_ms": -0.04, "dy_px_per_ms": 0.0},
+    "AXIS2_POSITIVE": {"dx_px_per_ms": 0.0, "dy_px_per_ms": 0.03},
+    "AXIS2_NEGATIVE": {"dx_px_per_ms": 0.0, "dy_px_per_ms": -0.03}
+  },
+  "cases": [
+    {
+      "id": "donut_centered",
+      "start_center_px": [120.0, 120.0],
+      "expected_pulses": [],
+      "expected_success": true
+    },
+    {
+      "id": "donut_left_20px",
+      "start_center_px": [100.0, 120.0],
+      "expected_pulses": [["AXIS1", "POSITIVE", 500]],
+      "expected_success": true
+    },
+    {
+      "id": "donut_right_20px",
+      "start_center_px": [140.0, 120.0],
+      "expected_pulses": [["AXIS1", "NEGATIVE", 500]],
+      "expected_success": true
+    },
+    {
+      "id": "donut_up_15px",
+      "start_center_px": [120.0, 105.0],
+      "expected_pulses": [["AXIS2", "POSITIVE", 500]],
+      "expected_success": true
+    },
+    {
+      "id": "donut_down_15px",
+      "start_center_px": [120.0, 135.0],
+      "expected_pulses": [["AXIS2", "NEGATIVE", 500]],
+      "expected_success": true
+    }
+  ]
+}
