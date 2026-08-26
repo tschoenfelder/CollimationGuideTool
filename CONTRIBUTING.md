@@ -47,6 +47,23 @@ lint/type-check in one step.
 A `CORE-*` change additionally requires the full `tests/contracts` and
 `tests/integration` suites to pass.
 
+## Before pushing a release
+
+`tests/acceptance` is a synchronous, below-UI regression suite (deterministic
+synthetic donut/star scenarios driven straight through `CollimationController`
+/ `GuideController.process_frame()`, with expected values reviewable in
+`datasets/acceptance/*.json`). It's slower and broader than the per-change
+suites above, so it isn't run on every patch — but it must pass before pushing
+a release/tag to GitHub:
+
+```
+scripts/check.sh --release      # or: scripts/check.ps1 -Release
+```
+
+This runs `tests/core tests/collimation tests/guide tests/contracts
+tests/integration tests/acceptance` plus ruff/mypy/lint-imports, on top of
+the always-run-three suites above.
+
 ## What one patch may touch
 
 ```
