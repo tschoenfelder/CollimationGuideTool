@@ -108,7 +108,7 @@ class CollimationRecenterPolicy:
             direction = self._direction_opposing(axis, offset_component)
             axis_response = self._calibration.response_for(axis, direction)
             px_per_ms = max(axis_response.px_per_ms, 1e-9)
-            duration_ms = max(1, min(cfg.max_pulse_ms, int(abs(offset_component) / px_per_ms)))
+            duration_ms = max(1, min(cfg.max_pulse_ms, round(abs(offset_component) / px_per_ms)))
 
             pulse_result = self._mount.pulse_axis(axis, direction, duration_ms)
             pulses += 1

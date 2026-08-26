@@ -53,6 +53,16 @@ class GuidingStatus:
     rms_px: float = 0.0
 
 
+@dataclass
+class GuidingFrameResult:
+    """Outcome of processing one frame through the guiding business logic."""
+
+    error: GuideError | None
+    pulses: list[WouldGuidePulse]
+    pulses_sent: bool
+    rms_px: float
+
+
 class GuideController:
     def __init__(
         self,
@@ -160,7 +170,7 @@ class GuideController:
                 hard_failure = str(err)
                 _log.warning("guide stream error: %s", err)
 
-            error: GuideError | None = None
+            result: GuidingFrameResult | None = None
             latest_frame_age: float | None = None
 
             if mailbox_frame is None:
@@ -170,20 +180,21 @@ class GuideController:
                 frame_age = time.monotonic() - mailbox_frame.captured_at_monotonic
                 latest_frame_age = frame_age
                 try:
-                    error = self._measure_one(mailbox_frame.frame.pixels)
+                    result = self.process_frame(mailbox_frame.frame.pixels)
                 except Exception as exc:
                     _log.warning(
                         "guide measurement error seq=%s: %s", mailbox_frame.sequence, exc
                     )
                     bad_count += 1
                 else:
+                    error = result.error
                     if error is not None and error.accepted and frame_age <= self._max_frame_age_s:
                         bad_count = 0
                     else:
                         bad_count += 1
 
             state = source_state_from_error(
-                error,
+                result.error if result is not None else None,
                 running=True,
                 latest_sequence=last_sequence,
                 latest_frame_age_s=latest_frame_age,
@@ -192,21 +203,37 @@ class GuideController:
                 hard_failure=hard_failure,
             )
 
-            if error is not None and error.error_magnitude_px is not None:
-                self._drift.add(error.error_magnitude_px)
-
-            pulses = self._compute_pulses(error)
-            self._send_pulses(pulses)
-
             with self._status_lock:
                 self._status = GuidingStatus(
                     state="running",
                     measure_only=self._measure_only,
                     source=state,
-                    latest_pulses=pulses,
+                    latest_pulses=result.pulses if result is not None else [],
                     started_at=started_at,
-                    rms_px=self._drift.rms_px(),
+                    rms_px=result.rms_px if result is not None else self._drift.rms_px(),
                 )
+
+    def process_frame(self, pixels: np.ndarray) -> GuidingFrameResult:
+        """Run one frame through detect/track -> error -> pulses -> optional send.
+
+        Synchronous business-logic entry point shared by the background
+        stream loop and by below-UI acceptance tests, so both exercise the
+        exact same guiding algorithm.
+        """
+        error = self._measure_one(pixels)
+
+        if error is not None and error.error_magnitude_px is not None:
+            self._drift.add(error.error_magnitude_px)
+
+        pulses = self._compute_pulses(error)
+        pulses_sent = self._send_pulses(pulses)
+
+        return GuidingFrameResult(
+            error=error,
+            pulses=pulses,
+            pulses_sent=pulses_sent,
+            rms_px=self._drift.rms_px(),
+        )
 
     def _measure_one(self, pixels: np.ndarray) -> GuideError | None:
         detection = detect_sources(pixels)
@@ -242,13 +269,14 @@ class GuideController:
             error.error_x, error.error_y, self._calibration, self._correction_config
         )
 
-    def _send_pulses(self, pulses: list[WouldGuidePulse]) -> None:
+    def _send_pulses(self, pulses: list[WouldGuidePulse]) -> bool:
         with self._status_lock:
             paused = self._pulses_paused
         if self._measure_only or paused or not pulses or self._correction_policy is None:
-            return
+            return False
         for pulse in pulses:
             try:
                 self._correction_policy.send(pulse)
             except Exception as exc:
                 _log.error("guide correction pulse failed: %s", exc)
+        return True

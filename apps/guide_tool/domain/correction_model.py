@@ -69,7 +69,7 @@ def compute_would_pulses(
         raw_ms = abs(error) * config.aggressiveness / px_per_ms
         if raw_ms < config.min_pulse_ms:
             continue
-        duration_ms = min(int(raw_ms), config.max_pulse_ms)
+        duration_ms = min(round(raw_ms), config.max_pulse_ms)
         pulses.append(
             WouldGuidePulse(
                 axis=axis,

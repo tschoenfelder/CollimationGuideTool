@@ -1,0 +1,198 @@
+{
+  "schema_version": 1,
+  "frame": {
+    "width": 240,
+    "height": 240,
+    "background_adu": 100.0,
+    "star_peak_adu": 5000.0,
+    "star_sigma_px": 2.5,
+    "bit_depth": 16
+  },
+  "target_px": [
+    120.0,
+    120.0
+  ],
+  "correction_config": {
+    "deadband_px": 0.5,
+    "max_pulse_ms": 2000,
+    "min_pulse_ms": 1,
+    "aggressiveness": 1.0,
+    "axis2_enabled": true
+  },
+  "motion_models": {
+    "normal": {
+      "AXIS1_POSITIVE": {
+        "dx_px_per_ms": 0.04,
+        "dy_px_per_ms": 0.0
+      },
+      "AXIS1_NEGATIVE": {
+        "dx_px_per_ms": -0.04,
+        "dy_px_per_ms": 0.0
+      },
+      "AXIS2_POSITIVE": {
+        "dx_px_per_ms": 0.0,
+        "dy_px_per_ms": 0.03
+      },
+      "AXIS2_NEGATIVE": {
+        "dx_px_per_ms": 0.0,
+        "dy_px_per_ms": -0.03
+      }
+    },
+    "reversed_axis1": {
+      "AXIS1_POSITIVE": {
+        "dx_px_per_ms": -0.04,
+        "dy_px_per_ms": 0.0
+      },
+      "AXIS1_NEGATIVE": {
+        "dx_px_per_ms": 0.04,
+        "dy_px_per_ms": 0.0
+      },
+      "AXIS2_POSITIVE": {
+        "dx_px_per_ms": 0.0,
+        "dy_px_per_ms": 0.03
+      },
+      "AXIS2_NEGATIVE": {
+        "dx_px_per_ms": 0.0,
+        "dy_px_per_ms": -0.03
+      }
+    }
+  },
+  "closed_loop_cases": [
+    {
+      "id": "drift_right_20px",
+      "motion_model": "normal",
+      "start_px": [
+        140.0,
+        120.0
+      ],
+      "expected_pulses": [
+        [
+          "AXIS1",
+          "NEGATIVE",
+          500
+        ]
+      ],
+      "expected_final_px": [
+        120.0,
+        120.0
+      ]
+    },
+    {
+      "id": "drift_left_20px",
+      "motion_model": "normal",
+      "start_px": [
+        100.0,
+        120.0
+      ],
+      "expected_pulses": [
+        [
+          "AXIS1",
+          "POSITIVE",
+          500
+        ]
+      ],
+      "expected_final_px": [
+        120.0,
+        120.0
+      ]
+    },
+    {
+      "id": "drift_down_15px",
+      "motion_model": "normal",
+      "start_px": [
+        120.0,
+        135.0
+      ],
+      "expected_pulses": [
+        [
+          "AXIS2",
+          "NEGATIVE",
+          500
+        ]
+      ],
+      "expected_final_px": [
+        120.0,
+        120.0
+      ]
+    },
+    {
+      "id": "drift_up_15px",
+      "motion_model": "normal",
+      "start_px": [
+        120.0,
+        105.0
+      ],
+      "expected_pulses": [
+        [
+          "AXIS2",
+          "POSITIVE",
+          500
+        ]
+      ],
+      "expected_final_px": [
+        120.0,
+        120.0
+      ]
+    },
+    {
+      "id": "reversed_camera_right_20px",
+      "motion_model": "reversed_axis1",
+      "start_px": [
+        140.0,
+        120.0
+      ],
+      "expected_pulses": [
+        [
+          "AXIS1",
+          "POSITIVE",
+          500
+        ]
+      ],
+      "expected_final_px": [
+        120.0,
+        120.0
+      ]
+    }
+  ],
+  "no_correction_cases": [
+    {
+      "id": "inside_deadband",
+      "position_px": [
+        120.3,
+        119.8
+      ],
+      "expected_pulses": []
+    },
+    {
+      "id": "target_position",
+      "position_px": [
+        120.0,
+        120.0
+      ],
+      "expected_pulses": []
+    }
+  ],
+  "lost_reacquired": {
+    "positions": [
+      [
+        120.0,
+        120.0
+      ],
+      [
+        121.0,
+        120.0
+      ],
+      null,
+      null,
+      [
+        122.0,
+        120.0
+      ],
+      [
+        123.0,
+        120.0
+      ]
+    ],
+    "expect_no_pulses_while_lost": true
+  }
+}
