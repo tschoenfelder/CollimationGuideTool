@@ -491,3 +491,91 @@ solely in service of that deferred pathway.
   RoiTracker core built in Stage 3 for CollimationTool is genuinely
   shared with GuideTool).
 - Stage: 6
+
+## Stage 7
+
+No smart_telescope source exists for any file below: its UI is a browser/JS
+frontend served by FastAPI, with zero PySide6 (or any desktop-toolkit)
+overlap. Everything in `apps/*/ui/` and `apps/*/main.py` is new.
+
+### apps/collimation_tool/ui/live_view.py — `LiveViewLabel`
+- Source: new — a `QLabel` that percentile-stretches the incoming mono
+  frame to uint8, converts to `QImage`/`QPixmap`, and (when a
+  `DonutMeasurement` is available) draws the outer-ring/inner-hole
+  circles plus the error vector between their centers via `QPainter`.
+- Change: the stretch formula mirrors `collimation_measurement.
+  auto_stretch`'s percentiles, but is a separate, display-tuned
+  function rather than an import from there — that function is
+  analysis-facing (tuned for `DonutAnalyzer`'s detection), this one is
+  purely for what looks good on screen, and the two should be free to
+  diverge independently.
+- Stage: 7
+
+### apps/collimation_tool/ui/main_window.py — `MainWindow`
+- Source: new. Owns a `StreamController` directly (unlike GuideTool's
+  window — see below) because `CollimationController` is a pure
+  per-frame measure/advise API with no run loop of its own; something
+  has to drive it each frame, and here that's the UI's `QTimer`.
+- Not wired: `CollimationRecenterPolicy` (SCT collimation screws are
+  turned by hand — driving the whole scope via the mount is a separate,
+  undecided operator workflow) and the Tri-Bahtinov fine-collimation
+  pathway (deferred since Stage 5).
+- Stage: 7
+
+### apps/collimation_tool/main.py — `main`
+- Source: new. Wires a `ReplayCamera` serving a small synthetic donut
+  sequence (via `testing.frame_factory.donut_image`) as the default
+  camera, not `FakeCamera` — `FakeCamera`'s round single-star field
+  can't exercise `DonutAnalyzer` (no ring shape), so PLAN.md's literal
+  "fake_camera by default" doesn't produce a working demo here. Frame
+  shape/radii/peak intentionally match
+  `datasets/acceptance/collimation_cases.json`'s frame config: with a
+  240x240 frame the ring occupies a small enough area for
+  `DonutAnalyzer.estimate_background`'s sigma-clipping to converge in
+  one pass; a first attempt at a larger 480x480/wider-ring demo frame
+  made the ring occupy ~30% of the image, which inflated the whole-image
+  standard deviation enough that every frame read as `"no_signal"`.
+- Stage: 7
+
+### apps/guide_tool/ui/live_view.py — `LiveViewLabel`
+- Source: new — same percentile-stretch-to-`QImage` shape as
+  CollimationTool's `LiveViewLabel`, drawing a target crosshair, a
+  centroid crosshair, and the drift-vector line between them (or a
+  "NO LOCK" label when the error is rejected) instead of donut rings.
+- Change: the stretch helper is duplicated from CollimationTool's
+  rather than shared, per this project's established guide_tool/
+  collimation_tool independence rule (see `correction_model.py`'s
+  `_direction_opposing` for the precedent).
+- Stage: 7
+
+### apps/guide_tool/application/guide_controller.py — `GuidingStatus.latest_pixels`
+- Source: new field on an existing (Stage 6) class. `GuideController`
+  already owns its `StreamController` privately and drives it via
+  `_loop()`; the UI has no other way to reach the live frame for
+  display, since `GuidingStatus` previously carried only measurement/
+  health fields, not pixels. Populated in `_loop()` from the same
+  `mailbox_frame.frame.pixels` `process_frame()` already consumes, and
+  held over (like `rms_px`) on ticks with no new frame.
+- Stage: 7
+
+### apps/guide_tool/ui/main_window.py — `MainWindow`
+- Source: new. Unlike CollimationTool's window, this one does not own a
+  `StreamController` — `GuideController` already owns one internally
+  (see Stage 6), so the window just calls `start()`/`stop()` and polls
+  `status()` on a `QTimer`.
+- Stage: 7
+
+### apps/guide_tool/main.py — `main`
+- Source: new. Wires a plain `FakeCamera()` with no mount configured —
+  unlike CollimationTool, `FakeCamera`'s single round star is exactly
+  what `RoiTracker`/`compute_guide_error` need, so PLAN.md's literal
+  "fake_camera by default" applies directly here.
+- Stage: 7
+
+### tests/conftest.py — `qapp` fixture
+- Source: new. Forces `QT_QPA_PLATFORM=offscreen` before any PySide6
+  import (module-level, so it applies even to collection-time imports),
+  and provides a session-scoped `QApplication` singleton — verified
+  working headlessly in this Windows dev environment via
+  `PySide6.QtWidgets.QApplication([])` under `QT_QPA_PLATFORM=offscreen`.
+- Stage: 7

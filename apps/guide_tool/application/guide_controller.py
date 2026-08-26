@@ -51,6 +51,7 @@ class GuidingStatus:
     started_at: float | None = None
     measure_only: bool = True
     rms_px: float = 0.0
+    latest_pixels: np.ndarray | None = None
 
 
 @dataclass
@@ -161,6 +162,7 @@ class GuideController:
         assert stream is not None
         last_sequence = 0
         bad_count = 0
+        latest_pixels: np.ndarray | None = None
 
         while not self._stop_event.is_set():
             mailbox_frame = stream.mailbox.wait_latest(after_sequence=last_sequence, timeout_s=0.1)
@@ -179,6 +181,7 @@ class GuideController:
                 last_sequence = mailbox_frame.sequence
                 frame_age = time.monotonic() - mailbox_frame.captured_at_monotonic
                 latest_frame_age = frame_age
+                latest_pixels = mailbox_frame.frame.pixels
                 try:
                     result = self.process_frame(mailbox_frame.frame.pixels)
                 except Exception as exc:
@@ -211,6 +214,7 @@ class GuideController:
                     latest_pulses=result.pulses if result is not None else [],
                     started_at=started_at,
                     rms_px=result.rms_px if result is not None else self._drift.rms_px(),
+                    latest_pixels=latest_pixels,
                 )
 
     def process_frame(self, pixels: np.ndarray) -> GuidingFrameResult:

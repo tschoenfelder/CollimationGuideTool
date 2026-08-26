@@ -12,8 +12,12 @@ logging.
 
 ## Status
 
-Scaffolding stage. No production code yet — see `PLAN.md` for the staged
-build order (Stage 0 of 8).
+Stages 0–7 of 8 complete (see `PLAN.md`): shared core, both apps' domain
+and application layers, and a minimal PySide6 UI for each. Run
+`collimation-tool` / `guide-tool` after installing to see both live
+against synthetic data (a donut sequence and a fake guide star,
+respectively) with no hardware attached. Remaining: Stage 8
+(regression-protection hardening, packaging finish, `v0.1.0` tag).
 
 ## Prior art
 
