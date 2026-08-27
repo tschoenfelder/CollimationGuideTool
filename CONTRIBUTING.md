@@ -84,6 +84,39 @@ acceptable even if the tests happen to stay green. If a refactor is
 genuinely needed, it is a separate, behavior-neutral commit — green tests
 before and after, no functional change in the same commit.
 
+## Cyclomatic complexity
+
+Ruff's McCabe checks (`C90`) are enabled with a hard limit of
+`max-complexity = 15` (`[tool.ruff.lint.mccabe]` in `pyproject.toml`), run as
+part of the normal `ruff check .` in `scripts/check.sh` / `scripts/check.ps1`
+— no separate CI system exists in this repo, so that script *is* the
+enforcement point for every change and release.
+
+Interpretation:
+
+- CC 1–5: simple / very good
+- CC 6–10: normal
+- CC 11–15: review zone — acceptable when the branching is cohesive domain
+  logic and well tested; don't fragment it artificially just to lower the
+  number
+- CC >15: refactor, or justify explicitly in the PR/commit message before
+  merging
+- CC >20: should normally not be accepted
+
+Prefer preserving a cohesive domain algorithm (donut analysis, autofocus
+search, tracking state handling) over splitting it into pieces that only
+exist to dodge the metric. Refactor when complexity instead reflects
+multiple responsibilities, duplicated decisions, or branches that are hard
+to test in isolation. No broad `# noqa: C901` suppression — a genuine
+exception is scoped to the one function, with a comment saying why.
+
+As of the `C90` rollout, the highest-complexity functions in the codebase
+were reviewed and found to be legitimate cohesive domain logic, well inside
+the limit: `FocusSearcher.search()` (12), `CollimationRecenterPolicy.center()`
+(10), `DonutAnalyzer.analyze()` (8), `CollimationAdvisor.recommend()` (7),
+`GuideController._loop()` (7), `RoiTracker.update()` (6). None required
+refactoring.
+
 ## Public interfaces
 
 Each `astrotool_core/<subsystem>/__init__.py` is the only supported import
