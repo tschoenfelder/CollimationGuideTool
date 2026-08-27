@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
+from _golden_master import assert_matches_golden
 from astrotool_core.camera.replay_camera import ReplayCamera
 from astrotool_core.target.detector import detect_sources
 from astrotool_core.target.roi_selector import select_target
@@ -59,5 +59,6 @@ def test_guide_error_reproduces_lost_and_reacquired_sequence() -> None:
             assert observed is None
         else:
             assert observed is not None
-            assert observed["error_x"] == pytest.approx(expected_error["error_x"], abs=0.5)
-            assert observed["error_y"] == pytest.approx(expected_error["error_y"], abs=0.5)
+            assert_matches_golden(
+                observed, expected_error, tolerances={"error_x": 0.5, "error_y": 0.5}
+            )

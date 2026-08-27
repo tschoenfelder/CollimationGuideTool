@@ -12,12 +12,13 @@ logging.
 
 ## Status
 
-Stages 0–7 of 8 complete (see `PLAN.md`): shared core, both apps' domain
-and application layers, and a minimal PySide6 UI for each. Run
-`collimation-tool` / `guide-tool` after installing to see both live
+All 8 stages complete (see `PLAN.md`), tagged `v0.1.0`: shared core, both
+apps' domain and application layers, a minimal PySide6 UI for each, and
+regression-protection hardening (contract tests for every adapter,
+tolerance-based golden-master replay tests, a Ruff `C90` complexity gate).
+Run `collimation-tool` / `guide-tool` after installing to see both live
 against synthetic data (a donut sequence and a fake guide star,
-respectively) with no hardware attached. Remaining: Stage 8
-(regression-protection hardening, packaging finish, `v0.1.0` tag).
+respectively) with no hardware attached.
 
 ## Prior art
 

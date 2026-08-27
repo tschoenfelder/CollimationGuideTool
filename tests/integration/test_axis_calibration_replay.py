@@ -14,6 +14,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from _golden_master import assert_matches_golden
 from astrotool_core.camera.replay_camera import ReplayCamera
 from astrotool_core.mount.axis_calibration import calibrate_axes
 from astrotool_core.mount.port import AxisDirection, MountAxis
@@ -73,6 +74,13 @@ def test_axis_calibration_reproduces_expected_response_matrix(dataset_name: str)
     for key, expected_response in expected["responses"].items():
         axis_name, direction_name = key.split("_")
         response = matrix.response_for(MountAxis[axis_name], AxisDirection[direction_name])
-        assert response.dx_px == pytest.approx(expected_response["dx_px"], abs=0.5)
-        assert response.dy_px == pytest.approx(expected_response["dy_px"], abs=0.5)
-        assert response.px_per_ms == pytest.approx(expected_response["px_per_ms"], abs=0.005)
+        actual = {
+            "dx_px": response.dx_px,
+            "dy_px": response.dy_px,
+            "px_per_ms": response.px_per_ms,
+        }
+        assert_matches_golden(
+            actual,
+            expected_response,
+            tolerances={"dx_px": 0.5, "dy_px": 0.5, "px_per_ms": 0.005},
+        )

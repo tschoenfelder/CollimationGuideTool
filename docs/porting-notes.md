@@ -579,3 +579,30 @@ overlap. Everything in `apps/*/ui/` and `apps/*/main.py` is new.
   working headlessly in this Windows dev environment via
   `PySide6.QtWidgets.QApplication([])` under `QT_QPA_PLATFORM=offscreen`.
 - Stage: 7
+
+## Stage 8
+
+### tests/integration/_golden_master.py — `assert_matches_golden`
+- Source: new. Factors out the per-key `pytest.approx(..., abs=tol)` loop
+  that `test_axis_calibration_replay.py` and `test_guide_lost_star_replay.py`
+  were each writing by hand, per PLAN.md's "Regression-protection
+  scaffolding" section — same signature as the doc's own sketch, but taking
+  an already-loaded `expected` dict rather than a `Path`, since both call
+  sites already have a dict in hand (a whole-file `load_expected()`, or one
+  sub-dict of it) and a dict-in/dict-out helper composes with either.
+  `test_roi_tracker_replay.py` is deliberately NOT converted — it compares a
+  list of lock-state names for exact equality, which isn't what a
+  numeric-tolerance helper is for.
+- Stage: 8
+
+### tests/integration/test_placeholder_datasets_skip_cleanly.py
+- Source: new. Wires the four still-empty `datasets/` leaves
+  (`collimation/artificial_star`, `collimation/color_bayer`,
+  `collimation/mono_centered`, `guiding/steady_drift`) into a real test per
+  PLAN.md Stage 8's "wire every datasets/ leaf", rather than leaving the
+  auto-skip convention their READMEs describe as prose only. No synthetic
+  frames were fabricated for these — that's still deferred (see each
+  README). The test skips cleanly while a leaf has no frames/expected.json,
+  and deliberately fails if data shows up without a real replay test
+  replacing the skip, so the placeholder can't silently rot once populated.
+- Stage: 8
