@@ -64,6 +64,17 @@ This runs `tests/core tests/collimation tests/guide tests/contracts
 tests/integration tests/acceptance` plus ruff/mypy/lint-imports, on top of
 the always-run-three suites above.
 
+## Server-side quality gate
+
+`.github/workflows/quality.yml` runs on every push/PR to `main` and executes
+exactly the release gate above (Python 3.13, `ruff check .`, `mypy .`,
+`lint-imports`, then the same six test directories) — it calls the same
+tools with the same config, not a separate copy of the thresholds, so local
+and CI runs cannot drift apart. This is the authoritative merge/release
+feedback mechanism: a failing check blocks the PR regardless of what a local
+run showed. Running `scripts/check.sh --release` locally before pushing is
+still recommended so failures are caught before CI, not instead of it.
+
 ## What one patch may touch
 
 ```

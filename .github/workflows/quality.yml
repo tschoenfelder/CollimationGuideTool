@@ -1,0 +1,49 @@
+name: Quality gauntlet
+
+# Server-side mirror of `scripts/check.sh --release` / `scripts/check.ps1
+# -Release` (see CONTRIBUTING.md, "Before pushing a release"). Runs the full
+# release gate on every push/PR so the rules are machine-enforced rather than
+# convention-enforced (relates to #3).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  quality:
+    runs-on: ubuntu-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install project + dev dependencies
+        run: python -m pip install -e ".[dev]"
+
+      - name: ruff (includes C90 complexity gate)
+        run: ruff check .
+
+      - name: mypy
+        run: mypy .
+
+      - name: import-linter
+        run: lint-imports
+
+      - name: pytest — full release gate
+        run: >
+          pytest tests/core tests/collimation tests/guide tests/contracts
+          tests/integration tests/acceptance
+          --cov-report=xml
+
+      - name: Upload coverage report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: coverage-xml
+          path: coverage.xml
