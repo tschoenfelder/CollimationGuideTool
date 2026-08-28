@@ -47,3 +47,13 @@ jobs:
         with:
           name: coverage-xml
           path: coverage.xml
+
+      - name: Complexity/coverage hotspot report (informational, issue #4)
+        run: python scripts/quality_report.py
+
+      - name: Upload hotspot report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: quality-hotspots
+          path: docs/quality/hotspots.json

@@ -128,6 +128,28 @@ the limit: `FocusSearcher.search()` (12), `CollimationRecenterPolicy.center()`
 `GuideController._loop()` (7), `RoiTracker.update()` (6). None required
 refactoring.
 
+## Complexity/coverage hotspot baseline (CRAP)
+
+`scripts/quality_report.py` combines per-function complexity (radon) with
+per-function statement coverage (from the `.coverage` data `pytest` already
+writes) into a CRAP score — `complexity^2 * (1 - coverage)^3 + complexity` —
+and writes `docs/quality/hotspots.json` (every function) and
+`docs/quality/hotspots.md` (top 10, committed as the current baseline).
+Regenerate after a normal `pytest` run:
+
+```
+pytest
+python scripts/quality_report.py
+```
+
+This is measurement-first and informational: it does not enforce a
+threshold (see issue #9, blocked on this baseline plus a mutation-testing
+baseline from issue #5) and must never be used to justify refactoring on its
+own — issue #7 requires a hotspot to show a *material* risk (high complexity
+*and* weak coverage) before touching it, not complexity alone. Note radon's
+complexity numbers are not ruff's (see the disclaimer in `hotspots.md`) —
+ruff's `C90` gate above remains the enforced threshold.
+
 ## Public interfaces
 
 Each `astrotool_core/<subsystem>/__init__.py` is the only supported import

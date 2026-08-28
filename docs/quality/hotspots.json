@@ -1,0 +1,2249 @@
+[
+  {
+    "file": "apps/collimation_tool/application/recenter_policy.py",
+    "function": "CollimationRecenterPolicy.center",
+    "complexity": 19,
+    "coverage_percent": 95.0,
+    "crap": 19.05
+  },
+  {
+    "file": "apps/guide_tool/ui/live_view.py",
+    "function": "LiveViewLabel.set_frame",
+    "complexity": 11,
+    "coverage_percent": 68.2,
+    "crap": 14.9
+  },
+  {
+    "file": "apps/guide_tool/application/guide_controller.py",
+    "function": "GuideController._loop",
+    "complexity": 13,
+    "coverage_percent": 81.2,
+    "crap": 14.11
+  },
+  {
+    "file": "apps/collimation_tool/application/focus_controller.py",
+    "function": "FocusSearcher.search",
+    "complexity": 12,
+    "coverage_percent": 92.1,
+    "crap": 12.07
+  },
+  {
+    "file": "packages/astrotool_core/testing/frame_factory.py",
+    "function": "bayer_star_field_image",
+    "complexity": 3,
+    "coverage_percent": 0.0,
+    "crap": 12.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_state.py",
+    "function": "CollimationAdvisor.recommend",
+    "complexity": 11,
+    "coverage_percent": 96.4,
+    "crap": 11.01
+  },
+  {
+    "file": "packages/astrotool_core/target/roi_tracker.py",
+    "function": "RoiTracker.update",
+    "complexity": 10,
+    "coverage_percent": 100.0,
+    "crap": 10.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_measurement.py",
+    "function": "estimate_background",
+    "complexity": 7,
+    "coverage_percent": 64.3,
+    "crap": 9.23
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_measurement.py",
+    "function": "DonutAnalyzer.analyze",
+    "complexity": 9,
+    "coverage_percent": 88.1,
+    "crap": 9.14
+  },
+  {
+    "file": "packages/astrotool_core/camera/touptek_adapter.py",
+    "function": "TouptekCameraAdapter._open_device",
+    "complexity": 9,
+    "coverage_percent": 100.0,
+    "crap": 9.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/touptek_adapter.py",
+    "function": "TouptekCameraAdapter._select_device",
+    "complexity": 8,
+    "coverage_percent": 100.0,
+    "crap": 8.0
+  },
+  {
+    "file": "apps/guide_tool/ui/main_window.py",
+    "function": "_format_status",
+    "complexity": 7,
+    "coverage_percent": 77.8,
+    "crap": 7.54
+  },
+  {
+    "file": "apps/guide_tool/application/guide_controller.py",
+    "function": "GuideController._send_pulses",
+    "complexity": 7,
+    "coverage_percent": 80.0,
+    "crap": 7.39
+  },
+  {
+    "file": "packages/astrotool_core/testing/fake_touptek.py",
+    "function": "FakeTouptekCamera.capture",
+    "complexity": 7,
+    "coverage_percent": 83.3,
+    "crap": 7.23
+  },
+  {
+    "file": "packages/astrotool_core/target/roi_selector.py",
+    "function": "select_target",
+    "complexity": 7,
+    "coverage_percent": 100.0,
+    "crap": 7.0
+  },
+  {
+    "file": "apps/collimation_tool/ui/main_window.py",
+    "function": "_format_recommendation",
+    "complexity": 4,
+    "coverage_percent": 42.9,
+    "crap": 6.99
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_measurement.py",
+    "function": "fit_ellipse",
+    "complexity": 6,
+    "coverage_percent": 82.8,
+    "crap": 6.18
+  },
+  {
+    "file": "packages/astrotool_core/camera/touptek_adapter.py",
+    "function": "_detect_pixel_shift",
+    "complexity": 6,
+    "coverage_percent": 94.1,
+    "crap": 6.01
+  },
+  {
+    "file": "packages/astrotool_core/camera/touptek_adapter.py",
+    "function": "TouptekCameraAdapter.get_descriptor",
+    "complexity": 6,
+    "coverage_percent": 100.0,
+    "crap": 6.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/touptek_adapter.py",
+    "function": "TouptekCameraAdapter._capture_raw",
+    "complexity": 6,
+    "coverage_percent": 100.0,
+    "crap": 6.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/touptek_adapter.py",
+    "function": "TouptekCameraAdapter._pull_pixels",
+    "complexity": 6,
+    "coverage_percent": 100.0,
+    "crap": 6.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/touptek_adapter.py",
+    "function": "_enum_devices",
+    "complexity": 2,
+    "coverage_percent": 0.0,
+    "crap": 6.0
+  },
+  {
+    "file": "packages/astrotool_core/testing/frame_factory.py",
+    "function": "with_hot_pixels",
+    "complexity": 2,
+    "coverage_percent": 0.0,
+    "crap": 6.0
+  },
+  {
+    "file": "apps/collimation_tool/main.py",
+    "function": "_default_camera",
+    "complexity": 2,
+    "coverage_percent": 0.0,
+    "crap": 6.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_measurement.py",
+    "function": "CircleEllipseFit.eccentricity",
+    "complexity": 2,
+    "coverage_percent": 0.0,
+    "crap": 6.0
+  },
+  {
+    "file": "apps/collimation_tool/ui/main_window.py",
+    "function": "MainWindow.closeEvent",
+    "complexity": 2,
+    "coverage_percent": 0.0,
+    "crap": 6.0
+  },
+  {
+    "file": "apps/guide_tool/application/guide_controller.py",
+    "function": "GuideController._compute_pulses",
+    "complexity": 6,
+    "coverage_percent": 100.0,
+    "crap": 6.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_measurement.py",
+    "function": "fit_circle",
+    "complexity": 5,
+    "coverage_percent": 81.0,
+    "crap": 5.17
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_measurement.py",
+    "function": "_conic_to_ellipse",
+    "complexity": 5,
+    "coverage_percent": 81.8,
+    "crap": 5.15
+  },
+  {
+    "file": "packages/astrotool_core/session/event_log.py",
+    "function": "_EventContext.__exit__",
+    "complexity": 5,
+    "coverage_percent": 88.2,
+    "crap": 5.04
+  },
+  {
+    "file": "packages/astrotool_core/acquisition/stream_controller.py",
+    "function": "StreamController._run",
+    "complexity": 5,
+    "coverage_percent": 94.1,
+    "crap": 5.01
+  },
+  {
+    "file": "apps/collimation_tool/application/focus_controller.py",
+    "function": "FocusSearcher._probe",
+    "complexity": 5,
+    "coverage_percent": 92.9,
+    "crap": 5.01
+  },
+  {
+    "file": "packages/astrotool_core/acquisition/stream_controller.py",
+    "function": "FrameMailbox.wait_latest",
+    "complexity": 5,
+    "coverage_percent": 100.0,
+    "crap": 5.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/touptek_adapter.py",
+    "function": "_camera_event",
+    "complexity": 5,
+    "coverage_percent": 100.0,
+    "crap": 5.0
+  },
+  {
+    "file": "packages/astrotool_core/frames/pixel_format.py",
+    "function": "mosaic_from_rgb",
+    "complexity": 5,
+    "coverage_percent": 100.0,
+    "crap": 5.0
+  },
+  {
+    "file": "apps/guide_tool/domain/correction_model.py",
+    "function": "compute_would_pulses",
+    "complexity": 5,
+    "coverage_percent": 100.0,
+    "crap": 5.0
+  },
+  {
+    "file": "apps/guide_tool/domain/guide_error.py",
+    "function": "compute_guide_error",
+    "complexity": 5,
+    "coverage_percent": 100.0,
+    "crap": 5.0
+  },
+  {
+    "file": "packages/astrotool_core/session/session_context.py",
+    "function": "SessionContext.get_logger",
+    "complexity": 4,
+    "coverage_percent": 90.0,
+    "crap": 4.02
+  },
+  {
+    "file": "packages/astrotool_core/acquisition/stream_controller.py",
+    "function": "StreamController.state",
+    "complexity": 4,
+    "coverage_percent": 100.0,
+    "crap": 4.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/touptek_adapter.py",
+    "function": "TouptekCameraAdapter.get_conversion_gain",
+    "complexity": 4,
+    "coverage_percent": 100.0,
+    "crap": 4.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/touptek_adapter.py",
+    "function": "TouptekCameraAdapter._basic_configure",
+    "complexity": 4,
+    "coverage_percent": 100.0,
+    "crap": 4.0
+  },
+  {
+    "file": "packages/astrotool_core/frames/pixel_format.py",
+    "function": "demosaic",
+    "complexity": 4,
+    "coverage_percent": 100.0,
+    "crap": 4.0
+  },
+  {
+    "file": "packages/astrotool_core/frames/pixel_format.py",
+    "function": "_convolve3x3",
+    "complexity": 4,
+    "coverage_percent": 100.0,
+    "crap": 4.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_measurement.py",
+    "function": "detect_clipping",
+    "complexity": 4,
+    "coverage_percent": 100.0,
+    "crap": 4.0
+  },
+  {
+    "file": "apps/guide_tool/application/guide_controller.py",
+    "function": "GuideController.__init__",
+    "complexity": 4,
+    "coverage_percent": 100.0,
+    "crap": 4.0
+  },
+  {
+    "file": "apps/guide_tool/application/guide_controller.py",
+    "function": "GuideController._measure_one",
+    "complexity": 4,
+    "coverage_percent": 93.8,
+    "crap": 4.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_measurement.py",
+    "function": "CircleEllipseFit.is_circle",
+    "complexity": 3,
+    "coverage_percent": 75.0,
+    "crap": 3.14
+  },
+  {
+    "file": "apps/collimation_tool/ui/main_window.py",
+    "function": "MainWindow._poll_frame",
+    "complexity": 3,
+    "coverage_percent": 80.0,
+    "crap": 3.07
+  },
+  {
+    "file": "packages/astrotool_core/acquisition/stream_controller.py",
+    "function": "StreamController.stop_stream",
+    "complexity": 3,
+    "coverage_percent": 85.7,
+    "crap": 3.03
+  },
+  {
+    "file": "packages/astrotool_core/camera/touptek_adapter.py",
+    "function": "TouptekCameraAdapter.connect",
+    "complexity": 3,
+    "coverage_percent": 85.7,
+    "crap": 3.03
+  },
+  {
+    "file": "apps/collimation_tool/application/collimation_controller.py",
+    "function": "adjust_exposure",
+    "complexity": 3,
+    "coverage_percent": 88.9,
+    "crap": 3.01
+  },
+  {
+    "file": "packages/astrotool_core/acquisition/single_capture.py",
+    "function": "capture_once",
+    "complexity": 3,
+    "coverage_percent": 100.0,
+    "crap": 3.0
+  },
+  {
+    "file": "packages/astrotool_core/acquisition/stream_controller.py",
+    "function": "StreamController.start_stream",
+    "complexity": 3,
+    "coverage_percent": 100.0,
+    "crap": 3.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/replay_camera.py",
+    "function": "ReplayCamera.from_directory",
+    "complexity": 3,
+    "coverage_percent": 100.0,
+    "crap": 3.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/replay_camera.py",
+    "function": "ReplayCamera.capture",
+    "complexity": 3,
+    "coverage_percent": 100.0,
+    "crap": 3.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/touptek_adapter.py",
+    "function": "TouptekCameraAdapter._capture_connected",
+    "complexity": 3,
+    "coverage_percent": 100.0,
+    "crap": 3.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/touptek_adapter.py",
+    "function": "TouptekCameraAdapter.get_gain",
+    "complexity": 3,
+    "coverage_percent": 100.0,
+    "crap": 3.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/touptek_adapter.py",
+    "function": "TouptekCameraAdapter.get_black_level",
+    "complexity": 3,
+    "coverage_percent": 100.0,
+    "crap": 3.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/touptek_adapter.py",
+    "function": "TouptekCameraAdapter.get_temperature",
+    "complexity": 3,
+    "coverage_percent": 100.0,
+    "crap": 3.0
+  },
+  {
+    "file": "packages/astrotool_core/frames/analysis_plane.py",
+    "function": "build_analysis_plane",
+    "complexity": 3,
+    "coverage_percent": 100.0,
+    "crap": 3.0
+  },
+  {
+    "file": "packages/astrotool_core/frames/frame.py",
+    "function": "Frame.to_fits_bytes",
+    "complexity": 3,
+    "coverage_percent": 100.0,
+    "crap": 3.0
+  },
+  {
+    "file": "packages/astrotool_core/mount/axis_calibration.py",
+    "function": "calibrate_axes",
+    "complexity": 3,
+    "coverage_percent": 100.0,
+    "crap": 3.0
+  },
+  {
+    "file": "packages/astrotool_core/session/event_log.py",
+    "function": "EventLogger.event",
+    "complexity": 3,
+    "coverage_percent": 100.0,
+    "crap": 3.0
+  },
+  {
+    "file": "packages/astrotool_core/session/session_context.py",
+    "function": "SessionContext.close",
+    "complexity": 3,
+    "coverage_percent": 100.0,
+    "crap": 3.0
+  },
+  {
+    "file": "packages/astrotool_core/target/roi_tracker.py",
+    "function": "_nearest_within",
+    "complexity": 3,
+    "coverage_percent": 100.0,
+    "crap": 3.0
+  },
+  {
+    "file": "packages/astrotool_core/testing/replay_dataset.py",
+    "function": "discover_fits_paths",
+    "complexity": 3,
+    "coverage_percent": 100.0,
+    "crap": 3.0
+  },
+  {
+    "file": "packages/astrotool_core/testing/replay_dataset.py",
+    "function": "load_frames",
+    "complexity": 3,
+    "coverage_percent": 100.0,
+    "crap": 3.0
+  },
+  {
+    "file": "apps/collimation_tool/application/collimation_controller.py",
+    "function": "run_auto_exposure",
+    "complexity": 3,
+    "coverage_percent": 100.0,
+    "crap": 3.0
+  },
+  {
+    "file": "apps/collimation_tool/application/focus_controller.py",
+    "function": "FocusSearcher._result",
+    "complexity": 3,
+    "coverage_percent": 100.0,
+    "crap": 3.0
+  },
+  {
+    "file": "apps/collimation_tool/application/recenter_policy.py",
+    "function": "CollimationRecenterPolicy._direction_opposing",
+    "complexity": 3,
+    "coverage_percent": 100.0,
+    "crap": 3.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_state.py",
+    "function": "CollimationAdvisor.__init__",
+    "complexity": 3,
+    "coverage_percent": 100.0,
+    "crap": 3.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_state.py",
+    "function": "ScrewResponseLearner._build_calibration",
+    "complexity": 3,
+    "coverage_percent": 100.0,
+    "crap": 3.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_state.py",
+    "function": "CollimationStateMachine.resume",
+    "complexity": 3,
+    "coverage_percent": 100.0,
+    "crap": 3.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/focus_metric.py",
+    "function": "classify_focus_quality",
+    "complexity": 3,
+    "coverage_percent": 100.0,
+    "crap": 3.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/symmetry_analysis.py",
+    "function": "detect_obstruction",
+    "complexity": 3,
+    "coverage_percent": 96.0,
+    "crap": 3.0
+  },
+  {
+    "file": "apps/collimation_tool/ui/main_window.py",
+    "function": "MainWindow._on_toggle_stream",
+    "complexity": 3,
+    "coverage_percent": 100.0,
+    "crap": 3.0
+  },
+  {
+    "file": "apps/guide_tool/application/guide_controller.py",
+    "function": "GuideController.stop",
+    "complexity": 3,
+    "coverage_percent": 100.0,
+    "crap": 3.0
+  },
+  {
+    "file": "apps/guide_tool/application/guide_controller.py",
+    "function": "GuideController.process_frame",
+    "complexity": 3,
+    "coverage_percent": 100.0,
+    "crap": 3.0
+  },
+  {
+    "file": "apps/guide_tool/domain/correction_model.py",
+    "function": "_direction_opposing",
+    "complexity": 3,
+    "coverage_percent": 100.0,
+    "crap": 3.0
+  },
+  {
+    "file": "apps/guide_tool/domain/drift_estimator.py",
+    "function": "DriftEstimator.rms_px",
+    "complexity": 3,
+    "coverage_percent": 100.0,
+    "crap": 3.0
+  },
+  {
+    "file": "apps/guide_tool/domain/guiding_state.py",
+    "function": "source_state_from_error",
+    "complexity": 3,
+    "coverage_percent": 100.0,
+    "crap": 3.0
+  },
+  {
+    "file": "apps/guide_tool/ui/main_window.py",
+    "function": "MainWindow._poll_status",
+    "complexity": 3,
+    "coverage_percent": 100.0,
+    "crap": 3.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_measurement.py",
+    "function": "Point2D.__sub__",
+    "complexity": 2,
+    "coverage_percent": 66.7,
+    "crap": 2.15
+  },
+  {
+    "file": "apps/guide_tool/ui/main_window.py",
+    "function": "_format_pulse",
+    "complexity": 2,
+    "coverage_percent": 66.7,
+    "crap": 2.15
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_state.py",
+    "function": "CollimationStateMachine.pause",
+    "complexity": 2,
+    "coverage_percent": 83.3,
+    "crap": 2.02
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_measurement.py",
+    "function": "auto_stretch",
+    "complexity": 2,
+    "coverage_percent": 85.7,
+    "crap": 2.01
+  },
+  {
+    "file": "apps/collimation_tool/ui/live_view.py",
+    "function": "_stretch_to_uint8",
+    "complexity": 2,
+    "coverage_percent": 85.7,
+    "crap": 2.01
+  },
+  {
+    "file": "packages/astrotool_core/acquisition/stream_controller.py",
+    "function": "FrameMailbox.put",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/fake_camera.py",
+    "function": "FakeCamera.connect",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/fake_camera.py",
+    "function": "FakeCamera.get_conversion_gain",
+    "complexity": 1,
+    "coverage_percent": 0.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/fake_camera.py",
+    "function": "FakeCamera.set_conversion_gain",
+    "complexity": 1,
+    "coverage_percent": 0.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/fake_camera.py",
+    "function": "FakeCamera.get_temperature",
+    "complexity": 1,
+    "coverage_percent": 0.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/replay_camera.py",
+    "function": "ReplayCamera.__init__",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/replay_camera.py",
+    "function": "ReplayCamera.from_arrays",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/replay_camera.py",
+    "function": "ReplayCamera.get_conversion_gain",
+    "complexity": 1,
+    "coverage_percent": 0.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/replay_camera.py",
+    "function": "ReplayCamera.set_conversion_gain",
+    "complexity": 1,
+    "coverage_percent": 0.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/touptek_adapter.py",
+    "function": "TouptekCameraAdapter.__init__",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/touptek_adapter.py",
+    "function": "TouptekCameraAdapter.disconnect",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/touptek_adapter.py",
+    "function": "TouptekCameraAdapter.capture",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/touptek_adapter.py",
+    "function": "TouptekCameraAdapter.get_exposure_ms",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/touptek_adapter.py",
+    "function": "TouptekCameraAdapter.set_exposure_ms",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/touptek_adapter.py",
+    "function": "TouptekCameraAdapter.set_gain",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/touptek_adapter.py",
+    "function": "TouptekCameraAdapter.set_black_level",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/touptek_adapter.py",
+    "function": "TouptekCameraAdapter.set_conversion_gain",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/touptek_adapter.py",
+    "function": "TouptekCameraAdapter._try",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/touptek_adapter.py",
+    "function": "TouptekCameraAdapter._drain_state",
+    "complexity": 1,
+    "coverage_percent": 0.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/focus/fake_focuser.py",
+    "function": "FakeFocuser.connect",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/focus/fake_focuser.py",
+    "function": "FakeFocuser.status",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/focus/no_focuser.py",
+    "function": "NoFocuser.move",
+    "complexity": 1,
+    "coverage_percent": 0.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/focus/no_focuser.py",
+    "function": "NoFocuser.get_position",
+    "complexity": 1,
+    "coverage_percent": 0.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/frames/frame.py",
+    "function": "Frame.from_fits_bytes",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/frames/pixel_format.py",
+    "function": "_channel_masks",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/mount/axis_calibration.py",
+    "function": "calibrate_axis",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/mount/axis_calibration.py",
+    "function": "_response_from_positions",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/mount/indi_adapter.py",
+    "function": "IndiMountAdapter.connect",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/mount/indi_adapter.py",
+    "function": "IndiMountAdapter.status",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/mount/indi_adapter.py",
+    "function": "IndiMountAdapter.pulse_axis",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/mount/indi_adapter.py",
+    "function": "IndiMountAdapter._pulse_axis_connected",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/session/frame_recorder.py",
+    "function": "save_frame",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/session/session_context.py",
+    "function": "_SectionAdapter.process",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/session/session_context.py",
+    "function": "SessionContext.__init__",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/target/detector.py",
+    "function": "detect_sources",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/testing/fake_mount.py",
+    "function": "FakeMountAdapter.connect",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/testing/fake_mount.py",
+    "function": "FakeMountAdapter.pulse_axis",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/testing/fake_touptek.py",
+    "function": "FakeTouptekCamera.__init__",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/testing/fake_touptek.py",
+    "function": "FakeTouptekCamera.connect",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/testing/fake_touptek.py",
+    "function": "_bright_pixels",
+    "complexity": 1,
+    "coverage_percent": 0.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/testing/fake_touptek.py",
+    "function": "_dim_pixels",
+    "complexity": 1,
+    "coverage_percent": 0.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/testing/fake_touptek.py",
+    "function": "FakeTouptekCamera.get_conversion_gain",
+    "complexity": 1,
+    "coverage_percent": 0.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/testing/fake_touptek.py",
+    "function": "FakeTouptekCamera.set_conversion_gain",
+    "complexity": 1,
+    "coverage_percent": 0.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/testing/fake_touptek.py",
+    "function": "FakeTouptekCamera.get_temperature",
+    "complexity": 1,
+    "coverage_percent": 0.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/testing/frame_factory.py",
+    "function": "star_field_image",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/testing/replay_dataset.py",
+    "function": "load_expected",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "apps/collimation_tool/main.py",
+    "function": "main",
+    "complexity": 1,
+    "coverage_percent": 0.0,
+    "crap": 2.0
+  },
+  {
+    "file": "apps/collimation_tool/application/collimation_controller.py",
+    "function": "CollimationController.measure_and_advise",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "apps/collimation_tool/application/recenter_policy.py",
+    "function": "CollimationRecenterPolicy.__init__",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_measurement.py",
+    "function": "extract_edge_points",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_measurement.py",
+    "function": "ReferenceCenterCalibration.compute",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_measurement.py",
+    "function": "ReferenceCenterCalibration.has_offset",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_measurement.py",
+    "function": "DonutMeasurement.is_collimated",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_measurement.py",
+    "function": "CircleEllipseFit.center",
+    "complexity": 1,
+    "coverage_percent": 0.0,
+    "crap": 2.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_measurement.py",
+    "function": "DonutMeasurement.error_vector",
+    "complexity": 1,
+    "coverage_percent": 0.0,
+    "crap": 2.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_state.py",
+    "function": "CollimationRecommendation.is_actionable",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_state.py",
+    "function": "ScrewResponseLearner.observe",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_state.py",
+    "function": "ScrewResponseLearner.get_calibration",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_state.py",
+    "function": "ScrewResponseLearner.get_all",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_state.py",
+    "function": "CollimationStateMachine.transition",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_state.py",
+    "function": "CollimationStateMachine.instruction",
+    "complexity": 1,
+    "coverage_percent": 0.0,
+    "crap": 2.0
+  },
+  {
+    "file": "apps/collimation_tool/ui/live_view.py",
+    "function": "LiveViewLabel.set_frame",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "apps/guide_tool/main.py",
+    "function": "_default_camera",
+    "complexity": 1,
+    "coverage_percent": 0.0,
+    "crap": 2.0
+  },
+  {
+    "file": "apps/guide_tool/main.py",
+    "function": "main",
+    "complexity": 1,
+    "coverage_percent": 0.0,
+    "crap": 2.0
+  },
+  {
+    "file": "apps/guide_tool/application/correction_policy.py",
+    "function": "GuideCorrectionPolicy.send_all",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "apps/guide_tool/application/guide_controller.py",
+    "function": "GuideController.start",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "apps/guide_tool/ui/live_view.py",
+    "function": "_stretch_to_uint8",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "apps/guide_tool/ui/main_window.py",
+    "function": "MainWindow._on_toggle",
+    "complexity": 2,
+    "coverage_percent": 100.0,
+    "crap": 2.0
+  },
+  {
+    "file": "apps/guide_tool/ui/main_window.py",
+    "function": "MainWindow.closeEvent",
+    "complexity": 1,
+    "coverage_percent": 0.0,
+    "crap": 2.0
+  },
+  {
+    "file": "packages/astrotool_core/acquisition/stream_controller.py",
+    "function": "FrameMailbox.__init__",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/acquisition/stream_controller.py",
+    "function": "FrameMailbox.dropped_count",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/acquisition/stream_controller.py",
+    "function": "StreamController.__init__",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/acquisition/stream_controller.py",
+    "function": "StreamController.pop_stream_error",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/fake_camera.py",
+    "function": "_star_field",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/fake_camera.py",
+    "function": "FakeCamera.__init__",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/fake_camera.py",
+    "function": "FakeCamera.disconnect",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/fake_camera.py",
+    "function": "FakeCamera.capture",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/fake_camera.py",
+    "function": "FakeCamera.get_exposure_ms",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/fake_camera.py",
+    "function": "FakeCamera.set_exposure_ms",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/fake_camera.py",
+    "function": "FakeCamera.get_gain",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/fake_camera.py",
+    "function": "FakeCamera.set_gain",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/fake_camera.py",
+    "function": "FakeCamera.get_black_level",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/fake_camera.py",
+    "function": "FakeCamera.set_black_level",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/fake_camera.py",
+    "function": "FakeCamera.get_descriptor",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/port.py",
+    "function": "CameraPort.connect",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/port.py",
+    "function": "CameraPort.disconnect",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/port.py",
+    "function": "CameraPort.capture",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/port.py",
+    "function": "CameraPort.abort_capture",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/port.py",
+    "function": "CameraPort.get_exposure_ms",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/port.py",
+    "function": "CameraPort.set_exposure_ms",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/port.py",
+    "function": "CameraPort.get_gain",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/port.py",
+    "function": "CameraPort.set_gain",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/port.py",
+    "function": "CameraPort.get_black_level",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/port.py",
+    "function": "CameraPort.set_black_level",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/port.py",
+    "function": "CameraPort.get_conversion_gain",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/port.py",
+    "function": "CameraPort.set_conversion_gain",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/port.py",
+    "function": "CameraPort.get_temperature",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/port.py",
+    "function": "CameraPort.get_descriptor",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/replay_camera.py",
+    "function": "ReplayCamera.connect",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/replay_camera.py",
+    "function": "ReplayCamera.disconnect",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/replay_camera.py",
+    "function": "ReplayCamera.get_exposure_ms",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/replay_camera.py",
+    "function": "ReplayCamera.set_exposure_ms",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/replay_camera.py",
+    "function": "ReplayCamera.get_gain",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/replay_camera.py",
+    "function": "ReplayCamera.set_gain",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/replay_camera.py",
+    "function": "ReplayCamera.get_black_level",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/replay_camera.py",
+    "function": "ReplayCamera.set_black_level",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/replay_camera.py",
+    "function": "ReplayCamera.get_temperature",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/replay_camera.py",
+    "function": "ReplayCamera.get_descriptor",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/replay_camera.py",
+    "function": "ReplayCamera.frame_index",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/replay_camera.py",
+    "function": "ReplayCamera.reset",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/touptek_adapter.py",
+    "function": "_normalise_camera_name",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/touptek_adapter.py",
+    "function": "_opt",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/touptek_adapter.py",
+    "function": "TouptekCameraAdapter.abort_capture",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/touptek_adapter.py",
+    "function": "TouptekCameraAdapter.is_color_sensor",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/touptek_adapter.py",
+    "function": "TouptekCameraAdapter._get_option",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/touptek_adapter.py",
+    "function": "TouptekCameraAdapter._put_option",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/camera/touptek_adapter.py",
+    "function": "TouptekCameraAdapter._prepare_capture_mode",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/focus/fake_focuser.py",
+    "function": "FakeFocuser.__init__",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/focus/fake_focuser.py",
+    "function": "FakeFocuser.disconnect",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/focus/fake_focuser.py",
+    "function": "FakeFocuser.is_available",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/focus/fake_focuser.py",
+    "function": "FakeFocuser.move_absolute",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/focus/fake_focuser.py",
+    "function": "FakeFocuser.move",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/focus/fake_focuser.py",
+    "function": "FakeFocuser.get_position",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/focus/fake_focuser.py",
+    "function": "FakeFocuser.get_max_position",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/focus/fake_focuser.py",
+    "function": "FakeFocuser.is_moving",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/focus/fake_focuser.py",
+    "function": "FakeFocuser.stop",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/focus/no_focuser.py",
+    "function": "NoFocuser.connect",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/focus/no_focuser.py",
+    "function": "NoFocuser.disconnect",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/focus/no_focuser.py",
+    "function": "NoFocuser.is_available",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/focus/no_focuser.py",
+    "function": "NoFocuser.status",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/focus/no_focuser.py",
+    "function": "NoFocuser.move_absolute",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/focus/no_focuser.py",
+    "function": "NoFocuser.get_max_position",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/focus/no_focuser.py",
+    "function": "NoFocuser.is_moving",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/focus/no_focuser.py",
+    "function": "NoFocuser.stop",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/focus/port.py",
+    "function": "FocuserPort.connect",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/focus/port.py",
+    "function": "FocuserPort.disconnect",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/focus/port.py",
+    "function": "FocuserPort.status",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/focus/port.py",
+    "function": "FocuserPort.move_absolute",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/focus/port.py",
+    "function": "FocuserPort.move",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/focus/port.py",
+    "function": "FocuserPort.get_position",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/focus/port.py",
+    "function": "FocuserPort.get_max_position",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/focus/port.py",
+    "function": "FocuserPort.is_moving",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/focus/port.py",
+    "function": "FocuserPort.stop",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/focus/port.py",
+    "function": "FocuserPort.is_available",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/frames/analysis_plane.py",
+    "function": "AnalysisPlane.normalized",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/frames/frame.py",
+    "function": "Frame.height",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/frames/frame.py",
+    "function": "Frame.width",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/frames/pixel_format.py",
+    "function": "is_bayer",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/frames/pixel_format.py",
+    "function": "_interpolate",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/mount/axis_calibration.py",
+    "function": "CalibrationMatrix.response_for",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/mount/indi_adapter.py",
+    "function": "IndiMountAdapter.__init__",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/mount/indi_adapter.py",
+    "function": "IndiMountAdapter.disconnect",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/mount/indi_adapter.py",
+    "function": "IndiMountAdapter.capabilities",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/mount/indi_adapter.py",
+    "function": "IndiMountAdapter._status_connected",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/mount/no_mount.py",
+    "function": "NoMountAdapter.connect",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/mount/no_mount.py",
+    "function": "NoMountAdapter.disconnect",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/mount/no_mount.py",
+    "function": "NoMountAdapter.capabilities",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/mount/no_mount.py",
+    "function": "NoMountAdapter.status",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/mount/no_mount.py",
+    "function": "NoMountAdapter.pulse_axis",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/mount/port.py",
+    "function": "MountPort.connect",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/mount/port.py",
+    "function": "MountPort.disconnect",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/mount/port.py",
+    "function": "MountPort.capabilities",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/mount/port.py",
+    "function": "MountPort.status",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/mount/port.py",
+    "function": "MountPort.pulse_axis",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/session/event_log.py",
+    "function": "EventRecord.to_dict",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/session/event_log.py",
+    "function": "EventRecord.to_json_line",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/session/event_log.py",
+    "function": "_EventContext.__init__",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/session/event_log.py",
+    "function": "_EventContext.set_response",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/session/event_log.py",
+    "function": "_EventContext.set_error",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/session/event_log.py",
+    "function": "_EventContext.mark_cancelled",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/session/event_log.py",
+    "function": "_EventContext.__enter__",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/session/event_log.py",
+    "function": "EventLogger.__init__",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/session/frame_recorder.py",
+    "function": "_safe",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/session/frame_recorder.py",
+    "function": "make_filename",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/session/session_context.py",
+    "function": "SessionContext.session_slug",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/session/session_context.py",
+    "function": "SessionContext.get_paths",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/target/detector.py",
+    "function": "_to_point_source",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/target/roi_tracker.py",
+    "function": "RoiTracker.__init__",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/target/roi_tracker.py",
+    "function": "RoiTracker.state",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/target/roi_tracker.py",
+    "function": "RoiTracker.acquire",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/testing/fake_mount.py",
+    "function": "FakeMountAdapter.__init__",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/testing/fake_mount.py",
+    "function": "FakeMountAdapter.disconnect",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/testing/fake_mount.py",
+    "function": "FakeMountAdapter.capabilities",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/testing/fake_mount.py",
+    "function": "FakeMountAdapter.status",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/testing/fake_touptek.py",
+    "function": "FakeTouptekCamera.disconnect",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/testing/fake_touptek.py",
+    "function": "FakeTouptekCamera.abort_capture",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/testing/fake_touptek.py",
+    "function": "FakeTouptekCamera.get_exposure_ms",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/testing/fake_touptek.py",
+    "function": "FakeTouptekCamera.set_exposure_ms",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/testing/fake_touptek.py",
+    "function": "FakeTouptekCamera.get_gain",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/testing/fake_touptek.py",
+    "function": "FakeTouptekCamera.set_gain",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/testing/fake_touptek.py",
+    "function": "FakeTouptekCamera.get_black_level",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/testing/fake_touptek.py",
+    "function": "FakeTouptekCamera.set_black_level",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/testing/fake_touptek.py",
+    "function": "FakeTouptekCamera.get_descriptor",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/testing/frame_factory.py",
+    "function": "single_star_image",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/testing/frame_factory.py",
+    "function": "donut_image",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/testing/frame_factory.py",
+    "function": "with_shadow",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "packages/astrotool_core/testing/frame_factory.py",
+    "function": "make_frame",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/collimation_tool/application/collimation_controller.py",
+    "function": "CollimationController.record_screw_adjustment",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/collimation_tool/application/focus_controller.py",
+    "function": "FocusSearcher.__init__",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_measurement.py",
+    "function": "saturation_fraction",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_measurement.py",
+    "function": "peak_location",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_measurement.py",
+    "function": "compare_circle_centers",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_measurement.py",
+    "function": "_degenerate_circle",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_measurement.py",
+    "function": "Point2D.distance_to",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_measurement.py",
+    "function": "ReferenceCenterCalibration.is_calibrated",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_measurement.py",
+    "function": "CircleEllipseFit.mean_radius",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_measurement.py",
+    "function": "DonutAnalyzer.__init__",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_state.py",
+    "function": "ScrewCalibration.response_magnitude",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_state.py",
+    "function": "ScrewResponseLearner.__init__",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_state.py",
+    "function": "CollimationStateMachine.__init__",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_state.py",
+    "function": "CollimationStateMachine.state",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_state.py",
+    "function": "CollimationStateMachine.prev_state",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_state.py",
+    "function": "CollimationStateMachine.reset",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_state.py",
+    "function": "CollimationStateMachine.is_terminal",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/collimation_state.py",
+    "function": "CollimationStateMachine.is_waiting_for_user",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/focus_metric.py",
+    "function": "mean_fwhm_px",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/collimation_tool/domain/focus_metric.py",
+    "function": "FocusQuality.is_in_focus",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/collimation_tool/ui/live_view.py",
+    "function": "_draw_ring",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/collimation_tool/ui/live_view.py",
+    "function": "LiveViewLabel.__init__",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/collimation_tool/ui/main_window.py",
+    "function": "MainWindow.__init__",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/collimation_tool/ui/main_window.py",
+    "function": "MainWindow._init_camera_controls",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/guide_tool/application/calibration_controller.py",
+    "function": "run_calibration",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/guide_tool/application/correction_policy.py",
+    "function": "GuideCorrectionPolicy.__init__",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/guide_tool/application/correction_policy.py",
+    "function": "GuideCorrectionPolicy.send",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/guide_tool/application/guide_controller.py",
+    "function": "GuideController.status",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/guide_tool/application/guide_controller.py",
+    "function": "GuideController.pause_pulses",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/guide_tool/application/guide_controller.py",
+    "function": "GuideController.resume_pulses",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/guide_tool/application/guide_controller.py",
+    "function": "GuideController.rebaseline",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/guide_tool/domain/drift_estimator.py",
+    "function": "DriftEstimator.__init__",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/guide_tool/domain/drift_estimator.py",
+    "function": "DriftEstimator.add",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/guide_tool/domain/drift_estimator.py",
+    "function": "DriftEstimator.reset",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/guide_tool/ui/live_view.py",
+    "function": "_cross",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/guide_tool/ui/live_view.py",
+    "function": "LiveViewLabel.__init__",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  },
+  {
+    "file": "apps/guide_tool/ui/main_window.py",
+    "function": "MainWindow.__init__",
+    "complexity": 1,
+    "coverage_percent": 100.0,
+    "crap": 1.0
+  }
+]
