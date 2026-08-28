@@ -150,6 +150,25 @@ own — issue #7 requires a hotspot to show a *material* risk (high complexity
 complexity numbers are not ruff's (see the disclaimer in `hotspots.md`) —
 ruff's `C90` gate above remains the enforced threshold.
 
+## Mutation-testing baseline
+
+`mutation/` holds one [cosmic-ray](https://cosmic-ray.readthedocs.io/) config
+per module for a selective mutation-testing baseline (issue #5), scoped to
+pure/near-pure deterministic domain modules where results are fast and
+meaningful: `correction_model.py`, `collimation_measurement.py`,
+`collimation_state.py`, `roi_tracker.py`. UI, threading code, and the
+hardware adapters are deliberately excluded from this first iteration — see
+`mutation/README.md` for rationale and how to rerun.
+
+`docs/quality/mutation.md` (committed) is the current baseline —
+`scripts/mutation_report.py` regenerates it from the four sessions. Like the
+CRAP baseline, this is measurement-first and informational: no score
+threshold is enforced yet (issue #9), and a surviving mutant is not itself a
+bug — issue #8 reviews survivors individually before any test is added, to
+tell a real missing behavior apart from an equivalent or irrelevant mutation
+(e.g. mutating a docstring-adjacent literal, or a `<` vs `<=` where the
+boundary is genuinely never hit).
+
 ## Public interfaces
 
 Each `astrotool_core/<subsystem>/__init__.py` is the only supported import

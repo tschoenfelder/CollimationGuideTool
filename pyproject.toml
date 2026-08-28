@@ -27,6 +27,7 @@ dev = [
     "mypy>=1.10",
     "import-linter>=2.0",
     "radon>=6.0",
+    "cosmic-ray>=8.7",
 ]
 
 [project.scripts]

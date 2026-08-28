@@ -11,6 +11,10 @@ dist/
 .coverage
 htmlcov/
 
+# cosmic-ray mutation-testing session databases (working state, not
+# durable data) — the aggregated docs/quality/mutation.* report is committed.
+mutation/*.sqlite
+
 # Config lives outside the repo (see ~/.CollimationGuideTool/config.toml),
 # but ignore a local dev override if one is created here.
 /*.local.toml
