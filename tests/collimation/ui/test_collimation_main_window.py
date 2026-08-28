@@ -1,6 +1,9 @@
 import time
 
+from astrotool_core.camera.port import CameraPort
 from astrotool_core.camera.replay_camera import ReplayCamera
+from astrotool_core.camera.touptek_adapter import TouptekDeviceInfo
+from astrotool_core.testing.fake_touptek import FakeTouptekCamera
 from astrotool_core.testing.frame_factory import donut_image
 from collimation_tool.ui.main_window import MainWindow
 
@@ -48,3 +51,74 @@ def test_stopping_the_stream_updates_the_label(qapp: object) -> None:
     window._start_button.setChecked(False)
     assert window._recommendation_label.text() == "Stream stopped."
     assert window._stream is None
+
+
+class TestCameraSelection:
+    def test_combo_offers_only_demo_camera_when_no_devices_found(self, qapp: object) -> None:
+        demo = _donut_camera((0.0, 0.0))
+        window = MainWindow(demo, device_lister=lambda: [])
+        assert window._camera_combo.count() == 1
+        assert window._camera_combo.currentIndex() == 0
+        assert window._camera_combo.currentData() is None
+
+    def test_combo_lists_enumerated_touptek_devices(self, qapp: object) -> None:
+        devices = [TouptekDeviceInfo(index=0, camera_id="dev-1", display_name="ATR585M Guide")]
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: devices)
+        assert window._camera_combo.count() == 2
+        assert "ATR585M Guide" in window._camera_combo.itemText(1)
+        assert window._camera_combo.itemData(1) == devices[0]
+
+    def test_connect_swaps_to_the_selected_touptek_camera_on_success(self, qapp: object) -> None:
+        demo = _donut_camera((0.0, 0.0))
+        devices = [TouptekDeviceInfo(index=0, camera_id="dev-1", display_name="ATR585M Guide")]
+        fake_touptek = FakeTouptekCamera()
+        window = MainWindow(
+            demo,
+            device_lister=lambda: devices,
+            camera_factory=lambda camera_id: fake_touptek,
+        )
+        window._camera_combo.setCurrentIndex(1)
+        window._on_connect_camera()
+        assert window._camera is fake_touptek
+        assert "ATR585M Guide" in window._camera_status_label.text()
+
+    def test_connect_failure_shows_error_and_keeps_current_camera(self, qapp: object) -> None:
+        demo = _donut_camera((0.0, 0.0))
+        devices = [TouptekDeviceInfo(index=0, camera_id="dev-1", display_name="ATR585M Guide")]
+        window = MainWindow(
+            demo,
+            device_lister=lambda: devices,
+            camera_factory=lambda camera_id: FakeTouptekCamera(fail_connect=True),
+        )
+        window._camera_combo.setCurrentIndex(1)
+        window._on_connect_camera()
+        assert window._camera is demo
+        assert "failed" in window._camera_status_label.text().lower()
+
+    def test_reselecting_demo_camera_restores_it(self, qapp: object) -> None:
+        demo = _donut_camera((0.0, 0.0))
+        devices = [TouptekDeviceInfo(index=0, camera_id="dev-1", display_name="ATR585M Guide")]
+        fake_touptek = FakeTouptekCamera()
+        window = MainWindow(
+            demo,
+            device_lister=lambda: devices,
+            camera_factory=lambda camera_id: fake_touptek,
+        )
+        window._camera_combo.setCurrentIndex(1)
+        window._on_connect_camera()
+        current: CameraPort = window._camera
+        assert current is fake_touptek
+
+        window._camera_combo.setCurrentIndex(0)
+        window._on_connect_camera()
+        current = window._camera
+        assert current is demo
+
+    def test_camera_controls_disabled_while_streaming(self, qapp: object) -> None:
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+        window._start_button.setChecked(True)
+        assert not window._camera_combo.isEnabled()
+        assert not window._connect_button.isEnabled()
+        window._start_button.setChecked(False)
+        assert window._camera_combo.isEnabled()
+        assert window._connect_button.isEnabled()

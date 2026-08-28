@@ -14,16 +14,33 @@ collimation screws are turned by hand; recentering the whole scope via
 the mount is a separate, not-yet-decided operator workflow) and the
 Tri-Bahtinov fine-collimation pathway (deferred since Stage 5 — see
 docs/porting-notes.md).
+
+Camera selection: the combo box always offers a "Demo camera" entry (index
+0, userData=None — preserves the constructor-injected *camera* exactly, so
+existing callers/tests are unaffected) plus one entry per
+`touptek_adapter.list_devices()` result. `device_lister`/`camera_factory`
+are constructor-injectable for testing without real hardware/SDK — see
+FakeTouptekCamera in tests.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from astrotool_core.acquisition.stream_controller import StreamController
 from astrotool_core.camera.port import CameraPort
+from astrotool_core.camera.touptek_adapter import (
+    TouptekCameraAdapter,
+    TouptekDeviceInfo,
+)
+from astrotool_core.camera.touptek_adapter import (
+    list_devices as _list_touptek_devices,
+)
 from astrotool_core.frames.analysis_plane import build_analysis_plane
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
+    QComboBox,
     QDoubleSpinBox,
     QHBoxLayout,
     QLabel,
@@ -40,6 +57,11 @@ from collimation_tool.domain.collimation_state import CollimationRecommendation
 from collimation_tool.ui.live_view import LiveViewLabel
 
 _POLL_INTERVAL_MS = 100
+_DEMO_CAMERA_LABEL = "Demo camera (no hardware)"
+
+
+def _default_camera_factory(camera_id: str) -> CameraPort:
+    return TouptekCameraAdapter(camera_id=camera_id)
 
 
 def _format_recommendation(
@@ -63,11 +85,19 @@ def _format_recommendation(
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, camera: CameraPort) -> None:
+    def __init__(
+        self,
+        camera: CameraPort,
+        *,
+        device_lister: Callable[[], list[TouptekDeviceInfo]] = _list_touptek_devices,
+        camera_factory: Callable[[str], CameraPort] = _default_camera_factory,
+    ) -> None:
         super().__init__()
         self.setWindowTitle("CollimationTool")
 
+        self._demo_camera = camera
         self._camera = camera
+        self._camera_factory = camera_factory
         self._stream: StreamController | None = None
         self._last_sequence = 0
         self._controller = CollimationController()
@@ -78,11 +108,28 @@ class MainWindow(QMainWindow):
         self._start_button.setCheckable(True)
         self._start_button.toggled.connect(self._on_toggle_stream)
 
+        self._camera_combo = QComboBox()
+        self._camera_combo.addItem(_DEMO_CAMERA_LABEL, None)
+        for device in device_lister():
+            self._camera_combo.addItem(f"{device.display_name} ({device.camera_id})", device)
+        self._connect_button = QPushButton("Connect")
+        self._connect_button.clicked.connect(self._on_connect_camera)
+        self._camera_status_label = QLabel(f"Camera: {_DEMO_CAMERA_LABEL}")
+
         self._exposure_spin = QDoubleSpinBox()
         self._exposure_spin.setSuffix(" ms")
         self._exposure_spin.setDecimals(1)
         self._gain_spin = QSpinBox()
         self._init_camera_controls()
+        self._exposure_spin.valueChanged.connect(self._on_exposure_changed)
+        self._gain_spin.valueChanged.connect(self._on_gain_changed)
+
+        camera_row = QHBoxLayout()
+        camera_row.addWidget(QLabel("Camera"))
+        camera_row.addWidget(self._camera_combo)
+        camera_row.addWidget(self._connect_button)
+        camera_row.addWidget(self._camera_status_label)
+        camera_row.addStretch(1)
 
         controls = QHBoxLayout()
         controls.addWidget(self._start_button)
@@ -93,6 +140,7 @@ class MainWindow(QMainWindow):
         controls.addStretch(1)
 
         layout = QVBoxLayout()
+        layout.addLayout(camera_row)
         layout.addLayout(controls)
         layout.addWidget(self._live_view, stretch=1)
         layout.addWidget(self._recommendation_label)
@@ -107,15 +155,29 @@ class MainWindow(QMainWindow):
         self._timer.timeout.connect(self._poll_frame)
 
     def _init_camera_controls(self) -> None:
+        """(Re)sync the exposure/gain spinboxes to the current self._camera.
+
+        Safe to call more than once — a camera swap (_on_connect_camera)
+        calls this again, so the spinboxes' signals are connected once in
+        __init__ to indirection methods that read self._camera at call time,
+        never directly to a specific camera's bound method (which would
+        stack a duplicate connection per swap).
+        """
         caps = self._camera.get_descriptor().capabilities
         self._exposure_spin.setRange(caps.min_exposure_ms, caps.max_exposure_ms)
         self._exposure_spin.setValue(self._camera.get_exposure_ms())
-        self._exposure_spin.valueChanged.connect(self._camera.set_exposure_ms)
         self._gain_spin.setRange(caps.min_gain, caps.max_gain)
         self._gain_spin.setValue(self._camera.get_gain())
-        self._gain_spin.valueChanged.connect(self._camera.set_gain)
+
+    def _on_exposure_changed(self, value: float) -> None:
+        self._camera.set_exposure_ms(value)
+
+    def _on_gain_changed(self, value: int) -> None:
+        self._camera.set_gain(value)
 
     def _on_toggle_stream(self, checked: bool) -> None:
+        self._camera_combo.setEnabled(not checked)
+        self._connect_button.setEnabled(not checked)
         if checked:
             self._camera.connect()
             self._stream = StreamController(self._camera, name="collimation")
@@ -130,6 +192,25 @@ class MainWindow(QMainWindow):
                 self._stream = None
             self._start_button.setText("Start stream")
             self._recommendation_label.setText("Stream stopped.")
+
+    def _on_connect_camera(self) -> None:
+        device = self._camera_combo.currentData()
+        if device is None:
+            self._camera = self._demo_camera
+            self._camera_status_label.setText(f"Camera: {_DEMO_CAMERA_LABEL}")
+            self._init_camera_controls()
+            return
+
+        assert isinstance(device, TouptekDeviceInfo)
+        candidate = self._camera_factory(device.camera_id)
+        try:
+            candidate.connect()
+        except ConnectionError as exc:
+            self._camera_status_label.setText(f"Camera: connect failed — {exc}")
+            return
+        self._camera = candidate
+        self._camera_status_label.setText(f"Camera: {device.display_name}")
+        self._init_camera_controls()
 
     def _poll_frame(self) -> None:
         if self._stream is None:

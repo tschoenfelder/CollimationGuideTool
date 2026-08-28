@@ -13,8 +13,11 @@ import pytest
 from astrotool_core.camera.capabilities import ConversionGain
 from astrotool_core.camera.touptek_adapter import (
     TouptekCameraAdapter,
+    TouptekDeviceInfo,
+    _devices_to_info,
     _normalise_camera_name,
     _opt,
+    list_devices,
 )
 
 
@@ -143,6 +146,29 @@ class TestSelectDevice:
         devices = [_FakeDevice(id="dev-1", displayname="Cam1")]
         index, device = adapter._select_device(devices)
         assert device is None
+
+
+class TestListDevices:
+    def test_devices_to_info_maps_enumerated_devices(self) -> None:
+        devices = [
+            _FakeDevice(id="dev-1", displayname="ATR585M Guide"),
+            _FakeDevice(id="dev-2", displayname="", model_name="G3M678M"),
+        ]
+        infos = _devices_to_info(devices)
+        assert infos == [
+            TouptekDeviceInfo(index=0, camera_id="dev-1", display_name="ATR585M Guide"),
+            # falls back to the model name when displayname is blank
+            TouptekDeviceInfo(index=1, camera_id="dev-2", display_name="G3M678M"),
+        ]
+
+    def test_devices_to_info_empty_list_returns_empty_list(self) -> None:
+        assert _devices_to_info([]) == []
+
+    def test_list_devices_returns_empty_list_when_sdk_missing(self) -> None:
+        # No `toupcam` package is installed in this dev/CI environment (no
+        # vendored SDK wheel yet — see pyproject.toml's touptek extra) —
+        # exactly the environment list_devices() must degrade gracefully in.
+        assert list_devices() == []
 
 
 def test_normalise_camera_name_strips_spaces_and_underscores() -> None:

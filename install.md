@@ -61,8 +61,12 @@ This pulls in the two runtime dependencies from their published sources
 from a tagged commit) — both need network access on first install.
 
 The ToupTek camera SDK is not yet vendored into this project (see the
-`touptek` extra's comment in `pyproject.toml`); until that lands, camera
-capture is limited to `FakeCamera`/`ReplayCamera`.
+`touptek` extra's comment in `pyproject.toml`); until that lands, the
+"Camera" dropdown in each app's toolbar only ever offers "Demo camera (no
+hardware)" — `touptek_adapter.list_devices()` returns an empty list
+whenever the SDK can't be imported. Once the wheel is vendored, connected
+cameras appear in that dropdown automatically (no config file needed to
+pick one); use "Connect" to select and start streaming from one.
 
 ### 4. Configuration
 

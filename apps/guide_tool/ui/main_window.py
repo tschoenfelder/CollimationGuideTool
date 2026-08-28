@@ -7,14 +7,30 @@ CollimationTool, this window doesn't own a `StreamController` directly
 — `GuideController` already owns one internally and drives the
 measure/correct loop on it (see its docstring); the UI just calls
 `start()`/`stop()` and polls `status()`.
+
+Camera selection: same combo/Connect pattern as CollimationTool's
+MainWindow (see its docstring), except GuideController binds its camera
+once at construction (no camera setter), so selecting a real device
+rebuilds `self._controller` around it rather than swapping a `self._camera`
+reference in place.
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from astrotool_core.camera.port import CameraPort
+from astrotool_core.camera.touptek_adapter import (
+    TouptekCameraAdapter,
+    TouptekDeviceInfo,
+)
+from astrotool_core.camera.touptek_adapter import (
+    list_devices as _list_touptek_devices,
+)
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
+    QComboBox,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -28,6 +44,11 @@ from guide_tool.domain.correction_model import WouldGuidePulse
 from guide_tool.ui.live_view import LiveViewLabel
 
 _POLL_INTERVAL_MS = 150
+_DEMO_CAMERA_LABEL = "Demo camera (no hardware)"
+
+
+def _default_camera_factory(camera_id: str) -> CameraPort:
+    return TouptekCameraAdapter(camera_id=camera_id)
 
 
 def _format_pulse(pulse: WouldGuidePulse | None) -> str:
@@ -53,10 +74,18 @@ def _format_status(status: GuidingStatus) -> str:
 
 
 class MainWindow(QMainWindow):
-    def __init__(self, camera: CameraPort) -> None:
+    def __init__(
+        self,
+        camera: CameraPort,
+        *,
+        device_lister: Callable[[], list[TouptekDeviceInfo]] = _list_touptek_devices,
+        camera_factory: Callable[[str], CameraPort] = _default_camera_factory,
+    ) -> None:
         super().__init__()
         self.setWindowTitle("GuideTool")
 
+        self._demo_camera = camera
+        self._camera_factory = camera_factory
         self._controller = GuideController(camera, measure_only=True)
 
         self._live_view = LiveViewLabel()
@@ -65,11 +94,27 @@ class MainWindow(QMainWindow):
         self._start_button.setCheckable(True)
         self._start_button.toggled.connect(self._on_toggle)
 
+        self._camera_combo = QComboBox()
+        self._camera_combo.addItem(_DEMO_CAMERA_LABEL, None)
+        for device in device_lister():
+            self._camera_combo.addItem(f"{device.display_name} ({device.camera_id})", device)
+        self._connect_button = QPushButton("Connect")
+        self._connect_button.clicked.connect(self._on_connect_camera)
+        self._camera_status_label = QLabel(f"Camera: {_DEMO_CAMERA_LABEL}")
+
+        camera_row = QHBoxLayout()
+        camera_row.addWidget(QLabel("Camera"))
+        camera_row.addWidget(self._camera_combo)
+        camera_row.addWidget(self._connect_button)
+        camera_row.addWidget(self._camera_status_label)
+        camera_row.addStretch(1)
+
         controls = QHBoxLayout()
         controls.addWidget(self._start_button)
         controls.addStretch(1)
 
         layout = QVBoxLayout()
+        layout.addLayout(camera_row)
         layout.addLayout(controls)
         layout.addWidget(self._live_view, stretch=1)
         layout.addWidget(self._status_label)
@@ -84,6 +129,8 @@ class MainWindow(QMainWindow):
         self._timer.timeout.connect(self._poll_status)
 
     def _on_toggle(self, checked: bool) -> None:
+        self._camera_combo.setEnabled(not checked)
+        self._connect_button.setEnabled(not checked)
         if checked:
             self._controller.start(exposure_s=0.2, cadence_s=0.2)
             self._start_button.setText("Stop guiding")
@@ -93,6 +140,23 @@ class MainWindow(QMainWindow):
             self._controller.stop()
             self._start_button.setText("Start guiding")
             self._status_label.setText("Stopped.")
+
+    def _on_connect_camera(self) -> None:
+        device = self._camera_combo.currentData()
+        if device is None:
+            self._controller = GuideController(self._demo_camera, measure_only=True)
+            self._camera_status_label.setText(f"Camera: {_DEMO_CAMERA_LABEL}")
+            return
+
+        assert isinstance(device, TouptekDeviceInfo)
+        candidate = self._camera_factory(device.camera_id)
+        try:
+            candidate.connect()
+        except ConnectionError as exc:
+            self._camera_status_label.setText(f"Camera: connect failed — {exc}")
+            return
+        self._controller = GuideController(candidate, measure_only=True)
+        self._camera_status_label.setText(f"Camera: {device.display_name}")
 
     def _poll_status(self) -> None:
         status = self._controller.status()

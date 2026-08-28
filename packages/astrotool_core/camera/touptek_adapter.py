@@ -20,6 +20,7 @@ import ctypes
 import logging
 import threading
 import time
+from dataclasses import dataclass
 from functools import reduce
 from math import gcd
 from typing import Any
@@ -113,6 +114,45 @@ def _enum_devices(tc: Any) -> list[Any]:  # noqa: ANN401 — untyped SDK module
     if _enum_devices_cache is None:
         _enum_devices_cache = tc.Toupcam.EnumV2()
     return _enum_devices_cache
+
+
+@dataclass(frozen=True)
+class TouptekDeviceInfo:
+    """One enumerated ToupTek device, for a UI camera picker.
+
+    ``camera_id`` is what ``TouptekCameraAdapter(camera_id=...)`` expects to
+    select this same device later.
+    """
+
+    index: int
+    camera_id: str
+    display_name: str
+
+
+def _devices_to_info(devices: Any) -> list[TouptekDeviceInfo]:  # noqa: ANN401
+    return [
+        TouptekDeviceInfo(
+            index=i,
+            camera_id=str(d.id),
+            display_name=str(d.displayname or d.model.name),
+        )
+        for i, d in enumerate(devices)
+    ]
+
+
+def list_devices() -> list[TouptekDeviceInfo]:
+    """Enumerate connected ToupTek cameras for a UI picker.
+
+    Returns an empty list if the SDK isn't installed — never raises, since
+    "no cameras available" is an expected, common state (e.g. this project's
+    Windows dev environment has no vendored SDK wheel at all — see
+    pyproject.toml's touptek extra).
+    """
+    try:
+        import toupcam as tc
+    except ImportError:
+        return []
+    return _devices_to_info(_enum_devices(tc))
 
 
 class TouptekCameraAdapter(CameraPort):
