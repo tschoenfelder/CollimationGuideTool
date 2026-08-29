@@ -15,6 +15,7 @@ from astrotool_core.camera.touptek_adapter import (
     TouptekCameraAdapter,
     TouptekDeviceInfo,
     _devices_to_info,
+    _is_real_camera,
     _normalise_camera_name,
     _opt,
     list_devices,
@@ -169,6 +170,34 @@ class TestListDevices:
         # vendored SDK wheel yet — see pyproject.toml's touptek extra) —
         # exactly the environment list_devices() must degrade gracefully in.
         assert list_devices() == []
+
+
+class _FakeModel:
+    def __init__(self, preview: int = 1, still: int = 0) -> None:
+        self.preview = preview
+        self.still = still
+
+
+class _FakeEnumeratedDevice:
+    def __init__(self, preview: int = 1, still: int = 0) -> None:
+        self.model = _FakeModel(preview=preview, still=still)
+
+
+class TestIsRealCamera:
+    """See issue #12's resolution: EnumV2() on real hardware enumerated a
+    filter wheel alongside actual cameras, crashing _open_device (empty
+    model.res) and letting a non-camera appear as a selectable "camera"
+    in the UI. A real camera always has at least one preview or still
+    resolution mode; an accessory has none."""
+
+    def test_device_with_preview_resolutions_is_a_real_camera(self) -> None:
+        assert _is_real_camera(_FakeEnumeratedDevice(preview=1, still=0)) is True
+
+    def test_device_with_still_resolutions_is_a_real_camera(self) -> None:
+        assert _is_real_camera(_FakeEnumeratedDevice(preview=0, still=1)) is True
+
+    def test_device_with_no_resolutions_is_not_a_real_camera(self) -> None:
+        assert _is_real_camera(_FakeEnumeratedDevice(preview=0, still=0)) is False
 
 
 def test_normalise_camera_name_strips_spaces_and_underscores() -> None:

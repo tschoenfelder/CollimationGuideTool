@@ -106,13 +106,26 @@ _sdk_lifecycle_lock = threading.RLock()
 _enum_devices_cache: list[Any] | None = None
 
 
+def _is_real_camera(device: Any) -> bool:  # noqa: ANN401 — untyped SDK device
+    """True for an actual imaging camera, false for a non-camera accessory.
+
+    EnumV2() enumerates ToupTek accessories (confirmed on real hardware:
+    a filter wheel) alongside cameras via the same call. A real camera
+    always has at least one preview or still resolution mode; an
+    accessory's ``model.res`` is empty, which otherwise crashes
+    ``_open_device``'s width/height fallback with an IndexError, and
+    would let a filter wheel appear as a selectable "camera" in the UI.
+    """
+    return bool(device.model.preview) or bool(device.model.still)
+
+
 def _enum_devices(tc: Any) -> list[Any]:  # noqa: ANN401 — untyped SDK module
     """Return ToupTek device enumeration, calling EnumV2() at most once per
-    process. Callers must go through this instead of calling
-    tc.Toupcam.EnumV2() directly."""
+    process, filtered to actual cameras (see ``_is_real_camera``). Callers
+    must go through this instead of calling tc.Toupcam.EnumV2() directly."""
     global _enum_devices_cache
     if _enum_devices_cache is None:
-        _enum_devices_cache = tc.Toupcam.EnumV2()
+        _enum_devices_cache = [d for d in tc.Toupcam.EnumV2() if _is_real_camera(d)]
     return _enum_devices_cache
 
 

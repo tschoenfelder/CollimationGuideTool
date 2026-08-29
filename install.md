@@ -60,13 +60,23 @@ This pulls in the two runtime dependencies from their published sources
 (`onstep-adapter` from a GitHub release wheel, `smarttscope-live-analysis`
 from a tagged commit) — both need network access on first install.
 
-The ToupTek camera SDK is not yet vendored into this project (see the
-`touptek` extra's comment in `pyproject.toml`); until that lands, the
-"Camera" dropdown in each app's toolbar only ever offers "Demo camera (no
-hardware)" — `touptek_adapter.list_devices()` returns an empty list
-whenever the SDK can't be imported. Once the wheel is vendored, connected
-cameras appear in that dropdown automatically (no config file needed to
-pick one); use "Connect" to select and start streaming from one.
+The ToupTek SDK isn't pip-installable (no public wheel), so it needs one
+extra step on each Pi:
+
+```bash
+bash scripts/setup_touptek_pi.sh
+```
+
+This copies the committed `resources/touptek/toupcam.py` plus a
+`libtoupcam.so` into the venv's site-packages — see that script's header
+for where it looks for `libtoupcam.so` (it's a large proprietary binary,
+not committed to git) and how to point it at one if it can't find it
+automatically. Until this step is done, the "Camera" dropdown in each
+app's toolbar only ever offers "Demo camera (no hardware)" —
+`touptek_adapter.list_devices()` returns an empty list whenever the SDK
+can't be imported. Once it's set up, connected cameras appear in that
+dropdown automatically (no config file needed to pick one); use "Connect"
+to select and start streaming from one.
 
 CollimationTool also has an "Auto exposure/gain" checkbox: while
 streaming, it keeps the frame's brightest signal in the 50-70% ADU range

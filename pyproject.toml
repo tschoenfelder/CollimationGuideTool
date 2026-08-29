@@ -16,8 +16,11 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# Vendored ToupTek SDK wheel path goes here once sourced for this project,
-# mirroring smart_telescope's resources/camera_adapter sync workflow.
+# The ToupTek SDK isn't pip-installable (no public wheel) — it's installed
+# via scripts/setup_touptek_pi.sh instead, which copies resources/touptek/
+# toupcam.py plus a libtoupcam.so (not committed — see that script's
+# header) into the venv's site-packages. This extra is left as a documented
+# placeholder in case a real wheel ever becomes available.
 touptek = []
 dev = [
     "pytest>=8.0",
@@ -45,6 +48,9 @@ addopts = "--cov=packages/astrotool_core --cov=apps/collimation_tool --cov=apps/
 [tool.ruff]
 line-length = 100
 target-version = "py313"
+# resources/touptek/toupcam.py is ToupTek's own vendored SDK wrapper
+# (ctypes bindings), not this project's code — never linted/reformatted.
+extend-exclude = ["resources"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "UP", "B", "SIM", "ANN", "C90"]
@@ -56,6 +62,9 @@ max-complexity = 15
 python_version = "3.13"
 strict = true
 ignore_missing_imports = true
+# resources/touptek/toupcam.py is ToupTek's own vendored SDK wrapper
+# (ctypes bindings), not this project's code — never type-checked.
+exclude = ["^resources/"]
 
 [tool.importlinter]
 root_packages = ["astrotool_core", "collimation_tool", "guide_tool"]
