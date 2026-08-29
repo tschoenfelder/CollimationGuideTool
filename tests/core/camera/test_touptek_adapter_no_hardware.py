@@ -20,7 +20,7 @@ from astrotool_core.camera.touptek_adapter import (
     _is_real_camera,
     _normalise_camera_name,
     _opt,
-    _pixel_shift_from_sdk_bit_depth,
+    _validated_sdk_bit_depth,
     list_devices,
 )
 from astrotool_core.frames.pixel_format import BayerPattern
@@ -258,27 +258,50 @@ def test_opt_falls_back_when_attribute_missing() -> None:
     assert _opt(_Module(), "TOUPCAM_OPTION_MISSING", 4) == 4
 
 
-class TestPixelShiftFromSdkBitDepth:
-    """See the "guide stays black"/"too white" investigation: get_RawFormat()
-    already reports a camera's true ADC bit depth directly — confirmed on
-    real hardware: the GPCMOS02000KPA reports 12-bit (matching its true
-    ~4095 saturation ceiling), the ATR585M and G3M678M both report 16-bit.
-    Using it outright avoids ever depending on `_detect_pixel_shift`
-    inferring the same thing from a captured frame, which fails exactly
-    when a frame happens to already be uniform/saturated."""
+class TestValidatedSdkBitDepth:
+    """See the "guide stays black"/"too white" investigation:
+    get_RawFormat() reports a camera's true ADC bit depth directly —
+    confirmed on real hardware: the GPCMOS02000KPA reports 12-bit
+    (matching its true ~4095 saturation ceiling), the ATR585M and
+    G3M678M both report 16-bit. This value is used only for what
+    ceiling to report/measure against, deliberately kept independent of
+    _detect_pixel_shift's buffer-layout detection — an earlier version
+    of this fix derived a pixel_shift from it directly and corrupted
+    real captures (see _validated_sdk_bit_depth's docstring): the
+    GPCMOS02000KPA's buffer already delivers unpadded 12-bit codes with
+    no left-shift needed, so forcing an extra shift of 4 divided every
+    real pixel value by 16."""
 
-    def test_twelve_bit_sdk_report_maps_to_shift_four(self) -> None:
-        assert _pixel_shift_from_sdk_bit_depth(12) == 4
-
-    def test_fourteen_bit_sdk_report_maps_to_shift_two(self) -> None:
-        assert _pixel_shift_from_sdk_bit_depth(14) == 2
-
-    def test_sixteen_bit_sdk_report_maps_to_no_shift(self) -> None:
-        assert _pixel_shift_from_sdk_bit_depth(16) == 0
+    @pytest.mark.parametrize("bit_depth", [8, 10, 12, 14, 16])
+    def test_sane_values_pass_through_unchanged(self, bit_depth: int) -> None:
+        assert _validated_sdk_bit_depth(bit_depth) == bit_depth
 
     @pytest.mark.parametrize("nonsensical", [0, -1, 17, 100])
     def test_nonsensical_values_return_unknown(self, nonsensical: int) -> None:
-        assert _pixel_shift_from_sdk_bit_depth(nonsensical) == -1
+        assert _validated_sdk_bit_depth(nonsensical) == -1
+
+
+class TestEffectiveBitDepth:
+    """Regression test for the real-hardware corruption an earlier version
+    of the SDK-bit-depth fix caused: forcing pixel_shift = 16 -
+    sdk_bit_depth divided every real pixel value by 16 extra on the
+    GPCMOS02000KPA, whose buffer already delivers unpadded 12-bit codes
+    (shift=0 is already correct there). _effective_bit_depth must only
+    ever affect *reporting*, never the shift applied to decode pixels."""
+
+    def test_prefers_the_sdk_reported_value_when_known(self) -> None:
+        adapter = TouptekCameraAdapter()
+        adapter._sdk_bit_depth = 12
+        # Even with a buffer shift of 0 (the GPCMOS02000KPA's real,
+        # correct shift) the *reported* bit depth must still be 12, not
+        # 16 - 0 = 16.
+        assert adapter._effective_bit_depth(shift=0) == 12
+
+    def test_falls_back_to_shift_derived_value_when_sdk_bit_depth_unknown(self) -> None:
+        adapter = TouptekCameraAdapter()
+        assert adapter._sdk_bit_depth == -1  # unset until connect()
+        assert adapter._effective_bit_depth(shift=4) == 12
+        assert adapter._effective_bit_depth(shift=0) == 16
 
 
 class TestGetBayerPattern:

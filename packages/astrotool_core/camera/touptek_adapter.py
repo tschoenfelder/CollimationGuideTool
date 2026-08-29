@@ -117,27 +117,32 @@ def _detect_pixel_shift(raw: np.ndarray) -> int:
     return 0  # true 16-bit
 
 
-def _pixel_shift_from_sdk_bit_depth(sdk_bit_depth: int) -> int:
-    """Convert get_RawFormat()'s directly-reported ADC bit depth to the
-    same right-shift convention as `_detect_pixel_shift` (16 - bit_depth):
-    12-bit ADC -> shift 4, 14-bit -> shift 2, 16-bit -> no shift.
+def _validated_sdk_bit_depth(sdk_bit_depth: int) -> int:
+    """Sanity-check get_RawFormat()'s directly-reported ADC bit depth.
 
-    Preferred over `_detect_pixel_shift`'s per-frame pixel-value-pattern
-    inference: the SDK already knows the sensor's native ADC width
-    outright, whereas the heuristic can only *infer* it from a captured
-    frame's value pattern and fails outright ("too little variety",
-    returns -1) on a frame that happens to be uniform or saturated —
-    exactly the condition a wrong bit_depth assumption itself produces
-    (see auto_exposure's saturation-fraction floor for the other half of
-    that bug). Confirmed on real hardware: the GPCMOS02000KPA's
-    get_RawFormat() reports 12-bit directly, matching its true ~4095
-    saturation ceiling seen in captured frames; the ATR585M and G3M678M
-    both correctly report 16-bit. Returns -1 (unknown) for a
-    nonsensical value so the caller falls back to per-frame detection.
+    Deliberately does NOT derive a buffer pixel_shift from this value —
+    an earlier version of this fix did (`16 - sdk_bit_depth`, mirroring
+    `_detect_pixel_shift`'s convention) on the assumption that the SDK
+    always delivers 16-bit output as sub-range data left-shifted
+    ("MSB-aligned") to fill it. That assumption doesn't hold for every
+    camera: confirmed on real hardware, the GPCMOS02000KPA's raw buffer
+    already delivers unpadded ~12-bit codes directly (0-4095, no
+    left-shift applied), which `_detect_pixel_shift` already correctly
+    recognizes as shift=0 whenever it can run — deriving shift=4 from
+    the SDK's bit-depth report instead divided every real pixel value by
+    16 on top of that, corrupting captures (observed: max pixel value
+    dropped from ~4094 to 255). So this value is used *only* for what
+    ceiling to report/measure against (bit_depth), independent of
+    whatever `_detect_pixel_shift` finds for the buffer's own layout.
+    Confirmed on real hardware: the GPCMOS02000KPA reports 12-bit
+    directly, matching its true ~4095 saturation ceiling seen in
+    captured frames; the ATR585M and G3M678M both correctly report
+    16-bit. Returns -1 (unknown) for a nonsensical value so the caller
+    falls back to the pixel_shift-derived bit_depth instead.
     """
     if not 1 <= sdk_bit_depth <= 16:
         return -1
-    return 16 - sdk_bit_depth
+    return sdk_bit_depth
 
 
 _sdk_lifecycle_lock = threading.RLock()
@@ -244,6 +249,20 @@ class TouptekCameraAdapter(CameraPort):
         self._capture_error: Exception | None = None
         self._capture_lock = threading.Lock()
         self._pixel_shift: int = -1  # -1=not yet detected; 0/2/4=right-shift to native range
+        # The sensor's true ADC bit depth as reported directly by the SDK
+        # (get_RawFormat()) — see _query_bit_depth_from_sdk's docstring.
+        # -1=unknown/query failed, fall back to 16 - pixel_shift.
+        # Deliberately independent of _pixel_shift: that governs whether
+        # the *buffer* needs right-shifting to reach native ADC codes (a
+        # data-layout question _detect_pixel_shift already answers
+        # correctly per frame), while this is purely about what ceiling to
+        # report/measure against — the two aren't the same sensor property
+        # and conflating them once corrupted real data (a since-reverted
+        # attempt at this fix forced pixel_shift from this value directly:
+        # on the GPCMOS02000KPA, whose buffer already delivers unpadded
+        # 12-bit codes with no shift needed, that divided every real pixel
+        # value by 16 on top of the correct shift of 0).
+        self._sdk_bit_depth: int = -1
         # See _capture_connected's docstring (issue #14) — tracks whether
         # set_exposure_ms() has ever been called, so capture()'s parameter
         # only bootstraps the very first exposure rather than permanently
@@ -291,8 +310,7 @@ class TouptekCameraAdapter(CameraPort):
 
         self._basic_configure()
         self._prepare_capture_mode()
-        if self._pixel_shift < 0:
-            self._pixel_shift = self._query_pixel_shift_from_sdk()
+        self._sdk_bit_depth = self._query_bit_depth_from_sdk()
 
     def disconnect(self) -> None:
         if self._cam is not None:  # pragma: no cover
@@ -354,7 +372,7 @@ class TouptekCameraAdapter(CameraPort):
                 pixels=pixels,
                 header=hdr,
                 exposure_seconds=actual_exposure_s,
-                bit_depth=16 - shift,
+                bit_depth=self._effective_bit_depth(shift),
             )
         finally:
             self._capture_lock.release()
@@ -436,7 +454,11 @@ class TouptekCameraAdapter(CameraPort):
             supports_lcg=True,
             supports_hdr=bool(self._model_flag & _FLAG_CGHDR),
             supports_black_level=bool(self._model_flag & _FLAG_BLACKLEVEL),
-            bit_depth=16 - max(0, self._pixel_shift) if self._bit_depth > 8 else 8,
+            bit_depth=(
+                self._effective_bit_depth(max(0, self._pixel_shift))
+                if self._bit_depth > 8
+                else 8
+            ),
             pixel_size_um=0.0,
             sensor_width_px=self._width,
             sensor_height_px=self._height,
@@ -473,26 +495,40 @@ class TouptekCameraAdapter(CameraPort):
             return BayerPattern.MONO
         return _FOURCC_TO_BAYER.get(int(fourcc), BayerPattern.MONO)
 
-    def _query_pixel_shift_from_sdk(self) -> int:
+    def _effective_bit_depth(self, shift: int) -> int:
+        """Bit depth to report for a captured frame/descriptor: prefer the
+        SDK's direct get_RawFormat() report (queried once at connect time,
+        see _query_bit_depth_from_sdk) over deriving it from *shift*
+        (16 - shift) — the two describe different sensor properties and
+        don't always agree (see _validated_sdk_bit_depth's docstring for
+        the real-hardware corruption that conflating them once caused).
+        Falls back to the shift-derived value when the SDK query wasn't
+        available (query failed, or not yet connected).
+        """
+        if self._sdk_bit_depth > 0:
+            return self._sdk_bit_depth
+        return 16 - shift
+
+    def _query_bit_depth_from_sdk(self) -> int:
         """Ask the SDK for this camera's native ADC bit depth directly,
         via the same get_RawFormat() call get_bayer_pattern() already
-        makes — see `_pixel_shift_from_sdk_bit_depth`'s docstring for why
-        this is preferred over waiting for `_detect_pixel_shift` to infer
-        it from a captured frame. Returns -1 (unknown) on any failure, so
-        `_capture_connected` falls back to per-frame detection exactly as
-        it already does today.
+        makes — see `_validated_sdk_bit_depth`'s docstring for why this is
+        preferred, for *reporting* purposes, over `16 - pixel_shift`
+        (which stays the source of truth for how to actually decode the
+        buffer). Returns -1 (unknown) on any failure, so callers fall back
+        to `16 - pixel_shift` exactly as before this existed.
         """
         try:  # pragma: no cover — requires real hardware
             _raw_fourcc, sdk_bit_depth = self._cam.get_RawFormat()
         except Exception as exc:
             _log.warning(
                 "TouptekCameraAdapter(%s): get_RawFormat() failed while determining "
-                "pixel shift: %s",
+                "bit depth: %s",
                 self._logical_name,
                 exc,
             )
             return -1
-        return _pixel_shift_from_sdk_bit_depth(int(sdk_bit_depth))
+        return _validated_sdk_bit_depth(int(sdk_bit_depth))
 
     def _select_device(self, devices: Any) -> tuple[int, Any | None]:  # noqa: ANN401
         if self._camera_id_hint:
