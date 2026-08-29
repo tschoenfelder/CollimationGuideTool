@@ -37,6 +37,18 @@ class _FakeDevice:
         return _FakeDevice._Model(self.model_name)
 
 
+def _toupcam_sdk_available() -> bool:
+    try:
+        import toupcam  # noqa: F401
+    except ImportError:
+        return False
+    return True
+
+
+@pytest.mark.skipif(
+    _toupcam_sdk_available(),
+    reason="toupcam SDK is installed here (e.g. the Pi) — this asserts the no-SDK path",
+)
 def test_connect_raises_connection_error_when_sdk_missing() -> None:
     adapter = TouptekCameraAdapter()
     with pytest.raises(ConnectionError):
@@ -165,9 +177,12 @@ class TestListDevices:
     def test_devices_to_info_empty_list_returns_empty_list(self) -> None:
         assert _devices_to_info([]) == []
 
+    @pytest.mark.skipif(
+        _toupcam_sdk_available(),
+        reason="toupcam SDK is installed here (e.g. the Pi) — this asserts the no-SDK path",
+    )
     def test_list_devices_returns_empty_list_when_sdk_missing(self) -> None:
-        # No `toupcam` package is installed in this dev/CI environment (no
-        # vendored SDK wheel yet — see pyproject.toml's touptek extra) —
+        # No `toupcam` package is installed in this dev/CI environment —
         # exactly the environment list_devices() must degrade gracefully in.
         assert list_devices() == []
 
