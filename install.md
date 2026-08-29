@@ -83,6 +83,15 @@ streaming, it keeps the frame's brightest signal in the 50-70% ADU range
 by adjusting exposure first, only raising gain above its 100 baseline if
 exposure alone (up to the camera's max) can't reach that band.
 
+CollimationTool shows two independent camera panels side by side — a
+primary/collimation camera (left) and a guide camera (right) — so both
+can be watched at once. Each has its own camera picker, Connect, exposure/
+gain, auto-exposure, and collimation measurement; connecting a real
+device on one side removes it from the other side's dropdown (a ToupTek
+camera only allows one open connection at a time), though both sides can
+independently use the demo camera. "Capture diagnostics" is shared
+between the two panels, not duplicated.
+
 ### 4. Configuration
 
 Hardware/session configuration lives outside the repo at

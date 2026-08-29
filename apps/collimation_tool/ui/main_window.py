@@ -1,13 +1,20 @@
-"""CollimationTool main window — live view, exposure/gain controls, and
-the rough-collimation recommendation readout.
+"""CollimationTool main window — two side-by-side camera panels plus a
+shared diagnostics action.
 
 New (Stage 7): smart_telescope's UI is a browser/JS frontend against a
-FastAPI backend, so there is no PySide6 analog to port. This window
-owns the camera's `StreamController` directly (unlike GuideTool, where
-`GuideController` owns its own internal stream) because
-`CollimationController` is a pure per-frame measure/advise API with no
-run loop of its own (see its docstring) — someone has to drive it, and
-for this app that's the UI.
+FastAPI backend, so there is no PySide6 analog to port.
+
+Two-camera layout: the left panel is the primary/collimation camera, the
+right is a guide camera to watch in parallel — each is a full,
+independent `CameraPanel` (its own connection, streaming, exposure/gain,
+auto-exposure, and collimation measurement; see that module's docstring).
+The two panels' camera pickers are cross-wired so connecting a real
+device on one side removes it from the other's combo — a ToupTek camera
+only allows one open handle at a time, so this isn't just a UX nicety.
+The two live views are independently sized widgets, each preserving its
+own aspect ratio (see `LiveViewLabel`) rather than sharing one pixel
+scale — there's no requirement that the two cameras even share a native
+resolution.
 
 Deliberately not wired for Stage 7: `CollimationRecenterPolicy` (SCT
 collimation screws are turned by hand; recentering the whole scope via
@@ -15,106 +22,41 @@ the mount is a separate, not-yet-decided operator workflow) and the
 Tri-Bahtinov fine-collimation pathway (deferred since Stage 5 — see
 docs/porting-notes.md).
 
-Camera selection: the combo box always offers a "Demo camera" entry (index
-0, userData=None — preserves the constructor-injected *camera* exactly, so
-existing callers/tests are unaffected) plus one entry per
-`touptek_adapter.list_devices()` result. `device_lister`/`camera_factory`
-are constructor-injectable for testing without real hardware/SDK — see
-FakeTouptekCamera in tests.
-
-Diagnostics (issue #10): a "Capture diagnostics" action always available
-next to the camera controls writes a UUID-identified bundle via the
+Diagnostics (issue #10): one "Capture diagnostics" action for the whole
+window (not duplicated per panel — capturing evidence is an app-level
+concept, not a per-camera one) writes a UUID-identified bundle via the
 shared `DiagnosticService` (`diagnostics` constructor param, injectable
 for testing) — same bundle format the app's unhandled-exception boundary
-uses (see main.py). This window registers itself as the service's
-context/frame provider so both capture paths see the same "what was
-happening" snapshot: the last measurement/recommendation, current camera
-settings, and a small bounded ring buffer of the most recently captured
-raw `Frame`s (`_recent_frames`, not just their displayed pixels).
-
-Auto exposure/gain: an "Auto exposure/gain" checkbox drives
-`astrotool_core.acquisition.auto_exposure.compute_auto_exposure` once per
-polled frame, keeping the frame's brightest real signal in the 50-70% ADU
-band (see that module's docstring for the algorithm and why gain only
-moves once exposure alone can't reach the band). CollimationTool-only for
-now: it owns exposure/gain UI already and cares about framing a good
-picture; GuideTool's guiding loop wants a stable cadence more than an
-optimal histogram, so it's left with fixed exposure — revisit if that
-turns out wrong in practice.
+uses (see main.py). The context/frame providers aggregate both panels'
+state under "left"/"right" keys.
 """
 
 from __future__ import annotations
 
-from collections import deque
 from collections.abc import Callable
 from typing import Any
 
-from astrotool_core.acquisition.auto_exposure import AutoExposureConfig, compute_auto_exposure
-from astrotool_core.acquisition.stream_controller import StreamController
-from astrotool_core.camera import (
-    DEMO_CAMERA_LABEL as _DEMO_CAMERA_LABEL,
-)
-from astrotool_core.camera import (
-    CameraPort,
-    TouptekCameraAdapter,
-    TouptekDeviceInfo,
-    build_camera_choices,
-)
+from astrotool_core.acquisition.auto_exposure import AutoExposureConfig
+from astrotool_core.camera import CameraPort, FakeCamera, TouptekDeviceInfo
 from astrotool_core.camera import (
     list_devices as _list_touptek_devices,
 )
 from astrotool_core.diagnostics import DiagnosticService
-from astrotool_core.frames.analysis_plane import build_analysis_plane
 from astrotool_core.frames.frame import Frame
-from PySide6.QtCore import QTimer
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
-    QCheckBox,
-    QComboBox,
-    QDoubleSpinBox,
     QHBoxLayout,
-    QLabel,
     QLineEdit,
     QMainWindow,
     QPushButton,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
 
-from collimation_tool.application.collimation_controller import CollimationController
-from collimation_tool.domain.collimation_measurement import DonutAnalysisResult
-from collimation_tool.domain.collimation_state import CollimationRecommendation
-from collimation_tool.ui.live_view import LiveViewLabel
+from collimation_tool.ui.camera_panel import CameraPanel, default_camera_factory
 
-_POLL_INTERVAL_MS = 100
-_RECENT_FRAMES_KEPT = 3
 _DEFAULT_MANUAL_REASON = "Manual capture from UI (no note given)"
-
-
-def _default_camera_factory(camera_id: str) -> CameraPort:
-    return TouptekCameraAdapter(camera_id=camera_id)
-
-
-def _format_recommendation(
-    result: DonutAnalysisResult, recommendation: CollimationRecommendation | None
-) -> str:
-    if result.measurement is None:
-        return f"No measurement — {result.reason}"
-    if recommendation is None:
-        return (
-            f"Error {result.measurement.error_magnitude_px:.1f}px — "
-            "no screw calibration learned yet"
-        )
-    if not recommendation.is_actionable:
-        return f"Close to collimated (confidence {recommendation.confidence:.0%})"
-    return (
-        f"Turn screw {recommendation.screw_id} "
-        f"{recommendation.turn_direction.value.replace('_', ' ')}, "
-        f"{recommendation.adjustment_size.value} "
-        f"(confidence {recommendation.confidence:.0%})"
-    )
 
 
 class MainWindow(QMainWindow):
@@ -122,60 +64,35 @@ class MainWindow(QMainWindow):
         self,
         camera: CameraPort,
         *,
+        guide_camera: CameraPort | None = None,
         device_lister: Callable[[], list[TouptekDeviceInfo]] = _list_touptek_devices,
-        camera_factory: Callable[[str], CameraPort] = _default_camera_factory,
+        camera_factory: Callable[[str], CameraPort] = default_camera_factory,
         diagnostics: DiagnosticService | None = None,
         auto_exposure_config: AutoExposureConfig | None = None,
     ) -> None:
         super().__init__()
         self.setWindowTitle("CollimationTool")
 
-        self._demo_camera = camera
-        self._camera = camera
-        self._camera_factory = camera_factory
-        self._stream: StreamController | None = None
-        self._last_sequence = 0
-        self._controller = CollimationController()
-        self._last_result: DonutAnalysisResult | None = None
-        self._last_recommendation: CollimationRecommendation | None = None
-        self._recent_frames: deque[Frame] = deque(maxlen=_RECENT_FRAMES_KEPT)
+        self._left_panel = CameraPanel(
+            camera,
+            title="Main",
+            device_lister=device_lister,
+            camera_factory=camera_factory,
+            auto_exposure_config=auto_exposure_config,
+        )
+        self._right_panel = CameraPanel(
+            guide_camera if guide_camera is not None else FakeCamera(),
+            title="Guide",
+            device_lister=device_lister,
+            camera_factory=camera_factory,
+            auto_exposure_config=auto_exposure_config,
+        )
+        self._left_panel.connected_device_changed.connect(self._on_left_camera_changed)
+        self._right_panel.connected_device_changed.connect(self._on_right_camera_changed)
 
         self._diagnostics = diagnostics or DiagnosticService(app_name="CollimationTool")
         self._diagnostics.set_context_provider(self._diagnostic_context)
-        self._diagnostics.set_frame_provider(lambda: list(self._recent_frames))
-
-        self._auto_exposure_config = auto_exposure_config or AutoExposureConfig()
-
-        self._live_view = LiveViewLabel()
-        self._recommendation_label = QLabel("Start the stream to begin.")
-        self._start_button = QPushButton("Start stream")
-        self._start_button.setCheckable(True)
-        self._start_button.toggled.connect(self._on_toggle_stream)
-
-        self._camera_combo = QComboBox()
-        for choice in build_camera_choices(device_lister()):
-            self._camera_combo.addItem(choice.label, choice.device)
-        self._connect_button = QPushButton("Connect")
-        self._connect_button.clicked.connect(self._on_connect_camera)
-        self._camera_status_label = QLabel(f"Camera: {_DEMO_CAMERA_LABEL}")
-
-        self._exposure_spin = QDoubleSpinBox()
-        self._exposure_spin.setSuffix(" ms")
-        self._exposure_spin.setDecimals(1)
-        self._gain_spin = QSpinBox()
-        self._init_camera_controls()
-        self._exposure_spin.valueChanged.connect(self._on_exposure_changed)
-        self._gain_spin.valueChanged.connect(self._on_gain_changed)
-
-        self._auto_exposure_checkbox = QCheckBox("Auto exposure/gain")
-        self._auto_exposure_checkbox.toggled.connect(self._on_auto_exposure_toggled)
-
-        camera_row = QHBoxLayout()
-        camera_row.addWidget(QLabel("Camera"))
-        camera_row.addWidget(self._camera_combo)
-        camera_row.addWidget(self._connect_button)
-        camera_row.addWidget(self._camera_status_label)
-        camera_row.addStretch(1)
+        self._diagnostics.set_frame_provider(self._all_recent_frames)
 
         self._diagnostics_note = QLineEdit()
         self._diagnostics_note.setPlaceholderText("What looked wrong? (optional)")
@@ -195,142 +112,35 @@ class MainWindow(QMainWindow):
         diagnostics_row.addWidget(self._diagnostics_status_label, stretch=1)
         diagnostics_row.addWidget(self._diagnostics_copy_button)
 
-        controls = QHBoxLayout()
-        controls.addWidget(self._start_button)
-        controls.addWidget(QLabel("Exposure"))
-        controls.addWidget(self._exposure_spin)
-        controls.addWidget(QLabel("Gain"))
-        controls.addWidget(self._gain_spin)
-        controls.addWidget(self._auto_exposure_checkbox)
-        controls.addStretch(1)
+        panels_row = QHBoxLayout()
+        panels_row.addWidget(self._left_panel, stretch=1)
+        panels_row.addWidget(self._right_panel, stretch=1)
 
         layout = QVBoxLayout()
-        layout.addLayout(camera_row)
-        layout.addLayout(controls)
         layout.addLayout(diagnostics_row)
-        layout.addWidget(self._live_view, stretch=1)
-        layout.addWidget(self._recommendation_label)
+        layout.addLayout(panels_row, stretch=1)
 
         central = QWidget()
         central.setLayout(layout)
         self.setCentralWidget(central)
-        self.resize(720, 640)
+        self.resize(1360, 700)
 
-        self._timer = QTimer(self)
-        self._timer.setInterval(_POLL_INTERVAL_MS)
-        self._timer.timeout.connect(self._poll_frame)
+    def _on_left_camera_changed(self, device: object) -> None:
+        excluded = device.camera_id if isinstance(device, TouptekDeviceInfo) else None
+        self._right_panel.refresh_camera_list(excluded)
 
-    def _init_camera_controls(self) -> None:
-        """(Re)sync the exposure/gain spinboxes to the current self._camera.
-
-        Safe to call more than once — a camera swap (_on_connect_camera)
-        calls this again, so the spinboxes' signals are connected once in
-        __init__ to indirection methods that read self._camera at call time,
-        never directly to a specific camera's bound method (which would
-        stack a duplicate connection per swap).
-        """
-        caps = self._camera.get_descriptor().capabilities
-        self._exposure_spin.setRange(caps.min_exposure_ms, caps.max_exposure_ms)
-        self._exposure_spin.setValue(self._camera.get_exposure_ms())
-        self._gain_spin.setRange(caps.min_gain, caps.max_gain)
-        self._gain_spin.setValue(self._camera.get_gain())
-
-    def _on_exposure_changed(self, value: float) -> None:
-        self._camera.set_exposure_ms(value)
-
-    def _on_gain_changed(self, value: int) -> None:
-        self._camera.set_gain(value)
-
-    def _on_auto_exposure_toggled(self, checked: bool) -> None:
-        self._exposure_spin.setEnabled(not checked)
-        self._gain_spin.setEnabled(not checked)
-        if checked:
-            self._gain_spin.setValue(self._auto_exposure_config.default_gain)
-
-    def _apply_auto_exposure(self, frame: Frame) -> None:
-        result = compute_auto_exposure(
-            frame.pixels,
-            bit_depth=frame.bit_depth,
-            current_exposure_ms=self._camera.get_exposure_ms(),
-            current_gain=self._camera.get_gain(),
-            capabilities=self._camera.get_descriptor().capabilities,
-            config=self._auto_exposure_config,
-        )
-        if result.changed:
-            self._exposure_spin.setValue(result.exposure_ms)
-            self._gain_spin.setValue(result.gain)
-
-    def _on_toggle_stream(self, checked: bool) -> None:
-        self._camera_combo.setEnabled(not checked)
-        self._connect_button.setEnabled(not checked)
-        if checked:
-            self._camera.connect()
-            self._stream = StreamController(self._camera, name="collimation")
-            self._stream.start_stream(self._exposure_spin.value() / 1000.0, cadence_s=0.2)
-            self._last_sequence = 0
-            self._start_button.setText("Stop stream")
-            self._timer.start()
-        else:
-            self._timer.stop()
-            if self._stream is not None:
-                self._stream.stop_stream()
-                self._stream = None
-            self._start_button.setText("Start stream")
-            self._recommendation_label.setText("Stream stopped.")
-
-    def _on_connect_camera(self) -> None:
-        device = self._camera_combo.currentData()
-        if device is None:
-            self._camera = self._demo_camera
-            self._camera_status_label.setText(f"Camera: {_DEMO_CAMERA_LABEL}")
-            self._init_camera_controls()
-            return
-
-        assert isinstance(device, TouptekDeviceInfo)
-        candidate = self._camera_factory(device.camera_id)
-        try:
-            candidate.connect()
-        except ConnectionError as exc:
-            self._camera_status_label.setText(f"Camera: connect failed — {exc}")
-            return
-        self._camera = candidate
-        self._camera_status_label.setText(f"Camera: {device.display_name}")
-        self._init_camera_controls()
-
-    def _poll_frame(self) -> None:
-        if self._stream is None:
-            return
-        mailbox_frame = self._stream.mailbox.wait_latest(
-            after_sequence=self._last_sequence, timeout_s=0.0
-        )
-        if mailbox_frame is None:
-            return
-        self._last_sequence = mailbox_frame.sequence
-        self._recent_frames.append(mailbox_frame.frame)
-
-        if self._auto_exposure_checkbox.isChecked():
-            self._apply_auto_exposure(mailbox_frame.frame)
-
-        plane = build_analysis_plane(mailbox_frame.frame)
-        result, recommendation = self._controller.measure_and_advise(plane)
-        self._last_result = result
-        self._last_recommendation = recommendation
-        self._live_view.set_frame(plane.mono, measurement=result.measurement)
-        self._recommendation_label.setText(_format_recommendation(result, recommendation))
+    def _on_right_camera_changed(self, device: object) -> None:
+        excluded = device.camera_id if isinstance(device, TouptekDeviceInfo) else None
+        self._left_panel.refresh_camera_list(excluded)
 
     def _diagnostic_context(self) -> dict[str, Any]:
-        context: dict[str, Any] = {
-            "camera_descriptor": self._camera.get_descriptor(),
-            "exposure_ms": self._exposure_spin.value(),
-            "gain": self._gain_spin.value(),
-            "streaming": self._stream is not None,
-            "auto_exposure_enabled": self._auto_exposure_checkbox.isChecked(),
+        return {
+            "left": self._left_panel.diagnostic_context(),
+            "right": self._right_panel.diagnostic_context(),
         }
-        if self._last_result is not None:
-            context["measurement_result"] = self._last_result
-        if self._last_recommendation is not None:
-            context["recommendation"] = self._last_recommendation
-        return context
+
+    def _all_recent_frames(self) -> list[Frame]:
+        return self._left_panel.recent_frames() + self._right_panel.recent_frames()
 
     def _on_capture_diagnostics(self) -> None:
         reason = self._diagnostics_note.text().strip() or _DEFAULT_MANUAL_REASON
@@ -350,7 +160,6 @@ class MainWindow(QMainWindow):
             clipboard.setText(self._diagnostics_status_label.text())
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 — Qt override
-        self._timer.stop()
-        if self._stream is not None:
-            self._stream.stop_stream()
+        self._left_panel.stop()
+        self._right_panel.stop()
         super().closeEvent(event)

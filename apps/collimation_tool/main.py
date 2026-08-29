@@ -93,7 +93,10 @@ def main() -> None:
     diagnostics = DiagnosticService(app_name="CollimationTool", recent_logs=log_handler.lines)
     _install_excepthook(diagnostics)
 
-    window = MainWindow(_default_camera(), diagnostics=diagnostics)
+    # Two independent ReplayCamera instances — the guide panel's demo
+    # camera can't be the same object as the main panel's (see
+    # CameraPanel's docstring: each panel owns its own StreamController).
+    window = MainWindow(_default_camera(), guide_camera=_default_camera(), diagnostics=diagnostics)
     window.show()
     sys.exit(app.exec())
 

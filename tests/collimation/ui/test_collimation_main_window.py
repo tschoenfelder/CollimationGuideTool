@@ -31,47 +31,51 @@ def _donut_camera(offset: tuple[float, float]) -> ReplayCamera:
 
 def test_window_starts_idle(qapp: object) -> None:
     window = MainWindow(_donut_camera((0.0, 0.0)))
-    assert window._recommendation_label.text() == "Start the stream to begin."
-    assert not window._start_button.isChecked()
+    assert window._left_panel._recommendation_label.text() == "Start the stream to begin."
+    assert not window._left_panel._start_button.isChecked()
 
 
 def test_starting_the_stream_and_polling_measures_and_shows_overlay(qapp: object) -> None:
     window = MainWindow(_donut_camera((5.0, -2.0)))
-    window._start_button.setChecked(True)
+    panel = window._left_panel
+    panel._start_button.setChecked(True)
     try:
         deadline = time.monotonic() + 2.0
-        while "Error" not in window._recommendation_label.text():
+        while "Error" not in panel._recommendation_label.text():
             assert time.monotonic() < deadline, "no measurement observed in time"
             time.sleep(0.02)
-            window._poll_frame()
+            panel._poll_frame()
 
-        assert not window._live_view.pixmap().isNull()
+        assert not panel._live_view.pixmap().isNull()
     finally:
-        window._start_button.setChecked(False)
+        panel._start_button.setChecked(False)
 
 
 def test_stopping_the_stream_updates_the_label(qapp: object) -> None:
     window = MainWindow(_donut_camera((0.0, 0.0)))
-    window._start_button.setChecked(True)
-    window._start_button.setChecked(False)
-    assert window._recommendation_label.text() == "Stream stopped."
-    assert window._stream is None
+    panel = window._left_panel
+    panel._start_button.setChecked(True)
+    panel._start_button.setChecked(False)
+    assert panel._recommendation_label.text() == "Stream stopped."
+    assert panel._stream is None
 
 
 class TestCameraSelection:
     def test_combo_offers_only_demo_camera_when_no_devices_found(self, qapp: object) -> None:
         demo = _donut_camera((0.0, 0.0))
         window = MainWindow(demo, device_lister=lambda: [])
-        assert window._camera_combo.count() == 1
-        assert window._camera_combo.currentIndex() == 0
-        assert window._camera_combo.currentData() is None
+        combo = window._left_panel._camera_combo
+        assert combo.count() == 1
+        assert combo.currentIndex() == 0
+        assert combo.currentData() is None
 
     def test_combo_lists_enumerated_touptek_devices(self, qapp: object) -> None:
         devices = [TouptekDeviceInfo(index=0, camera_id="dev-1", display_name="ATR585M Guide")]
         window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: devices)
-        assert window._camera_combo.count() == 2
-        assert "ATR585M Guide" in window._camera_combo.itemText(1)
-        assert window._camera_combo.itemData(1) == devices[0]
+        combo = window._left_panel._camera_combo
+        assert combo.count() == 2
+        assert "ATR585M Guide" in combo.itemText(1)
+        assert combo.itemData(1) == devices[0]
 
     def test_connect_swaps_to_the_selected_touptek_camera_on_success(self, qapp: object) -> None:
         demo = _donut_camera((0.0, 0.0))
@@ -82,10 +86,11 @@ class TestCameraSelection:
             device_lister=lambda: devices,
             camera_factory=lambda camera_id: fake_touptek,
         )
-        window._camera_combo.setCurrentIndex(1)
-        window._on_connect_camera()
-        assert window._camera is fake_touptek
-        assert "ATR585M Guide" in window._camera_status_label.text()
+        panel = window._left_panel
+        panel._camera_combo.setCurrentIndex(1)
+        panel._on_connect_camera()
+        assert panel._camera is fake_touptek
+        assert "ATR585M Guide" in panel._camera_status_label.text()
 
     def test_connect_failure_shows_error_and_keeps_current_camera(self, qapp: object) -> None:
         demo = _donut_camera((0.0, 0.0))
@@ -95,10 +100,11 @@ class TestCameraSelection:
             device_lister=lambda: devices,
             camera_factory=lambda camera_id: FakeTouptekCamera(fail_connect=True),
         )
-        window._camera_combo.setCurrentIndex(1)
-        window._on_connect_camera()
-        assert window._camera is demo
-        assert "failed" in window._camera_status_label.text().lower()
+        panel = window._left_panel
+        panel._camera_combo.setCurrentIndex(1)
+        panel._on_connect_camera()
+        assert panel._camera is demo
+        assert "failed" in panel._camera_status_label.text().lower()
 
     def test_reselecting_demo_camera_restores_it(self, qapp: object) -> None:
         demo = _donut_camera((0.0, 0.0))
@@ -109,24 +115,106 @@ class TestCameraSelection:
             device_lister=lambda: devices,
             camera_factory=lambda camera_id: fake_touptek,
         )
-        window._camera_combo.setCurrentIndex(1)
-        window._on_connect_camera()
-        current: CameraPort = window._camera
+        panel = window._left_panel
+        panel._camera_combo.setCurrentIndex(1)
+        panel._on_connect_camera()
+        current: CameraPort = panel._camera
         assert current is fake_touptek
 
-        window._camera_combo.setCurrentIndex(0)
-        window._on_connect_camera()
-        current = window._camera
+        panel._camera_combo.setCurrentIndex(0)
+        panel._on_connect_camera()
+        current = panel._camera
         assert current is demo
 
     def test_camera_controls_disabled_while_streaming(self, qapp: object) -> None:
         window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
-        window._start_button.setChecked(True)
-        assert not window._camera_combo.isEnabled()
-        assert not window._connect_button.isEnabled()
-        window._start_button.setChecked(False)
-        assert window._camera_combo.isEnabled()
-        assert window._connect_button.isEnabled()
+        panel = window._left_panel
+        panel._start_button.setChecked(True)
+        assert not panel._camera_combo.isEnabled()
+        assert not panel._connect_button.isEnabled()
+        panel._start_button.setChecked(False)
+        assert panel._camera_combo.isEnabled()
+        assert panel._connect_button.isEnabled()
+
+
+class TestTwoPanelExclusion:
+    """See the two-camera-panel feature request: connecting a real device
+    on one side must remove it from the other side's combo — a ToupTek
+    camera only allows one open handle at a time."""
+
+    def test_both_panels_offer_the_same_devices_before_any_connection(
+        self, qapp: object
+    ) -> None:
+        devices = [
+            TouptekDeviceInfo(index=0, camera_id="dev-1", display_name="ATR585M"),
+            TouptekDeviceInfo(index=1, camera_id="dev-2", display_name="GPCMOS"),
+        ]
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: devices)
+        assert window._left_panel._camera_combo.count() == 3  # demo + 2
+        assert window._right_panel._camera_combo.count() == 3
+
+    def test_connecting_a_device_on_the_left_removes_it_from_the_right_combo(
+        self, qapp: object
+    ) -> None:
+        devices = [
+            TouptekDeviceInfo(index=0, camera_id="dev-1", display_name="ATR585M"),
+            TouptekDeviceInfo(index=1, camera_id="dev-2", display_name="GPCMOS"),
+        ]
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)),
+            device_lister=lambda: devices,
+            camera_factory=lambda camera_id: FakeTouptekCamera(),
+        )
+        window._left_panel._camera_combo.setCurrentIndex(1)  # dev-1
+        window._left_panel._on_connect_camera()
+
+        right_ids = {
+            window._right_panel._camera_combo.itemData(i).camera_id
+            for i in range(1, window._right_panel._camera_combo.count())
+        }
+        assert right_ids == {"dev-2"}
+
+    def test_connecting_on_the_right_removes_it_from_the_left_combo(
+        self, qapp: object
+    ) -> None:
+        devices = [TouptekDeviceInfo(index=0, camera_id="dev-1", display_name="ATR585M")]
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)),
+            device_lister=lambda: devices,
+            camera_factory=lambda camera_id: FakeTouptekCamera(),
+        )
+        window._right_panel._camera_combo.setCurrentIndex(1)  # dev-1
+        window._right_panel._on_connect_camera()
+
+        assert window._left_panel._camera_combo.count() == 1  # demo only
+
+    def test_switching_back_to_demo_restores_the_device_on_the_other_side(
+        self, qapp: object
+    ) -> None:
+        devices = [TouptekDeviceInfo(index=0, camera_id="dev-1", display_name="ATR585M")]
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)),
+            device_lister=lambda: devices,
+            camera_factory=lambda camera_id: FakeTouptekCamera(),
+        )
+        window._left_panel._camera_combo.setCurrentIndex(1)
+        window._left_panel._on_connect_camera()
+        assert window._right_panel._camera_combo.count() == 1  # excluded
+
+        window._left_panel._camera_combo.setCurrentIndex(0)  # back to demo
+        window._left_panel._on_connect_camera()
+        assert window._right_panel._camera_combo.count() == 2  # demo + dev-1 again
+
+    def test_both_panels_can_independently_select_the_demo_camera(
+        self, qapp: object
+    ) -> None:
+        """The demo camera has no hardware-conflict constraint — both sides
+        may use it at once."""
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+        window._left_panel._on_connect_camera()
+        window._right_panel._on_connect_camera()
+        assert window._left_panel._camera_combo.currentData() is None
+        assert window._right_panel._camera_combo.currentData() is None
 
 
 class TestDiagnosticsCapture:
@@ -189,52 +277,57 @@ class TestDiagnosticsCapture:
         incident = json.loads((bundle_dir / "incident.json").read_text(encoding="utf-8"))
         assert incident["reason"]
 
-    def test_capture_includes_camera_settings_and_last_measurement(
+    def test_capture_includes_both_panels_camera_settings_and_measurement(
         self, qapp: object, tmp_path: Path
     ) -> None:
         diagnostics = DiagnosticService(app_name="CollimationTool", diagnostics_dir=tmp_path)
         window = MainWindow(
             _donut_camera((5.0, -2.0)), device_lister=lambda: [], diagnostics=diagnostics
         )
-        window._start_button.setChecked(True)
+        panel = window._left_panel
+        panel._start_button.setChecked(True)
         try:
             deadline = time.monotonic() + 2.0
-            while window._last_result is None:
+            while panel._last_result is None:
                 assert time.monotonic() < deadline, "no measurement observed in time"
                 time.sleep(0.02)
-                window._poll_frame()
+                panel._poll_frame()
         finally:
-            window._start_button.setChecked(False)
+            panel._start_button.setChecked(False)
 
         window._on_capture_diagnostics()
         bundle_dir = next(tmp_path.iterdir())
         incident = json.loads((bundle_dir / "incident.json").read_text(encoding="utf-8"))
         context = incident["context"]
-        assert "serial_number" in context["camera_descriptor"]
-        assert "measurement_result" in context
-        # At least one recent frame was captured as raw FITS evidence.
+        assert "left" in context
+        assert "right" in context
+        assert "serial_number" in context["left"]["camera_descriptor"]
+        assert "measurement_result" in context["left"]
+        # At least one recent frame (from either panel) was captured as
+        # raw FITS evidence.
         frames_dir = bundle_dir / "frames"
         assert frames_dir.is_dir()
         assert len(list(frames_dir.iterdir())) >= 1
 
-    def test_recent_frame_buffer_is_bounded(self, qapp: object, tmp_path: Path) -> None:
+    def test_recent_frame_buffer_is_bounded_per_panel(self, qapp: object, tmp_path: Path) -> None:
         expected_capacity = 3
         diagnostics = DiagnosticService(app_name="CollimationTool", diagnostics_dir=tmp_path)
         window = MainWindow(
             _donut_camera((0.0, 0.0)), device_lister=lambda: [], diagnostics=diagnostics
         )
-        window._start_button.setChecked(True)
+        panel = window._left_panel
+        panel._start_button.setChecked(True)
         try:
             deadline = time.monotonic() + 2.0
-            while len(window._recent_frames) < expected_capacity:
+            while len(panel._recent_frames) < expected_capacity:
                 assert time.monotonic() < deadline, "buffer never filled"
                 time.sleep(0.02)
-                window._poll_frame()
+                panel._poll_frame()
             for _ in range(10):
-                window._poll_frame()
+                panel._poll_frame()
         finally:
-            window._start_button.setChecked(False)
-        assert len(window._recent_frames) == expected_capacity
+            panel._start_button.setChecked(False)
+        assert len(panel._recent_frames) == expected_capacity
 
     def test_capture_failure_shows_an_error_and_does_not_raise(
         self, qapp: object, tmp_path: Path
@@ -265,57 +358,62 @@ class TestAutoExposure:
         self, qapp: object
     ) -> None:
         window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
-        assert not window._auto_exposure_checkbox.isChecked()
-        assert window._exposure_spin.isEnabled()
-        assert window._gain_spin.isEnabled()
+        panel = window._left_panel
+        assert not panel._auto_exposure_checkbox.isChecked()
+        assert panel._exposure_spin.isEnabled()
+        assert panel._gain_spin.isEnabled()
 
     def test_enabling_disables_manual_spinboxes_and_resets_gain_to_default(
         self, qapp: object
     ) -> None:
         window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
-        window._gain_spin.setValue(250)
-        window._auto_exposure_checkbox.setChecked(True)
-        assert not window._exposure_spin.isEnabled()
-        assert not window._gain_spin.isEnabled()
-        assert window._gain_spin.value() == 100
-        assert window._camera.get_gain() == 100
+        panel = window._left_panel
+        panel._gain_spin.setValue(250)
+        panel._auto_exposure_checkbox.setChecked(True)
+        assert not panel._exposure_spin.isEnabled()
+        assert not panel._gain_spin.isEnabled()
+        assert panel._gain_spin.value() == 100
+        assert panel._camera.get_gain() == 100
 
     def test_disabling_reenables_manual_controls(self, qapp: object) -> None:
         window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
-        window._auto_exposure_checkbox.setChecked(True)
-        window._auto_exposure_checkbox.setChecked(False)
-        assert window._exposure_spin.isEnabled()
-        assert window._gain_spin.isEnabled()
+        panel = window._left_panel
+        panel._auto_exposure_checkbox.setChecked(True)
+        panel._auto_exposure_checkbox.setChecked(False)
+        assert panel._exposure_spin.isEnabled()
+        assert panel._gain_spin.isEnabled()
 
     def test_a_dim_donut_frame_increases_exposure_while_streaming(
         self, qapp: object
     ) -> None:
         window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
-        initial_exposure = window._exposure_spin.value()
-        window._auto_exposure_checkbox.setChecked(True)
-        window._start_button.setChecked(True)
+        panel = window._left_panel
+        initial_exposure = panel._exposure_spin.value()
+        panel._auto_exposure_checkbox.setChecked(True)
+        panel._start_button.setChecked(True)
         try:
-            window._poll_frame()
+            panel._poll_frame()
             time.sleep(0.05)
-            window._poll_frame()
+            panel._poll_frame()
         finally:
-            window._start_button.setChecked(False)
+            panel._start_button.setChecked(False)
         # The demo donut's peak (3000) is a small fraction of 16-bit full
         # range — well below the 50-70% target band — so exposure must rise.
-        assert window._exposure_spin.value() > initial_exposure
-        assert window._gain_spin.value() == 100
+        assert panel._exposure_spin.value() > initial_exposure
+        assert panel._gain_spin.value() == 100
 
     def test_no_change_applied_while_auto_exposure_is_off(self, qapp: object) -> None:
         window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
-        initial_exposure = window._exposure_spin.value()
-        window._start_button.setChecked(True)
+        panel = window._left_panel
+        initial_exposure = panel._exposure_spin.value()
+        panel._start_button.setChecked(True)
         try:
-            window._poll_frame()
+            panel._poll_frame()
             time.sleep(0.05)
-            window._poll_frame()
+            panel._poll_frame()
         finally:
-            window._start_button.setChecked(False)
-        assert window._exposure_spin.value() == initial_exposure
+            panel._start_button.setChecked(False)
+        assert panel._exposure_spin.value() == initial_exposure
 
     def test_custom_auto_exposure_config_default_gain_is_honored(
         self, qapp: object
@@ -325,8 +423,9 @@ class TestAutoExposure:
             device_lister=lambda: [],
             auto_exposure_config=AutoExposureConfig(default_gain=250),
         )
-        window._auto_exposure_checkbox.setChecked(True)
-        assert window._gain_spin.value() == 250
+        panel = window._left_panel
+        panel._auto_exposure_checkbox.setChecked(True)
+        assert panel._gain_spin.value() == 250
 
     def test_a_bright_uniform_frame_within_band_leaves_exposure_unchanged(
         self, qapp: object
@@ -335,12 +434,64 @@ class TestAutoExposure:
         array = np.full((64, 64), 0.6 * 65535, dtype=np.float32)
         camera = ReplayCamera.from_arrays([array], cycle=True)
         window = MainWindow(camera, device_lister=lambda: [])
-        initial_exposure = window._exposure_spin.value()
-        window._auto_exposure_checkbox.setChecked(True)
-        window._start_button.setChecked(True)
+        panel = window._left_panel
+        initial_exposure = panel._exposure_spin.value()
+        panel._auto_exposure_checkbox.setChecked(True)
+        panel._start_button.setChecked(True)
         try:
-            window._poll_frame()
+            panel._poll_frame()
         finally:
-            window._start_button.setChecked(False)
-        assert window._exposure_spin.value() == initial_exposure
-        assert window._gain_spin.value() == 100
+            panel._start_button.setChecked(False)
+        assert panel._exposure_spin.value() == initial_exposure
+        assert panel._gain_spin.value() == 100
+
+
+class TestRightPanel:
+    """The right/guide panel is a fully independent CameraPanel — spot-check
+    it works the same as the left, rather than repeating every case above."""
+
+    def test_right_panel_defaults_to_a_fake_camera_when_not_supplied(
+        self, qapp: object
+    ) -> None:
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+        assert window._right_panel is not window._left_panel
+        assert window._right_panel._camera is not window._left_panel._camera
+
+    def test_explicit_guide_camera_is_used_for_the_right_panel(self, qapp: object) -> None:
+        guide = _donut_camera((1.0, 1.0))
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)), guide_camera=guide, device_lister=lambda: []
+        )
+        assert window._right_panel._camera is guide
+
+    def test_right_panel_streams_and_measures_independently(self, qapp: object) -> None:
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)),
+            guide_camera=_donut_camera((5.0, -2.0)),
+            device_lister=lambda: [],
+        )
+        panel = window._right_panel
+        panel._start_button.setChecked(True)
+        try:
+            deadline = time.monotonic() + 2.0
+            while "Error" not in panel._recommendation_label.text():
+                assert time.monotonic() < deadline, "no measurement observed in time"
+                time.sleep(0.02)
+                panel._poll_frame()
+            assert not panel._live_view.pixmap().isNull()
+        finally:
+            panel._start_button.setChecked(False)
+        # The left panel is untouched by the right panel streaming.
+        assert window._left_panel._stream is None
+
+    def test_closing_the_window_stops_both_panels(self, qapp: object) -> None:
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)),
+            guide_camera=_donut_camera((0.0, 0.0)),
+            device_lister=lambda: [],
+        )
+        window._left_panel._start_button.setChecked(True)
+        window._right_panel._start_button.setChecked(True)
+        window.close()
+        assert window._left_panel._stream is None
+        assert window._right_panel._stream is None

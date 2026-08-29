@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import numpy as np
 from PySide6.QtCore import Qt
-from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap
+from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap, QResizeEvent
 from PySide6.QtWidgets import QLabel
 
 from collimation_tool.domain.collimation_measurement import CircleEllipseFit, DonutMeasurement
@@ -48,15 +48,23 @@ def _draw_ring(painter: QPainter, ring: CircleEllipseFit, color: QColor) -> None
 
 
 class LiveViewLabel(QLabel):
-    """Displays the latest mono frame, optionally with a donut measurement overlay."""
+    """Displays the latest mono frame, optionally with a donut measurement overlay.
+
+    Scales to fit the label's current size with X and Y scaled by the same
+    factor (``Qt.KeepAspectRatio`` — no stretching/distortion), not a 1:1
+    pixel mapping: the label is generally smaller than the sensor's native
+    resolution, and this is deliberately independent of whatever scale any
+    other view on screen is using (see CollimationTool's two-camera-panel
+    layout, where the two panels aren't the same size).
+    """
 
     def __init__(self) -> None:
         super().__init__()
         self.setMinimumSize(320, 240)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.setScaledContents(True)
         self.setStyleSheet("background-color: black;")
         self.setText("No frame yet")
+        self._base_pixmap: QPixmap | None = None
 
     def set_frame(self, mono: np.ndarray, *, measurement: DonutMeasurement | None) -> None:
         gray = _stretch_to_uint8(mono)
@@ -81,4 +89,19 @@ class LiveViewLabel(QLabel):
             finally:
                 painter.end()
 
-        self.setPixmap(pixmap)
+        self._base_pixmap = pixmap
+        self._update_scaled_pixmap()
+
+    def _update_scaled_pixmap(self) -> None:
+        if self._base_pixmap is None or self._base_pixmap.isNull():
+            return
+        scaled = self._base_pixmap.scaled(
+            self.size(),
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        self.setPixmap(scaled)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802 — Qt override
+        super().resizeEvent(event)
+        self._update_scaled_pixmap()
