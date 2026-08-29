@@ -106,8 +106,12 @@ class GuideController:
                     return
 
             self._stop_event.clear()
-            with self._status_lock:
-                self._pulses_paused = False
+            # Deliberately not resetting _pulses_paused here: pause/resume is
+            # a level-state toggle a caller may set before start() (e.g. to
+            # begin a session in measure-only-observe mode) — clobbering it
+            # unconditionally silently discarded that call. Unlike
+            # _rebaseline_requested (an edge-triggered one-shot), pause has
+            # no "consumed" semantics to reset on a fresh start.
             self._rebaseline_requested.clear()
             self._target = None
             self._acquired = False
