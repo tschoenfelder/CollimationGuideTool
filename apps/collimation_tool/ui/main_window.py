@@ -51,12 +51,16 @@ from typing import Any
 
 from astrotool_core.acquisition.auto_exposure import AutoExposureConfig, compute_auto_exposure
 from astrotool_core.acquisition.stream_controller import StreamController
-from astrotool_core.camera.port import CameraPort
-from astrotool_core.camera.touptek_adapter import (
+from astrotool_core.camera import (
+    DEMO_CAMERA_LABEL as _DEMO_CAMERA_LABEL,
+)
+from astrotool_core.camera import (
+    CameraPort,
     TouptekCameraAdapter,
     TouptekDeviceInfo,
+    build_camera_choices,
 )
-from astrotool_core.camera.touptek_adapter import (
+from astrotool_core.camera import (
     list_devices as _list_touptek_devices,
 )
 from astrotool_core.diagnostics import DiagnosticService
@@ -85,7 +89,6 @@ from collimation_tool.domain.collimation_state import CollimationRecommendation
 from collimation_tool.ui.live_view import LiveViewLabel
 
 _POLL_INTERVAL_MS = 100
-_DEMO_CAMERA_LABEL = "Demo camera (no hardware)"
 _RECENT_FRAMES_KEPT = 3
 _DEFAULT_MANUAL_REASON = "Manual capture from UI (no note given)"
 
@@ -150,9 +153,8 @@ class MainWindow(QMainWindow):
         self._start_button.toggled.connect(self._on_toggle_stream)
 
         self._camera_combo = QComboBox()
-        self._camera_combo.addItem(_DEMO_CAMERA_LABEL, None)
-        for device in device_lister():
-            self._camera_combo.addItem(f"{device.display_name} ({device.camera_id})", device)
+        for choice in build_camera_choices(device_lister()):
+            self._camera_combo.addItem(choice.label, choice.device)
         self._connect_button = QPushButton("Connect")
         self._connect_button.clicked.connect(self._on_connect_camera)
         self._camera_status_label = QLabel(f"Camera: {_DEMO_CAMERA_LABEL}")
