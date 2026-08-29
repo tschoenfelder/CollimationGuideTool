@@ -72,6 +72,33 @@ def test_disconnect_is_safe_when_never_connected() -> None:
     adapter.disconnect()  # must not raise
 
 
+class TestExposureEverSetFlag:
+    """See issue #14: capture() used to unconditionally re-apply its own
+    exposure_seconds parameter to hardware on every call, silently undoing
+    any set_exposure_ms() made afterward — exactly what a live UI does
+    while streaming (manual spinbox edits and auto-exposure both call it).
+    _exposure_ever_set is what lets capture() tell "never explicitly set,
+    bootstrap from my parameter" apart from "already live-managed, leave
+    it alone" — these tests cover the flag's state machine without needing
+    hardware; the actual capture()-doesn't-override-it-anymore behavior is
+    proven end-to-end by the real-hardware contract test."""
+
+    def test_flag_starts_false(self) -> None:
+        adapter = TouptekCameraAdapter()
+        assert adapter._exposure_ever_set is False
+
+    def test_set_exposure_ms_marks_the_flag_even_without_hardware(self) -> None:
+        adapter = TouptekCameraAdapter()
+        adapter.set_exposure_ms(5.0)
+        assert adapter._exposure_ever_set is True
+
+    def test_disconnect_resets_the_flag_so_a_reconnect_can_bootstrap_again(self) -> None:
+        adapter = TouptekCameraAdapter()
+        adapter.set_exposure_ms(5.0)
+        adapter.disconnect()
+        assert adapter._exposure_ever_set is False
+
+
 def test_abort_capture_sets_the_abort_event_without_hardware() -> None:
     adapter = TouptekCameraAdapter()
     adapter.abort_capture()

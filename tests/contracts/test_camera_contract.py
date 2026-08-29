@@ -117,3 +117,29 @@ def test_real_touptek_connect_then_capture(camera_factory: CameraFactory) -> Non
         assert frame.width > 0
     finally:
         camera.disconnect()
+
+
+@pytest.mark.parametrize("camera_factory", REAL_CAMERA_FACTORIES)
+def test_real_touptek_live_exposure_change_survives_the_next_capture(
+    camera_factory: CameraFactory,
+) -> None:
+    """Regression test for issue #14, found via real-hardware testing:
+    capture() used to unconditionally re-apply its own exposure_seconds
+    argument to hardware on every call, silently reverting any
+    set_exposure_ms() made in between — exactly what happens when a live
+    UI adjusts exposure while streaming (manual spinbox edits and the
+    auto-exposure feature both call set_exposure_ms() mid-stream), and
+    StreamController always calls capture() with the exposure it was
+    started with. Exposure appeared "stuck" no matter what the UI did.
+    """
+    camera = camera_factory()
+    camera.connect()
+    try:
+        camera.capture(0.001)  # bootstrap capture at a tiny exposure
+        camera.set_exposure_ms(50.0)  # a live adjustment, as the UI makes
+        # StreamController would keep passing the *original* 0.001s here.
+        frame = camera.capture(0.001)
+        assert camera.get_exposure_ms() == pytest.approx(50.0, rel=0.2)
+        assert frame.exposure_seconds == pytest.approx(0.05, rel=0.2)
+    finally:
+        camera.disconnect()

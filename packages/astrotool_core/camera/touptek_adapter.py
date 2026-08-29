@@ -200,6 +200,11 @@ class TouptekCameraAdapter(CameraPort):
         self._capture_error: Exception | None = None
         self._capture_lock = threading.Lock()
         self._pixel_shift: int = -1  # -1=not yet detected; 0/2/4=right-shift to native range
+        # See _capture_connected's docstring (issue #14) — tracks whether
+        # set_exposure_ms() has ever been called, so capture()'s parameter
+        # only bootstraps the very first exposure rather than permanently
+        # overriding whatever was set afterward on every subsequent frame.
+        self._exposure_ever_set = False
 
     def connect(self) -> None:
         if self._cam is not None:
@@ -252,6 +257,7 @@ class TouptekCameraAdapter(CameraPort):
                     self._cam.Close()
         self._cam = None
         self._tc = None
+        self._exposure_ever_set = False  # a reconnect should re-bootstrap from capture()'s hint
 
     def abort_capture(self) -> None:
         self._abort.set()
@@ -262,11 +268,32 @@ class TouptekCameraAdapter(CameraPort):
         return self._capture_connected(exposure_seconds)  # pragma: no cover
 
     def _capture_connected(self, exposure_seconds: float) -> Frame:  # pragma: no cover
+        """Capture one frame.
+
+        Deliberately does NOT unconditionally push *exposure_seconds* to the
+        hardware on every call. ``StreamController._run()`` calls
+        ``capture(exposure_s)`` in a loop with the *same* value it was
+        started with — doing so here on every frame silently undid any live
+        ``set_exposure_ms()`` call made afterward (manual spinbox edits and
+        the auto-exposure feature both call it while streaming — see
+        MainWindow's docstring), on the very next captured frame. Found via
+        real-hardware testing (issue #14): exposure appeared "stuck" no
+        matter what the UI did once streaming had started.
+
+        *exposure_seconds* only bootstraps the very first capture after
+        connect (before anything has called ``set_exposure_ms()``), so a
+        bare ``connect(); capture(x)`` caller still gets what it asked for.
+        After that, whatever's currently on the camera — via
+        ``set_exposure_ms()`` — wins, matching how gain already works (there
+        is no gain equivalent of this parameter at all).
+        """
+        if not self._exposure_ever_set:
+            self.set_exposure_ms(exposure_seconds * 1000.0)
         if not self._capture_lock.acquire(timeout=exposure_seconds + self._timeout_extra_s + 12.0):
             raise RuntimeError("TouptekCameraAdapter: camera busy")
         try:
-            self._cam.put_ExpoTime(max(1, int(exposure_seconds * 1_000_000)))
-            raw_u16 = self._capture_raw(exposure_seconds + self._timeout_extra_s)
+            actual_exposure_s = self.get_exposure_ms() / 1000.0
+            raw_u16 = self._capture_raw(actual_exposure_s + self._timeout_extra_s)
             if self._pixel_shift < 0:
                 self._pixel_shift = _detect_pixel_shift(raw_u16)
             shift = max(0, self._pixel_shift)
@@ -278,7 +305,7 @@ class TouptekCameraAdapter(CameraPort):
             return Frame(
                 pixels=pixels,
                 header=hdr,
-                exposure_seconds=exposure_seconds,
+                exposure_seconds=actual_exposure_s,
                 bit_depth=16 - shift,
             )
         finally:
@@ -290,6 +317,7 @@ class TouptekCameraAdapter(CameraPort):
         return float(self._cam.get_ExpoTime()) / 1000.0  # pragma: no cover
 
     def set_exposure_ms(self, ms: float) -> None:
+        self._exposure_ever_set = True
         if self._cam is not None:  # pragma: no cover
             self._cam.put_ExpoTime(max(1, int(ms * 1000)))
 
