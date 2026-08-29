@@ -25,6 +25,20 @@ Diagnostics stay owned by MainWindow, not duplicated per panel — a
 "Capture diagnostics" action conceptually belongs to the whole app, not
 one camera. `diagnostic_context()`/`recent_frames()` are this panel's
 contribution to that aggregate.
+
+Analysis runs off the UI thread: measured against a real camera frame,
+the measurement+stretch pipeline took ~900ms — inline on the poll timer
+that blocked the whole window's event loop, for both panels. See
+`FrameAnalyzer`. `_poll_frame()` only ever submits/collects; it never
+runs the pipeline itself.
+
+Mono vs. color: a color camera's raw frame is a Bayer mosaic, not a
+valid mono plane — `_camera.is_color_sensor()`/`get_bayer_pattern()`
+(see `CameraPort`) tell `FrameAnalyzer` whether and how to demosaic it
+before analysis. Demosaicing was implemented and is unit-tested, but
+not yet proven against a real color sensor — no color camera was free
+to test against during development (see the commit that introduced
+this for which real cameras were checked and their result).
 """
 
 from __future__ import annotations
@@ -45,7 +59,6 @@ from astrotool_core.camera import (
 from astrotool_core.camera import (
     list_devices as _list_touptek_devices,
 )
-from astrotool_core.frames.analysis_plane import build_analysis_plane
 from astrotool_core.frames.frame import Frame
 from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import (
@@ -63,6 +76,7 @@ from PySide6.QtWidgets import (
 from collimation_tool.application.collimation_controller import CollimationController
 from collimation_tool.domain.collimation_measurement import DonutAnalysisResult
 from collimation_tool.domain.collimation_state import CollimationRecommendation
+from collimation_tool.ui.frame_analyzer import FrameAnalyzer
 from collimation_tool.ui.live_view import LiveViewLabel
 
 _POLL_INTERVAL_MS = 100
@@ -118,6 +132,7 @@ class CameraPanel(QWidget):
         self._stream: StreamController | None = None
         self._last_sequence = 0
         self._controller = CollimationController()
+        self._analyzer = FrameAnalyzer(self._controller)
         self._last_result: DonutAnalysisResult | None = None
         self._last_recommendation: CollimationRecommendation | None = None
         self._recent_frames: deque[Frame] = deque(maxlen=_RECENT_FRAMES_KEPT)
@@ -295,25 +310,38 @@ class CameraPanel(QWidget):
             self._camera_combo.blockSignals(False)
 
     def _poll_frame(self) -> None:
+        """Cheap by design — see module docstring. Never runs the analysis
+        pipeline itself: submits the latest captured frame to `_analyzer`
+        (a no-op if a previous analysis is still running) and picks up
+        whichever analysis most recently finished, if any."""
         if self._stream is None:
             return
         mailbox_frame = self._stream.mailbox.wait_latest(
             after_sequence=self._last_sequence, timeout_s=0.0
         )
-        if mailbox_frame is None:
-            return
-        self._last_sequence = mailbox_frame.sequence
-        self._recent_frames.append(mailbox_frame.frame)
+        if mailbox_frame is not None:
+            self._last_sequence = mailbox_frame.sequence
+            self._recent_frames.append(mailbox_frame.frame)
 
-        if self._auto_exposure_checkbox.isChecked():
-            self._apply_auto_exposure(mailbox_frame.frame)
+            if self._auto_exposure_checkbox.isChecked():
+                self._apply_auto_exposure(mailbox_frame.frame)
 
-        plane = build_analysis_plane(mailbox_frame.frame)
-        result, recommendation = self._controller.measure_and_advise(plane)
-        self._last_result = result
-        self._last_recommendation = recommendation
-        self._live_view.set_frame(plane.mono, measurement=result.measurement)
-        self._recommendation_label.setText(_format_recommendation(result, recommendation))
+            self._analyzer.submit(
+                mailbox_frame.frame,
+                is_color=self._camera.is_color_sensor(),
+                bayer_pattern=self._camera.get_bayer_pattern(),
+            )
+
+        outcome = self._analyzer.take_latest()
+        if outcome is not None:
+            self._last_result = outcome.result
+            self._last_recommendation = outcome.recommendation
+            self._live_view.set_stretched_frame(
+                outcome.stretched, measurement=outcome.result.measurement
+            )
+            self._recommendation_label.setText(
+                _format_recommendation(outcome.result, outcome.recommendation)
+            )
 
     def diagnostic_context(self) -> dict[str, Any]:
         context: dict[str, Any] = {

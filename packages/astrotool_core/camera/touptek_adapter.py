@@ -35,6 +35,7 @@ from astrotool_core.camera.capabilities import (
 )
 from astrotool_core.camera.port import CameraPort, CaptureAbortedError
 from astrotool_core.frames.frame import Frame
+from astrotool_core.frames.pixel_format import BayerPattern
 
 _log = logging.getLogger(__name__)
 
@@ -51,6 +52,26 @@ _FLAG_CGHDR = 0x0000000800000000
 _FLAG_BLACKLEVEL = 0x00400000
 _FLAG_MONO = 0x00000040
 _FLAG_RAW16 = 0x00008000  # camera has true 16-bit ADC depth
+
+
+def _fourcc(a: str, b: str, c: str, d: str) -> int:
+    """Matches the SDK's MAKEFOURCC packing (little-endian; verified
+    against real hardware: G3M678M's get_RawFormat() returned 0x59595959
+    for 'YYYY', i.e. the first character is the least-significant byte)."""
+    return ord(a) | (ord(b) << 8) | (ord(c) << 16) | (ord(d) << 24)
+
+
+# get_RawFormat()'s FourCC -> BayerPattern — see toupcam.py's get_RawFormat
+# docstring for the full FourCC list; only the Bayer/mono ones are relevant
+# here (YUV/RGB888 raw formats aren't produced in this adapter's RAW=1
+# capture mode — see _basic_configure).
+_FOURCC_TO_BAYER: dict[int, BayerPattern] = {
+    _fourcc("R", "G", "G", "B"): BayerPattern.RGGB,
+    _fourcc("B", "G", "G", "R"): BayerPattern.BGGR,
+    _fourcc("G", "R", "B", "G"): BayerPattern.GRBG,
+    _fourcc("G", "B", "R", "G"): BayerPattern.GBRG,
+    _fourcc("Y", "Y", "Y", "Y"): BayerPattern.MONO,
+}
 
 _OPTION_BLACKLEVEL = 0x15
 _OPTION_CG = 0x19
@@ -403,6 +424,29 @@ class TouptekCameraAdapter(CameraPort):
 
     def is_color_sensor(self) -> bool:
         return not bool(self._model_flag & _FLAG_MONO)
+
+    def get_bayer_pattern(self) -> BayerPattern:
+        """Query the sensor's actual Bayer layout via get_RawFormat().
+
+        Unlike the sibling smart_telescope project's adapter (which
+        hardcodes "RGGB" unconditionally), this queries the SDK directly —
+        verified against real hardware: a mono camera (G3M678M) correctly
+        reports fourcc 'YYYY'. Not yet verified against a real *color*
+        camera (none was available/free during development — see issue
+        tracker); falls back to MONO on any failure or unrecognized fourcc
+        so a demosaic step is never applied to data that isn't actually
+        mosaiced.
+        """
+        if self._cam is None or not self.is_color_sensor():  # pragma: no cover
+            return BayerPattern.MONO
+        try:  # pragma: no cover — requires real hardware
+            fourcc, _bit_depth = self._cam.get_RawFormat()
+        except Exception as exc:
+            _log.warning(
+                "TouptekCameraAdapter(%s): get_RawFormat() failed: %s", self._logical_name, exc
+            )
+            return BayerPattern.MONO
+        return _FOURCC_TO_BAYER.get(int(fourcc), BayerPattern.MONO)
 
     def _select_device(self, devices: Any) -> tuple[int, Any | None]:  # noqa: ANN401
         if self._camera_id_hint:

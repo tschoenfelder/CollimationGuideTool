@@ -14,6 +14,7 @@ from abc import ABC, abstractmethod
 
 from astrotool_core.camera.capabilities import CameraDescriptor, ConversionGain
 from astrotool_core.frames.frame import Frame
+from astrotool_core.frames.pixel_format import BayerPattern
 
 
 class CaptureAbortedError(Exception):
@@ -62,3 +63,18 @@ class CameraPort(ABC):
 
     @abstractmethod
     def get_descriptor(self) -> CameraDescriptor: ...
+
+    def is_color_sensor(self) -> bool:  # noqa: B027 — deliberate default, not abstract
+        """True if this camera has a color filter array. Default: mono.
+
+        A caller must not assume every ``CameraPort`` needs demosaicing —
+        most test doubles and simple sources are mono — so this defaults
+        to False rather than being abstract; ``TouptekCameraAdapter``
+        overrides it with the real answer from hardware.
+        """
+        return False
+
+    def get_bayer_pattern(self) -> BayerPattern:  # noqa: B027 — deliberate default
+        """Sensor's Bayer mosaic layout. Meaningful only when
+        ``is_color_sensor()`` is True; default: MONO (no filter array)."""
+        return BayerPattern.MONO

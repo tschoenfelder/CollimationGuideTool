@@ -12,14 +12,17 @@ from dataclasses import dataclass
 import pytest
 from astrotool_core.camera.capabilities import ConversionGain
 from astrotool_core.camera.touptek_adapter import (
+    _FOURCC_TO_BAYER,
     TouptekCameraAdapter,
     TouptekDeviceInfo,
     _devices_to_info,
+    _fourcc,
     _is_real_camera,
     _normalise_camera_name,
     _opt,
     list_devices,
 )
+from astrotool_core.frames.pixel_format import BayerPattern
 
 
 @dataclass
@@ -252,3 +255,61 @@ def test_opt_falls_back_when_attribute_missing() -> None:
 
     assert _opt(_Module(), "TOUPCAM_OPTION_RAW", 4) == 99
     assert _opt(_Module(), "TOUPCAM_OPTION_MISSING", 4) == 4
+
+
+class TestGetBayerPattern:
+    """See the mono/color camera requirement. get_bayer_pattern() itself
+    needs a real connected camera to exercise (marked # pragma: no cover
+    in the source, like the rest of the SDK-touching methods) — these
+    tests cover the pure FourCC<->BayerPattern mapping it relies on,
+    verified against real hardware (a mono camera, G3M678M, reported
+    fourcc 0x59595959 for 'YYYY' — see _fourcc's docstring)."""
+
+    def test_fourcc_matches_the_sdk_documented_yyyy_value_for_mono(self) -> None:
+        # Confirmed against real hardware: G3M678M's get_RawFormat()
+        # returned exactly this value for a monochromatic sensor.
+        assert _fourcc("Y", "Y", "Y", "Y") == 0x59595959
+
+    @pytest.mark.parametrize(
+        ("chars", "expected_pattern"),
+        [
+            (("R", "G", "G", "B"), BayerPattern.RGGB),
+            (("B", "G", "G", "R"), BayerPattern.BGGR),
+            (("G", "R", "B", "G"), BayerPattern.GRBG),
+            (("G", "B", "R", "G"), BayerPattern.GBRG),
+            (("Y", "Y", "Y", "Y"), BayerPattern.MONO),
+        ],
+    )
+    def test_every_documented_fourcc_maps_to_the_right_pattern(
+        self, chars: tuple[str, str, str, str], expected_pattern: BayerPattern
+    ) -> None:
+        assert _FOURCC_TO_BAYER[_fourcc(*chars)] is expected_pattern
+
+    def test_get_bayer_pattern_defaults_to_mono_when_not_connected(self) -> None:
+        adapter = TouptekCameraAdapter()
+        assert adapter.get_bayer_pattern() is BayerPattern.MONO
+
+    def test_is_color_sensor_defaults_to_true_when_model_flag_unset(self) -> None:
+        # Worth noting, not a bug: is_color_sensor() checks the MONO bit,
+        # so an adapter with no model info yet (never connected) reads as
+        # "color" by this bit-check alone — get_bayer_pattern() still
+        # correctly falls back to MONO in that state via the `_cam is
+        # None` guard, tested above.
+        adapter = TouptekCameraAdapter()
+        assert adapter.is_color_sensor() is True
+
+
+class TestCameraPortColorDefaults:
+    """The shared CameraPort.is_color_sensor()/get_bayer_pattern() defaults
+    (mono) — every non-ToupTek CameraPort (FakeCamera, ReplayCamera,
+    FakeTouptekCamera) inherits these unless it overrides them."""
+
+    def test_default_is_color_sensor_is_false(self) -> None:
+        from astrotool_core.camera.fake_camera import FakeCamera
+
+        assert FakeCamera().is_color_sensor() is False
+
+    def test_default_bayer_pattern_is_mono(self) -> None:
+        from astrotool_core.camera.fake_camera import FakeCamera
+
+        assert FakeCamera().get_bayer_pattern() is BayerPattern.MONO

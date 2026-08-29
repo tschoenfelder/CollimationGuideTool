@@ -22,10 +22,22 @@ _INNER_COLOR = QColor(255, 210, 60)
 _ERROR_COLOR = QColor(255, 90, 90)
 
 
-def _stretch_to_uint8(mono: np.ndarray, *, low: float = 1.0, high: float = 99.5) -> np.ndarray:
-    """Percentile-stretch a mono float array to a displayable uint8 copy."""
-    lo = float(np.percentile(mono, low))
-    hi = float(np.percentile(mono, high))
+def stretch_to_uint8(
+    mono: np.ndarray, *, low: float = 1.0, high: float = 99.5, sample_stride: int = 4
+) -> np.ndarray:
+    """Percentile-stretch a mono float array to a displayable uint8 copy.
+
+    The percentile bounds are estimated from a strided subsample rather
+    than every pixel — measured at ~250ms on a real 3840x2160 frame for
+    the naive full-array `np.percentile` (a real contributor to the UI
+    responsiveness issue this was found from; the actual clip/scale below
+    still runs over the full array, which is cheap by comparison). A
+    stride of 4 (1/16 of the pixels in 2D) doesn't visibly change the
+    stretch for a live-view display, which has no precision requirement.
+    """
+    sample = mono[::sample_stride, ::sample_stride] if sample_stride > 1 else mono
+    lo = float(np.percentile(sample, low))
+    hi = float(np.percentile(sample, high))
     if hi <= lo:
         hi = lo + 1.0
     stretched = np.clip((mono - lo) / (hi - lo), 0.0, 1.0)
@@ -67,7 +79,14 @@ class LiveViewLabel(QLabel):
         self._base_pixmap: QPixmap | None = None
 
     def set_frame(self, mono: np.ndarray, *, measurement: DonutMeasurement | None) -> None:
-        gray = _stretch_to_uint8(mono)
+        """Stretch and display *mono*. For a real (large) camera frame,
+        prefer computing the stretch off the UI thread and calling
+        `set_stretched_frame` instead — see `FrameAnalyzer`."""
+        self.set_stretched_frame(stretch_to_uint8(mono), measurement=measurement)
+
+    def set_stretched_frame(
+        self, gray: np.ndarray, *, measurement: DonutMeasurement | None
+    ) -> None:
         height, width = gray.shape
         image = QImage(
             gray.tobytes(), width, height, width, QImage.Format.Format_Grayscale8

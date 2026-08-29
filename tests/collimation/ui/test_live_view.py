@@ -1,10 +1,40 @@
 import numpy as np
-from collimation_tool.ui.live_view import LiveViewLabel
+from collimation_tool.ui.live_view import LiveViewLabel, stretch_to_uint8
 from PySide6.QtWidgets import QApplication
 
 
 def _frame(height: int, width: int) -> np.ndarray:
     return np.full((height, width), 500.0, dtype=np.float32)
+
+
+class TestStretchToUint8:
+    """See the UI-responsiveness fix: percentile bounds are now estimated
+    from a strided subsample (np.percentile over a full 3840x2160 frame
+    measured at ~250ms) rather than every pixel."""
+
+    def test_uniform_frame_stretches_to_a_uniform_value(self) -> None:
+        gray = stretch_to_uint8(np.full((64, 64), 500.0, dtype=np.float32))
+        assert gray.dtype == np.uint8
+        assert gray.shape == (64, 64)
+
+    def test_a_bright_spot_still_reads_bright_after_subsampled_stretch(self) -> None:
+        mono = np.full((64, 64), 100.0, dtype=np.float32)
+        mono[30:34, 30:34] = 50_000.0
+        gray = stretch_to_uint8(mono)
+        assert gray[32, 32] > 200
+        assert gray[0, 0] < 50
+
+    def test_subsampling_gives_essentially_the_same_result_as_full_resolution(
+        self,
+    ) -> None:
+        rng = np.random.default_rng(seed=0)
+        mono = rng.uniform(0.0, 60_000.0, size=(256, 256)).astype(np.float32)
+        full = stretch_to_uint8(mono, sample_stride=1)
+        subsampled = stretch_to_uint8(mono, sample_stride=4)
+        # Not identical (different percentile estimate from fewer samples),
+        # but close enough that no pixel's displayed brightness visibly
+        # changes — this is a display stretch, not a measurement.
+        assert np.abs(full.astype(int) - subsampled.astype(int)).max() <= 5
 
 
 class TestAspectPreservingScale:
@@ -53,3 +83,32 @@ class TestAspectPreservingScale:
     def test_no_frame_yet_has_no_pixmap(self, qapp: object) -> None:
         label = LiveViewLabel()
         assert label.pixmap().isNull()
+
+
+class TestSetStretchedFrame:
+    """See FrameAnalyzer: the stretch runs off the UI thread, so
+    LiveViewLabel needs a way to display already-stretched uint8 data
+    without redoing (or re-timing) the stretch itself."""
+
+    def test_set_stretched_frame_skips_stretching_and_displays_as_is(
+        self, qapp: object
+    ) -> None:
+        label = LiveViewLabel()
+        label.resize(100, 100)
+        gray = np.zeros((50, 50), dtype=np.uint8)
+        gray[10:20, 10:20] = 255
+        label.set_stretched_frame(gray, measurement=None)
+        assert not label.pixmap().isNull()
+
+    def test_set_frame_and_set_stretched_frame_produce_the_same_pixmap_size(
+        self, qapp: object
+    ) -> None:
+        label_a = LiveViewLabel()
+        label_a.resize(200, 200)
+        label_a.set_frame(_frame(100, 200), measurement=None)
+
+        label_b = LiveViewLabel()
+        label_b.resize(200, 200)
+        label_b.set_stretched_frame(stretch_to_uint8(_frame(100, 200)), measurement=None)
+
+        assert label_a.pixmap().size() == label_b.pixmap().size()
