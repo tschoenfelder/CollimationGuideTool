@@ -615,15 +615,17 @@ class TestFovOverlayIntegration:
         # Deliberately not relying on ~/.SmartTScope/config.toml being
         # absent (true on Windows/CI, but *not* true wherever SmartTScope
         # is actually installed alongside this project, e.g. the Pi this
-        # feature was verified on — where it correctly does find real
-        # data instead). None is passed explicitly here so the "no config
-        # available" path is exercised regardless of the machine.
+        # feature was verified on). And deliberately *not* passing None
+        # either — None means "unspecified, auto-detect from config" (see
+        # MainWindow's constructor), so it can't be used to force "no
+        # data" on a machine where the config genuinely exists; 0.0 is a
+        # given-but-invalid value, exercised regardless of the machine.
         window = MainWindow(
             _camera_with_sensor(3840, 2160),
             guide_camera=_camera_with_sensor(1920, 1080),
             device_lister=lambda: [],
-            main_pixel_scale_arcsec=None,
-            guide_pixel_scale_arcsec=None,
+            main_pixel_scale_arcsec=0.0,
+            guide_pixel_scale_arcsec=0.0,
         )
         assert window._right_panel._fov_rect is None
 
