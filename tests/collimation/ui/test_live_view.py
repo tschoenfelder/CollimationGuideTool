@@ -1,4 +1,5 @@
 import numpy as np
+from collimation_tool.ui.fov_overlay import FovOverlayRect
 from collimation_tool.ui.live_view import LiveViewLabel, stretch_to_uint8
 from PySide6.QtWidgets import QApplication
 
@@ -83,6 +84,46 @@ class TestAspectPreservingScale:
     def test_no_frame_yet_has_no_pixmap(self, qapp: object) -> None:
         label = LiveViewLabel()
         assert label.pixmap().isNull()
+
+
+class TestFovRectOverlay:
+    """See the main-camera-FOV-in-guide-frame overlay feature."""
+
+    def test_a_yellow_rectangle_is_drawn_at_the_expected_location(self, qapp: object) -> None:
+        # Inspect the base (native-resolution) pixmap directly, before the
+        # KeepAspectRatio display scaling — see TestAspectPreservingScale
+        # for why the label's *displayed* size can't be pinned exactly
+        # (setMinimumSize(320, 240) clamps a smaller .resize()).
+        label = LiveViewLabel()
+        rect = FovOverlayRect(x=0.2, y=0.2, width=0.6, height=0.6)
+        label.set_frame(_frame(100, 100), measurement=None, fov_rect=rect)
+
+        assert label._base_pixmap is not None
+        image = label._base_pixmap.toImage()
+        # Middle of the top edge, in native 100x100 pixel coordinates.
+        edge_color = image.pixelColor(50, 20)
+        assert edge_color.red() > 200
+        assert edge_color.green() > 200
+        assert edge_color.blue() < 100
+
+    def test_no_rectangle_drawn_when_fov_rect_is_none(self, qapp: object) -> None:
+        label = LiveViewLabel()
+        label.set_frame(_frame(100, 100), measurement=None, fov_rect=None)
+
+        assert label._base_pixmap is not None
+        image = label._base_pixmap.toImage()
+        # Nothing yellow anywhere near where a rect would have been drawn.
+        color = image.pixelColor(50, 20)
+        assert not (color.red() > 200 and color.green() > 200 and color.blue() < 100)
+
+    def test_set_stretched_frame_also_accepts_a_fov_rect(self, qapp: object) -> None:
+        label = LiveViewLabel()
+        label.resize(100, 100)
+        rect = FovOverlayRect(x=0.2, y=0.2, width=0.6, height=0.6)
+        label.set_stretched_frame(
+            stretch_to_uint8(_frame(100, 100)), measurement=None, fov_rect=rect
+        )
+        assert not label.pixmap().isNull()
 
 
 class TestSetStretchedFrame:

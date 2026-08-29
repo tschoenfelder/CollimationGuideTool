@@ -3,7 +3,9 @@ import time
 from pathlib import Path
 
 import numpy as np
+import pytest
 from astrotool_core.acquisition.auto_exposure import AutoExposureConfig
+from astrotool_core.camera.capabilities import CameraCapabilities
 from astrotool_core.camera.port import CameraPort
 from astrotool_core.camera.replay_camera import ReplayCamera
 from astrotool_core.camera.touptek_adapter import TouptekDeviceInfo
@@ -560,3 +562,118 @@ class TestRightPanel:
         window.close()
         assert window._left_panel._stream is None
         assert window._right_panel._stream is None
+
+
+def _camera_with_sensor(width_px: int, height_px: int) -> ReplayCamera:
+    caps = CameraCapabilities(
+        min_gain=100,
+        max_gain=15000,
+        min_exposure_ms=0.1,
+        max_exposure_ms=3_600_000.0,
+        supports_cooling=True,
+        supports_hcg=True,
+        supports_lcg=True,
+        supports_hdr=True,
+        supports_black_level=True,
+        bit_depth=16,
+        pixel_size_um=0.0,
+        sensor_width_px=width_px,
+        sensor_height_px=height_px,
+    )
+    return ReplayCamera.from_arrays(
+        [np.zeros((height_px, width_px), dtype=np.float32)], capabilities=caps
+    )
+
+
+class TestFovOverlayIntegration:
+    """Test below UI: the real rig this feature was built for —
+    ATR585M (main, 3840x2160, 0.38"/px) and GPCMOS02000KPA (guide,
+    1920x1080, ~3.32"/px) — end to end through MainWindow, not just the
+    pure compute_fov_overlay_rect() math (see test_fov_overlay.py for
+    that)."""
+
+    _MAIN_SCALE = 0.38
+    _GUIDE_SCALE = 3.32
+
+    def test_overlay_computed_for_the_real_rig_specs_end_to_end(self, qapp: object) -> None:
+        window = MainWindow(
+            _camera_with_sensor(3840, 2160),
+            guide_camera=_camera_with_sensor(1920, 1080),
+            device_lister=lambda: [],
+            main_pixel_scale_arcsec=self._MAIN_SCALE,
+            guide_pixel_scale_arcsec=self._GUIDE_SCALE,
+        )
+        rect = window._right_panel._fov_rect
+        assert rect is not None
+        assert rect.width == pytest.approx(0.2289, abs=0.001)
+        assert rect.height == pytest.approx(0.2289, abs=0.001)
+        assert rect.x == pytest.approx((1.0 - rect.width) / 2.0)
+
+    def test_no_overlay_when_pixel_scale_config_is_unavailable(self, qapp: object) -> None:
+        # No main_pixel_scale_arcsec/guide_pixel_scale_arcsec given, and no
+        # real ~/.SmartTScope/config.toml on this dev machine — must not
+        # raise, and must produce no overlay rather than a wrong one.
+        window = MainWindow(
+            _camera_with_sensor(3840, 2160),
+            guide_camera=_camera_with_sensor(1920, 1080),
+            device_lister=lambda: [],
+        )
+        assert window._right_panel._fov_rect is None
+
+    def test_overlay_recomputes_when_a_panel_connects_a_differently_sized_camera(
+        self, qapp: object
+    ) -> None:
+        devices = [TouptekDeviceInfo(index=0, camera_id="dev-1", display_name="ATR585M")]
+        window = MainWindow(
+            _camera_with_sensor(1920, 1080),  # left starts the same size as guide
+            guide_camera=_camera_with_sensor(1920, 1080),
+            device_lister=lambda: devices,
+            camera_factory=lambda camera_id: _camera_with_sensor(3840, 2160),
+            main_pixel_scale_arcsec=self._MAIN_SCALE,
+            guide_pixel_scale_arcsec=self._GUIDE_SCALE,
+        )
+        initial_rect = window._right_panel._fov_rect
+        assert initial_rect is not None
+        # Equal *pixel counts* on both sides initially, but the plate
+        # scales still differ (0.38 vs 3.32"/px), so the ratio isn't 1.0.
+        assert initial_rect.width == pytest.approx(self._MAIN_SCALE / self._GUIDE_SCALE)
+
+        window._left_panel._camera_combo.setCurrentIndex(1)
+        window._left_panel._on_connect_camera()
+
+        updated_rect = window._right_panel._fov_rect
+        assert updated_rect is not None
+        assert updated_rect.width == pytest.approx(0.2289, abs=0.001)
+
+    def test_overlay_is_visibly_rendered_in_the_guide_panels_live_view(
+        self, qapp: object
+    ) -> None:
+        window = MainWindow(
+            _camera_with_sensor(3840, 2160),
+            guide_camera=_camera_with_sensor(1920, 1080),
+            device_lister=lambda: [],
+            main_pixel_scale_arcsec=self._MAIN_SCALE,
+            guide_pixel_scale_arcsec=self._GUIDE_SCALE,
+        )
+        panel = window._right_panel
+        panel._start_button.setChecked(True)
+        try:
+            deadline = time.monotonic() + 2.0
+            while panel._live_view._base_pixmap is None:
+                assert time.monotonic() < deadline, "no frame rendered in time"
+                time.sleep(0.02)
+                panel._poll_frame()
+        finally:
+            panel._start_button.setChecked(False)
+
+        assert panel._live_view._base_pixmap is not None
+        image = panel._live_view._base_pixmap.toImage()
+        rect = panel._fov_rect
+        assert rect is not None
+        # Middle of the rectangle's top edge, in native guide-frame pixels.
+        x = int((rect.x + rect.width / 2) * 1920)
+        y = int(rect.y * 1080)
+        edge_color = image.pixelColor(x, y)
+        assert edge_color.red() > 200
+        assert edge_color.green() > 200
+        assert edge_color.blue() < 100

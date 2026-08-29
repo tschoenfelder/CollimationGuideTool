@@ -95,6 +95,16 @@ camera only allows one open connection at a time), though both sides can
 independently use the demo camera. "Capture diagnostics" is shared
 between the two panels, not duplicated.
 
+The guide (right) panel draws a yellow rectangle showing where the main
+camera's field of view falls within it. This needs the sibling
+SmartTScope project's `~/.SmartTScope/config.toml` — read once at
+startup as the master source for each optical train's plate scale (see
+`[optical_trains.main]`/`[optical_trains.guide]`, `[telescopes]`); no
+overlay is drawn if that file or the relevant train isn't found. The
+rectangle is centered and unrotated — no guide-to-main pointing
+offset/rotation calibration exists yet, so this is a placeholder for
+that, not a measured alignment.
+
 ### 4. Configuration
 
 Hardware/session configuration lives outside the repo at

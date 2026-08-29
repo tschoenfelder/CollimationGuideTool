@@ -2,6 +2,7 @@ from pathlib import Path
 
 import numpy as np
 import pytest
+from astrotool_core.camera.capabilities import CameraCapabilities
 from astrotool_core.camera.port import CaptureAbortedError
 from astrotool_core.camera.replay_camera import ReplayCamera
 from astrotool_core.session.frame_recorder import save_frame
@@ -78,3 +79,35 @@ def test_descriptor_and_setters_round_trip() -> None:
     assert camera.get_black_level() == 20
     assert camera.get_descriptor().logical_name == "ReplayCamera"
     assert camera.get_temperature() is None
+
+
+def test_capabilities_override_lets_tests_simulate_a_specific_real_camera() -> None:
+    # See the FOV-overlay feature: tests need a ReplayCamera reporting a
+    # specific real camera's sensor size (e.g. ATR585M's 3840x2160), not
+    # the module's default placeholder resolution.
+    caps = CameraCapabilities(
+        min_gain=100,
+        max_gain=15000,
+        min_exposure_ms=0.1,
+        max_exposure_ms=3_600_000.0,
+        supports_cooling=True,
+        supports_hcg=True,
+        supports_lcg=True,
+        supports_hdr=True,
+        supports_black_level=True,
+        bit_depth=16,
+        pixel_size_um=0.0,
+        sensor_width_px=3840,
+        sensor_height_px=2160,
+    )
+    camera = ReplayCamera.from_arrays([np.zeros((4, 4), dtype=np.float32)], capabilities=caps)
+    descriptor = camera.get_descriptor()
+    assert descriptor.capabilities.sensor_width_px == 3840
+    assert descriptor.capabilities.sensor_height_px == 2160
+    camera.set_gain(50)  # below this camera's min_gain (100)
+    assert camera.get_gain() == 100  # clamped by the *overridden* capabilities
+
+
+def test_capabilities_default_unchanged_when_not_given() -> None:
+    camera = ReplayCamera.from_arrays([np.zeros((4, 4), dtype=np.float32)])
+    assert camera.get_descriptor().capabilities.min_gain == 100

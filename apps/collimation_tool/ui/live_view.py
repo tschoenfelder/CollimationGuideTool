@@ -16,10 +16,12 @@ from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap, QResizeEvent
 from PySide6.QtWidgets import QLabel
 
 from collimation_tool.domain.collimation_measurement import CircleEllipseFit, DonutMeasurement
+from collimation_tool.ui.fov_overlay import FovOverlayRect
 
 _OUTER_COLOR = QColor(80, 220, 255)
 _INNER_COLOR = QColor(255, 210, 60)
 _ERROR_COLOR = QColor(255, 90, 90)
+_FOV_COLOR = QColor(255, 255, 0)
 
 
 def stretch_to_uint8(
@@ -78,14 +80,24 @@ class LiveViewLabel(QLabel):
         self.setText("No frame yet")
         self._base_pixmap: QPixmap | None = None
 
-    def set_frame(self, mono: np.ndarray, *, measurement: DonutMeasurement | None) -> None:
+    def set_frame(
+        self,
+        mono: np.ndarray,
+        *,
+        measurement: DonutMeasurement | None,
+        fov_rect: FovOverlayRect | None = None,
+    ) -> None:
         """Stretch and display *mono*. For a real (large) camera frame,
         prefer computing the stretch off the UI thread and calling
         `set_stretched_frame` instead — see `FrameAnalyzer`."""
-        self.set_stretched_frame(stretch_to_uint8(mono), measurement=measurement)
+        self.set_stretched_frame(stretch_to_uint8(mono), measurement=measurement, fov_rect=fov_rect)
 
     def set_stretched_frame(
-        self, gray: np.ndarray, *, measurement: DonutMeasurement | None
+        self,
+        gray: np.ndarray,
+        *,
+        measurement: DonutMeasurement | None,
+        fov_rect: FovOverlayRect | None = None,
     ) -> None:
         height, width = gray.shape
         image = QImage(
@@ -93,18 +105,32 @@ class LiveViewLabel(QLabel):
         ).copy()
         pixmap = QPixmap.fromImage(image)
 
-        if measurement is not None:
+        if measurement is not None or fov_rect is not None:
             painter = QPainter(pixmap)
             try:
-                _draw_ring(painter, measurement.outer_ring, _OUTER_COLOR)
-                _draw_ring(painter, measurement.inner_hole, _INNER_COLOR)
-                painter.setPen(QPen(_ERROR_COLOR, 2))
-                painter.drawLine(
-                    int(measurement.outer_ring.center_x),
-                    int(measurement.outer_ring.center_y),
-                    int(measurement.inner_hole.center_x),
-                    int(measurement.inner_hole.center_y),
-                )
+                if measurement is not None:
+                    _draw_ring(painter, measurement.outer_ring, _OUTER_COLOR)
+                    _draw_ring(painter, measurement.inner_hole, _INNER_COLOR)
+                    painter.setPen(QPen(_ERROR_COLOR, 2))
+                    painter.drawLine(
+                        int(measurement.outer_ring.center_x),
+                        int(measurement.outer_ring.center_y),
+                        int(measurement.inner_hole.center_x),
+                        int(measurement.inner_hole.center_y),
+                    )
+                if fov_rect is not None:
+                    # Where the *other* (main) camera's field of view falls
+                    # within this (guide) frame — see fov_overlay's docstring
+                    # for what this rectangle does and doesn't account for
+                    # (centered/unrotated placeholder, no measured alignment
+                    # data exists yet).
+                    painter.setPen(QPen(_FOV_COLOR, 2))
+                    painter.drawRect(
+                        int(fov_rect.x * width),
+                        int(fov_rect.y * height),
+                        int(fov_rect.width * width),
+                        int(fov_rect.height * height),
+                    )
             finally:
                 painter.end()
 

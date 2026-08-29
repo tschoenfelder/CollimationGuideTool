@@ -51,6 +51,7 @@ from astrotool_core.acquisition.auto_exposure import AutoExposureConfig, compute
 from astrotool_core.acquisition.stream_controller import StreamController
 from astrotool_core.camera import (
     DEMO_CAMERA_LABEL,
+    CameraDescriptor,
     CameraPort,
     TouptekCameraAdapter,
     TouptekDeviceInfo,
@@ -76,6 +77,7 @@ from PySide6.QtWidgets import (
 from collimation_tool.application.collimation_controller import CollimationController
 from collimation_tool.domain.collimation_measurement import DonutAnalysisResult
 from collimation_tool.domain.collimation_state import CollimationRecommendation
+from collimation_tool.ui.fov_overlay import FovOverlayRect
 from collimation_tool.ui.frame_analyzer import FrameAnalyzer
 from collimation_tool.ui.live_view import LiveViewLabel
 
@@ -137,6 +139,10 @@ class CameraPanel(QWidget):
         self._last_recommendation: CollimationRecommendation | None = None
         self._recent_frames: deque[Frame] = deque(maxlen=_RECENT_FRAMES_KEPT)
         self._auto_exposure_config = auto_exposure_config or AutoExposureConfig()
+        #: Set by MainWindow via set_fov_overlay() — see its docstring's
+        #: "Guide-frame FOV overlay". None on the left/main panel always;
+        #: on the right/guide panel, None means no overlay data available.
+        self._fov_rect: FovOverlayRect | None = None
 
         self._title_label = QLabel(f"<b>{title}</b>")
         self._live_view = LiveViewLabel()
@@ -337,7 +343,7 @@ class CameraPanel(QWidget):
             self._last_result = outcome.result
             self._last_recommendation = outcome.recommendation
             self._live_view.set_stretched_frame(
-                outcome.stretched, measurement=outcome.result.measurement
+                outcome.stretched, measurement=outcome.result.measurement, fov_rect=self._fov_rect
             )
             self._recommendation_label.setText(
                 _format_recommendation(outcome.result, outcome.recommendation)
@@ -359,6 +365,16 @@ class CameraPanel(QWidget):
 
     def recent_frames(self) -> list[Frame]:
         return list(self._recent_frames)
+
+    def camera_descriptor(self) -> CameraDescriptor:
+        return self._camera.get_descriptor()
+
+    def set_fov_overlay(self, rect: FovOverlayRect | None) -> None:
+        """Set (or clear, with None) the yellow FOV rectangle this panel's
+        live view draws — see MainWindow's docstring. Takes effect on the
+        next polled frame; does not force an immediate redraw of a
+        currently-displayed frame."""
+        self._fov_rect = rect
 
     def stop(self) -> None:
         """Stop streaming/polling. Safe to call whether or not streaming."""

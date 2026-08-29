@@ -47,7 +47,13 @@ class ReplayCamera(CameraPort):
     synthetic-but-realistic) image data without live hardware.
     """
 
-    def __init__(self, frames: list[Frame], *, cycle: bool = True) -> None:
+    def __init__(
+        self,
+        frames: list[Frame],
+        *,
+        cycle: bool = True,
+        capabilities: CameraCapabilities | None = None,
+    ) -> None:
         if not frames:
             raise ValueError("ReplayCamera requires at least one frame")
         self._frames = frames
@@ -57,6 +63,11 @@ class ReplayCamera(CameraPort):
         self._gain = 100
         self._black_level = 0
         self._conversion_gain = ConversionGain.LCG
+        # Defaults to the module-level replay capabilities unless a test
+        # needs to simulate a specific real camera's sensor size (e.g. for
+        # FOV-overlay geometry tests) — see collimation_tool's
+        # test_fov_overlay-adjacent MainWindow tests.
+        self._capabilities = capabilities or _REPLAY_CAPABILITIES
 
     @classmethod
     def from_directory(cls, dir_path: Path | str, *, cycle: bool = True) -> ReplayCamera:
@@ -74,6 +85,7 @@ class ReplayCamera(CameraPort):
         *,
         bit_depth: int = 16,
         cycle: bool = True,
+        capabilities: CameraCapabilities | None = None,
     ) -> ReplayCamera:
         """Build a ReplayCamera directly from in-memory pixel arrays (no disk I/O)."""
         frames = [
@@ -85,7 +97,7 @@ class ReplayCamera(CameraPort):
             )
             for array in arrays
         ]
-        return cls(frames, cycle=cycle)
+        return cls(frames, cycle=cycle, capabilities=capabilities)
 
     def connect(self) -> None:
         pass
@@ -118,7 +130,7 @@ class ReplayCamera(CameraPort):
         return self._gain
 
     def set_gain(self, gain: int) -> None:
-        self._gain = max(_REPLAY_CAPABILITIES.min_gain, gain)
+        self._gain = max(self._capabilities.min_gain, gain)
 
     def get_black_level(self) -> int:
         return self._black_level
@@ -139,7 +151,7 @@ class ReplayCamera(CameraPort):
         return CameraDescriptor(
             serial_number="",
             logical_name="ReplayCamera",
-            capabilities=_REPLAY_CAPABILITIES,
+            capabilities=self._capabilities,
         )
 
     @property

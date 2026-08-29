@@ -29,6 +29,17 @@ shared `DiagnosticService` (`diagnostics` constructor param, injectable
 for testing) — same bundle format the app's unhandled-exception boundary
 uses (see main.py). The context/frame providers aggregate both panels'
 state under "left"/"right" keys.
+
+Guide-frame FOV overlay: the right (guide) panel's live view draws a
+yellow rectangle showing where the left (main) camera's field of view
+falls within it — see `collimation_tool.ui.fov_overlay`. The optical
+trains' plate scale is the *master* config for this and is read exactly
+once, here at startup (`main_pixel_scale_arcsec`/`guide_pixel_scale_arcsec`,
+each defaulting to `astrotool_core.optics.load_pixel_scale_arcsec()`
+against SmartTScope's config.toml if not given) — never re-read per
+frame or per poll; a config change requires restarting the app, same as
+any other startup-read config. Recomputed only when either panel's
+connected camera changes (its sensor resolution is the other input).
 """
 
 from __future__ import annotations
@@ -43,6 +54,7 @@ from astrotool_core.camera import (
 )
 from astrotool_core.diagnostics import DiagnosticService
 from astrotool_core.frames.frame import Frame
+from astrotool_core.optics import load_pixel_scale_arcsec
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -55,6 +67,7 @@ from PySide6.QtWidgets import (
 )
 
 from collimation_tool.ui.camera_panel import CameraPanel, default_camera_factory
+from collimation_tool.ui.fov_overlay import compute_fov_overlay_rect
 
 _DEFAULT_MANUAL_REASON = "Manual capture from UI (no note given)"
 
@@ -69,9 +82,25 @@ class MainWindow(QMainWindow):
         camera_factory: Callable[[str], CameraPort] = default_camera_factory,
         diagnostics: DiagnosticService | None = None,
         auto_exposure_config: AutoExposureConfig | None = None,
+        main_pixel_scale_arcsec: float | None = None,
+        guide_pixel_scale_arcsec: float | None = None,
     ) -> None:
         super().__init__()
         self.setWindowTitle("CollimationTool")
+
+        # Master config, read once at startup — see module docstring's
+        # "Guide-frame FOV overlay". None means "no overlay data available"
+        # (e.g. no SmartTScope config.toml on this machine), not an error.
+        self._main_pixel_scale_arcsec = (
+            main_pixel_scale_arcsec
+            if main_pixel_scale_arcsec is not None
+            else load_pixel_scale_arcsec("main")
+        )
+        self._guide_pixel_scale_arcsec = (
+            guide_pixel_scale_arcsec
+            if guide_pixel_scale_arcsec is not None
+            else load_pixel_scale_arcsec("guide")
+        )
 
         self._left_panel = CameraPanel(
             camera,
@@ -89,6 +118,7 @@ class MainWindow(QMainWindow):
         )
         self._left_panel.connected_device_changed.connect(self._on_left_camera_changed)
         self._right_panel.connected_device_changed.connect(self._on_right_camera_changed)
+        self._update_fov_overlay()
 
         self._diagnostics = diagnostics or DiagnosticService(app_name="CollimationTool")
         self._diagnostics.set_context_provider(self._diagnostic_context)
@@ -128,10 +158,32 @@ class MainWindow(QMainWindow):
     def _on_left_camera_changed(self, device: object) -> None:
         excluded = device.camera_id if isinstance(device, TouptekDeviceInfo) else None
         self._right_panel.refresh_camera_list(excluded)
+        self._update_fov_overlay()
 
     def _on_right_camera_changed(self, device: object) -> None:
         excluded = device.camera_id if isinstance(device, TouptekDeviceInfo) else None
         self._left_panel.refresh_camera_list(excluded)
+        self._update_fov_overlay()
+
+    def _update_fov_overlay(self) -> None:
+        """Recompute the guide-frame FOV rectangle — see module docstring.
+        Called whenever either panel's connected camera changes (its
+        sensor resolution is the other input this needs); never re-reads
+        the optical-train config itself, which was read once at startup."""
+        if self._main_pixel_scale_arcsec is None or self._guide_pixel_scale_arcsec is None:
+            self._right_panel.set_fov_overlay(None)
+            return
+        main_caps = self._left_panel.camera_descriptor().capabilities
+        guide_caps = self._right_panel.camera_descriptor().capabilities
+        rect = compute_fov_overlay_rect(
+            main_pixel_scale_arcsec=self._main_pixel_scale_arcsec,
+            main_sensor_width_px=main_caps.sensor_width_px,
+            main_sensor_height_px=main_caps.sensor_height_px,
+            guide_pixel_scale_arcsec=self._guide_pixel_scale_arcsec,
+            guide_sensor_width_px=guide_caps.sensor_width_px,
+            guide_sensor_height_px=guide_caps.sensor_height_px,
+        )
+        self._right_panel.set_fov_overlay(rect)
 
     def _diagnostic_context(self) -> dict[str, Any]:
         return {
