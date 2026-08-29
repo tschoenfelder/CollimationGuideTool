@@ -75,27 +75,13 @@ class AutoExposureResult:
     metric: float
 
 
-#: A camera whose true ADC ceiling is lower than the bit_depth this
-#: adapter reports (e.g. a 12-bit sensor tagged bit_depth=16 because
-#: pixel-shift detection never locks in a shift for it — see
-#: touptek_adapter.py's _detect_pixel_shift) can genuinely saturate
-#: while still reading as a small fraction of an assumed-too-large full
-#: range. If at least this fraction of pixels sit within 0.1% of the
-#: frame's own maximum, treat it as fully saturated regardless of what
-#: the assumed ceiling says — a real sensor pinned at its true ceiling
-#: still shows this even with a handful of hot/cold defect pixels
-#: (confirmed on real hardware), which is why this checks a fraction
-#: rather than requiring literally every pixel to match.
-_SATURATION_FRACTION_THRESHOLD = 0.5
-
-
 def _measure(pixels: np.ndarray, bit_depth: int, percentile: float) -> float:
     """Fraction of *pixels*' assumed full range the frame's "signal"
     (a high percentile, not the mean) actually reaches.
 
-    Real-hardware bug this saturation check was added for: a camera
+    Real-hardware bug this saturation floor was added for: a camera
     whose true ADC range is smaller than the assumed bit_depth can sit
-    fully saturated at its real ceiling while this function's naive
+    fully saturated at its real ceiling while the naive
     `signal / (2**bit_depth - 1)` still reads as a small percentage.
     Auto-exposure would then conclude "far too dim" and escalate
     exposure/gain without bound, chasing a target the sensor can never
@@ -104,19 +90,35 @@ def _measure(pixels: np.ndarray, bit_depth: int, percentile: float) -> float:
     uniform-frame handling for the other half of that bug). Confirmed
     on real hardware: gain 100->5000 left the frame completely
     unchanged, pinned at the sensor's true ceiling the whole time.
+
+    The fraction of pixels sitting at the frame's own maximum is used as
+    a *floor* on the naive metric, not a hard cutoff replacing it (an
+    earlier version returned a hard 1.0 once >=50% of pixels were
+    saturated, else fell through to the naive value alone — on real
+    hardware, as exposure/gain corrections nudged the saturated fraction
+    back and forth across that 50% line, the reported metric jumped
+    between ~1.0 and ~0.0625 every other frame, and auto-exposure
+    chased that discontinuity instead of settling: confirmed on the
+    real GPCMOS02000KPA, oscillating indefinitely between ~1.5ms and
+    ~4.5ms exposure). Taking the max of the two instead makes the
+    metric rise smoothly as more of the frame clips, with no cliff to
+    oscillate around: a small hot-pixel cluster or a synthetic test
+    frame with only a handful of pixels at their own max barely moves
+    it, while a real sensor increasingly pinned at its true ceiling
+    pushes it smoothly toward 1.0.
     """
     if pixels.size == 0:
         return 0.0
-    actual_max = float(pixels.max())
-    if actual_max > 0.0:
-        saturated_fraction = float(np.mean(pixels >= actual_max * 0.999))
-        if saturated_fraction >= _SATURATION_FRACTION_THRESHOLD:
-            return 1.0
     adu_max = float(2**bit_depth - 1)
     if adu_max <= 0.0:
         return 0.0
     signal = float(np.percentile(pixels, percentile))
-    return max(0.0, signal) / adu_max
+    naive_metric = max(0.0, signal) / adu_max
+    actual_max = float(pixels.max())
+    if actual_max <= 0.0:
+        return naive_metric
+    saturated_fraction = float(np.mean(pixels >= actual_max * 0.999))
+    return max(naive_metric, saturated_fraction)
 
 
 def compute_auto_exposure(

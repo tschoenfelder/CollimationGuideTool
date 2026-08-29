@@ -313,6 +313,69 @@ class TestSaturationAtALowerTrueAdcCeiling:
         assert result.gain == 380  # gain untouched — exposure has headroom
 
 
+class TestSettlesInsteadOfOscillatingNearSaturation:
+    """Follow-up real-hardware bug: the first saturation fix (a hard
+    "fraction >= 50% saturated -> metric=1.0, else fall through to the
+    naive percentile" cutoff) had a cliff at that 50% line. As
+    corrections nudged the guide camera's clipped-pixel fraction back
+    and forth across it, the reported metric jumped between ~1.0 and
+    ~0.0625 every other frame — confirmed on the real GPCMOS02000KPA,
+    oscillating indefinitely between ~1.5ms and ~4.5ms exposure instead
+    of settling. _measure's max(naive, saturated_fraction) floor (no
+    cutoff) fixes this by making the metric rise smoothly with the
+    clipped fraction."""
+
+    _CEILING = 4094.0  # the sensor's true ADC ceiling, well below bit_depth=16
+
+    def _pixels_for_exposure(self, exposure_ms: float) -> np.ndarray:
+        # A smooth per-pixel gradient up to 3x the true ceiling, scaled by
+        # exposure and clipped at it — mimics a real partially-overexposed
+        # scene where the clipped fraction grows continuously with
+        # exposure, not a frame that is either fully flat or fully varied.
+        gradient = np.linspace(0.0, self._CEILING * 3.0, 200 * 200).reshape(200, 200)
+        raw = gradient * (exposure_ms / 5.0)
+        return np.minimum(raw, self._CEILING).astype(np.float32)
+
+    def test_exposure_settles_near_the_target_band_instead_of_oscillating(self) -> None:
+        config = AutoExposureConfig()
+        exposure_ms = 1.0
+        gain = 100
+        seen_settled = False
+        for _ in range(40):
+            pixels = self._pixels_for_exposure(exposure_ms)
+            result = compute_auto_exposure(
+                pixels,
+                bit_depth=_BIT_DEPTH,
+                current_exposure_ms=exposure_ms,
+                current_gain=gain,
+                capabilities=_CAPS,
+                config=config,
+            )
+            exposure_ms, gain = result.exposure_ms, result.gain
+            if not result.changed:
+                seen_settled = True
+                break
+        assert seen_settled, "auto-exposure never reached a fixed point (still oscillating)"
+        # "Close to 70%": the upper edge of the default target band, not
+        # pinned to either saturation (1.0) or the pre-fix dim misread.
+        assert config.target_low <= result.metric <= config.target_high
+
+        # Once settled, it must actually stay settled — not just pause for
+        # one frame before flipping again.
+        for _ in range(5):
+            pixels = self._pixels_for_exposure(exposure_ms)
+            result = compute_auto_exposure(
+                pixels,
+                bit_depth=_BIT_DEPTH,
+                current_exposure_ms=exposure_ms,
+                current_gain=gain,
+                capabilities=_CAPS,
+                config=config,
+            )
+            assert result.changed is False
+            assert config.target_low <= result.metric <= config.target_high
+
+
 def test_custom_target_band_is_respected() -> None:
     config = AutoExposureConfig(target_low=0.2, target_high=0.3)
     result = compute_auto_exposure(
