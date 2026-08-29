@@ -77,7 +77,9 @@ def _install_excepthook(diagnostics: DiagnosticService) -> None:
             window = QApplication.activeWindow()
             status_label = getattr(window, "_diagnostics_status_label", None)
             if status_label is not None:
-                status_label.setText(f"Crash captured — diagnostics: {bundle.incident_id}")
+                # Raw UUID only — the field is a read-only, selectable/copyable
+                # QLineEdit (issue #11); the log line above carries the framing.
+                status_label.setText(bundle.incident_id)
         previous_hook(exc_type, exc_value, exc_tb)
 
     sys.excepthook = _hook

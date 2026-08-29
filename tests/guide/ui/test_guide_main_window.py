@@ -109,6 +109,29 @@ class TestDiagnosticsCapture:
         assert incident["trigger"] == "manual"
         assert incident["reason"] == "guide correction seemed backwards"
 
+    def test_status_field_is_read_only_and_selectable_not_a_plain_label(
+        self, qapp: object
+    ) -> None:
+        """See issue #11 — the UUID must be copy/paste-able, not just readable."""
+        window = MainWindow(FakeCamera(), device_lister=lambda: [])
+        assert window._diagnostics_status_label.isReadOnly()
+
+    def test_copy_button_copies_the_incident_uuid_to_the_clipboard(
+        self, qapp: object, tmp_path: Path
+    ) -> None:
+        diagnostics = DiagnosticService(app_name="GuideTool", diagnostics_dir=tmp_path)
+        window = MainWindow(FakeCamera(), device_lister=lambda: [], diagnostics=diagnostics)
+        window._on_capture_diagnostics()
+        shown_uuid = window._diagnostics_status_label.text()
+
+        window._on_copy_diagnostics_status()
+
+        from PySide6.QtWidgets import QApplication
+
+        clipboard = QApplication.clipboard()
+        assert clipboard is not None
+        assert clipboard.text() == shown_uuid
+
     def test_capture_includes_guiding_status_and_a_recent_frame(
         self, qapp: object, tmp_path: Path
     ) -> None:

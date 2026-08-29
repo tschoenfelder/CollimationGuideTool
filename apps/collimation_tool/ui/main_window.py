@@ -65,6 +65,7 @@ from astrotool_core.frames.frame import Frame
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDoubleSpinBox,
@@ -178,12 +179,19 @@ class MainWindow(QMainWindow):
         self._diagnostics_note.setPlaceholderText("What looked wrong? (optional)")
         self._capture_diagnostics_button = QPushButton("Capture diagnostics")
         self._capture_diagnostics_button.clicked.connect(self._on_capture_diagnostics)
-        self._diagnostics_status_label = QLabel("")
+        # A read-only QLineEdit (not a QLabel) so the incident UUID is
+        # selectable/copyable via normal text-field interaction — see
+        # issue #11. A "Copy" button covers the one-click case too.
+        self._diagnostics_status_label = QLineEdit("")
+        self._diagnostics_status_label.setReadOnly(True)
+        self._diagnostics_copy_button = QPushButton("Copy")
+        self._diagnostics_copy_button.clicked.connect(self._on_copy_diagnostics_status)
 
         diagnostics_row = QHBoxLayout()
         diagnostics_row.addWidget(self._diagnostics_note, stretch=1)
         diagnostics_row.addWidget(self._capture_diagnostics_button)
-        diagnostics_row.addWidget(self._diagnostics_status_label)
+        diagnostics_row.addWidget(self._diagnostics_status_label, stretch=1)
+        diagnostics_row.addWidget(self._diagnostics_copy_button)
 
         controls = QHBoxLayout()
         controls.addWidget(self._start_button)
@@ -328,8 +336,16 @@ class MainWindow(QMainWindow):
         if bundle is None:
             self._diagnostics_status_label.setText("Diagnostics capture failed — see logs.")
             return
-        self._diagnostics_status_label.setText(f"Diagnostics captured: {bundle.incident_id}")
+        # Just the raw UUID (not "Diagnostics captured: <uuid>" prose) — the
+        # field exists so this can be selected/copied cleanly (issue #11);
+        # the log line above still carries the human-readable framing.
+        self._diagnostics_status_label.setText(bundle.incident_id)
         self._diagnostics_note.clear()
+
+    def _on_copy_diagnostics_status(self) -> None:
+        clipboard = QApplication.clipboard()
+        if clipboard is not None:
+            clipboard.setText(self._diagnostics_status_label.text())
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 — Qt override
         self._timer.stop()
