@@ -877,6 +877,42 @@ class TestFovCalibration:
         assert len(window._right_panel._fov_polygon) == 4
         assert "calibrated" in window._calibrate_fov_status_label.text().lower()
 
+    def test_status_shows_progress_while_calibration_is_running(self, qapp: object) -> None:
+        """See the real bug: "Calibration started but working without any
+        status on progress" — a static message for a ~2-minute search
+        looked indistinguishable from a hang."""
+        guide = _starfield(120, 120, n_stars=40, seed=3)
+        main_array = guide[30:90, 25:100].copy()
+        window = MainWindow(
+            ReplayCamera.from_arrays([main_array], cycle=True),
+            guide_camera=ReplayCamera.from_arrays([guide], cycle=True),
+            device_lister=lambda: [],
+            main_pixel_scale_arcsec=1.0,
+            guide_pixel_scale_arcsec=1.0,
+        )
+        window._left_panel._start_button.setChecked(True)
+        window._right_panel._start_button.setChecked(True)
+        try:
+            window._left_panel._poll_frame()
+            window._right_panel._poll_frame()
+        finally:
+            window._left_panel._start_button.setChecked(False)
+            window._right_panel._start_button.setChecked(False)
+
+        window._on_calibrate_fov()
+
+        deadline = time.monotonic() + 15.0
+        saw_progress_text = False
+        while window._calibrate_fov_poll_timer.isActive():
+            assert time.monotonic() < deadline, "calibration never completed"
+            time.sleep(0.01)
+            window._poll_fov_calibration()
+            status = window._calibrate_fov_status_label.text()
+            if "/" in status and "%" in status:
+                saw_progress_text = True
+
+        assert saw_progress_text, "status label never showed a completed/total progress update"
+
     def test_changing_a_connected_camera_clears_a_stale_calibrated_polygon(
         self, qapp: object
     ) -> None:

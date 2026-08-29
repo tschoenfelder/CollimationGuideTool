@@ -250,7 +250,20 @@ class MainWindow(QMainWindow):
     def _poll_fov_calibration(self) -> None:
         outcome = self._fov_calibrator.take_latest()
         if outcome is None:
-            return  # still running
+            # Still running — see the real bug this progress reporting
+            # was added for ("Calibration started but working without any
+            # status on progress"): the search genuinely takes on the
+            # order of two real minutes (see fov_registration's
+            # docstring), and a static "Calibrating…" message for that
+            # long is indistinguishable from a hang.
+            progress = self._fov_calibrator.latest_progress()
+            if progress is not None:
+                completed, total = progress
+                percent = (completed / total * 100.0) if total else 0.0
+                self._calibrate_fov_status_label.setText(
+                    f"Calibrating… {completed}/{total} ({percent:.0f}%)"
+                )
+            return
         self._calibrate_fov_poll_timer.stop()
         self._calibrate_fov_button.setEnabled(True)
         if outcome.result is None:

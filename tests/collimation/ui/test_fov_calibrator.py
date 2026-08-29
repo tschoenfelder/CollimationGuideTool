@@ -1,0 +1,130 @@
+import time
+from collections.abc import Callable
+
+import numpy as np
+from collimation_tool.ui.fov_calibrator import FovCalibrator
+
+
+def _starfield(height: int, width: int, *, n_stars: int, seed: int) -> np.ndarray:
+    rng = np.random.default_rng(seed)
+    image = np.full((height, width), 100.0, dtype=np.float64)
+    ys, xs = np.meshgrid(np.arange(height), np.arange(width), indexing="ij")
+    for _ in range(n_stars):
+        cx, cy = rng.uniform(0, width), rng.uniform(0, height)
+        peak = rng.uniform(500.0, 3000.0)
+        sigma = rng.uniform(1.5, 3.0)
+        image += peak * np.exp(-(((xs - cx) ** 2 + (ys - cy) ** 2) / (2 * sigma**2)))
+    return image
+
+
+def _wait_for(predicate: Callable[[], bool], *, timeout_s: float = 10.0) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
+
+
+class TestFovCalibrator:
+    def test_submit_then_take_latest_returns_a_completed_outcome(self) -> None:
+        guide = _starfield(60, 60, n_stars=15, seed=1)
+        main = guide[15:45, 10:50].copy()
+        calibrator = FovCalibrator()
+
+        calibrator.submit(main, guide, approx_scale=1.0)
+        assert _wait_for(lambda: not calibrator.is_busy)
+
+        outcome = calibrator.take_latest()
+        assert outcome is not None
+        assert outcome.result is not None
+
+    def test_take_latest_returns_none_when_nothing_has_completed_yet(self) -> None:
+        assert FovCalibrator().take_latest() is None
+
+    def test_take_latest_clears_the_outcome_so_it_is_returned_only_once(self) -> None:
+        guide = _starfield(60, 60, n_stars=15, seed=2)
+        main = guide[15:45, 10:50].copy()
+        calibrator = FovCalibrator()
+        calibrator.submit(main, guide, approx_scale=1.0)
+        assert _wait_for(lambda: not calibrator.is_busy)
+
+        assert calibrator.take_latest() is not None
+        assert calibrator.take_latest() is None
+
+    def test_a_submit_while_busy_is_a_no_op(self) -> None:
+        guide = _starfield(60, 60, n_stars=15, seed=3)
+        main = guide[15:45, 10:50].copy()
+        calibrator = FovCalibrator()
+        calibrator._busy = True  # simulate an in-flight calibration
+
+        started = calibrator.submit(main, guide, approx_scale=1.0)
+        assert started is False
+        assert calibrator.take_latest() is None  # nothing was actually started
+
+    def test_no_confident_match_still_produces_an_outcome(self) -> None:
+        guide = _starfield(60, 60, n_stars=15, seed=4)
+        rng = np.random.default_rng(99)
+        unrelated = rng.normal(500.0, 50.0, size=(20, 25))
+        calibrator = FovCalibrator()
+
+        calibrator.submit(unrelated, guide, approx_scale=1.0)
+        assert _wait_for(lambda: not calibrator.is_busy)
+
+        outcome = calibrator.take_latest()
+        assert outcome is not None
+        assert outcome.result is None  # ran to completion, just no match
+
+    def test_bad_input_is_reported_as_no_match_not_a_crash(self) -> None:
+        guide = _starfield(30, 30, n_stars=5, seed=5)
+        too_big = np.full((80, 80), 500.0)  # can't fit inside guide at any scale
+        calibrator = FovCalibrator()
+
+        calibrator.submit(too_big, guide, approx_scale=1.0)
+        assert _wait_for(lambda: not calibrator.is_busy)
+
+        outcome = calibrator.take_latest()
+        assert outcome is not None
+        assert outcome.result is None
+
+
+class TestLatestProgress:
+    """See the real bug this was added for: "Calibration started but
+    working without any status on progress"."""
+
+    def test_progress_is_none_before_anything_is_submitted(self) -> None:
+        assert FovCalibrator().latest_progress() is None
+
+    def test_progress_advances_towards_completion_while_running(self) -> None:
+        guide = _starfield(100, 100, n_stars=30, seed=6)
+        main = guide[25:75, 20:80].copy()
+        calibrator = FovCalibrator()
+
+        calibrator.submit(main, guide, approx_scale=1.0)
+        # Sample progress a few times while it's still running — each
+        # sample should be a valid, non-decreasing (completed, total).
+        samples: list[tuple[int, int]] = []
+        deadline = time.monotonic() + 10.0
+        while calibrator.is_busy and time.monotonic() < deadline:
+            progress = calibrator.latest_progress()
+            if progress is not None:
+                samples.append(progress)
+            time.sleep(0.01)
+        assert _wait_for(lambda: not calibrator.is_busy)
+
+        assert len(samples) > 0, "no progress was ever reported"
+        completed_values = [c for c, _ in samples]
+        assert completed_values == sorted(completed_values)  # never decreases
+        totals = {total for _, total in samples}
+        assert len(totals) == 1  # total stays constant through one run
+        assert all(c <= next(iter(totals)) for c in completed_values)
+
+    def test_progress_is_cleared_once_the_calibration_completes(self) -> None:
+        guide = _starfield(60, 60, n_stars=15, seed=7)
+        main = guide[15:45, 10:50].copy()
+        calibrator = FovCalibrator()
+
+        calibrator.submit(main, guide, approx_scale=1.0)
+        assert _wait_for(lambda: not calibrator.is_busy)
+
+        assert calibrator.latest_progress() is None

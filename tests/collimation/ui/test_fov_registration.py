@@ -225,6 +225,65 @@ class TestNoConfidentMatch:
         assert result is None
 
 
+class TestProgressCallback:
+    """See the real bug this was added for: "Calibration started but
+    working without any status on progress" — a ~2-minute search with no
+    feedback looked indistinguishable from a hang."""
+
+    def test_callback_is_called_once_per_candidate_with_a_correct_final_total(self) -> None:
+        guide = _starfield(80, 80, n_stars=20, seed=20)
+        main = guide[20:60, 15:65].copy()
+        calls: list[tuple[int, int]] = []
+
+        register_main_frame_in_guide_frame(
+            main,
+            guide,
+            approx_scale=1.0,
+            scale_steps=3,
+            angle_step_deg=30.0,
+            angle_range_deg=(-30, 30),
+            progress_callback=lambda completed, total: calls.append((completed, total)),
+        )
+
+        assert len(calls) > 0
+        # completed counts strictly increase by 1 each call, up to total.
+        totals = {total for _, total in calls}
+        assert len(totals) == 1  # the same total reported throughout
+        (total,) = totals
+        assert [c for c, _ in calls] == list(range(1, total + 1))
+
+    def test_no_callback_given_does_not_raise(self) -> None:
+        guide = _starfield(60, 60, n_stars=10, seed=21)
+        main = guide[10:40, 10:45].copy()
+        # Must work with the default progress_callback=None, same as
+        # every other test in this file already exercises implicitly.
+        result = register_main_frame_in_guide_frame(
+            main,
+            guide,
+            approx_scale=1.0,
+            scale_steps=1,
+            angle_step_deg=10.0,
+            angle_range_deg=(-10, 10),
+        )
+        assert result is not None
+
+    def test_callback_never_called_when_every_scale_is_too_large(self) -> None:
+        guide = _starfield(50, 50, n_stars=10, seed=22)
+        main = np.full((80, 80), 500.0)
+        calls: list[tuple[int, int]] = []
+
+        result = register_main_frame_in_guide_frame(
+            main,
+            guide,
+            approx_scale=1.0,
+            scale_steps=1,
+            angle_step_deg=30.0,
+            progress_callback=lambda completed, total: calls.append((completed, total)),
+        )
+        assert result is None
+        assert calls == []
+
+
 class TestInputValidation:
     def test_non_2d_arrays_raise(self) -> None:
         guide = _starfield(50, 50, n_stars=10, seed=9)

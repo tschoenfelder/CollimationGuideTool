@@ -33,6 +33,7 @@ the UI thread).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 
 import numpy as np
@@ -191,6 +192,7 @@ def register_main_frame_in_guide_frame(
     angle_step_deg: float = 5.0,
     angle_range_deg: tuple[float, float] = (-180.0, 180.0),
     min_score: float = 0.3,
+    progress_callback: Callable[[int, int], None] | None = None,
 ) -> FovRegistrationResult | None:
     """Find where ``main_mono``'s content appears within ``guide_mono``,
     searching over rotation, a small range of scale around
@@ -224,6 +226,13 @@ def register_main_frame_in_guide_frame(
     either axis (an ``approx_scale`` far too large for this pair of
     frames).
 
+    ``progress_callback``, if given, is called as ``callback(completed,
+    total)`` after each (scale, angle) candidate is scored — the search
+    takes long enough (see "Performance" above) that a caller running
+    this off the UI thread should report progress rather than leave the
+    user watching a static "working" message with no sign anything is
+    happening (see `FovCalibrator`).
+
     Not for per-frame use — see the module docstring's "Deliberately a
     one-shot, explicitly-triggered calibration".
     """
@@ -243,12 +252,20 @@ def register_main_frame_in_guide_frame(
 
     angles = np.arange(angle_range_deg[0], angle_range_deg[1], angle_step_deg)
 
-    best: FovRegistrationResult | None = None
+    # Filter out-of-range scales up front so the total candidate count —
+    # and therefore progress — is known before the (slow) search starts,
+    # rather than discovered candidate by candidate.
+    valid_scales: list[tuple[float, int, int]] = []
     for scale in scale_candidates:
         scaled_h = max(1, round(main_h * scale))
         scaled_w = max(1, round(main_w * scale))
-        if scaled_h > guide_h or scaled_w > guide_w:
-            continue
+        if scaled_h <= guide_h and scaled_w <= guide_w:
+            valid_scales.append((scale, scaled_h, scaled_w))
+    total_candidates = len(valid_scales) * len(angles)
+
+    best: FovRegistrationResult | None = None
+    completed = 0
+    for scale, scaled_h, scaled_w in valid_scales:
         resized = _resize_bilinear(main_mono, scaled_h, scaled_w)
         fill_value = float(resized.mean())
         for angle in angles:
@@ -266,6 +283,9 @@ def register_main_frame_in_guide_frame(
                     scale=float(scale),
                     score=score,
                 )
+            completed += 1
+            if progress_callback is not None:
+                progress_callback(completed, total_candidates)
 
     if best is None or best.score < min_score:
         return None
