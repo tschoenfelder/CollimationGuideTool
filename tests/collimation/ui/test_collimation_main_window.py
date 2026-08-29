@@ -609,16 +609,42 @@ class TestFovOverlayIntegration:
         assert rect.height == pytest.approx(0.2289, abs=0.001)
         assert rect.x == pytest.approx((1.0 - rect.width) / 2.0)
 
-    def test_no_overlay_when_pixel_scale_config_is_unavailable(self, qapp: object) -> None:
-        # No main_pixel_scale_arcsec/guide_pixel_scale_arcsec given, and no
-        # real ~/.SmartTScope/config.toml on this dev machine — must not
-        # raise, and must produce no overlay rather than a wrong one.
+    def test_no_overlay_when_a_pixel_scale_is_explicitly_unavailable(
+        self, qapp: object
+    ) -> None:
+        # Deliberately not relying on ~/.SmartTScope/config.toml being
+        # absent (true on Windows/CI, but *not* true wherever SmartTScope
+        # is actually installed alongside this project, e.g. the Pi this
+        # feature was verified on — where it correctly does find real
+        # data instead). None is passed explicitly here so the "no config
+        # available" path is exercised regardless of the machine.
+        window = MainWindow(
+            _camera_with_sensor(3840, 2160),
+            guide_camera=_camera_with_sensor(1920, 1080),
+            device_lister=lambda: [],
+            main_pixel_scale_arcsec=None,
+            guide_pixel_scale_arcsec=None,
+        )
+        assert window._right_panel._fov_rect is None
+
+    def test_default_construction_finds_real_data_when_smarttscope_is_installed(
+        self, qapp: object
+    ) -> None:
+        # Verified on the Pi this feature was built for: with no override
+        # given, MainWindow reads the real ~/.SmartTScope/config.toml and
+        # produces the real rig's overlay — skipped everywhere else.
+        from astrotool_core.optics import DEFAULT_CONFIG_PATH
+
+        if not DEFAULT_CONFIG_PATH.is_file():
+            pytest.skip("no ~/.SmartTScope/config.toml on this machine")
         window = MainWindow(
             _camera_with_sensor(3840, 2160),
             guide_camera=_camera_with_sensor(1920, 1080),
             device_lister=lambda: [],
         )
-        assert window._right_panel._fov_rect is None
+        rect = window._right_panel._fov_rect
+        assert rect is not None
+        assert rect.width == pytest.approx(0.2289, abs=0.001)
 
     def test_overlay_recomputes_when_a_panel_connects_a_differently_sized_camera(
         self, qapp: object
