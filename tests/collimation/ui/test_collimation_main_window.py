@@ -913,6 +913,105 @@ class TestFovCalibration:
 
         assert saw_progress_text, "status label never showed a completed/total progress update"
 
+    def test_keep_calibrating_is_off_by_default_and_does_not_auto_restart(
+        self, qapp: object
+    ) -> None:
+        guide = _starfield(80, 80, n_stars=30, seed=42)
+        main_array = guide[20:60, 15:65].copy()
+        window = MainWindow(
+            ReplayCamera.from_arrays([main_array], cycle=True),
+            guide_camera=ReplayCamera.from_arrays([guide], cycle=True),
+            device_lister=lambda: [],
+            main_pixel_scale_arcsec=1.0,
+            guide_pixel_scale_arcsec=1.0,
+        )
+        window._left_panel._start_button.setChecked(True)
+        window._right_panel._start_button.setChecked(True)
+        try:
+            window._left_panel._poll_frame()
+            window._right_panel._poll_frame()
+        finally:
+            window._left_panel._start_button.setChecked(False)
+            window._right_panel._start_button.setChecked(False)
+
+        assert not window._auto_recalibrate_checkbox.isChecked()
+        window._on_calibrate_fov()
+
+        deadline = time.monotonic() + 15.0
+        while window._calibrate_fov_poll_timer.isActive():
+            assert time.monotonic() < deadline, "calibration never completed"
+            time.sleep(0.02)
+            window._poll_fov_calibration()
+
+        # One run completed and nothing restarted it.
+        assert not window._calibrate_fov_poll_timer.isActive()
+        assert not window._fov_calibrator.is_busy
+        window.close()
+
+    def test_keep_calibrating_checked_restarts_after_the_overlay_updates(
+        self, qapp: object
+    ) -> None:
+        guide = _starfield(80, 80, n_stars=30, seed=5)
+        main_array = guide[20:60, 15:65].copy()
+        window = MainWindow(
+            ReplayCamera.from_arrays([main_array], cycle=True),
+            guide_camera=ReplayCamera.from_arrays([guide], cycle=True),
+            device_lister=lambda: [],
+            main_pixel_scale_arcsec=1.0,
+            guide_pixel_scale_arcsec=1.0,
+        )
+        window._left_panel._start_button.setChecked(True)
+        window._right_panel._start_button.setChecked(True)
+        try:
+            window._left_panel._poll_frame()
+            window._right_panel._poll_frame()
+        finally:
+            window._left_panel._start_button.setChecked(False)
+            window._right_panel._start_button.setChecked(False)
+
+        # Detect the auto-restart via a *decrease* in reported progress
+        # (a fresh run's `completed` resets to a low number after the
+        # previous run finished near its own total) rather than watching
+        # the poll timer go idle or the status text change: with
+        # auto-restart on, a completed run is immediately followed by a
+        # new submit() inside the same _poll_fov_calibration() call, so
+        # neither isActive() nor the status label are ever observed in
+        # their momentary "just finished" state from outside. (An earlier
+        # version of this test instead wrapped FovCalibrator.submit in a
+        # counting closure — that captured the original *bound* method,
+        # creating a reference cycle back through `__self__` to the very
+        # object being patched, which delayed this whole window's
+        # QTimers past normal refcounting cleanup into an unpredictable
+        # later GC pass and crashed a later, unrelated test.)
+        window._auto_recalibrate_checkbox.setChecked(True)
+        window._on_calibrate_fov()
+
+        restarted = False
+        last_completed = 0
+        deadline = time.monotonic() + 15.0
+        while not restarted:
+            assert time.monotonic() < deadline, "auto-restart was never observed"
+            time.sleep(0.01)
+            window._poll_fov_calibration()
+            progress = window._fov_calibrator.latest_progress()
+            if progress is not None:
+                completed, _total = progress
+                if completed < last_completed:
+                    restarted = True
+                last_completed = completed
+        assert window._right_panel._fov_polygon is not None  # the first run's overlay landed
+
+        # A second run is now in flight — turn the switch off so it
+        # doesn't restart again, then let this one finish.
+        window._auto_recalibrate_checkbox.setChecked(False)
+        deadline = time.monotonic() + 15.0
+        while window._calibrate_fov_poll_timer.isActive():
+            assert time.monotonic() < deadline, "final calibration never completed"
+            time.sleep(0.01)
+            window._poll_fov_calibration()
+
+        assert not window._calibrate_fov_poll_timer.isActive()
+
     def test_changing_a_connected_camera_clears_a_stale_calibrated_polygon(
         self, qapp: object
     ) -> None:

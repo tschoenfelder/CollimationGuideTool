@@ -49,9 +49,15 @@ the two panels' latest captured frames (using the config's plate-scale
 ratio only as a starting-point scale estimate) and, on a confident
 match, sets the guide panel's polygon overlay via `set_fov_polygon` —
 see `FovCalibrator` for why this runs on a background thread rather than
-inline on the button click. An explicit, user-triggered one-shot action,
-not something re-run automatically: the two scopes' relative mounting
-doesn't drift frame to frame, only when the rig is physically adjusted.
+inline on the button click. An explicit, user-triggered action by
+default, not something re-run automatically: the two scopes' relative
+mounting doesn't drift frame to frame, only when the rig is physically
+adjusted. The "Keep calibrating" checkbox opts into repeating it anyway
+— typically while actively adjusting that physical alignment and
+wanting to see each attempt's result without a fresh click every time —
+by restarting a new run as soon as each one finishes and the overlay
+updates (see _poll_fov_calibration); unchecking it takes effect after
+the run in flight finishes, not mid-search.
 """
 
 from __future__ import annotations
@@ -71,6 +77,7 @@ from PySide6.QtCore import QTimer
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QHBoxLayout,
     QLabel,
     QLineEdit,
@@ -141,6 +148,13 @@ class MainWindow(QMainWindow):
         self._fov_calibrator = FovCalibrator()
         self._calibrate_fov_button = QPushButton("Calibrate FOV")
         self._calibrate_fov_button.clicked.connect(self._on_calibrate_fov)
+        # Off by default — the base action is still the one-shot
+        # calibration described above. Checking this (typically after
+        # watching the first run complete, while still adjusting the
+        # rig's physical alignment) restarts a new run as soon as each
+        # one finishes and the overlay updates, instead of requiring a
+        # fresh button click every cycle. See _poll_fov_calibration.
+        self._auto_recalibrate_checkbox = QCheckBox("Keep calibrating")
         self._calibrate_fov_status_label = QLabel("")
         self._calibrate_fov_poll_timer = QTimer(self)
         self._calibrate_fov_poll_timer.setInterval(_CALIBRATION_POLL_INTERVAL_MS)
@@ -170,6 +184,7 @@ class MainWindow(QMainWindow):
 
         calibration_row = QHBoxLayout()
         calibration_row.addWidget(self._calibrate_fov_button)
+        calibration_row.addWidget(self._auto_recalibrate_checkbox)
         calibration_row.addWidget(self._calibrate_fov_status_label, stretch=1)
 
         panels_row = QHBoxLayout()
@@ -270,13 +285,23 @@ class MainWindow(QMainWindow):
             self._calibrate_fov_status_label.setText(
                 "No confident match found — keeping the previous overlay."
             )
-            return
-        result = outcome.result
-        self._calibrate_fov_status_label.setText(
-            f"Calibrated: rotation {result.rotation_deg:.1f}°, "
-            f"scale {result.scale:.4f}, score {result.score:.2f}"
-        )
-        self._right_panel.set_fov_polygon(registration_corners(result))
+        else:
+            result = outcome.result
+            self._calibrate_fov_status_label.setText(
+                f"Calibrated: rotation {result.rotation_deg:.1f}°, "
+                f"scale {result.scale:.4f}, score {result.score:.2f}"
+            )
+            self._right_panel.set_fov_polygon(registration_corners(result))
+
+        if self._auto_recalibrate_checkbox.isChecked():
+            # Restart regardless of whether this run found a match —
+            # "keep calibrating" is typically used *while* still adjusting
+            # the rig's physical alignment, so a miss now is exactly the
+            # case where retrying against the next frame matters most.
+            # _on_calibrate_fov's own guards (no frame captured yet, no
+            # plate-scale config) apply unchanged and simply won't restart
+            # the poll timer if streaming has stopped in the meantime.
+            self._on_calibrate_fov()
 
     def _diagnostic_context(self) -> dict[str, Any]:
         return {
