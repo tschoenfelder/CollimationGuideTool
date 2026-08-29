@@ -477,12 +477,15 @@ class TestAutoExposure:
     def test_a_bright_uniform_frame_within_band_leaves_exposure_unchanged(
         self, qapp: object
     ) -> None:
-        # A synthetic in-band frame (60% of 16-bit full range) via ReplayCamera.
-        # Not perfectly uniform (one pixel dropped, not affecting the 99th
-        # percentile) — a truly flat frame reads as saturated regardless of
-        # its absolute value, see auto_exposure's saturation-fraction check.
-        array = np.full((64, 64), 0.6 * 65535, dtype=np.float32)
-        array.flat[0] = 0.0
+        # A synthetic in-band frame (60% of 16-bit full range) via
+        # ReplayCamera. Only the top ~50 (of 4096) pixels sit at that
+        # value — enough that the 99th percentile still lands exactly on
+        # it (virtual index 4054.05, well inside the top-50 block), but
+        # far from "most pixels at their own max", which
+        # auto_exposure's saturation-fraction check treats as genuine
+        # hardware saturation regardless of the absolute value.
+        array = np.zeros((64, 64), dtype=np.float32)
+        array.flat[-50:] = 0.6 * 65535
         camera = ReplayCamera.from_arrays([array], cycle=True)
         window = MainWindow(camera, device_lister=lambda: [])
         panel = window._left_panel

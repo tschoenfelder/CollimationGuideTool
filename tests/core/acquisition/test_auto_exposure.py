@@ -28,17 +28,18 @@ _CAPS = CameraCapabilities(
 def _frame(fraction: float) -> np.ndarray:
     """A frame whose 99th percentile is exactly `fraction` of full ADU range.
 
-    99 of the 100 pixels sit at that exact value and one is dropped to 0 —
-    not perfectly uniform, matching the fact that real sensor data always
-    carries some read noise (see auto_exposure's saturation-fraction
-    check, which treats a *perfectly flat* frame as a signal of genuine
-    hardware saturation, not something a normal in-range/dim/bright frame
-    should ever trigger). The single low outlier never lands in the top
-    99th-percentile band, so it doesn't change any test's expected metric."""
+    Only the top 3 of the 100 pixels sit at that exact value; the rest
+    are 0 — deliberately *not* mostly-uniform at that value, since
+    auto_exposure's saturation-fraction check treats "most pixels sit at
+    their own max" as a signal of genuine hardware saturation (see its
+    docstring), and a normal in-range/dim/bright test frame must not
+    trip that. The top 3 (of 100) is still enough for the 99th
+    percentile to land exactly on the intended value — verified: with
+    virtual index 98.01, both index 98 and 99 fall inside the top block."""
     value = fraction * _ADU_MAX
-    frame = np.full((10, 10), value, dtype=np.float32)
-    frame.flat[0] = 0.0
-    return frame
+    frame = np.zeros(100, dtype=np.float32)
+    frame[-3:] = value
+    return frame.reshape(10, 10)
 
 
 def test_in_range_metric_leaves_settings_unchanged() -> None:

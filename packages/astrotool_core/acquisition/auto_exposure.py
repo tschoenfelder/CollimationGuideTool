@@ -81,16 +81,12 @@ class AutoExposureResult:
 #: touptek_adapter.py's _detect_pixel_shift) can genuinely saturate
 #: while still reading as a small fraction of an assumed-too-large full
 #: range. If at least this fraction of pixels sit within 0.1% of the
-#: frame's own maximum *and* the frame has essentially zero spread
-#: (see _measure), treat it as fully saturated regardless of what the
-#: assumed ceiling says. Real sensor data — even a genuinely dim scene —
-#: always has some read noise and is never perfectly flat; a
-#: deliberately uniform synthetic test frame is the one case this could
-#: misfire on, which is why the near-zero-spread check matters too.
-_SATURATION_FRACTION_THRESHOLD = 0.999
-#: Relative spread (std/mean) below which a frame is "suspiciously flat"
-#: for real sensor data — see _SATURATION_FRACTION_THRESHOLD.
-_FLAT_RELATIVE_STD_THRESHOLD = 1e-6
+#: frame's own maximum, treat it as fully saturated regardless of what
+#: the assumed ceiling says — a real sensor pinned at its true ceiling
+#: still shows this even with a handful of hot/cold defect pixels
+#: (confirmed on real hardware), which is why this checks a fraction
+#: rather than requiring literally every pixel to match.
+_SATURATION_FRACTION_THRESHOLD = 0.5
 
 
 def _measure(pixels: np.ndarray, bit_depth: int, percentile: float) -> float:
@@ -111,10 +107,8 @@ def _measure(pixels: np.ndarray, bit_depth: int, percentile: float) -> float:
     """
     if pixels.size == 0:
         return 0.0
-    mean = float(pixels.mean())
-    std = float(pixels.std())
-    if mean > 0.0 and std / mean < _FLAT_RELATIVE_STD_THRESHOLD:
-        actual_max = float(pixels.max())
+    actual_max = float(pixels.max())
+    if actual_max > 0.0:
         saturated_fraction = float(np.mean(pixels >= actual_max * 0.999))
         if saturated_fraction >= _SATURATION_FRACTION_THRESHOLD:
             return 1.0
