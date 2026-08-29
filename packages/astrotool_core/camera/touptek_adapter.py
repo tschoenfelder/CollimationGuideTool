@@ -302,6 +302,8 @@ class TouptekCameraAdapter(CameraPort):
             hdr["CAMERA"] = self._logical_name
             hdr["CAMID"] = self._device_id
             hdr["SERIAL"] = self._serial_number
+            hdr["EXPTIME"] = actual_exposure_s
+            hdr["GAIN"] = self.get_gain()
             return Frame(
                 pixels=pixels,
                 header=hdr,
