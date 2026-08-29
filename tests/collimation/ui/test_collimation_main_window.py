@@ -216,6 +216,46 @@ class TestTwoPanelExclusion:
         assert window._left_panel._camera_combo.currentData() is None
         assert window._right_panel._camera_combo.currentData() is None
 
+    def test_exclusion_survives_a_device_lister_returning_fresh_instances(
+        self, qapp: object
+    ) -> None:
+        """Regression test: the real list_devices() builds a brand new
+        TouptekDeviceInfo on every call (not the same object each time,
+        unlike this test file's usual `lambda: devices` fixtures) — found
+        via real-hardware testing that refresh_camera_list()'s selection
+        restore silently broke in exactly this situation because
+        QComboBox.findData() doesn't reliably match by value for a custom
+        Python object, only (sometimes) by identity."""
+
+        def fresh_devices() -> list[TouptekDeviceInfo]:
+            return [
+                TouptekDeviceInfo(index=0, camera_id="dev-1", display_name="ATR585M"),
+                TouptekDeviceInfo(index=1, camera_id="dev-2", display_name="GPCMOS"),
+            ]
+
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)),
+            device_lister=fresh_devices,
+            camera_factory=lambda camera_id: FakeTouptekCamera(),
+        )
+        right = window._right_panel
+        # Select (not yet connect) dev-2 on the right before the left side
+        # triggers a refresh_camera_list() call.
+        right_idx = next(
+            i
+            for i in range(right._camera_combo.count())
+            if (data := right._camera_combo.itemData(i)) is not None
+            and data.camera_id == "dev-2"
+        )
+        right._camera_combo.setCurrentIndex(right_idx)
+
+        window._left_panel._camera_combo.setCurrentIndex(1)  # dev-1
+        window._left_panel._on_connect_camera()
+
+        current = right._camera_combo.currentData()
+        assert current is not None
+        assert current.camera_id == "dev-2"
+
 
 class TestDiagnosticsCapture:
     """See GitHub issue #10."""

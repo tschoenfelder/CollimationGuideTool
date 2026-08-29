@@ -263,17 +263,34 @@ class CameraPanel(QWidget):
         Preserves the current selection when it's still available; if the
         currently *selected* (not yet connected) item just became excluded,
         falls back to the demo camera entry.
+
+        Matches the previous selection by ``camera_id`` (a plain string)
+        rather than via ``QComboBox.findData()``: PySide6 wraps a stored
+        Python object in a QVariant, and ``findData()`` does not reliably
+        fall back to the object's own ``__eq__`` for value equality — found
+        via real-hardware testing, where `list_devices()` builds a fresh
+        `TouptekDeviceInfo` instance on every call, so `findData()` almost
+        always missed even an exact value match (it happened to "work" in
+        tests that reused one fixed device list — the exact same object
+        instances — masking this).
         """
         self._excluded_camera_id = excluded_camera_id
         current = self._camera_combo.currentData()
+        current_camera_id = current.camera_id if isinstance(current, TouptekDeviceInfo) else None
         self._camera_combo.blockSignals(True)
         try:
             self._camera_combo.clear()
             devices = [d for d in self._device_lister() if d.camera_id != excluded_camera_id]
             for choice in build_camera_choices(devices):
                 self._camera_combo.addItem(choice.label, choice.device)
-            restore_at = self._camera_combo.findData(current) if current is not None else 0
-            self._camera_combo.setCurrentIndex(max(0, restore_at))
+            restore_at = 0
+            if current_camera_id is not None:
+                for i in range(1, self._camera_combo.count()):
+                    item = self._camera_combo.itemData(i)
+                    if isinstance(item, TouptekDeviceInfo) and item.camera_id == current_camera_id:
+                        restore_at = i
+                        break
+            self._camera_combo.setCurrentIndex(restore_at)
         finally:
             self._camera_combo.blockSignals(False)
 
