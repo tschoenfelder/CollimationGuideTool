@@ -47,6 +47,7 @@ from collections import deque
 from collections.abc import Callable
 from typing import Any
 
+import numpy as np
 from astrotool_core.acquisition.auto_exposure import AutoExposureConfig, compute_auto_exposure
 from astrotool_core.acquisition.stream_controller import StreamController
 from astrotool_core.camera import (
@@ -60,6 +61,7 @@ from astrotool_core.camera import (
 from astrotool_core.camera import (
     list_devices as _list_touptek_devices,
 )
+from astrotool_core.frames import demosaic, rgb_to_luma
 from astrotool_core.frames.frame import Frame
 from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import (
@@ -143,6 +145,12 @@ class CameraPanel(QWidget):
         #: "Guide-frame FOV overlay". None on the left/main panel always;
         #: on the right/guide panel, None means no overlay data available.
         self._fov_rect: FovOverlayRect | None = None
+        #: Set by MainWindow via set_fov_polygon() once a "Calibrate FOV"
+        #: run finds a confident content match — see fov_registration and
+        #: MainWindow's docstring. Takes precedence over _fov_rect (a
+        #: measured, possibly-rotated match beats the config-only centered
+        #: placeholder) when both are set.
+        self._fov_polygon: list[tuple[float, float]] | None = None
 
         self._title_label = QLabel(f"<b>{title}</b>")
         self._live_view = LiveViewLabel()
@@ -343,7 +351,10 @@ class CameraPanel(QWidget):
             self._last_result = outcome.result
             self._last_recommendation = outcome.recommendation
             self._live_view.set_stretched_frame(
-                outcome.stretched, measurement=outcome.result.measurement, fov_rect=self._fov_rect
+                outcome.stretched,
+                measurement=outcome.result.measurement,
+                fov_rect=self._fov_rect,
+                fov_polygon=self._fov_polygon,
             )
             self._recommendation_label.setText(
                 _format_recommendation(outcome.result, outcome.recommendation)
@@ -375,6 +386,35 @@ class CameraPanel(QWidget):
         next polled frame; does not force an immediate redraw of a
         currently-displayed frame."""
         self._fov_rect = rect
+
+    def set_fov_polygon(self, corners: list[tuple[float, float]] | None) -> None:
+        """Set (or clear, with None) the calibrated FOV polygon this
+        panel's live view draws — see MainWindow's "Calibrate FOV" and
+        `set_fov_overlay`'s docstring (this takes precedence when both
+        are set). Takes effect on the next polled frame."""
+        self._fov_polygon = corners
+
+    def latest_mono_frame(self) -> np.ndarray | None:
+        """The most recently captured frame's mono representation
+        (demosaiced luma for a color camera, raw pixels for mono) — for
+        one-shot FOV calibration (see `fov_registration`/MainWindow's
+        "Calibrate FOV"). None if nothing has been captured yet.
+
+        Deliberately reads the raw captured `Frame` directly rather than
+        FrameAnalyzer's latest analysis outcome: that pipeline runs
+        asynchronously and can lag behind by however long a full
+        measure_and_advise pass takes, whereas calibration just needs
+        *a* recent, real frame from each camera.
+        """
+        if not self._recent_frames:
+            return None
+        frame = self._recent_frames[-1]
+        if self._camera.is_color_sensor():
+            rgb = demosaic(frame.pixels, self._camera.get_bayer_pattern())
+            mono: np.ndarray = rgb_to_luma(rgb)
+            return mono
+        pixels: np.ndarray = frame.pixels
+        return pixels
 
     def stop(self) -> None:
         """Stop streaming/polling. Safe to call whether or not streaming."""

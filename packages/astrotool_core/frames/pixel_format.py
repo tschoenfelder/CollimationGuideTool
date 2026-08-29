@@ -40,6 +40,20 @@ _PATTERN_LAYOUT: dict[BayerPattern, dict[tuple[int, int], str]] = {
 _RB_KERNEL = np.array([[1.0, 2.0, 1.0], [2.0, 4.0, 2.0], [1.0, 2.0, 1.0]], dtype=np.float32)
 _G_KERNEL = np.array([[0.0, 1.0, 0.0], [1.0, 4.0, 1.0], [0.0, 1.0, 0.0]], dtype=np.float32)
 
+# ITU-R BT.601 luma weights — shared by every caller that needs a single
+# mono view of a demosaiced RGB frame (donut/star geometry analysis cares
+# about spatial intensity, not color science, and this is also the plane
+# CollimationGuideTool's live-view display uses to pick its stretch
+# range — see FrameAnalyzer and live_view.stretch_rgb_to_uint8).
+_LUMA_R, _LUMA_G, _LUMA_B = 0.299, 0.587, 0.114
+
+
+def rgb_to_luma(rgb: np.ndarray) -> np.ndarray:
+    """Collapse an (H, W, 3) RGB image to a single-channel luma plane."""
+    luma = _LUMA_R * rgb[..., 0] + _LUMA_G * rgb[..., 1] + _LUMA_B * rgb[..., 2]
+    result: np.ndarray = luma.astype(np.float32)
+    return result
+
 
 def demosaic(plane: np.ndarray, pattern: BayerPattern) -> np.ndarray:
     """Convert a single mosaiced (or mono) plane into an (H, W, 3) float32 RGB image.

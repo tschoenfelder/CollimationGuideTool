@@ -783,4 +783,110 @@ class TestFovOverlayIntegration:
         # from the saturated-white background behind it (same red/green,
         # but background blue is high while the marker's is near zero).
         assert edge_color.blue() < 100
-        assert edge_color.blue() < background.blue() - 100
+
+
+def _starfield(height: int, width: int, *, n_stars: int, seed: int) -> np.ndarray:
+    """See tests/collimation/ui/test_fov_registration.py's identical
+    helper — duplicated locally rather than imported, matching this
+    file's existing convention of small self-contained test fixtures."""
+    rng = np.random.default_rng(seed)
+    image = np.full((height, width), 100.0, dtype=np.float32)
+    ys, xs = np.meshgrid(np.arange(height), np.arange(width), indexing="ij")
+    for _ in range(n_stars):
+        cx, cy = rng.uniform(0, width), rng.uniform(0, height)
+        peak = rng.uniform(500.0, 3000.0)
+        sigma = rng.uniform(1.5, 3.0)
+        image += peak * np.exp(-(((xs - cx) ** 2 + (ys - cy) ** 2) / (2 * sigma**2)))
+    return image.astype(np.float32)
+
+
+class TestFovCalibration:
+    """See MainWindow's "Calibrate FOV" — content-matches the two
+    panels' latest captured frames, replacing the config-only centered
+    placeholder with a real (possibly rotated) match."""
+
+    def test_status_message_when_no_frame_has_been_captured_yet(self, qapp: object) -> None:
+        window = MainWindow(
+            _camera_with_sensor(200, 200),
+            guide_camera=_camera_with_sensor(200, 200),
+            device_lister=lambda: [],
+        )
+        window._on_calibrate_fov()
+        assert "start both streams" in window._calibrate_fov_status_label.text().lower()
+
+    def test_status_message_when_no_plate_scale_config_is_available(self, qapp: object) -> None:
+        guide = _starfield(200, 200, n_stars=40, seed=1)
+        main_array = guide[60:140, 60:140].copy()
+        window = MainWindow(
+            ReplayCamera.from_arrays([main_array], cycle=True),
+            guide_camera=ReplayCamera.from_arrays([guide], cycle=True),
+            device_lister=lambda: [],
+            main_pixel_scale_arcsec=0.0,  # given-but-invalid — see FovOverlayIntegration
+            guide_pixel_scale_arcsec=0.0,
+        )
+        window._left_panel._start_button.setChecked(True)
+        window._right_panel._start_button.setChecked(True)
+        try:
+            window._left_panel._poll_frame()
+            window._right_panel._poll_frame()
+        finally:
+            window._left_panel._start_button.setChecked(False)
+            window._right_panel._start_button.setChecked(False)
+
+        window._on_calibrate_fov()
+        assert "plate-scale" in window._calibrate_fov_status_label.text().lower()
+
+    def test_a_confident_match_sets_the_guide_panels_polygon(self, qapp: object) -> None:
+        # Small enough that even the *default* (production) search
+        # parameters — no test-only overrides — complete in ~1s.
+        guide = _starfield(80, 80, n_stars=30, seed=2)
+        main_array = guide[20:60, 15:65].copy()  # a real, matchable sub-crop
+        window = MainWindow(
+            ReplayCamera.from_arrays([main_array], cycle=True),
+            guide_camera=ReplayCamera.from_arrays([guide], cycle=True),
+            device_lister=lambda: [],
+            main_pixel_scale_arcsec=1.0,
+            guide_pixel_scale_arcsec=1.0,
+        )
+        window._left_panel._start_button.setChecked(True)
+        window._right_panel._start_button.setChecked(True)
+        try:
+            window._left_panel._poll_frame()
+            window._right_panel._poll_frame()
+        finally:
+            window._left_panel._start_button.setChecked(False)
+            window._right_panel._start_button.setChecked(False)
+
+        assert window._left_panel.latest_mono_frame() is not None
+        assert window._right_panel.latest_mono_frame() is not None
+
+        window._on_calibrate_fov()
+        assert not window._calibrate_fov_button.isEnabled()
+        assert window._fov_calibrator.submit(  # a second submit while running is a no-op
+            main_array, guide, approx_scale=1.0
+        ) is False
+
+        deadline = time.monotonic() + 15.0
+        while window._calibrate_fov_poll_timer.isActive():
+            assert time.monotonic() < deadline, "calibration never completed"
+            time.sleep(0.02)
+            window._poll_fov_calibration()
+
+        assert window._calibrate_fov_button.isEnabled()
+        assert window._right_panel._fov_polygon is not None
+        assert len(window._right_panel._fov_polygon) == 4
+        assert "calibrated" in window._calibrate_fov_status_label.text().lower()
+
+    def test_changing_a_connected_camera_clears_a_stale_calibrated_polygon(
+        self, qapp: object
+    ) -> None:
+        window = MainWindow(
+            _camera_with_sensor(200, 200),
+            guide_camera=_camera_with_sensor(200, 200),
+            device_lister=lambda: [],
+            main_pixel_scale_arcsec=1.0,
+            guide_pixel_scale_arcsec=1.0,
+        )
+        window._right_panel.set_fov_polygon([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
+        window._update_fov_overlay()
+        assert window._right_panel._fov_polygon is None

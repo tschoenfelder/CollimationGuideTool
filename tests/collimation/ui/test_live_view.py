@@ -1,6 +1,6 @@
 import numpy as np
 from collimation_tool.ui.fov_overlay import FovOverlayRect
-from collimation_tool.ui.live_view import LiveViewLabel, stretch_to_uint8
+from collimation_tool.ui.live_view import LiveViewLabel, stretch_rgb_to_uint8, stretch_to_uint8
 from PySide6.QtWidgets import QApplication
 
 
@@ -65,6 +65,118 @@ class TestDegenerateUniformFrame:
         gray = stretch_to_uint8(mono)
         assert gray[32, 32] < 50
         assert gray[1, 1] > 200
+
+
+class TestStretchRgbToUint8:
+    """See the "guide cam is color, but picture seems mono" bug: the live
+    view was always built from the mono luma plane, even for a color
+    camera, so a color sensor's feed never showed color at all."""
+
+    def test_output_is_three_channel_uint8(self) -> None:
+        rgb = np.full((32, 32, 3), 500.0, dtype=np.float32)
+        stretched = stretch_rgb_to_uint8(rgb)
+        assert stretched.dtype == np.uint8
+        assert stretched.shape == (32, 32, 3)
+
+    def test_color_ratios_are_preserved_not_stretched_independently(self) -> None:
+        # A tinted frame (more red than green/blue) with genuine spatial
+        # variation (a gradient, not flat — a flat frame hits the
+        # degenerate all-white/all-black case tested separately below,
+        # which has no color to preserve in the first place). An
+        # independent per-channel stretch would normalize each channel to
+        # its own full range and destroy the tint (turning it gray); a
+        # single luma-derived range applied to all channels preserves the
+        # ratio between them.
+        gradient = np.linspace(0.0, 1.0, 32).reshape(1, 32)
+        rgb = np.zeros((32, 32, 3), dtype=np.float32)
+        rgb[..., 0] = 500.0 + 2500.0 * gradient
+        rgb[..., 1] = 500.0 + 500.0 * gradient
+        rgb[..., 2] = 500.0 + 100.0 * gradient
+        stretched = stretch_rgb_to_uint8(rgb)
+        assert stretched[..., 0].mean() > stretched[..., 1].mean() > stretched[..., 2].mean()
+
+    def test_a_bright_spot_is_visible_in_all_three_channels(self) -> None:
+        rgb = np.full((64, 64, 3), 100.0, dtype=np.float32)
+        rgb[30:34, 30:34, :] = 50_000.0
+        stretched = stretch_rgb_to_uint8(rgb)
+        assert stretched[32, 32, :].min() > 200
+        assert stretched[0, 0, :].max() < 50
+
+    def test_a_uniform_saturated_frame_renders_white_not_black(self) -> None:
+        # Same degenerate-frame handling as the mono stretch_to_uint8 —
+        # see TestDegenerateUniformFrame.
+        rgb = np.full((32, 32, 3), 4094.0, dtype=np.float32)
+        stretched = stretch_rgb_to_uint8(rgb)
+        assert stretched.min() == 255
+
+    def test_a_uniform_zero_frame_still_renders_black(self) -> None:
+        rgb = np.zeros((32, 32, 3), dtype=np.float32)
+        stretched = stretch_rgb_to_uint8(rgb)
+        assert stretched.max() == 0
+
+
+class TestColorFrameDisplay:
+    """LiveViewLabel must accept an (H, W, 3) stretched array (a color
+    camera's live view) in addition to the existing 2D mono case."""
+
+    def test_a_color_stretched_frame_displays_without_error(self, qapp: object) -> None:
+        label = LiveViewLabel()
+        label.resize(100, 100)
+        rgb = np.zeros((50, 50, 3), dtype=np.uint8)
+        rgb[..., 0] = 200  # a visibly red frame
+        label.set_stretched_frame(rgb, measurement=None)
+        assert not label.pixmap().isNull()
+
+    def test_a_color_frames_actual_color_is_preserved_on_screen(self, qapp: object) -> None:
+        label = LiveViewLabel()
+        rgb = np.zeros((20, 20, 3), dtype=np.uint8)
+        rgb[..., 0] = 10  # deliberately red-dominant, not grayscale
+        rgb[..., 1] = 200
+        rgb[..., 2] = 10
+        label.set_stretched_frame(rgb, measurement=None)
+
+        assert label._base_pixmap is not None
+        color = label._base_pixmap.toImage().pixelColor(10, 10)
+        assert color.green() > color.red()
+        assert color.green() > color.blue()
+
+
+class TestFovPolygonOverlay:
+    """A calibrated (fov_registration) match takes precedence over the
+    config-only placeholder rectangle, and draws as an actual rotated
+    quadrilateral rather than an axis-aligned box."""
+
+    def test_a_polygon_is_drawn_at_the_given_corners(self, qapp: object) -> None:
+        label = LiveViewLabel()
+        # A rotated (diamond-shaped) quadrilateral centered in a 100x100 frame.
+        polygon = [(50.0, 10.0), (90.0, 50.0), (50.0, 90.0), (10.0, 50.0)]
+        label.set_frame(_frame(100, 100), measurement=None, fov_polygon=polygon)
+
+        assert label._base_pixmap is not None
+        image = label._base_pixmap.toImage()
+        edge_color = image.pixelColor(50, 10)
+        assert edge_color.red() > 200
+        assert edge_color.green() > 200
+        assert edge_color.blue() < 100
+
+    def test_polygon_takes_precedence_over_fov_rect_when_both_are_given(
+        self, qapp: object
+    ) -> None:
+        label = LiveViewLabel()
+        rect = FovOverlayRect(x=0.2, y=0.2, width=0.6, height=0.6)  # would draw at (20,20)-(80,80)
+        polygon = [(50.0, 10.0), (90.0, 50.0), (50.0, 90.0), (10.0, 50.0)]
+        label.set_frame(_frame(100, 100), measurement=None, fov_rect=rect, fov_polygon=polygon)
+
+        assert label._base_pixmap is not None
+        image = label._base_pixmap.toImage()
+        # The rect's top edge (y=20) would be yellow if it were drawn —
+        # only the polygon (whose topmost point is y=10) should be.
+        rect_edge_color = image.pixelColor(50, 20)
+        assert not (
+            rect_edge_color.red() > 200
+            and rect_edge_color.green() > 200
+            and rect_edge_color.blue() < 100
+        )
 
 
 class TestAspectPreservingScale:

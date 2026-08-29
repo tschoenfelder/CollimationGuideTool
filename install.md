@@ -100,10 +100,27 @@ camera's field of view falls within it. This needs the sibling
 SmartTScope project's `~/.SmartTScope/config.toml` — read once at
 startup as the master source for each optical train's plate scale (see
 `[optical_trains.main]`/`[optical_trains.guide]`, `[telescopes]`); no
-overlay is drawn if that file or the relevant train isn't found. The
-rectangle is centered and unrotated — no guide-to-main pointing
-offset/rotation calibration exists yet, so this is a placeholder for
-that, not a measured alignment.
+overlay is drawn if that file or the relevant train isn't found. Until
+calibrated (see below), this rectangle is only centered and unrotated —
+a placeholder derived purely from the config's plate scale, not a
+measured alignment.
+
+**Calibrate FOV**: click this button (with both streams running) to
+replace that placeholder with a real, content-matched rectangle —
+`fov_registration` locates the main camera's actual frame content within
+the guide frame, allowing for rotation and a small scale correction
+around the config's plate-scale ratio. Runs on a background thread (a
+full search can take a few real seconds) and reports a status message
+with the found rotation/scale/score, or "no confident match" if it
+couldn't find one (the previous overlay, if any, is left in place). A
+one-shot, explicitly-triggered action — it does not re-run automatically
+per frame, and reconnecting either camera clears a previous calibration
+(it no longer matches the new frame content/size).
+
+Color cameras (e.g. the GPCMOS02000KPA) now display their actual demosaiced
+color in the live view, not the mono luma plane the collimation/donut
+analysis uses internally — this was previously a bug ("guide cam is
+color, but picture seems mono").
 
 ### 4. Configuration
 

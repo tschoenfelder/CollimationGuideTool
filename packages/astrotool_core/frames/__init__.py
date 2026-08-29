@@ -9,6 +9,7 @@ from astrotool_core.frames.pixel_format import (
     demosaic,
     is_bayer,
     mosaic_from_rgb,
+    rgb_to_luma,
 )
 
 __all__ = [
@@ -19,4 +20,5 @@ __all__ = [
     "demosaic",
     "is_bayer",
     "mosaic_from_rgb",
+    "rgb_to_luma",
 ]

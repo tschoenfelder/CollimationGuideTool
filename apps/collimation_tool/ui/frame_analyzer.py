@@ -12,10 +12,14 @@ poll and picks up whatever the most recently *completed* analysis is;
 both are non-blocking, so the poll tick itself stays cheap regardless of
 how long analysis actually takes.
 
-Also does color-sensor demosaicing (see `_demosaiced_mono`) before
-building the analysis plane — a color camera's raw frame is a Bayer
-mosaic, not a valid mono plane on its own (see
-`astrotool_core.frames.pixel_format`).
+Also does color-sensor demosaicing before building the analysis plane —
+a color camera's raw frame is a Bayer mosaic, not a valid mono plane on
+its own (see `astrotool_core.frames.pixel_format`). The demosaiced RGB
+is used two ways: `rgb_to_luma()` of it feeds the mono analysis plane
+(donut/star detection cares about spatial intensity, not color), while
+the full RGB itself is what gets percentile-stretched for display (see
+`stretch_rgb_to_uint8`) — a mono camera has no RGB to speak of, so its
+frame is stretched directly instead.
 """
 
 from __future__ import annotations
@@ -24,24 +28,13 @@ import threading
 from dataclasses import dataclass
 
 import numpy as np
-from astrotool_core.frames import BayerPattern, build_analysis_plane, demosaic
+from astrotool_core.frames import BayerPattern, build_analysis_plane, demosaic, rgb_to_luma
 from astrotool_core.frames.frame import Frame
 
 from collimation_tool.application.collimation_controller import CollimationController
 from collimation_tool.domain.collimation_measurement import DonutAnalysisResult
 from collimation_tool.domain.collimation_state import CollimationRecommendation
-from collimation_tool.ui.live_view import stretch_to_uint8
-
-# ITU-R BT.601 luma weights — good enough for donut/star geometry
-# detection, which cares about spatial intensity, not color science.
-_LUMA_R, _LUMA_G, _LUMA_B = 0.299, 0.587, 0.114
-
-
-def _demosaiced_mono(pixels: np.ndarray, pattern: BayerPattern) -> np.ndarray:
-    rgb = demosaic(pixels, pattern)
-    luma = _LUMA_R * rgb[..., 0] + _LUMA_G * rgb[..., 1] + _LUMA_B * rgb[..., 2]
-    result: np.ndarray = luma.astype(np.float32)
-    return result
+from collimation_tool.ui.live_view import stretch_rgb_to_uint8, stretch_to_uint8
 
 
 @dataclass(frozen=True)
@@ -81,10 +74,19 @@ class FrameAnalyzer:
 
     def _run(self, frame: Frame, is_color: bool, bayer_pattern: BayerPattern) -> None:
         try:
-            mono_override = _demosaiced_mono(frame.pixels, bayer_pattern) if is_color else None
+            rgb = demosaic(frame.pixels, bayer_pattern) if is_color else None
+            mono_override = rgb_to_luma(rgb) if rgb is not None else None
             plane = build_analysis_plane(frame, plane=mono_override)
             result, recommendation = self._controller.measure_and_advise(plane)
-            stretched = stretch_to_uint8(plane.mono)
+            # Display a color camera's actual color, not the mono luma
+            # plane analysis uses internally — see stretch_rgb_to_uint8's
+            # docstring for the bug this fixes ("guide cam is color, but
+            # picture seems mono": the live view was always built from
+            # the analysis-only mono plane, so a color sensor's feed
+            # never showed color at all).
+            stretched = (
+                stretch_rgb_to_uint8(rgb) if rgb is not None else stretch_to_uint8(plane.mono)
+            )
             outcome = AnalysisOutcome(
                 frame=frame, stretched=stretched, result=result, recommendation=recommendation
             )

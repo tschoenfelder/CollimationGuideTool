@@ -6,7 +6,7 @@ from astropy.io import fits
 from astrotool_core.frames.frame import Frame
 from astrotool_core.frames.pixel_format import BayerPattern
 from collimation_tool.application.collimation_controller import CollimationController
-from collimation_tool.ui.frame_analyzer import FrameAnalyzer, _demosaiced_mono
+from collimation_tool.ui.frame_analyzer import FrameAnalyzer
 
 
 def _mono_frame(value: float = 500.0, shape: tuple[int, int] = (64, 64)) -> Frame:
@@ -68,19 +68,30 @@ class TestFrameAnalyzer:
         assert elapsed < 0.1
 
 
-class TestDemosaicedMono:
-    def test_mono_pattern_is_a_passthrough(self) -> None:
-        plane = np.full((8, 8), 123.0, dtype=np.float32)
-        result = _demosaiced_mono(plane, BayerPattern.MONO)
-        assert result.shape == (8, 8)
-        assert np.allclose(result, 123.0)
+class TestColorDisplay:
+    """See the real bug this was found from: "guide cam is color, but
+    picture seems mono" — the live view's `stretched` output was always
+    built from the mono luma plane analysis uses internally, even for a
+    color camera, so a color sensor's feed never showed color at all.
+    `stretched` must now be a 3-channel (H, W, 3) array for a color
+    camera and stay a 2D mono array for a mono one."""
 
-    def test_uniform_bayer_plane_demosaics_to_a_uniform_mono_plane(self) -> None:
-        # A flat-field mosaic (every raw pixel the same value) must
-        # demosaic to a flat luma plane of the same value, regardless of
-        # Bayer pattern — a good sanity check independent of geometry.
-        plane = np.full((8, 8), 1000.0, dtype=np.float32)
-        for pattern in (BayerPattern.RGGB, BayerPattern.BGGR, BayerPattern.GRBG, BayerPattern.GBRG):
-            result = _demosaiced_mono(plane, pattern)
-            assert result.shape == (8, 8)
-            assert np.allclose(result, 1000.0, atol=1.0), pattern
+    def test_a_color_cameras_stretched_output_has_three_channels(self) -> None:
+        analyzer = FrameAnalyzer(CollimationController())
+        analyzer.submit(_mono_frame(shape=(8, 8)), is_color=True, bayer_pattern=BayerPattern.RGGB)
+        assert _wait_for(lambda: not analyzer.is_busy)
+
+        outcome = analyzer.take_latest()
+        assert outcome is not None
+        assert outcome.stretched.ndim == 3
+        assert outcome.stretched.shape[2] == 3
+        assert outcome.stretched.dtype == np.uint8
+
+    def test_a_mono_cameras_stretched_output_stays_two_dimensional(self) -> None:
+        analyzer = FrameAnalyzer(CollimationController())
+        analyzer.submit(_mono_frame(shape=(8, 8)), is_color=False, bayer_pattern=BayerPattern.MONO)
+        assert _wait_for(lambda: not analyzer.is_busy)
+
+        outcome = analyzer.take_latest()
+        assert outcome is not None
+        assert outcome.stretched.ndim == 2

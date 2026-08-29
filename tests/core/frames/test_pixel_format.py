@@ -1,6 +1,12 @@
 import numpy as np
 import pytest
-from astrotool_core.frames.pixel_format import BayerPattern, demosaic, is_bayer, mosaic_from_rgb
+from astrotool_core.frames.pixel_format import (
+    BayerPattern,
+    demosaic,
+    is_bayer,
+    mosaic_from_rgb,
+    rgb_to_luma,
+)
 
 
 def _solid_bayer(pattern: BayerPattern, r: float, g: float, b: float) -> np.ndarray:
@@ -99,3 +105,39 @@ class TestMosaicFromRgb:
         rgb = np.zeros((5, 4, 3), dtype=np.float32)
         with pytest.raises(ValueError, match="even"):
             mosaic_from_rgb(rgb, BayerPattern.RGGB)
+
+
+class TestRgbToLuma:
+    """Shared by FrameAnalyzer (mono analysis plane for donut/star
+    detection) and live_view.stretch_rgb_to_uint8 (stretch range for a
+    color camera's display) — see fov_registration/frame_analyzer
+    docstrings for why."""
+
+    def test_a_uniform_color_collapses_to_a_uniform_luma(self) -> None:
+        rgb = np.zeros((8, 8, 3), dtype=np.float32)
+        rgb[..., 0], rgb[..., 1], rgb[..., 2] = 1000.0, 2000.0, 3000.0
+        luma = rgb_to_luma(rgb)
+        expected = 0.299 * 1000.0 + 0.587 * 2000.0 + 0.114 * 3000.0
+        assert luma.shape == (8, 8)
+        assert np.allclose(luma, expected)
+
+    def test_output_dtype_is_float32(self) -> None:
+        rgb = np.zeros((4, 4, 3), dtype=np.float64)
+        assert rgb_to_luma(rgb).dtype == np.float32
+
+    @pytest.mark.parametrize(
+        "pattern",
+        [BayerPattern.RGGB, BayerPattern.BGGR, BayerPattern.GRBG, BayerPattern.GBRG],
+    )
+    def test_a_flat_field_mosaic_demosaics_and_collapses_to_its_own_value(
+        self, pattern: BayerPattern
+    ) -> None:
+        # Regression coverage for the composition FrameAnalyzer relies on:
+        # a flat-field mosaic (every raw pixel the same value) must
+        # demosaic to a flat RGB image and collapse to a flat luma plane
+        # of that same value, regardless of Bayer pattern.
+        plane = np.full((8, 8), 1000.0, dtype=np.float32)
+        rgb = demosaic(plane, pattern)
+        luma = rgb_to_luma(rgb)
+        assert luma.shape == (8, 8)
+        assert np.allclose(luma, 1000.0, atol=1.0), pattern
