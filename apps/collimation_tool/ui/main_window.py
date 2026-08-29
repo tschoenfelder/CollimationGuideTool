@@ -21,11 +21,23 @@ existing callers/tests are unaffected) plus one entry per
 `touptek_adapter.list_devices()` result. `device_lister`/`camera_factory`
 are constructor-injectable for testing without real hardware/SDK — see
 FakeTouptekCamera in tests.
+
+Diagnostics (issue #10): a "Capture diagnostics" action always available
+next to the camera controls writes a UUID-identified bundle via the
+shared `DiagnosticService` (`diagnostics` constructor param, injectable
+for testing) — same bundle format the app's unhandled-exception boundary
+uses (see main.py). This window registers itself as the service's
+context/frame provider so both capture paths see the same "what was
+happening" snapshot: the last measurement/recommendation, current camera
+settings, and a small bounded ring buffer of the most recently captured
+raw `Frame`s (`_recent_frames`, not just their displayed pixels).
 """
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Callable
+from typing import Any
 
 from astrotool_core.acquisition.stream_controller import StreamController
 from astrotool_core.camera.port import CameraPort
@@ -36,7 +48,9 @@ from astrotool_core.camera.touptek_adapter import (
 from astrotool_core.camera.touptek_adapter import (
     list_devices as _list_touptek_devices,
 )
+from astrotool_core.diagnostics import DiagnosticService
 from astrotool_core.frames.analysis_plane import build_analysis_plane
+from astrotool_core.frames.frame import Frame
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
@@ -44,6 +58,7 @@ from PySide6.QtWidgets import (
     QDoubleSpinBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QPushButton,
     QSpinBox,
@@ -58,6 +73,8 @@ from collimation_tool.ui.live_view import LiveViewLabel
 
 _POLL_INTERVAL_MS = 100
 _DEMO_CAMERA_LABEL = "Demo camera (no hardware)"
+_RECENT_FRAMES_KEPT = 3
+_DEFAULT_MANUAL_REASON = "Manual capture from UI (no note given)"
 
 
 def _default_camera_factory(camera_id: str) -> CameraPort:
@@ -91,6 +108,7 @@ class MainWindow(QMainWindow):
         *,
         device_lister: Callable[[], list[TouptekDeviceInfo]] = _list_touptek_devices,
         camera_factory: Callable[[str], CameraPort] = _default_camera_factory,
+        diagnostics: DiagnosticService | None = None,
     ) -> None:
         super().__init__()
         self.setWindowTitle("CollimationTool")
@@ -101,6 +119,13 @@ class MainWindow(QMainWindow):
         self._stream: StreamController | None = None
         self._last_sequence = 0
         self._controller = CollimationController()
+        self._last_result: DonutAnalysisResult | None = None
+        self._last_recommendation: CollimationRecommendation | None = None
+        self._recent_frames: deque[Frame] = deque(maxlen=_RECENT_FRAMES_KEPT)
+
+        self._diagnostics = diagnostics or DiagnosticService(app_name="CollimationTool")
+        self._diagnostics.set_context_provider(self._diagnostic_context)
+        self._diagnostics.set_frame_provider(lambda: list(self._recent_frames))
 
         self._live_view = LiveViewLabel()
         self._recommendation_label = QLabel("Start the stream to begin.")
@@ -131,6 +156,17 @@ class MainWindow(QMainWindow):
         camera_row.addWidget(self._camera_status_label)
         camera_row.addStretch(1)
 
+        self._diagnostics_note = QLineEdit()
+        self._diagnostics_note.setPlaceholderText("What looked wrong? (optional)")
+        self._capture_diagnostics_button = QPushButton("Capture diagnostics")
+        self._capture_diagnostics_button.clicked.connect(self._on_capture_diagnostics)
+        self._diagnostics_status_label = QLabel("")
+
+        diagnostics_row = QHBoxLayout()
+        diagnostics_row.addWidget(self._diagnostics_note, stretch=1)
+        diagnostics_row.addWidget(self._capture_diagnostics_button)
+        diagnostics_row.addWidget(self._diagnostics_status_label)
+
         controls = QHBoxLayout()
         controls.addWidget(self._start_button)
         controls.addWidget(QLabel("Exposure"))
@@ -142,6 +178,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout()
         layout.addLayout(camera_row)
         layout.addLayout(controls)
+        layout.addLayout(diagnostics_row)
         layout.addWidget(self._live_view, stretch=1)
         layout.addWidget(self._recommendation_label)
 
@@ -221,11 +258,36 @@ class MainWindow(QMainWindow):
         if mailbox_frame is None:
             return
         self._last_sequence = mailbox_frame.sequence
+        self._recent_frames.append(mailbox_frame.frame)
 
         plane = build_analysis_plane(mailbox_frame.frame)
         result, recommendation = self._controller.measure_and_advise(plane)
+        self._last_result = result
+        self._last_recommendation = recommendation
         self._live_view.set_frame(plane.mono, measurement=result.measurement)
         self._recommendation_label.setText(_format_recommendation(result, recommendation))
+
+    def _diagnostic_context(self) -> dict[str, Any]:
+        context: dict[str, Any] = {
+            "camera_descriptor": self._camera.get_descriptor(),
+            "exposure_ms": self._exposure_spin.value(),
+            "gain": self._gain_spin.value(),
+            "streaming": self._stream is not None,
+        }
+        if self._last_result is not None:
+            context["measurement_result"] = self._last_result
+        if self._last_recommendation is not None:
+            context["recommendation"] = self._last_recommendation
+        return context
+
+    def _on_capture_diagnostics(self) -> None:
+        reason = self._diagnostics_note.text().strip() or _DEFAULT_MANUAL_REASON
+        bundle = self._diagnostics.capture_manual(reason=reason)
+        if bundle is None:
+            self._diagnostics_status_label.setText("Diagnostics capture failed — see logs.")
+            return
+        self._diagnostics_status_label.setText(f"Diagnostics captured: {bundle.incident_id}")
+        self._diagnostics_note.clear()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 — Qt override
         self._timer.stop()

@@ -169,6 +169,36 @@ tell a real missing behavior apart from an equivalent or irrelevant mutation
 (e.g. mutating a docstring-adjacent literal, or a `<` vs `<=` where the
 boundary is genuinely never hit).
 
+## Diagnostic capture
+
+`astrotool_core.diagnostics.DiagnosticService` (issue #10) writes a
+self-contained, UUID-named bundle to
+`~/.CollimationGuideTool/diagnostics/<uuid>/` — structured `incident.json`,
+a bounded recent-log tail, and any recent frames as FITS — whenever:
+
+- an unhandled exception reaches the app's `sys.excepthook` boundary
+  (installed in each app's `main.py`), or
+- the user clicks **Capture diagnostics** in either app's toolbar.
+
+Both paths go through the same `DiagnosticService._capture()`, so bundle
+format never diverges between automatic and manual capture. Each
+`MainWindow` registers itself as the service's context/frame provider
+(`set_context_provider`/`set_frame_provider`) so an automatic capture —
+which has no call-site context of its own — still gets the latest known
+measurement/state and a small bounded recent-frame buffer (kept in the UI
+layer, not the service: see each `MainWindow`'s docstring).
+
+Retention is local and bounded — bundles older than 7 days, or beyond the
+most recent 20, are pruned on every capture (`DEFAULT_MAX_AGE_DAYS`/
+`DEFAULT_MAX_BUNDLES`). Nothing is uploaded automatically, and dict keys
+that look sensitive (`password`, `secret`, `token`, ...) are redacted
+before a bundle is written.
+
+To investigate a reported incident locally: `astrotool_core.diagnostics.
+find_bundle("<uuid-or-prefix>")` resolves it to its directory (a full UUID
+or an unambiguous prefix both work) — no service/database lookup needed,
+just the directory convention above.
+
 ## Public interfaces
 
 Each `astrotool_core/<subsystem>/__init__.py` is the only supported import

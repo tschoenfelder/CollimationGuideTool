@@ -1,8 +1,11 @@
+import json
 import time
+from pathlib import Path
 
 from astrotool_core.camera.port import CameraPort
 from astrotool_core.camera.replay_camera import ReplayCamera
 from astrotool_core.camera.touptek_adapter import TouptekDeviceInfo
+from astrotool_core.diagnostics import DiagnosticService
 from astrotool_core.testing.fake_touptek import FakeTouptekCamera
 from astrotool_core.testing.frame_factory import donut_image
 from collimation_tool.ui.main_window import MainWindow
@@ -122,3 +125,107 @@ class TestCameraSelection:
         window._start_button.setChecked(False)
         assert window._camera_combo.isEnabled()
         assert window._connect_button.isEnabled()
+
+
+class TestDiagnosticsCapture:
+    """See GitHub issue #10."""
+
+    def test_manual_capture_writes_a_bundle_and_shows_the_uuid(
+        self, qapp: object, tmp_path: Path
+    ) -> None:
+        diagnostics = DiagnosticService(app_name="CollimationTool", diagnostics_dir=tmp_path)
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)), device_lister=lambda: [], diagnostics=diagnostics
+        )
+        window._diagnostics_note.setText("donut looked lopsided")
+        window._on_capture_diagnostics()
+
+        bundles = list(tmp_path.iterdir())
+        assert len(bundles) == 1
+        assert bundles[0].name in window._diagnostics_status_label.text()
+        incident = json.loads((bundles[0] / "incident.json").read_text(encoding="utf-8"))
+        assert incident["trigger"] == "manual"
+        assert incident["reason"] == "donut looked lopsided"
+        # The note field is cleared after a successful capture.
+        assert window._diagnostics_note.text() == ""
+
+    def test_manual_capture_without_a_note_uses_a_default_reason(
+        self, qapp: object, tmp_path: Path
+    ) -> None:
+        diagnostics = DiagnosticService(app_name="CollimationTool", diagnostics_dir=tmp_path)
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)), device_lister=lambda: [], diagnostics=diagnostics
+        )
+        window._on_capture_diagnostics()
+
+        bundle_dir = next(tmp_path.iterdir())
+        incident = json.loads((bundle_dir / "incident.json").read_text(encoding="utf-8"))
+        assert incident["reason"]
+
+    def test_capture_includes_camera_settings_and_last_measurement(
+        self, qapp: object, tmp_path: Path
+    ) -> None:
+        diagnostics = DiagnosticService(app_name="CollimationTool", diagnostics_dir=tmp_path)
+        window = MainWindow(
+            _donut_camera((5.0, -2.0)), device_lister=lambda: [], diagnostics=diagnostics
+        )
+        window._start_button.setChecked(True)
+        try:
+            deadline = time.monotonic() + 2.0
+            while window._last_result is None:
+                assert time.monotonic() < deadline, "no measurement observed in time"
+                time.sleep(0.02)
+                window._poll_frame()
+        finally:
+            window._start_button.setChecked(False)
+
+        window._on_capture_diagnostics()
+        bundle_dir = next(tmp_path.iterdir())
+        incident = json.loads((bundle_dir / "incident.json").read_text(encoding="utf-8"))
+        context = incident["context"]
+        assert "serial_number" in context["camera_descriptor"]
+        assert "measurement_result" in context
+        # At least one recent frame was captured as raw FITS evidence.
+        frames_dir = bundle_dir / "frames"
+        assert frames_dir.is_dir()
+        assert len(list(frames_dir.iterdir())) >= 1
+
+    def test_recent_frame_buffer_is_bounded(self, qapp: object, tmp_path: Path) -> None:
+        expected_capacity = 3
+        diagnostics = DiagnosticService(app_name="CollimationTool", diagnostics_dir=tmp_path)
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)), device_lister=lambda: [], diagnostics=diagnostics
+        )
+        window._start_button.setChecked(True)
+        try:
+            deadline = time.monotonic() + 2.0
+            while len(window._recent_frames) < expected_capacity:
+                assert time.monotonic() < deadline, "buffer never filled"
+                time.sleep(0.02)
+                window._poll_frame()
+            for _ in range(10):
+                window._poll_frame()
+        finally:
+            window._start_button.setChecked(False)
+        assert len(window._recent_frames) == expected_capacity
+
+    def test_capture_failure_shows_an_error_and_does_not_raise(
+        self, qapp: object, tmp_path: Path
+    ) -> None:
+        unwritable = tmp_path / "some" / "file.txt"
+        unwritable.parent.mkdir()
+        unwritable.write_text("not a directory")
+        diagnostics = DiagnosticService(
+            app_name="CollimationTool", diagnostics_dir=unwritable
+        )
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)), device_lister=lambda: [], diagnostics=diagnostics
+        )
+        window._on_capture_diagnostics()  # must not raise
+        assert "failed" in window._diagnostics_status_label.text().lower()
+
+    def test_capture_diagnostics_is_available_by_default_without_injection(
+        self, qapp: object
+    ) -> None:
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+        assert window._diagnostics is not None

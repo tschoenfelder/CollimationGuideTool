@@ -82,6 +82,17 @@ mkdir -p ~/.CollimationGuideTool
 (The config loader itself is planned but not yet implemented — see
 `PLAN.md`. This is the path it will read from once it exists.)
 
+### Diagnostics
+
+Both apps write local diagnostic bundles to
+`~/.CollimationGuideTool/diagnostics/<uuid>/` — automatically on an
+unhandled exception, or on demand via the **Capture diagnostics** button
+in each toolbar. Nothing is uploaded; bundles older than 7 days (or
+beyond the most recent 20) are pruned automatically. Reference the UUID
+shown in the app or the logs when filing a bug report — see
+CONTRIBUTING.md's "Diagnostic capture" section for the bundle format and
+how to locate one locally.
+
 ### 5. Desktop menu entries
 
 Once Stage 7 ships the two console scripts, add a `.desktop` launcher

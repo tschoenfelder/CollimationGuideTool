@@ -13,12 +13,22 @@ MainWindow (see its docstring), except GuideController binds its camera
 once at construction (no camera setter), so selecting a real device
 rebuilds `self._controller` around it rather than swapping a `self._camera`
 reference in place.
+
+Diagnostics (issue #10): same "Capture diagnostics" action and shared
+`DiagnosticService` as CollimationTool — see its docstring. GuideController
+only exposes raw pixel arrays via `GuidingStatus.latest_pixels` (no `Frame`
+with exposure/header metadata at this layer), so the recent-frame buffer
+here wraps each array in a minimal `Frame` for FITS export; capture
+metadata is correspondingly best-effort compared to CollimationTool's.
 """
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Callable
+from typing import Any
 
+from astropy.io import fits
 from astrotool_core.camera.port import CameraPort
 from astrotool_core.camera.touptek_adapter import (
     TouptekCameraAdapter,
@@ -27,12 +37,15 @@ from astrotool_core.camera.touptek_adapter import (
 from astrotool_core.camera.touptek_adapter import (
     list_devices as _list_touptek_devices,
 )
+from astrotool_core.diagnostics import DiagnosticService
+from astrotool_core.frames.frame import Frame
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QMainWindow,
     QPushButton,
     QVBoxLayout,
@@ -45,6 +58,8 @@ from guide_tool.ui.live_view import LiveViewLabel
 
 _POLL_INTERVAL_MS = 150
 _DEMO_CAMERA_LABEL = "Demo camera (no hardware)"
+_RECENT_FRAMES_KEPT = 3
+_DEFAULT_MANUAL_REASON = "Manual capture from UI (no note given)"
 
 
 def _default_camera_factory(camera_id: str) -> CameraPort:
@@ -80,13 +95,21 @@ class MainWindow(QMainWindow):
         *,
         device_lister: Callable[[], list[TouptekDeviceInfo]] = _list_touptek_devices,
         camera_factory: Callable[[str], CameraPort] = _default_camera_factory,
+        diagnostics: DiagnosticService | None = None,
     ) -> None:
         super().__init__()
         self.setWindowTitle("GuideTool")
 
         self._demo_camera = camera
+        self._current_camera = camera
         self._camera_factory = camera_factory
         self._controller = GuideController(camera, measure_only=True)
+        self._last_status: GuidingStatus | None = None
+        self._recent_frames: deque[Frame] = deque(maxlen=_RECENT_FRAMES_KEPT)
+
+        self._diagnostics = diagnostics or DiagnosticService(app_name="GuideTool")
+        self._diagnostics.set_context_provider(self._diagnostic_context)
+        self._diagnostics.set_frame_provider(lambda: list(self._recent_frames))
 
         self._live_view = LiveViewLabel()
         self._status_label = QLabel("Start guiding to begin.")
@@ -109,6 +132,17 @@ class MainWindow(QMainWindow):
         camera_row.addWidget(self._camera_status_label)
         camera_row.addStretch(1)
 
+        self._diagnostics_note = QLineEdit()
+        self._diagnostics_note.setPlaceholderText("What looked wrong? (optional)")
+        self._capture_diagnostics_button = QPushButton("Capture diagnostics")
+        self._capture_diagnostics_button.clicked.connect(self._on_capture_diagnostics)
+        self._diagnostics_status_label = QLabel("")
+
+        diagnostics_row = QHBoxLayout()
+        diagnostics_row.addWidget(self._diagnostics_note, stretch=1)
+        diagnostics_row.addWidget(self._capture_diagnostics_button)
+        diagnostics_row.addWidget(self._diagnostics_status_label)
+
         controls = QHBoxLayout()
         controls.addWidget(self._start_button)
         controls.addStretch(1)
@@ -116,6 +150,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout()
         layout.addLayout(camera_row)
         layout.addLayout(controls)
+        layout.addLayout(diagnostics_row)
         layout.addWidget(self._live_view, stretch=1)
         layout.addWidget(self._status_label)
 
@@ -145,6 +180,7 @@ class MainWindow(QMainWindow):
         device = self._camera_combo.currentData()
         if device is None:
             self._controller = GuideController(self._demo_camera, measure_only=True)
+            self._current_camera = self._demo_camera
             self._camera_status_label.setText(f"Camera: {_DEMO_CAMERA_LABEL}")
             return
 
@@ -156,14 +192,34 @@ class MainWindow(QMainWindow):
             self._camera_status_label.setText(f"Camera: connect failed — {exc}")
             return
         self._controller = GuideController(candidate, measure_only=True)
+        self._current_camera = candidate
         self._camera_status_label.setText(f"Camera: {device.display_name}")
 
     def _poll_status(self) -> None:
         status = self._controller.status()
+        self._last_status = status
         self._status_label.setText(_format_status(status))
         if status.latest_pixels is not None:
             error = status.source.error if status.source is not None else None
             self._live_view.set_frame(status.latest_pixels, error=error)
+            self._recent_frames.append(
+                Frame(pixels=status.latest_pixels, header=fits.Header(), exposure_seconds=0.0)
+            )
+
+    def _diagnostic_context(self) -> dict[str, Any]:
+        context: dict[str, Any] = {"camera_descriptor": self._current_camera.get_descriptor()}
+        if self._last_status is not None:
+            context["guiding_status"] = self._last_status
+        return context
+
+    def _on_capture_diagnostics(self) -> None:
+        reason = self._diagnostics_note.text().strip() or _DEFAULT_MANUAL_REASON
+        bundle = self._diagnostics.capture_manual(reason=reason)
+        if bundle is None:
+            self._diagnostics_status_label.setText("Diagnostics capture failed — see logs.")
+            return
+        self._diagnostics_status_label.setText(f"Diagnostics captured: {bundle.incident_id}")
+        self._diagnostics_note.clear()
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 — Qt override
         self._timer.stop()
