@@ -18,6 +18,21 @@ Scope trim: this does not "unwind" gain back toward 100 once conditions
 improve (e.g. a brighter object framed after gain was raised for a dimmer
 one) — each call only reacts to the current frame being outside the target
 band. Revisit if that turns out to matter in practice.
+
+Live-view exposure ceiling (see `AutoExposureConfig.max_auto_exposure_ms`):
+found via real-hardware testing that this algorithm could "run away" —
+each doubling step reacts to whatever frame just arrived, and at short
+exposures frames arrive almost as fast as the poll rate, so a dim scene
+could climb from 0.1ms past 10 SECONDS within a few real wall-clock
+seconds. The camera then blocks each capture for that full duration —
+freezing the "live" view for 10+ real seconds per frame, which looks
+indistinguishable from "the display stopped updating" or "exposure
+changes aren't being applied" (they were; the camera was just busy
+actually exposing). `max_auto_exposure_ms` caps the climb at a much
+smaller, still-actually-live value, well below a camera's own hardware
+maximum (e.g. the ATR585M's is 3,600,000ms — one hour) — beyond that
+ceiling, gain takes over exactly as it already does at the camera's own
+hardware limit.
 """
 
 from __future__ import annotations
@@ -41,6 +56,10 @@ class AutoExposureConfig:
     #: noisy/outlier frame can't cause a wild jump or oscillation.
     max_step_factor: float = 2.0
     gain_step: int = 10
+    #: Practical ceiling for a *live* view, independent of (and generally
+    #: much lower than) the camera's own hardware max_exposure_ms — see
+    #: the module docstring's "Live-view exposure ceiling".
+    max_auto_exposure_ms: float = 2000.0
 
 
 _DEFAULT_CONFIG = AutoExposureConfig()
@@ -83,24 +102,29 @@ def compute_auto_exposure(
     if config.target_low <= metric <= config.target_high:
         return AutoExposureResult(current_exposure_ms, current_gain, changed=False, metric=metric)
 
+    # The live-view ceiling, not the camera's own (often huge) hardware
+    # max — see the module docstring's "Live-view exposure ceiling".
+    effective_max_exposure_ms = min(capabilities.max_exposure_ms, config.max_auto_exposure_ms)
+
     target_mid = (config.target_low + config.target_high) / 2
     if metric <= 0.0:
         # Nothing to scale from (e.g. a fully black frame) — push exposure
         # up and let the next frame's measurement drive further changes.
-        desired_exposure = capabilities.max_exposure_ms
+        desired_exposure = effective_max_exposure_ms
     else:
         scale = target_mid / metric
         scale = min(config.max_step_factor, max(1.0 / config.max_step_factor, scale))
         desired_exposure = current_exposure_ms * scale
 
     clamped_exposure = min(
-        capabilities.max_exposure_ms, max(capabilities.min_exposure_ms, desired_exposure)
+        effective_max_exposure_ms, max(capabilities.min_exposure_ms, desired_exposure)
     )
 
     too_dim = metric < config.target_low
     new_gain = current_gain
-    if too_dim and desired_exposure > capabilities.max_exposure_ms:
-        # Exposure is already maxed and still not enough — only now step gain up.
+    if too_dim and desired_exposure > effective_max_exposure_ms:
+        # Exposure is already at the live-view ceiling and still not
+        # enough — only now step gain up.
         new_gain = min(capabilities.max_gain, current_gain + config.gain_step)
     elif not too_dim and desired_exposure < capabilities.min_exposure_ms:
         # Symmetric case: too bright even at minimum exposure.

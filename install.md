@@ -81,7 +81,10 @@ to select and start streaming from one.
 CollimationTool also has an "Auto exposure/gain" checkbox: while
 streaming, it keeps the frame's brightest signal in the 50-70% ADU range
 by adjusting exposure first, only raising gain above its 100 baseline if
-exposure alone (up to the camera's max) can't reach that band.
+exposure alone can't reach that band. Exposure is capped at a 2-second
+live-view ceiling, not the camera's own (often much higher) hardware
+maximum — a multi-second-per-frame exposure would defeat the point of a
+*live* view, so gain takes over well before that.
 
 CollimationTool shows two independent camera panels side by side — a
 primary/collimation camera (left) and a guide camera (right) — so both

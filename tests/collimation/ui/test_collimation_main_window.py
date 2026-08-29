@@ -428,6 +428,11 @@ class TestAutoExposure:
     ) -> None:
         window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
         panel = window._left_panel
+        # ReplayCamera's own default (2000ms) happens to equal
+        # AutoExposureConfig's default live-view ceiling — starting there
+        # would correctly *not* raise exposure any further (it's already
+        # at the ceiling), which isn't what this test means to exercise.
+        panel._exposure_spin.setValue(10.0)
         initial_exposure = panel._exposure_spin.value()
         panel._auto_exposure_checkbox.setChecked(True)
         panel._start_button.setChecked(True)
@@ -484,6 +489,26 @@ class TestAutoExposure:
             panel._start_button.setChecked(False)
         assert panel._exposure_spin.value() == initial_exposure
         assert panel._gain_spin.value() == 100
+
+    def test_exposure_never_climbs_past_the_live_view_ceiling(self, qapp: object) -> None:
+        """Regression test for a real-hardware bug: exposure could climb
+        from a tiny value past 10+ real seconds within a handful of poll
+        cycles, then the camera blocked every capture for that long,
+        freezing the live view. Exposure must stop climbing at
+        AutoExposureConfig's default ceiling (2s) and switch to gain."""
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+        panel = window._left_panel
+        panel._exposure_spin.setValue(panel._auto_exposure_config.max_auto_exposure_ms)
+        panel._auto_exposure_checkbox.setChecked(True)
+        panel._start_button.setChecked(True)
+        try:
+            for _ in range(10):
+                panel._poll_frame()
+                time.sleep(0.01)
+        finally:
+            panel._start_button.setChecked(False)
+        assert panel._exposure_spin.value() <= panel._auto_exposure_config.max_auto_exposure_ms
+        assert panel._gain_spin.value() > 100
 
 
 class TestRightPanel:
