@@ -75,9 +75,51 @@ class AutoExposureResult:
     metric: float
 
 
+#: A camera whose true ADC ceiling is lower than the bit_depth this
+#: adapter reports (e.g. a 12-bit sensor tagged bit_depth=16 because
+#: pixel-shift detection never locks in a shift for it — see
+#: touptek_adapter.py's _detect_pixel_shift) can genuinely saturate
+#: while still reading as a small fraction of an assumed-too-large full
+#: range. If at least this fraction of pixels sit within 0.1% of the
+#: frame's own maximum *and* the frame has essentially zero spread
+#: (see _measure), treat it as fully saturated regardless of what the
+#: assumed ceiling says. Real sensor data — even a genuinely dim scene —
+#: always has some read noise and is never perfectly flat; a
+#: deliberately uniform synthetic test frame is the one case this could
+#: misfire on, which is why the near-zero-spread check matters too.
+_SATURATION_FRACTION_THRESHOLD = 0.999
+#: Relative spread (std/mean) below which a frame is "suspiciously flat"
+#: for real sensor data — see _SATURATION_FRACTION_THRESHOLD.
+_FLAT_RELATIVE_STD_THRESHOLD = 1e-6
+
+
 def _measure(pixels: np.ndarray, bit_depth: int, percentile: float) -> float:
+    """Fraction of *pixels*' assumed full range the frame's "signal"
+    (a high percentile, not the mean) actually reaches.
+
+    Real-hardware bug this saturation check was added for: a camera
+    whose true ADC range is smaller than the assumed bit_depth can sit
+    fully saturated at its real ceiling while this function's naive
+    `signal / (2**bit_depth - 1)` still reads as a small percentage.
+    Auto-exposure would then conclude "far too dim" and escalate
+    exposure/gain without bound, chasing a target the sensor can never
+    produce — exactly what "guide stays black" turned out to be
+    (saturated white, not empty; see also stretch_to_uint8's degenerate-
+    uniform-frame handling for the other half of that bug). Confirmed
+    on real hardware: gain 100->5000 left the frame completely
+    unchanged, pinned at the sensor's true ceiling the whole time.
+    """
+    if pixels.size == 0:
+        return 0.0
+    mean = float(pixels.mean())
+    std = float(pixels.std())
+    if mean > 0.0 and std / mean < _FLAT_RELATIVE_STD_THRESHOLD:
+        actual_max = float(pixels.max())
+        saturated_fraction = float(np.mean(pixels >= actual_max * 0.999))
+        if saturated_fraction >= _SATURATION_FRACTION_THRESHOLD:
+            return 1.0
     adu_max = float(2**bit_depth - 1)
-    if adu_max <= 0.0 or pixels.size == 0:
+    if adu_max <= 0.0:
         return 0.0
     signal = float(np.percentile(pixels, percentile))
     return max(0.0, signal) / adu_max

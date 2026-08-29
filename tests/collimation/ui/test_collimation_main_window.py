@@ -478,7 +478,11 @@ class TestAutoExposure:
         self, qapp: object
     ) -> None:
         # A synthetic in-band frame (60% of 16-bit full range) via ReplayCamera.
+        # Not perfectly uniform (one pixel dropped, not affecting the 99th
+        # percentile) — a truly flat frame reads as saturated regardless of
+        # its absolute value, see auto_exposure's saturation-fraction check.
         array = np.full((64, 64), 0.6 * 65535, dtype=np.float32)
+        array.flat[0] = 0.0
         camera = ReplayCamera.from_arrays([array], cycle=True)
         window = MainWindow(camera, device_lister=lambda: [])
         panel = window._left_panel
@@ -705,3 +709,75 @@ class TestFovOverlayIntegration:
         assert edge_color.red() > 200
         assert edge_color.green() > 200
         assert edge_color.blue() < 100
+
+    def test_overlay_stays_detectable_when_the_guide_camera_saturates(
+        self, qapp: object
+    ) -> None:
+        """Below-UI regression for "guide stays black" (real hardware:
+        GPCMOS02000KPA pinned at its true ~4094 ADC ceiling, tagged
+        bit_depth=16). Two things must now hold end to end: auto-exposure
+        must recognize the saturation and stop escalating gain (the real
+        runaway was 100->380+), and the main camera's FOV rectangle must
+        still be visible on screen — not washed into solid white, not
+        hidden by a solid black misread of a saturated sensor."""
+        guide_caps = CameraCapabilities(
+            min_gain=100,
+            max_gain=15000,
+            min_exposure_ms=0.1,
+            max_exposure_ms=3_600_000.0,
+            supports_cooling=True,
+            supports_hcg=True,
+            supports_lcg=True,
+            supports_hdr=True,
+            supports_black_level=True,
+            bit_depth=16,  # assumed — the sensor's true ADC ceiling is far lower
+            pixel_size_um=2.9,
+            sensor_width_px=1920,
+            sensor_height_px=1080,
+        )
+        pinned = np.full((1080, 1920), 4094.0, dtype=np.float32)
+        guide_camera = ReplayCamera.from_arrays([pinned], cycle=True, capabilities=guide_caps)
+        window = MainWindow(
+            _camera_with_sensor(3840, 2160),
+            guide_camera=guide_camera,
+            device_lister=lambda: [],
+            main_pixel_scale_arcsec=self._MAIN_SCALE,
+            guide_pixel_scale_arcsec=self._GUIDE_SCALE,
+        )
+        panel = window._right_panel
+        panel._gain_spin.setValue(380)  # already escalated once, per the real report
+        panel._auto_exposure_checkbox.setChecked(True)
+        panel._start_button.setChecked(True)
+        try:
+            for _ in range(10):
+                panel._poll_frame()
+                time.sleep(0.01)
+            gain_after_settling = panel._gain_spin.value()
+            for _ in range(10):
+                panel._poll_frame()
+                time.sleep(0.01)
+        finally:
+            panel._start_button.setChecked(False)
+
+        # Recognized as saturated, not "far too dim" — gain must not have
+        # kept climbing past where it already was.
+        assert panel._gain_spin.value() <= gain_after_settling
+
+        assert panel._live_view._base_pixmap is not None
+        image = panel._live_view._base_pixmap.toImage()
+        # A background pixel, away from the overlay rectangle: a saturated
+        # sensor must render bright (white), not black — detectable as
+        # "something is there", just overexposed.
+        background = image.pixelColor(10, 10)
+        assert background.red() > 200
+
+        rect = panel._fov_rect
+        assert rect is not None
+        x = int((rect.x + rect.width / 2) * 1920)
+        y = int(rect.y * 1080)
+        edge_color = image.pixelColor(x, y)
+        # The main camera's FOV marker must still read as yellow, distinct
+        # from the saturated-white background behind it (same red/green,
+        # but background blue is high while the marker's is near zero).
+        assert edge_color.blue() < 100
+        assert edge_color.blue() < background.blue() - 100

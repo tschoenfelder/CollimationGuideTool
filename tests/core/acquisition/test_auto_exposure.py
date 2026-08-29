@@ -26,8 +26,19 @@ _CAPS = CameraCapabilities(
 
 
 def _frame(fraction: float) -> np.ndarray:
-    """A uniform frame whose 99th percentile is exactly `fraction` of full ADU range."""
-    return np.full((10, 10), fraction * _ADU_MAX, dtype=np.float32)
+    """A frame whose 99th percentile is exactly `fraction` of full ADU range.
+
+    99 of the 100 pixels sit at that exact value and one is dropped to 0 —
+    not perfectly uniform, matching the fact that real sensor data always
+    carries some read noise (see auto_exposure's saturation-fraction
+    check, which treats a *perfectly flat* frame as a signal of genuine
+    hardware saturation, not something a normal in-range/dim/bright frame
+    should ever trigger). The single low outlier never lands in the top
+    99th-percentile band, so it doesn't change any test's expected metric."""
+    value = fraction * _ADU_MAX
+    frame = np.full((10, 10), value, dtype=np.float32)
+    frame.flat[0] = 0.0
+    return frame
 
 
 def test_in_range_metric_leaves_settings_unchanged() -> None:
@@ -263,6 +274,42 @@ def test_fully_black_frame_with_the_ceiling_raised_out_of_the_way_reaches_camera
 
 def test_default_gain_is_100_matching_every_supported_camera_minimum() -> None:
     assert AutoExposureConfig().default_gain == 100
+
+
+class TestSaturationAtALowerTrueAdcCeiling:
+    """Real-hardware bug ("guide stays black"): a sensor whose true ADC
+    ceiling is well below the assumed bit_depth (e.g. ~4094 on a camera
+    reporting bit_depth=16, because pixel-shift detection can only
+    recognize specific MSB-padding patterns, not learn a sensor's actual
+    ADC width) can sit fully, perfectly saturated at that real ceiling —
+    confirmed on real hardware: raising gain 100->5000 left the frame
+    completely unchanged. The naive signal/(2**bit_depth-1) computation
+    then reads this as only a few percent "bright", so auto-exposure
+    concludes "far too dim" and escalates exposure/gain without bound,
+    chasing a target the sensor can never produce."""
+
+    def test_a_perfectly_flat_frame_pinned_well_below_assumed_max_reads_as_fully_saturated(
+        self,
+    ) -> None:
+        # A real, perfectly uniform ~4094 frame, exactly the observed bug —
+        # naively 4094 / 65535 = 6.25%, i.e. "far too dim". Correctly read
+        # as fully saturated (metric=1.0), it's treated the same as any
+        # too-bright frame: exposure is backed off, not escalated further —
+        # the fix for a real runaway where gain climbed 100->380+ while
+        # the sensor stayed pinned at its true, lower ADC ceiling the
+        # whole time, never actually getting brighter.
+        pinned = np.full((10, 10), 4094.0, dtype=np.float32)
+        result = compute_auto_exposure(
+            pinned,
+            bit_depth=_BIT_DEPTH,
+            current_exposure_ms=1000.0,
+            current_gain=380,  # already escalated once, per the real report
+            capabilities=_CAPS,
+        )
+        assert result.metric == 1.0
+        assert result.changed is True
+        assert result.exposure_ms < 1000.0  # backs off instead of escalating
+        assert result.gain == 380  # gain untouched — exposure has headroom
 
 
 def test_custom_target_band_is_respected() -> None:

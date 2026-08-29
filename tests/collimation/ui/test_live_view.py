@@ -38,6 +38,35 @@ class TestStretchToUint8:
         assert np.abs(full.astype(int) - subsampled.astype(int)).max() <= 5
 
 
+class TestDegenerateUniformFrame:
+    """Real-hardware bug ("guide stays black"): a sensor pinned at its
+    true ADC ceiling produces a perfectly uniform frame with hi <= lo
+    after the percentile stretch. The old fallback always rendered
+    BLACK, indistinguishable from a genuinely empty/no-signal frame —
+    hiding that the sensor was actually saturated (see auto_exposure's
+    companion saturation-fraction fix for the other half of this bug)."""
+
+    def test_a_uniform_bright_frame_renders_white_not_black(self) -> None:
+        gray = stretch_to_uint8(np.full((64, 64), 4094.0, dtype=np.float32))
+        assert gray.min() == 255
+
+    def test_a_uniform_zero_frame_still_renders_black(self) -> None:
+        gray = stretch_to_uint8(np.zeros((64, 64), dtype=np.float32))
+        assert gray.max() == 0
+
+    def test_a_small_bright_spot_missed_by_subsampling_is_still_detected(self) -> None:
+        # The subsample (stride 4) can land entirely between a small
+        # bright feature's pixels, making the *sample* look uniform even
+        # though the full frame isn't — must not fall through to the
+        # degenerate all-white case and wash out the real, mostly-dim
+        # frame.
+        mono = np.full((64, 64), 100.0, dtype=np.float32)
+        mono[1:3, 1:3] = 50_000.0  # small enough to plausibly miss stride-4 sampling
+        gray = stretch_to_uint8(mono)
+        assert gray[32, 32] < 50
+        assert gray[1, 1] > 200
+
+
 class TestAspectPreservingScale:
     """See the two-camera-panel feature request: a panel's live view must
     not stretch X and Y by different factors, even when its widget size

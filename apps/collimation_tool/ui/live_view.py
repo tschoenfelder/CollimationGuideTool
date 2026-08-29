@@ -41,7 +41,30 @@ def stretch_to_uint8(
     lo = float(np.percentile(sample, low))
     hi = float(np.percentile(sample, high))
     if hi <= lo:
-        hi = lo + 1.0
+        # The *subsample* looks flat, but a small bright/dark feature can
+        # fall entirely between subsampled pixels (e.g. a few-pixel-wide
+        # spot in a 3840x2160 frame at stride 4) without the full frame
+        # actually being uniform — re-check against the full array before
+        # trusting the degenerate case, since that check is cheap (one
+        # min/max) compared to the percentile call this stride exists to
+        # avoid.
+        full_lo = float(mono.min())
+        full_hi = float(mono.max())
+        if full_hi > full_lo:
+            lo, hi = full_lo, full_hi
+        else:
+            # Genuinely uniform frame: either really empty (lo == 0) or —
+            # far more likely, since real sensor read noise means an
+            # actually-dim scene is never perfectly flat — saturated at
+            # whatever the sensor's true ADC ceiling is (see
+            # auto_exposure's saturation-fraction check for the companion
+            # fix to the same real-hardware bug). The old `hi = lo + 1.0`
+            # fallback mapped every pixel to (lo-lo)/(hi-lo) = 0
+            # unconditionally — a solid BLACK display for a *saturated*
+            # sensor, which read as "no signal at all" and hid the real
+            # (overexposed) cause.
+            fill = 255 if lo > 0.0 else 0
+            return np.full(mono.shape, fill, dtype=np.uint8)
     stretched = np.clip((mono - lo) / (hi - lo), 0.0, 1.0)
     result: np.ndarray = (stretched * 255.0).astype(np.uint8)
     return result
