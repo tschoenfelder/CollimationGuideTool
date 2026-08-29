@@ -21,11 +21,14 @@ around it too) and keeps whichever (scale, angle, position) scores best
 overall.
 
 Deliberately a one-shot, explicitly-triggered calibration, not something
-run on every polled frame: a full search (the default ~180 angles x 5
-scales, each an FFT-based correlation against the full guide frame) is
-too slow for a live 100ms poll tick, and the two scopes' relative
-mounting doesn't change frame to frame — only when the rig is physically
-adjusted. See `CameraPanel`'s "Calibrate FOV" action.
+run on every polled frame: a full search (the default 72 angles x 3
+scales, each an FFT-based correlation against the full guide frame —
+measured at ~0.6s per candidate on a real ATR585M/GPCMOS02000KPA rig,
+so on the order of two real minutes end to end) is far too slow for a
+live 100ms poll tick, and the two scopes' relative mounting doesn't
+change frame to frame — only when the rig is physically adjusted. See
+`MainWindow`'s "Calibrate FOV" action and `FovCalibrator` (runs this off
+the UI thread).
 """
 
 from __future__ import annotations
@@ -184,8 +187,8 @@ def register_main_frame_in_guide_frame(
     *,
     approx_scale: float,
     scale_search_fraction: float = 0.15,
-    scale_steps: int = 5,
-    angle_step_deg: float = 2.0,
+    scale_steps: int = 3,
+    angle_step_deg: float = 5.0,
     angle_range_deg: tuple[float, float] = (-180.0, 180.0),
     min_score: float = 0.3,
 ) -> FovRegistrationResult | None:
@@ -201,6 +204,17 @@ def register_main_frame_in_guide_frame(
     absorb the config being slightly off, not to discover scale from
     scratch. Pass ``scale_steps=1`` to trust ``approx_scale`` exactly and
     skip the scale search entirely (cheaper).
+
+    Performance: measured on a real rig (ATR585M 3840x2160 main,
+    GPCMOS02000KPA 1920x1080 guide) at ~0.6s per (scale, angle)
+    correlation — the defaults above (72 angles x 3 scales = 216
+    candidates) take roughly two real minutes end to end. The rotation
+    range defaults to the full circle since a guide scope's mounting
+    angle relative to the main OTA isn't assumed to be small; narrow
+    ``angle_range_deg`` if you already have a rough idea (e.g. after an
+    initial calibration, to refine it faster), or widen
+    ``angle_step_deg``/reduce ``scale_steps`` for a quicker, coarser
+    pass. Always call this off the UI thread — see `FovCalibrator`.
 
     Returns ``None`` if no candidate reaches ``min_score`` (a real match
     typically scores well above it; unrelated frames score near 0) — the

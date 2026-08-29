@@ -109,13 +109,15 @@ measured alignment.
 replace that placeholder with a real, content-matched rectangle —
 `fov_registration` locates the main camera's actual frame content within
 the guide frame, allowing for rotation and a small scale correction
-around the config's plate-scale ratio. Runs on a background thread (a
-full search can take a few real seconds) and reports a status message
-with the found rotation/scale/score, or "no confident match" if it
-couldn't find one (the previous overlay, if any, is left in place). A
-one-shot, explicitly-triggered action — it does not re-run automatically
-per frame, and reconnecting either camera clears a previous calibration
-(it no longer matches the new frame content/size).
+around the config's plate-scale ratio. Runs on a background thread so
+the window stays responsive — a full search at real camera resolution
+takes on the order of two real minutes (measured on the ATR585M/
+GPCMOS02000KPA rig) — and reports a status message with the found
+rotation/scale/score, or "no confident match" if it couldn't find one
+(the previous overlay, if any, is left in place). A one-shot,
+explicitly-triggered action — it does not re-run automatically per
+frame, and reconnecting either camera clears a previous calibration (it
+no longer matches the new frame content/size).
 
 Color cameras (e.g. the GPCMOS02000KPA) now display their actual demosaiced
 color in the live view, not the mono luma plane the collimation/donut
