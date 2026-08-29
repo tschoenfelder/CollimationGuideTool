@@ -31,6 +31,16 @@ context/frame provider so both capture paths see the same "what was
 happening" snapshot: the last measurement/recommendation, current camera
 settings, and a small bounded ring buffer of the most recently captured
 raw `Frame`s (`_recent_frames`, not just their displayed pixels).
+
+Auto exposure/gain: an "Auto exposure/gain" checkbox drives
+`astrotool_core.acquisition.auto_exposure.compute_auto_exposure` once per
+polled frame, keeping the frame's brightest real signal in the 50-70% ADU
+band (see that module's docstring for the algorithm and why gain only
+moves once exposure alone can't reach the band). CollimationTool-only for
+now: it owns exposure/gain UI already and cares about framing a good
+picture; GuideTool's guiding loop wants a stable cadence more than an
+optimal histogram, so it's left with fixed exposure — revisit if that
+turns out wrong in practice.
 """
 
 from __future__ import annotations
@@ -39,6 +49,7 @@ from collections import deque
 from collections.abc import Callable
 from typing import Any
 
+from astrotool_core.acquisition.auto_exposure import AutoExposureConfig, compute_auto_exposure
 from astrotool_core.acquisition.stream_controller import StreamController
 from astrotool_core.camera.port import CameraPort
 from astrotool_core.camera.touptek_adapter import (
@@ -54,6 +65,7 @@ from astrotool_core.frames.frame import Frame
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QDoubleSpinBox,
     QHBoxLayout,
@@ -109,6 +121,7 @@ class MainWindow(QMainWindow):
         device_lister: Callable[[], list[TouptekDeviceInfo]] = _list_touptek_devices,
         camera_factory: Callable[[str], CameraPort] = _default_camera_factory,
         diagnostics: DiagnosticService | None = None,
+        auto_exposure_config: AutoExposureConfig | None = None,
     ) -> None:
         super().__init__()
         self.setWindowTitle("CollimationTool")
@@ -126,6 +139,8 @@ class MainWindow(QMainWindow):
         self._diagnostics = diagnostics or DiagnosticService(app_name="CollimationTool")
         self._diagnostics.set_context_provider(self._diagnostic_context)
         self._diagnostics.set_frame_provider(lambda: list(self._recent_frames))
+
+        self._auto_exposure_config = auto_exposure_config or AutoExposureConfig()
 
         self._live_view = LiveViewLabel()
         self._recommendation_label = QLabel("Start the stream to begin.")
@@ -148,6 +163,9 @@ class MainWindow(QMainWindow):
         self._init_camera_controls()
         self._exposure_spin.valueChanged.connect(self._on_exposure_changed)
         self._gain_spin.valueChanged.connect(self._on_gain_changed)
+
+        self._auto_exposure_checkbox = QCheckBox("Auto exposure/gain")
+        self._auto_exposure_checkbox.toggled.connect(self._on_auto_exposure_toggled)
 
         camera_row = QHBoxLayout()
         camera_row.addWidget(QLabel("Camera"))
@@ -173,6 +191,7 @@ class MainWindow(QMainWindow):
         controls.addWidget(self._exposure_spin)
         controls.addWidget(QLabel("Gain"))
         controls.addWidget(self._gain_spin)
+        controls.addWidget(self._auto_exposure_checkbox)
         controls.addStretch(1)
 
         layout = QVBoxLayout()
@@ -211,6 +230,25 @@ class MainWindow(QMainWindow):
 
     def _on_gain_changed(self, value: int) -> None:
         self._camera.set_gain(value)
+
+    def _on_auto_exposure_toggled(self, checked: bool) -> None:
+        self._exposure_spin.setEnabled(not checked)
+        self._gain_spin.setEnabled(not checked)
+        if checked:
+            self._gain_spin.setValue(self._auto_exposure_config.default_gain)
+
+    def _apply_auto_exposure(self, frame: Frame) -> None:
+        result = compute_auto_exposure(
+            frame.pixels,
+            bit_depth=frame.bit_depth,
+            current_exposure_ms=self._camera.get_exposure_ms(),
+            current_gain=self._camera.get_gain(),
+            capabilities=self._camera.get_descriptor().capabilities,
+            config=self._auto_exposure_config,
+        )
+        if result.changed:
+            self._exposure_spin.setValue(result.exposure_ms)
+            self._gain_spin.setValue(result.gain)
 
     def _on_toggle_stream(self, checked: bool) -> None:
         self._camera_combo.setEnabled(not checked)
@@ -260,6 +298,9 @@ class MainWindow(QMainWindow):
         self._last_sequence = mailbox_frame.sequence
         self._recent_frames.append(mailbox_frame.frame)
 
+        if self._auto_exposure_checkbox.isChecked():
+            self._apply_auto_exposure(mailbox_frame.frame)
+
         plane = build_analysis_plane(mailbox_frame.frame)
         result, recommendation = self._controller.measure_and_advise(plane)
         self._last_result = result
@@ -273,6 +314,7 @@ class MainWindow(QMainWindow):
             "exposure_ms": self._exposure_spin.value(),
             "gain": self._gain_spin.value(),
             "streaming": self._stream is not None,
+            "auto_exposure_enabled": self._auto_exposure_checkbox.isChecked(),
         }
         if self._last_result is not None:
             context["measurement_result"] = self._last_result

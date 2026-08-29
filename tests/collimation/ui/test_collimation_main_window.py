@@ -2,6 +2,8 @@ import json
 import time
 from pathlib import Path
 
+import numpy as np
+from astrotool_core.acquisition.auto_exposure import AutoExposureConfig
 from astrotool_core.camera.port import CameraPort
 from astrotool_core.camera.replay_camera import ReplayCamera
 from astrotool_core.camera.touptek_adapter import TouptekDeviceInfo
@@ -229,3 +231,91 @@ class TestDiagnosticsCapture:
     ) -> None:
         window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
         assert window._diagnostics is not None
+
+
+class TestAutoExposure:
+    """See the follow-up to issue #10: histogram-based auto exposure/gain."""
+
+    def test_checkbox_off_by_default_and_manual_controls_enabled(
+        self, qapp: object
+    ) -> None:
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+        assert not window._auto_exposure_checkbox.isChecked()
+        assert window._exposure_spin.isEnabled()
+        assert window._gain_spin.isEnabled()
+
+    def test_enabling_disables_manual_spinboxes_and_resets_gain_to_default(
+        self, qapp: object
+    ) -> None:
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+        window._gain_spin.setValue(250)
+        window._auto_exposure_checkbox.setChecked(True)
+        assert not window._exposure_spin.isEnabled()
+        assert not window._gain_spin.isEnabled()
+        assert window._gain_spin.value() == 100
+        assert window._camera.get_gain() == 100
+
+    def test_disabling_reenables_manual_controls(self, qapp: object) -> None:
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+        window._auto_exposure_checkbox.setChecked(True)
+        window._auto_exposure_checkbox.setChecked(False)
+        assert window._exposure_spin.isEnabled()
+        assert window._gain_spin.isEnabled()
+
+    def test_a_dim_donut_frame_increases_exposure_while_streaming(
+        self, qapp: object
+    ) -> None:
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+        initial_exposure = window._exposure_spin.value()
+        window._auto_exposure_checkbox.setChecked(True)
+        window._start_button.setChecked(True)
+        try:
+            window._poll_frame()
+            time.sleep(0.05)
+            window._poll_frame()
+        finally:
+            window._start_button.setChecked(False)
+        # The demo donut's peak (3000) is a small fraction of 16-bit full
+        # range — well below the 50-70% target band — so exposure must rise.
+        assert window._exposure_spin.value() > initial_exposure
+        assert window._gain_spin.value() == 100
+
+    def test_no_change_applied_while_auto_exposure_is_off(self, qapp: object) -> None:
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+        initial_exposure = window._exposure_spin.value()
+        window._start_button.setChecked(True)
+        try:
+            window._poll_frame()
+            time.sleep(0.05)
+            window._poll_frame()
+        finally:
+            window._start_button.setChecked(False)
+        assert window._exposure_spin.value() == initial_exposure
+
+    def test_custom_auto_exposure_config_default_gain_is_honored(
+        self, qapp: object
+    ) -> None:
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)),
+            device_lister=lambda: [],
+            auto_exposure_config=AutoExposureConfig(default_gain=250),
+        )
+        window._auto_exposure_checkbox.setChecked(True)
+        assert window._gain_spin.value() == 250
+
+    def test_a_bright_uniform_frame_within_band_leaves_exposure_unchanged(
+        self, qapp: object
+    ) -> None:
+        # A synthetic in-band frame (60% of 16-bit full range) via ReplayCamera.
+        array = np.full((64, 64), 0.6 * 65535, dtype=np.float32)
+        camera = ReplayCamera.from_arrays([array], cycle=True)
+        window = MainWindow(camera, device_lister=lambda: [])
+        initial_exposure = window._exposure_spin.value()
+        window._auto_exposure_checkbox.setChecked(True)
+        window._start_button.setChecked(True)
+        try:
+            window._poll_frame()
+        finally:
+            window._start_button.setChecked(False)
+        assert window._exposure_spin.value() == initial_exposure
+        assert window._gain_spin.value() == 100

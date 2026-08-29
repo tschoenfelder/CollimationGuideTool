@@ -68,6 +68,11 @@ whenever the SDK can't be imported. Once the wheel is vendored, connected
 cameras appear in that dropdown automatically (no config file needed to
 pick one); use "Connect" to select and start streaming from one.
 
+CollimationTool also has an "Auto exposure/gain" checkbox: while
+streaming, it keeps the frame's brightest signal in the 50-70% ADU range
+by adjusting exposure first, only raising gain above its 100 baseline if
+exposure alone (up to the camera's max) can't reach that band.
+
 ### 4. Configuration
 
 Hardware/session configuration lives outside the repo at
