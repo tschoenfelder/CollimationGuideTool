@@ -75,6 +75,16 @@ feedback mechanism: a failing check blocks the PR regardless of what a local
 run showed. Running `scripts/check.sh --release` locally before pushing is
 still recommended so failures are caught before CI, not instead of it.
 
+Known environment gap: `ubuntu-latest` doesn't ship the Qt runtime
+libraries PySide6 dynamically links even under `QT_QPA_PLATFORM=offscreen`
+(`libEGL.so.1` and several `libxcb-*`/`libxkbcommon*` libraries) — every UI
+test module fails to *import* (not just run) without them. The workflow
+installs them via `apt-get` before the dependency-install step. This bit
+us once (the workflow ran green-looking locally on Windows, which needs
+none of this, while every CI run silently failed from the day the gate was
+added) — if a future UI import starts pulling in a new native Qt module,
+check this list first before assuming the test itself is broken.
+
 ## What one patch may touch
 
 ```
