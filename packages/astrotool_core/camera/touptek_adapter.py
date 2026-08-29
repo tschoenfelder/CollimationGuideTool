@@ -117,6 +117,29 @@ def _detect_pixel_shift(raw: np.ndarray) -> int:
     return 0  # true 16-bit
 
 
+def _pixel_shift_from_sdk_bit_depth(sdk_bit_depth: int) -> int:
+    """Convert get_RawFormat()'s directly-reported ADC bit depth to the
+    same right-shift convention as `_detect_pixel_shift` (16 - bit_depth):
+    12-bit ADC -> shift 4, 14-bit -> shift 2, 16-bit -> no shift.
+
+    Preferred over `_detect_pixel_shift`'s per-frame pixel-value-pattern
+    inference: the SDK already knows the sensor's native ADC width
+    outright, whereas the heuristic can only *infer* it from a captured
+    frame's value pattern and fails outright ("too little variety",
+    returns -1) on a frame that happens to be uniform or saturated —
+    exactly the condition a wrong bit_depth assumption itself produces
+    (see auto_exposure's saturation-fraction floor for the other half of
+    that bug). Confirmed on real hardware: the GPCMOS02000KPA's
+    get_RawFormat() reports 12-bit directly, matching its true ~4095
+    saturation ceiling seen in captured frames; the ATR585M and G3M678M
+    both correctly report 16-bit. Returns -1 (unknown) for a
+    nonsensical value so the caller falls back to per-frame detection.
+    """
+    if not 1 <= sdk_bit_depth <= 16:
+        return -1
+    return 16 - sdk_bit_depth
+
+
 _sdk_lifecycle_lock = threading.RLock()
 
 # EnumV2() must be called at most once per process (ported guard — see
@@ -268,6 +291,8 @@ class TouptekCameraAdapter(CameraPort):
 
         self._basic_configure()
         self._prepare_capture_mode()
+        if self._pixel_shift < 0:
+            self._pixel_shift = self._query_pixel_shift_from_sdk()
 
     def disconnect(self) -> None:
         if self._cam is not None:  # pragma: no cover
@@ -447,6 +472,27 @@ class TouptekCameraAdapter(CameraPort):
             )
             return BayerPattern.MONO
         return _FOURCC_TO_BAYER.get(int(fourcc), BayerPattern.MONO)
+
+    def _query_pixel_shift_from_sdk(self) -> int:
+        """Ask the SDK for this camera's native ADC bit depth directly,
+        via the same get_RawFormat() call get_bayer_pattern() already
+        makes — see `_pixel_shift_from_sdk_bit_depth`'s docstring for why
+        this is preferred over waiting for `_detect_pixel_shift` to infer
+        it from a captured frame. Returns -1 (unknown) on any failure, so
+        `_capture_connected` falls back to per-frame detection exactly as
+        it already does today.
+        """
+        try:  # pragma: no cover — requires real hardware
+            _raw_fourcc, sdk_bit_depth = self._cam.get_RawFormat()
+        except Exception as exc:
+            _log.warning(
+                "TouptekCameraAdapter(%s): get_RawFormat() failed while determining "
+                "pixel shift: %s",
+                self._logical_name,
+                exc,
+            )
+            return -1
+        return _pixel_shift_from_sdk_bit_depth(int(sdk_bit_depth))
 
     def _select_device(self, devices: Any) -> tuple[int, Any | None]:  # noqa: ANN401
         if self._camera_id_hint:

@@ -20,6 +20,7 @@ from astrotool_core.camera.touptek_adapter import (
     _is_real_camera,
     _normalise_camera_name,
     _opt,
+    _pixel_shift_from_sdk_bit_depth,
     list_devices,
 )
 from astrotool_core.frames.pixel_format import BayerPattern
@@ -255,6 +256,29 @@ def test_opt_falls_back_when_attribute_missing() -> None:
 
     assert _opt(_Module(), "TOUPCAM_OPTION_RAW", 4) == 99
     assert _opt(_Module(), "TOUPCAM_OPTION_MISSING", 4) == 4
+
+
+class TestPixelShiftFromSdkBitDepth:
+    """See the "guide stays black"/"too white" investigation: get_RawFormat()
+    already reports a camera's true ADC bit depth directly — confirmed on
+    real hardware: the GPCMOS02000KPA reports 12-bit (matching its true
+    ~4095 saturation ceiling), the ATR585M and G3M678M both report 16-bit.
+    Using it outright avoids ever depending on `_detect_pixel_shift`
+    inferring the same thing from a captured frame, which fails exactly
+    when a frame happens to already be uniform/saturated."""
+
+    def test_twelve_bit_sdk_report_maps_to_shift_four(self) -> None:
+        assert _pixel_shift_from_sdk_bit_depth(12) == 4
+
+    def test_fourteen_bit_sdk_report_maps_to_shift_two(self) -> None:
+        assert _pixel_shift_from_sdk_bit_depth(14) == 2
+
+    def test_sixteen_bit_sdk_report_maps_to_no_shift(self) -> None:
+        assert _pixel_shift_from_sdk_bit_depth(16) == 0
+
+    @pytest.mark.parametrize("nonsensical", [0, -1, 17, 100])
+    def test_nonsensical_values_return_unknown(self, nonsensical: int) -> None:
+        assert _pixel_shift_from_sdk_bit_depth(nonsensical) == -1
 
 
 class TestGetBayerPattern:
