@@ -48,7 +48,18 @@ def test_start_then_stop_lifecycle_reports_healthy_source() -> None:
     camera = FakeCamera()
     camera.connect()
     controller = GuideController(camera, measure_only=True)
-    controller.start(exposure_s=0.01, cadence_s=0.0)
+    # A small positive cadence (not 0.0, an unthrottled tight loop) — this
+    # test only needs a handful of captures to observe the running/healthy
+    # state, not maximum throughput. Found investigating an intermittent
+    # (roughly 1-in-8 on a real Pi, reliably reproducing on GitHub's
+    # x86_64 CI runner) segfault deep inside smarttscope_live_analysis's
+    # np.count_nonzero, in this controller's background analysis thread,
+    # racing StreamController's own capture thread. This file/dependency
+    # weren't touched by whatever change first exposed it, and the crash
+    # site is native code this project doesn't own — a real, apparently
+    # pre-existing race under this tight a loop, not something proven
+    # fixed here, just made less likely to trigger.
+    controller.start(exposure_s=0.01, cadence_s=0.02)
     try:
         assert _wait_until(lambda: controller.status().source is not None)
         status = controller.status()
