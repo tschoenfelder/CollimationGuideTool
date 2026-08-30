@@ -9,6 +9,7 @@ from astrotool_core.camera.capabilities import CameraCapabilities
 from astrotool_core.camera.port import CameraPort
 from astrotool_core.camera.replay_camera import ReplayCamera
 from astrotool_core.camera.touptek_adapter import TouptekDeviceInfo
+from astrotool_core.config import load_camera_settings
 from astrotool_core.diagnostics import DiagnosticService
 from astrotool_core.testing.fake_touptek import FakeTouptekCamera
 from astrotool_core.testing.frame_factory import donut_image
@@ -1105,3 +1106,115 @@ class TestFovCalibration:
         window._right_panel.set_fov_polygon([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
         window._update_fov_overlay()
         assert window._right_panel._fov_polygon is None
+
+
+class TestCameraSettingsPersistence:
+    """"Add storing own settings for cameras connected as the default
+    startup settings. Assumption is, that the hardware will not change
+    each time" — see astrotool_core.config.camera_settings. `tmp_path`
+    isolation is automatic (see conftest.py's autouse fixture patching
+    MainWindow's default settings path), so these tests don't need to
+    pass camera_settings_path explicitly — two MainWindow(...) calls in
+    the same test share the same tmp_path/config.toml, same as two real
+    app launches would share the real config.toml."""
+
+    def test_connecting_a_device_persists_its_camera_id(self, qapp: object) -> None:
+        devices = [TouptekDeviceInfo(index=0, camera_id="dev-1", display_name="ATR585M")]
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)),
+            device_lister=lambda: devices,
+            camera_factory=lambda camera_id: FakeTouptekCamera(),
+        )
+        window._left_panel._camera_combo.setCurrentIndex(1)
+        window._left_panel._on_connect_camera()
+
+        saved = load_camera_settings(window._camera_settings_path)
+        assert saved["main"].camera_id == "dev-1"
+
+    def test_editing_exposure_and_gain_persists_them(self, qapp: object) -> None:
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+        window._left_panel._exposure_spin.setValue(123.0)
+        window._left_panel._gain_spin.setValue(150)
+
+        saved = load_camera_settings(window._camera_settings_path)
+        assert saved["main"].exposure_ms == pytest.approx(123.0)
+        assert saved["main"].gain == 150
+
+    def test_toggling_auto_exposure_persists_it(self, qapp: object) -> None:
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+        window._left_panel._auto_exposure_checkbox.setChecked(True)
+
+        saved = load_camera_settings(window._camera_settings_path)
+        assert saved["main"].auto_exposure_enabled is True
+
+    def test_a_later_launch_restores_the_previous_camera_and_settings(
+        self, qapp: object
+    ) -> None:
+        devices = [TouptekDeviceInfo(index=0, camera_id="dev-1", display_name="ATR585M")]
+        fake_touptek = FakeTouptekCamera()
+        first = MainWindow(
+            _donut_camera((0.0, 0.0)),
+            device_lister=lambda: devices,
+            camera_factory=lambda camera_id: fake_touptek,
+        )
+        first._left_panel._camera_combo.setCurrentIndex(1)
+        first._left_panel._on_connect_camera()
+        # Auto-exposure toggled on *before* the manual exposure/gain edits:
+        # checking it forces gain to the auto-exposure config's own default
+        # (see _on_auto_exposure_toggled) — setting it last would clobber
+        # the 200 this test means to persist and restore.
+        first._left_panel._auto_exposure_checkbox.setChecked(True)
+        first._left_panel._exposure_spin.setValue(321.0)
+        first._left_panel._gain_spin.setValue(200)
+
+        second = MainWindow(
+            _donut_camera((0.0, 0.0)),
+            device_lister=lambda: devices,
+            camera_factory=lambda camera_id: fake_touptek,
+        )
+        panel = second._left_panel
+        assert panel._camera is fake_touptek
+        assert panel._camera_combo.currentData() == devices[0]
+        assert panel._exposure_spin.value() == pytest.approx(321.0)
+        assert panel._gain_spin.value() == 200
+        assert panel._auto_exposure_checkbox.isChecked()
+
+    def test_restoring_a_custom_gain_survives_auto_exposure_also_being_restored_on(
+        self, qapp: object
+    ) -> None:
+        """Checking "Auto exposure/gain" forces gain to the auto-exposure
+        config's own default (see _on_auto_exposure_toggled) — restoring
+        the checkbox after the saved gain would silently re-clobber it
+        right back to that default."""
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+        window._left_panel._auto_exposure_checkbox.setChecked(True)
+        window._left_panel._gain_spin.setValue(777)
+
+        second = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+        assert second._left_panel._auto_exposure_checkbox.isChecked()
+        assert second._left_panel._gain_spin.value() == 777
+
+    def test_a_saved_camera_no_longer_enumerated_falls_back_to_the_demo_camera(
+        self, qapp: object
+    ) -> None:
+        devices = [TouptekDeviceInfo(index=0, camera_id="dev-1", display_name="ATR585M")]
+        first = MainWindow(
+            _donut_camera((0.0, 0.0)),
+            device_lister=lambda: devices,
+            camera_factory=lambda camera_id: FakeTouptekCamera(),
+        )
+        first._left_panel._camera_combo.setCurrentIndex(1)
+        first._left_panel._on_connect_camera()
+
+        demo = _donut_camera((0.0, 0.0))
+        second = MainWindow(demo, device_lister=lambda: [])  # dev-1 no longer present
+        assert second._left_panel._camera is demo
+        assert second._left_panel._camera_combo.currentData() is None
+
+    def test_no_saved_settings_file_leaves_panels_on_the_demo_camera(
+        self, qapp: object
+    ) -> None:
+        demo = _donut_camera((0.0, 0.0))
+        window = MainWindow(demo, device_lister=lambda: [])
+        assert window._left_panel._camera is demo
+        assert not window._left_panel._auto_exposure_checkbox.isChecked()

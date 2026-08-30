@@ -41,6 +41,15 @@ frame or per poll; a config change requires restarting the app, same as
 any other startup-read config. Recomputed only when either panel's
 connected camera changes (its sensor resolution is the other input).
 
+Startup settings restore: each panel's connected camera (by camera_id)
+plus exposure/gain/auto-exposure is saved to
+`~/.CollimationGuideTool/config.toml` (`camera_settings_path`, injectable
+for testing) on every change and restored on the next launch — see
+`astrotool_core.config.camera_settings`'s docstring for the "hardware
+will not change each time" reasoning behind trusting a saved camera_id.
+A saved camera no longer enumerated is a graceful fall-back to the demo
+camera, not an error.
+
 That config-only rectangle is always centered and unrotated — it has no
 way to reflect how the two cameras are actually mounted relative to each
 other. "Calibrate FOV" replaces it with a real, possibly-rotated match:
@@ -63,12 +72,18 @@ the run in flight finishes, not mid-search.
 from __future__ import annotations
 
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any
 
 from astrotool_core.acquisition.auto_exposure import AutoExposureConfig
 from astrotool_core.camera import CameraPort, FakeCamera, TouptekDeviceInfo
 from astrotool_core.camera import (
     list_devices as _list_touptek_devices,
+)
+from astrotool_core.config import (
+    DEFAULT_CONFIG_PATH,
+    load_camera_settings,
+    save_camera_settings,
 )
 from astrotool_core.diagnostics import DiagnosticService
 from astrotool_core.frames.frame import Frame
@@ -109,6 +124,7 @@ class MainWindow(QMainWindow):
         auto_exposure_config: AutoExposureConfig | None = None,
         main_pixel_scale_arcsec: float | None = None,
         guide_pixel_scale_arcsec: float | None = None,
+        camera_settings_path: Path | str | None = None,
     ) -> None:
         super().__init__()
         self.setWindowTitle("CollimationTool")
@@ -143,6 +159,26 @@ class MainWindow(QMainWindow):
         )
         self._left_panel.connected_device_changed.connect(self._on_left_camera_changed)
         self._right_panel.connected_device_changed.connect(self._on_right_camera_changed)
+
+        # Restore last session's connected camera + exposure/gain/
+        # auto-exposure per panel — see module docstring's "Startup
+        # settings restore" and astrotool_core.config.camera_settings.
+        # Connected *after* the restore, not before: applying saved
+        # settings shouldn't re-save the very state it just loaded.
+        # Resolved from the module-level DEFAULT_CONFIG_PATH at call time
+        # (not bound as this parameter's own default value) so tests can
+        # monkeypatch this module's DEFAULT_CONFIG_PATH to redirect every
+        # MainWindow() call at once, rather than needing camera_settings_path
+        # threaded through every test's construction call — see conftest.py.
+        self._camera_settings_path = (
+            Path(camera_settings_path) if camera_settings_path is not None else DEFAULT_CONFIG_PATH
+        )
+        saved_settings = load_camera_settings(self._camera_settings_path)
+        self._left_panel.apply_saved_settings(saved_settings.get("main"))
+        self._right_panel.apply_saved_settings(saved_settings.get("guide"))
+        self._left_panel.settings_changed.connect(self._save_camera_settings)
+        self._right_panel.settings_changed.connect(self._save_camera_settings)
+
         self._update_fov_overlay()
 
         self._fov_calibrator = FovCalibrator()
@@ -323,6 +359,24 @@ class MainWindow(QMainWindow):
             # report has no record of what was actually picked at all.
             context["fov_calibration"] = self._last_calibration_result
         return context
+
+    def _save_camera_settings(self) -> None:
+        """Persist both panels' current settings as this session's new
+        startup defaults — see module docstring's "Startup settings
+        restore". Wired to each panel's settings_changed signal, so this
+        fires (and overwrites the whole file — see
+        save_camera_settings's docstring) on every connect, exposure/gain
+        edit, and auto-exposure toggle on either panel; a Pi losing power
+        mid-session still keeps whatever was saved as of the last such
+        change rather than only a clean shutdown's state.
+        """
+        save_camera_settings(
+            {
+                "main": self._left_panel.current_settings(),
+                "guide": self._right_panel.current_settings(),
+            },
+            self._camera_settings_path,
+        )
 
     def _all_recent_frames(self) -> list[Frame]:
         return self._left_panel.recent_frames() + self._right_panel.recent_frames()

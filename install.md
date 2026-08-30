@@ -135,8 +135,15 @@ mkdir -p ~/.CollimationGuideTool
 # create/edit ~/.CollimationGuideTool/config.toml with your camera/mount settings
 ```
 
-(The config loader itself is planned but not yet implemented — see
-`PLAN.md`. This is the path it will read from once it exists.)
+CollimationTool now reads and writes this file itself for one thing —
+each panel's connected camera plus its exposure/gain/auto-exposure state
+(`[cameras.main]`/`[cameras.guide]`) — saved automatically on every
+change and restored on the next launch, on the assumption that a rig's
+cameras stay on the same USB ports between sessions; a saved camera no
+longer plugged in just falls back to the demo camera. A broader config
+loader (mount settings, other session state) is still planned but not
+yet implemented — see `PLAN.md` — and can add its own tables to this
+same file alongside `[cameras.*]` without conflict.
 
 ### Diagnostics
 

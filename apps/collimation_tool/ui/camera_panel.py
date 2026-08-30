@@ -21,6 +21,11 @@ real device on one side removes it from the other side's combo — the
 underlying hardware constraint is that a ToupTek camera only allows one
 open handle at a time, so this isn't just a UX nicety.
 
+Settings persistence: `current_settings()`/`apply_saved_settings()` are
+this panel's read/write halves of `astrotool_core.config.camera_settings`
+— MainWindow owns *when* to load/save (startup restore, and on this
+panel's `settings_changed` signal), this panel only knows its own state.
+
 Diagnostics stay owned by MainWindow, not duplicated per panel — a
 "Capture diagnostics" action conceptually belongs to the whole app, not
 one camera. `diagnostic_context()`/`recent_frames()` are this panel's
@@ -61,6 +66,7 @@ from astrotool_core.camera import (
 from astrotool_core.camera import (
     list_devices as _list_touptek_devices,
 )
+from astrotool_core.config import CameraPanelSettings
 from astrotool_core.frames import demosaic, rgb_to_luma
 from astrotool_core.frames.frame import Frame
 from PySide6.QtCore import QBuffer, QIODevice, QTimer, Signal
@@ -115,6 +121,13 @@ class CameraPanel(QWidget):
     #: Emits the newly-connected TouptekDeviceInfo, or None for the demo
     #: camera — see module docstring's "two panels can't share one camera".
     connected_device_changed = Signal(object)
+
+    #: Fires whenever anything `current_settings()` reports changes
+    #: (camera connect, exposure/gain edit, auto-exposure toggle) — see
+    #: `astrotool_core.config.camera_settings`. MainWindow connects this
+    #: to persist both panels' settings; carries no payload since the
+    #: listener always re-reads current_settings() itself.
+    settings_changed = Signal()
 
     def __init__(
         self,
@@ -222,15 +235,18 @@ class CameraPanel(QWidget):
 
     def _on_exposure_changed(self, value: float) -> None:
         self._camera.set_exposure_ms(value)
+        self.settings_changed.emit()
 
     def _on_gain_changed(self, value: int) -> None:
         self._camera.set_gain(value)
+        self.settings_changed.emit()
 
     def _on_auto_exposure_toggled(self, checked: bool) -> None:
         self._exposure_spin.setEnabled(not checked)
         self._gain_spin.setEnabled(not checked)
         if checked:
             self._gain_spin.setValue(self._auto_exposure_config.default_gain)
+        self.settings_changed.emit()
 
     def _apply_auto_exposure(self, frame: Frame) -> None:
         result = compute_auto_exposure(
@@ -271,6 +287,7 @@ class CameraPanel(QWidget):
             self._camera_status_label.setText(f"Camera: {DEMO_CAMERA_LABEL}")
             self._init_camera_controls()
             self.connected_device_changed.emit(None)
+            self.settings_changed.emit()
             return
 
         assert isinstance(device, TouptekDeviceInfo)
@@ -285,6 +302,7 @@ class CameraPanel(QWidget):
         self._camera_status_label.setText(f"Camera: {device.display_name}")
         self._init_camera_controls()
         self.connected_device_changed.emit(device)
+        self.settings_changed.emit()
 
     def refresh_camera_list(self, excluded_camera_id: str | None) -> None:
         """Rebuild the combo excluding a device connected on another panel.
@@ -359,6 +377,49 @@ class CameraPanel(QWidget):
             self._recommendation_label.setText(
                 _format_recommendation(outcome.result, outcome.recommendation)
             )
+
+    def current_settings(self) -> CameraPanelSettings:
+        """This panel's state, for persisting as this session's default
+        startup settings — see `astrotool_core.config.camera_settings`."""
+        return CameraPanelSettings(
+            camera_id=self._connected_device.camera_id if self._connected_device else None,
+            exposure_ms=self._exposure_spin.value(),
+            gain=self._gain_spin.value(),
+            auto_exposure_enabled=self._auto_exposure_checkbox.isChecked(),
+        )
+
+    def apply_saved_settings(self, settings: CameraPanelSettings | None) -> None:
+        """Restore a previously-saved `current_settings()` — see
+        `astrotool_core.config.camera_settings`'s "hardware will not
+        change each time" reasoning. A no-op if `settings` is None (no
+        saved state for this panel yet).
+
+        A saved `camera_id` no longer present in the combo (the "hardware
+        will not change" assumption didn't hold this time) is a graceful
+        no-op for that part — this stays on the demo camera rather than
+        erroring, same as any other camera-not-found case.
+        """
+        if settings is None:
+            return
+        if settings.camera_id is not None:
+            for i in range(1, self._camera_combo.count()):
+                item = self._camera_combo.itemData(i)
+                if isinstance(item, TouptekDeviceInfo) and item.camera_id == settings.camera_id:
+                    self._camera_combo.setCurrentIndex(i)
+                    self._on_connect_camera()
+                    break
+        # Applied after any connect attempt above: _on_connect_camera's own
+        # _init_camera_controls() resets these spinboxes to whatever the
+        # newly-connected camera itself currently reports, which this
+        # restore should override with the saved values instead.
+        #
+        # Checkbox set *before* exposure/gain, not after: checking it
+        # forces gain to the auto-exposure config's own default (see
+        # _on_auto_exposure_toggled) — restoring it last would silently
+        # discard a saved gain whenever auto-exposure was also enabled.
+        self._auto_exposure_checkbox.setChecked(settings.auto_exposure_enabled)
+        self._exposure_spin.setValue(settings.exposure_ms)
+        self._gain_spin.setValue(settings.gain)
 
     def diagnostic_context(self) -> dict[str, Any]:
         context: dict[str, Any] = {

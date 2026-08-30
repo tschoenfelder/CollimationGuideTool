@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
 
@@ -33,6 +34,27 @@ os.environ.setdefault("OMP_NUM_THREADS", "1")
 os.environ.setdefault("MKL_NUM_THREADS", "1")
 os.environ.setdefault("VECLIB_MAXIMUM_THREADS", "1")
 os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
+
+
+@pytest.fixture(autouse=True)
+def _isolate_camera_settings_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Redirect CollimationTool MainWindow's default camera-settings file
+    to a per-test tmp_path instead of the real
+    ``~/.CollimationGuideTool/config.toml``.
+
+    Without this, every test that constructs a bare `MainWindow(...)`
+    (the vast majority — `camera_settings_path` is rarely passed
+    explicitly) would read and overwrite the developer's/Pi's actual
+    saved camera settings on every test run. Patches the name as
+    imported into `main_window` (not the defining module) — see that
+    constructor's own comment on why a bare global reference, not a
+    default-parameter value, makes this patch effective.
+    """
+    try:
+        import collimation_tool.ui.main_window as _main_window_module
+    except ImportError:
+        return
+    monkeypatch.setattr(_main_window_module, "DEFAULT_CONFIG_PATH", tmp_path / "config.toml")
 
 
 @pytest.fixture(scope="session")
