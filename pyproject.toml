@@ -45,6 +45,18 @@ include = ["astrotool_core*", "collimation_tool*", "guide_tool*"]
 testpaths = ["tests"]
 addopts = "--cov=packages/astrotool_core --cov=apps/collimation_tool --cov=apps/guide_tool --cov-report=term-missing --cov-fail-under=80"
 
+[tool.coverage.run]
+# coverage.py's default tracer (CTracer, a C-level sys.settrace hook) has
+# a real thread-safety bug under Python 3.13 that reliably segfaults this
+# suite: two apparently unrelated crashes (Qt's QApplication.processEvents
+# on Windows in test_live_view.py; numpy/threading in
+# test_guide_controller.py's background threads on Linux) both vanished
+# entirely once traced with "sysmon" (Python 3.12+'s sys.monitoring API)
+# instead — verified locally across multiple consecutive runs where the
+# default core crashed close to every time with --cov active. Neither
+# crash touched code this project owns; only the tracer changed.
+core = "sysmon"
+
 [tool.ruff]
 line-length = 100
 target-version = "py313"

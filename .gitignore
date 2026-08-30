@@ -9,6 +9,7 @@ dist/
 .mypy_cache/
 .ruff_cache/
 .coverage
+coverage.xml
 htmlcov/
 
 # cosmic-ray mutation-testing session databases (working state, not
