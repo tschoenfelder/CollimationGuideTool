@@ -136,6 +136,50 @@ class TestUnparkOvercomesDriverTrackOnOverride:
         finally:
             fake.stop()
 
+    def test_a_quick_repark_does_not_cancel_the_retry_that_still_wins(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Real-hardware regression: the "test move" feature unparks,
+        pulses (~1s), and re-parks -- all comfortably within the driver's
+        own ~1.5s delayed auto-track-on window. park() must not cancel
+        unpark()'s pending retries just because the mount is parked again
+        by the time the driver's override lands -- it can still land
+        *after* park(), and TRACK_OFF is idempotent regardless of park
+        state (see park()'s own docstring)."""
+        import astrotool_core.mount.indi_mount_park_adapter as adapter_module
+
+        monkeypatch.setattr(adapter_module, "_TRACK_OFF_RETRY_DELAYS_S", (0.2,))
+        fake = FakeIndiServer(
+            start_parked=True, park_delay_s=0.02, auto_track_on_after_unpark_delay_s=0.1
+        )
+        fake.start()
+        try:
+            mount = IndiMountParkAdapter(fake.host, fake.port, connect_timeout_s=2.0)
+            mount.connect()
+            mount.unpark()
+            _wait_until(lambda: not mount.status().parked)
+            mount.park()  # re-parks well before the 0.2s retry fires
+            _wait_until(lambda: mount.status().parked)
+            # Confirm the driver's override actually lands *after*
+            # park() first -- without this, "tracking is already False"
+            # would trivially pass regardless of whether the retry ever
+            # does anything (the mistake an earlier version of this test
+            # made: checking "not tracking" before the override had even
+            # had a chance to fire proves nothing).
+            _wait_until(
+                lambda: mount.status().tracking,
+                message="driver override never observed after re-park",
+            )
+            # ...but the retry (at 0.2s) must still win afterward -- not
+            # stuck on because park() cancelled it.
+            _wait_until(
+                lambda: not mount.status().tracking, message="retry never landed after re-park"
+            )
+            assert mount.status().tracking is False
+            mount.disconnect()
+        finally:
+            fake.stop()
+
 
 class TestMountInterfaceUnavailable:
     def test_connect_succeeds_but_mount_is_not_available(self) -> None:

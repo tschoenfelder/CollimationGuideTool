@@ -146,7 +146,16 @@ class IndiMountParkAdapter(MountParkPort):
     def park(self) -> None:
         if not self.is_available:
             return
-        self._cancel_pending_track_off_retries()
+        # Deliberately does NOT cancel unpark()'s pending TRACK_OFF
+        # retries -- a real-hardware check (the "test move" feature,
+        # which unparks/pulses/re-parks in well under the driver's own
+        # ~1.5s delayed auto-track-on) caught park() cancelling them
+        # right as one was about to be needed: the driver's override can
+        # still land *after* this park() call, leaving tracking=True
+        # despite parked=True. Any already-armed retries keep firing
+        # (harmless/idempotent either way — see unpark()'s docstring);
+        # unpark() itself still cancels stale ones from a previous cycle
+        # before arming its own.
         _log.info("IndiMountParkAdapter.park(): parking %r", self._device_name)
         self._client.send_new_switch_vector(self._device_name, "TELESCOPE_PARK", {"PARK": True})
 
