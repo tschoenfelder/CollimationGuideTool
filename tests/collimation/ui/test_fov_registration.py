@@ -266,7 +266,16 @@ class TestSharpnessRatio:
     brightness gradient (e.g. sky glow) can carry plenty of standard
     deviation — enough to pass the contrast floor — without any genuine
     high-frequency detail to register against. _sharpness_ratio measures
-    that detail directly, as gradient energy relative to variance."""
+    that detail directly, as gradient energy relative to variance.
+
+    register_main_frame_in_guide_frame checks this on the template and
+    the specific guide window a candidate actually matched against
+    (padded — see _SHARPNESS_CHECK_PADDING_FACTOR — for a stabler
+    reading than the bare matched footprint), not as a single whole-frame
+    average up front — see a second real report this module's own
+    docstring records: a guide frame mixing a large flat/hazy area with
+    genuinely sharp texture elsewhere reads as unsharp on average even
+    though a real match's own window would pass easily."""
 
     def test_a_starfield_scores_much_higher_than_a_smooth_gradient(self) -> None:
         starfield = _starfield(100, 100, n_stars=30, seed=60)
@@ -321,24 +330,69 @@ class TestSharpnessRatio:
 
     def test_a_custom_lower_threshold_lets_the_search_actually_run(self) -> None:
         # Proves the parameter is genuinely load-bearing (not a no-op):
-        # with the default floor, this low-sharpness guide is rejected
-        # before the search starts and progress_callback never fires;
-        # with the floor disabled (0.0), the search actually runs.
+        # with the default floor this smooth guide's only candidate is
+        # rejected (result is None); with the floor disabled (0.0), the
+        # exact same search accepts it. The search itself always runs
+        # to completion either way (progress_callback always fires) —
+        # the floor only gates whether a candidate can become `best`,
+        # not whether the search happens at all.
         smooth_guide = np.linspace(0.0, 2000.0, 150).reshape(1, 150) * np.ones((150, 1))
         main = _starfield(40, 40, n_stars=15, seed=61)
         calls: list[tuple[int, int]] = []
 
-        register_main_frame_in_guide_frame(
+        rejected = register_main_frame_in_guide_frame(
             main,
             smooth_guide,
             approx_scale=1.0,
             scale_steps=1,
             angle_step_deg=30.0,
             angle_range_deg=(-30, 30),
+            min_score=0.0,
+        )
+        assert rejected is None
+
+        accepted = register_main_frame_in_guide_frame(
+            main,
+            smooth_guide,
+            approx_scale=1.0,
+            scale_steps=1,
+            angle_step_deg=30.0,
+            angle_range_deg=(-30, 30),
+            min_score=0.0,
             min_sharpness_ratio=0.0,
             progress_callback=lambda completed, total: calls.append((completed, total)),
         )
+        assert accepted is not None
         assert len(calls) > 0
+
+    def test_a_real_match_in_an_otherwise_flat_guide_frame_is_still_found(self) -> None:
+        # The motivating case for checking locally rather than as one
+        # whole-frame average: most of the guide frame is a smooth
+        # brightness gradient (real standard deviation, e.g. sky glow —
+        # not a perfectly flat background, which would contribute ~0 to
+        # both the gradient-energy numerator and the variance
+        # denominator and mostly cancel out) with a small genuinely
+        # sharp starfield patch in one corner — the only part a real
+        # main frame would ever actually match against. The guide's own
+        # *whole-frame* average reads below the floor even though the
+        # real match's window is comfortably above it.
+        guide = np.linspace(0.0, 2000.0, 300).reshape(1, 300) * np.ones((300, 1))
+        guide[20:80, 20:80] = _starfield(60, 60, n_stars=25, seed=70) + guide[20:80, 20:80].mean()
+        main = guide[30:70, 30:70].copy()
+
+        assert _sharpness_ratio(guide) < 0.02  # whole-frame average: below the floor
+        assert _sharpness_ratio(main) > 0.02  # the actual template: comfortably above it
+
+        result = register_main_frame_in_guide_frame(
+            main,
+            guide,
+            approx_scale=1.0,
+            scale_steps=1,
+            angle_step_deg=30.0,
+            angle_range_deg=(-30, 30),
+        )
+        assert result is not None
+        assert result.score > 0.9
 
 
 class TestSearchDownsample:

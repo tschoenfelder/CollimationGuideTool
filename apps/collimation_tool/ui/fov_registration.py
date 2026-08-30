@@ -188,16 +188,50 @@ def _normalized_cross_correlation_surface(search: np.ndarray, template: np.ndarr
 #: regions" docstring section.
 _DEFAULT_MIN_RELATIVE_CONTRAST = 0.05
 
-#: Below this, an image is treated as lacking genuine star-like
+#: Below this, a template/window is treated as lacking genuine star-like
 #: high-frequency detail regardless of its overall contrast — see
 #: register_main_frame_in_guide_frame's "Out-of-focus/low-detail
-#: images" docstring section. Every synthetic starfield this module's
+#: images" docstring section (checked locally, per candidate, not as a
+#: single whole-frame average). Every synthetic starfield this module's
 #: own test suite uses (several sizes/star counts/seeds) scores
 #: 0.16-0.23; a real, heavily out-of-focus daytime capture (sky and a
-#: blurred landscape, no resolved stars — see the incident this was
-#: added for) scored ~0.002, over 75x lower. 0.02 leaves a wide margin
-#: on both sides.
+#: blurred landscape, no resolved stars) scored ~0.002, over 75x lower.
+#: A real daytime tree/sky scene's own local tiles ranged from ~0.03
+#: (flat sky/haze patches) up to 1.5+ (branches, wires) despite that
+#: same frame's *global* average reading below this floor — the
+#: motivating case for checking locally instead. 0.02 leaves a wide
+#: margin against both known-bad references while still excluding pure
+#: flat/hazy patches.
 _DEFAULT_MIN_SHARPNESS_RATIO = 0.02
+
+#: How much larger than the matched footprint to grow a guide window
+#: before computing its _sharpness_ratio for the check above — see that
+#: constant's docstring. 2.0 (each dimension doubled, so ~4x the area,
+#: clamped to the guide frame's own bounds) took a real hopeless-pair
+#: false reading of 0.074 down to 0.004 in the incident this was pinned
+#: against; 1.0 (the bare matched footprint, tried first) did not.
+_SHARPNESS_CHECK_PADDING_FACTOR = 4.0
+
+
+def _expand_window(
+    center_row: float,
+    center_col: float,
+    height: int,
+    width: int,
+    factor: float,
+    bounds: tuple[int, int],
+) -> tuple[int, int, int, int]:
+    """A ``(row, col, height, width)`` box `factor` times as large as
+    ``height x width`` in each dimension, centered on ``(center_row,
+    center_col)`` and clamped to ``bounds`` (the source array's own
+    shape) — see _SHARPNESS_CHECK_PADDING_FACTOR.
+    """
+    bounds_h, bounds_w = bounds
+    padded_h = min(bounds_h, round(height * factor))
+    padded_w = min(bounds_w, round(width * factor))
+    row = int(min(max(0, round(center_row - padded_h / 2.0)), bounds_h - padded_h))
+    col = int(min(max(0, round(center_col - padded_w / 2.0)), bounds_w - padded_w))
+    return row, col, padded_h, padded_w
 
 
 def _sharpness_ratio(image: np.ndarray) -> float:
@@ -300,11 +334,25 @@ def register_main_frame_in_guide_frame(
     brightness gradient (sky glow, or landscape-to-sky transition) that
     happened to weakly resemble the template's own blur, not from
     genuine matchable structure. Overall contrast can't tell a smooth
-    gradient apart from real detail; this instead requires both images'
-    ``_sharpness_ratio`` (high-frequency gradient energy relative to
-    variance — see that function) to reach ``min_sharpness_ratio``,
-    checked once up front (before the search starts, so a hopeless pair
-    fails fast rather than after a full search).
+    gradient apart from real detail; this instead requires both the
+    template and the *specific guide window a candidate actually
+    matched against* to reach ``min_sharpness_ratio`` (high-frequency
+    gradient energy relative to variance — see ``_sharpness_ratio``)
+    before that candidate can be accepted as the running best.
+
+    Deliberately local, not a single whole-frame check up front: a
+    second real incident had a guide frame mixing a large flat/hazy sky
+    area with genuinely sharp texture elsewhere (trees, wires) — its
+    *average* sharpness read as low as the first incident's genuinely
+    out-of-focus case, which would wrongly reject a real match anywhere
+    in the sharp part, while a whole-template check on a main frame
+    mixing sharp content with a large flat region would average out the
+    same way in the other direction. Checking only the template and
+    window an actual high-scoring candidate covers judges each on its
+    own content instead of an unrelated average. The trade-off: a
+    hopeless pair (no sharp content anywhere in either frame) no longer
+    fails before the search starts, only after — bounded by
+    ``search_downsample`` the same as the rest of the search's cost.
 
     Returns ``None`` if no candidate reaches ``min_score`` (a real match
     typically scores well above it; unrelated frames score near 0) — the
@@ -313,7 +361,8 @@ def register_main_frame_in_guide_frame(
     would make the resized template larger than the guide frame on
     either axis (an ``approx_scale`` far too large for this pair of
     frames), if every candidate scale fails the contrast floor above, or
-    if either image fails the sharpness check above.
+    if no candidate's own template+window both pass the sharpness check
+    above.
 
     ``progress_callback``, if given, is called as ``callback(completed,
     total)`` after each (scale, angle) candidate is scored — the search
@@ -329,14 +378,6 @@ def register_main_frame_in_guide_frame(
         raise ValueError("main_mono and guide_mono must be 2D mono arrays")
     if approx_scale <= 0.0:
         raise ValueError("approx_scale must be positive")
-
-    if (
-        _sharpness_ratio(main_mono) < min_sharpness_ratio
-        or _sharpness_ratio(guide_mono) < min_sharpness_ratio
-    ):
-        # Fail fast, before the (slow) search — see "Out-of-focus/
-        # low-detail images" above.
-        return None
 
     downsample = max(1, int(search_downsample))
     if downsample > 1:
@@ -388,24 +429,70 @@ def register_main_frame_in_guide_frame(
     for scale, scaled_h, scaled_w in valid_scales:
         resized = _resize_bilinear(main_search, scaled_h, scaled_w)
         fill_value = float(resized.mean())
+
+        # The sharpness sanity check below is deliberately done at *full*
+        # resolution, on the original main_mono/guide_mono — not on
+        # main_search/guide_search, which search_downsample may have
+        # already shrunk well below full res — and over a window padded
+        # out to _SHARPNESS_CHECK_PADDING_FACTOR times the matched
+        # footprint (see there), not the bare matched rectangle. Found
+        # empirically, on the real incident that pinned this dataset: a
+        # bare 53x93 matched-footprint crop read 0.074 — comfortably
+        # clearing min_sharpness_ratio in an image confirmed genuinely
+        # hopeless — while the same physical footprint doubled in each
+        # dimension read 0.004, correctly below it. A small crop's
+        # sharpness_ratio is just too noisy an estimate to trust on its
+        # own; padding it out is what actually fixes that, independent of
+        # resolution. Recomputed once per scale here (rotation-invariant,
+        # so not needed per angle) — cheap relative to the FFT correlation
+        # this loop already pays for.
+        full_scaled_h = max(1, round(main_mono.shape[0] * scale))
+        full_scaled_w = max(1, round(main_mono.shape[1] * scale))
+        full_resized = _resize_bilinear(main_mono, full_scaled_h, full_scaled_w)
+        template_sharp = _sharpness_ratio(full_resized)
+
         for angle in angles:
             rotated = _rotate_bilinear(resized, float(angle), fill_value)
             surface = _normalized_cross_correlation_surface(guide_search, rotated)
             row, col = np.unravel_index(int(np.argmax(surface)), surface.shape)
             score = float(surface[row, col])
-            if best is None or score > best.score:
-                best = FovRegistrationResult(
-                    center_x_px=(col + scaled_w / 2.0) * downsample,
-                    center_y_px=(row + scaled_h / 2.0) * downsample,
-                    width_px=float(scaled_w) * downsample,
-                    height_px=float(scaled_h) * downsample,
-                    rotation_deg=float(angle),
-                    scale=float(scale),
-                    score=score,
-                )
             completed += 1
             if progress_callback is not None:
                 progress_callback(completed, total_candidates)
+            if best is not None and score <= best.score:
+                continue
+            # Local, not global — see "Out-of-focus/low-detail images"
+            # above: checked on the template and the *specific* guide
+            # window this candidate actually matched against, not the
+            # whole frames. A frame that mixes flat sky with genuinely
+            # sharp texture elsewhere (confirmed on a real incident) would
+            # otherwise fail this check on average even when the actual
+            # matched region is perfectly fine, or pass it on average
+            # while the actual matched region is the flat part.
+            full_row, full_col = row * downsample, col * downsample
+            win_row, win_col, win_h, win_w = _expand_window(
+                full_row + full_scaled_h / 2.0,
+                full_col + full_scaled_w / 2.0,
+                full_scaled_h,
+                full_scaled_w,
+                _SHARPNESS_CHECK_PADDING_FACTOR,
+                guide_mono.shape,
+            )
+            window = guide_mono[win_row : win_row + win_h, win_col : win_col + win_w]
+            if (
+                template_sharp < min_sharpness_ratio
+                or _sharpness_ratio(window) < min_sharpness_ratio
+            ):
+                continue
+            best = FovRegistrationResult(
+                center_x_px=(col + scaled_w / 2.0) * downsample,
+                center_y_px=(row + scaled_h / 2.0) * downsample,
+                width_px=float(scaled_w) * downsample,
+                height_px=float(scaled_h) * downsample,
+                rotation_deg=float(angle),
+                scale=float(scale),
+                score=score,
+            )
 
     if best is None or best.score < min_score:
         return None
