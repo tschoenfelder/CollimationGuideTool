@@ -84,6 +84,51 @@ class TestUuidAndBundleCreation:
         assert incident["reason"] == "star not recentered"
         assert incident["exception"] is None
         assert "timestamp" in incident
+        assert "version" in incident
+        assert "git_commit" in incident
+
+
+class TestVersionAndGitCommit:
+    """`git_commit` exists precisely because the static package version
+    doesn't change per commit in this project's dev workflow — a bundle
+    with only "0.1.0" can't say whether a given fix was actually deployed
+    yet. See _detect_git_commit()'s docstring for the incident that
+    prompted this."""
+
+    def test_explicit_version_and_git_commit_are_used_verbatim(self, tmp_path: Path) -> None:
+        service = DiagnosticService(
+            app_name="CollimationTool",
+            diagnostics_dir=tmp_path,
+            version="9.9.9",
+            git_commit="deadbeef0000",
+        )
+        bundle = service.capture_manual(reason="pin the build info")
+        assert bundle is not None
+        incident = _read_incident(bundle.path)
+        assert incident["version"] == "9.9.9"
+        assert incident["git_commit"] == "deadbeef0000"
+
+    def test_git_commit_is_auto_detected_from_this_real_checkout(self, tmp_path: Path) -> None:
+        """No explicit git_commit given — this test itself runs from a
+        real git checkout, so auto-detection should find something."""
+        service = DiagnosticService(app_name="CollimationTool", diagnostics_dir=tmp_path)
+        bundle = service.capture_manual(reason="auto-detect")
+        assert bundle is not None
+        incident = _read_incident(bundle.path)
+        assert isinstance(incident["git_commit"], str)
+        assert len(incident["git_commit"]) > 0
+
+    def test_git_commit_is_none_when_detection_fails(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import astrotool_core.diagnostics.service as service_module
+
+        monkeypatch.setattr(service_module, "_detect_git_commit", lambda: None)
+        service = DiagnosticService(app_name="CollimationTool", diagnostics_dir=tmp_path)
+        bundle = service.capture_manual(reason="detection unavailable")
+        assert bundle is not None
+        incident = _read_incident(bundle.path)
+        assert incident["git_commit"] is None
 
 
 class TestExceptionCapture:

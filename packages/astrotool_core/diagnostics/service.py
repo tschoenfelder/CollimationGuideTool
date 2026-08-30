@@ -34,6 +34,7 @@ import itertools
 import json
 import logging
 import shutil
+import subprocess
 import time
 import traceback
 import uuid
@@ -136,6 +137,39 @@ def _detect_version() -> str | None:
         return None
 
 
+def _detect_git_commit() -> str | None:
+    """Best-effort short git commit hash of the running checkout.
+
+    This project doesn't bump ``[project.version]`` per commit — every
+    bundle otherwise reports the same static "0.1.0" regardless of which
+    fix was actually deployed when it was captured, making "was this
+    already fixed?" unanswerable from the bundle alone (see the incident
+    that prompted this: a bug reported again minutes after a fix had been
+    pushed turned out to be a not-yet-restarted process still running the
+    old code — obvious in hindsight, invisible from the bundle at the
+    time). An editable install (``pip install -e .``, this project's only
+    supported install path — see install.md) means the running package's
+    own files live inside the git working tree, so `git rev-parse` run
+    from there reports exactly what's checked out. Returns ``None`` on
+    any failure (git not installed, not actually a git checkout, etc.) —
+    this is a diagnostics nicety, never worth failing a capture over.
+    """
+    repo_root = Path(__file__).resolve().parents[3]
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short=12", "HEAD"],
+            cwd=repo_root,
+            capture_output=True,
+            text=True,
+            timeout=2.0,
+            check=True,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    commit = result.stdout.strip()
+    return commit or None
+
+
 def find_bundle(
     incident_id: str, *, diagnostics_dir: Path | str = DEFAULT_DIAGNOSTICS_DIR
 ) -> Path | None:
@@ -169,6 +203,7 @@ class DiagnosticService:
         max_bundles: int = DEFAULT_MAX_BUNDLES,
         max_age_days: float = DEFAULT_MAX_AGE_DAYS,
         version: str | None = None,
+        git_commit: str | None = None,
         recent_logs: Callable[[], list[str]] | None = None,
     ) -> None:
         self._app_name = app_name
@@ -176,6 +211,7 @@ class DiagnosticService:
         self._max_bundles = max_bundles
         self._max_age_days = max_age_days
         self._version = version if version is not None else _detect_version()
+        self._git_commit = git_commit if git_commit is not None else _detect_git_commit()
         self._recent_logs = recent_logs
         self._context_provider: Callable[[], dict[str, Any]] | None = None
         self._frame_provider: Callable[[], Sequence[Frame]] | None = None
@@ -311,6 +347,7 @@ class DiagnosticService:
                 "sequence": next(self._sequence),
                 "app": self._app_name,
                 "version": self._version,
+                "git_commit": self._git_commit,
                 "trigger": trigger,
                 "reason": reason,
                 "exception": _exception_payload(exception),

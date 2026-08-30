@@ -21,6 +21,16 @@ or when the focuser was never found available (no focuser hardware
 behind the connected INDI device) — returns safe defaults / rejects the
 action, never raises, matching `NoFocuser`/`FakeFocuser`'s tolerance and
 the shared `FocuserPort` contract test's expectations.
+
+Logging (issue: focuser jitter reports where the app's own log showed
+nothing at all about the moves in question): `connect()` turns the
+driver's own `DEBUG`/`DEBUG_LEVEL` properties fully on — indiserver's own
+`<date>.islog` then captures the driver's internal view of every move in
+detail, which is what actually let a later real-hardware repro get
+traced at the wire level. Every `move()`/`move_absolute()`/`stop()` call
+is also logged here at INFO, so this app's *own* diagnostic bundle
+(`application.log`) has a record too, not just indiserver's separate log
+file.
 """
 
 from __future__ import annotations
@@ -70,6 +80,7 @@ class IndiFocuserAdapter(FocuserPort):
                 f"within {self._connect_timeout_s}s — is indiserver running with this driver?"
             )
         self._connected = True
+        self._enable_verbose_driver_logging()
         # The driver only defines the focuser vectors once it has probed
         # for real focuser hardware post-connect (mirrors onstep-adapter's
         # own `:FA#` availability check) — a short wait, and *not*
@@ -82,6 +93,40 @@ class IndiFocuserAdapter(FocuserPort):
             _log.warning(
                 "IndiFocuserAdapter: %r connected but no focuser hardware detected",
                 self._device_name,
+            )
+        else:
+            _log.info(
+                "IndiFocuserAdapter: connected to %r at position=%d, max=%d",
+                self._device_name,
+                self.get_position(),
+                self.get_max_position(),
+            )
+
+    def _enable_verbose_driver_logging(self) -> None:
+        """Turn the driver's own DEBUG output fully on, so indiserver's
+        log file captures maximum detail about what the driver/firmware
+        actually did for every move — see module docstring's "Logging".
+        Best-effort: these properties existing at all is a driver detail
+        this adapter otherwise doesn't depend on, so a failure here must
+        never block a successful connect.
+        """
+        try:
+            self._client.send_new_switch_vector(self._device_name, "DEBUG", {"ENABLE": True})
+            self._client.send_new_switch_vector(
+                self._device_name,
+                "DEBUG_LEVEL",
+                {
+                    "DBG_ERROR": True,
+                    "DBG_WARNING": True,
+                    "DBG_SESSION": True,
+                    "DBG_DEBUG": True,
+                    "DBG_EXTRA_1": True,
+                    "DBG_EXTRA_2": True,
+                },
+            )
+        except ConnectionError:
+            _log.warning(
+                "IndiFocuserAdapter: could not enable verbose driver logging", exc_info=True
             )
 
     def disconnect(self) -> None:
@@ -132,6 +177,9 @@ class IndiFocuserAdapter(FocuserPort):
     def move(self, steps: int) -> None:
         if not self.is_available or steps == 0:
             return
+        _log.info(
+            "IndiFocuserAdapter.move(): steps=%d (from position=%d)", steps, self.get_position()
+        )
         self._client.send_new_switch_vector(
             self._device_name,
             "FOCUS_MOTION",
@@ -147,6 +195,11 @@ class IndiFocuserAdapter(FocuserPort):
             return FocuserMoveResult(
                 accepted=False, target_position=steps, start_position=start_position
             )
+        _log.info(
+            "IndiFocuserAdapter.move_absolute(): target=%d (from position=%d)",
+            steps,
+            start_position,
+        )
         self._client.send_new_number_vector(
             self._device_name, "ABS_FOCUS_POSITION", {"FOCUS_ABSOLUTE_POSITION": steps}
         )
@@ -157,6 +210,9 @@ class IndiFocuserAdapter(FocuserPort):
     def stop(self) -> None:
         if not self.is_available:
             return
+        _log.info(
+            "IndiFocuserAdapter.stop(): aborting motion at position=%d", self.get_position()
+        )
         self._client.send_new_switch_vector(
             self._device_name, "FOCUS_ABORT_MOTION", {"ABORT": True}
         )

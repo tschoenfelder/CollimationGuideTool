@@ -63,6 +63,50 @@ class TestNotConnected:
             adapter.connect()
 
 
+class TestVerboseDriverLogging:
+    """connect() turns the driver's own DEBUG output fully on — see
+    _enable_verbose_driver_logging's docstring (prompted by two focuser
+    jitter reports where this app's own log showed nothing at all)."""
+
+    def test_connect_enables_debug_and_all_debug_levels(
+        self, focuser: IndiFocuserAdapter
+    ) -> None:
+        sent: list[tuple[str, dict[str, bool]]] = []
+        original = focuser._client.send_new_switch_vector
+
+        def spy(device: str, name: str, elements: dict[str, bool]) -> None:
+            sent.append((name, elements))
+            original(device, name, elements)
+
+        focuser._client.send_new_switch_vector = spy  # type: ignore[method-assign]
+        focuser.connect()
+
+        sent_by_name = dict(sent)
+        assert sent_by_name["DEBUG"] == {"ENABLE": True}
+        assert sent_by_name["DEBUG_LEVEL"] == {
+            "DBG_ERROR": True,
+            "DBG_WARNING": True,
+            "DBG_SESSION": True,
+            "DBG_DEBUG": True,
+            "DBG_EXTRA_1": True,
+            "DBG_EXTRA_2": True,
+        }
+
+    def test_a_failure_enabling_verbose_logging_does_not_block_connect(
+        self, focuser: IndiFocuserAdapter
+    ) -> None:
+        original = focuser._client.send_new_switch_vector
+
+        def flaky(device: str, name: str, elements: dict[str, bool]) -> None:
+            if name in ("DEBUG", "DEBUG_LEVEL"):
+                raise ConnectionError("simulated: driver has no DEBUG property")
+            original(device, name, elements)
+
+        focuser._client.send_new_switch_vector = flaky  # type: ignore[method-assign]
+        focuser.connect()  # must not raise despite the injected failure
+        assert focuser.is_available is True
+
+
 class TestConnected:
     def test_connect_makes_the_focuser_available(self, focuser: IndiFocuserAdapter) -> None:
         focuser.connect()
