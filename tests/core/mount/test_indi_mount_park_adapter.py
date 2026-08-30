@@ -1,0 +1,130 @@
+"""Full MountParkPort behavior for IndiMountParkAdapter against a real
+(loopback) FakeIndiServer — mirrors test_indi_focuser_adapter.py's
+pattern for the same reasons (real coverage of the connected paths,
+unlike IndiMountAdapter's hardware-only ones)."""
+
+from __future__ import annotations
+
+import time
+from collections.abc import Callable, Iterator
+
+import pytest
+from astrotool_core.mount.indi_mount_park_adapter import IndiMountParkAdapter
+from astrotool_core.testing.fake_indi_server import FakeIndiServer
+
+
+@pytest.fixture
+def server() -> Iterator[FakeIndiServer]:
+    fake = FakeIndiServer(start_parked=True, park_delay_s=0.05)
+    fake.start()
+    try:
+        yield fake
+    finally:
+        fake.stop()
+
+
+@pytest.fixture
+def mount(server: FakeIndiServer) -> Iterator[IndiMountParkAdapter]:
+    adapter = IndiMountParkAdapter(server.host, server.port, connect_timeout_s=2.0)
+    yield adapter
+    adapter.disconnect()
+
+
+class TestNotConnected:
+    def test_is_available_is_false(self) -> None:
+        adapter = IndiMountParkAdapter("127.0.0.1", 1)
+        assert adapter.is_available is False
+
+    def test_status_reports_unavailable_and_not_parked_or_tracking(self) -> None:
+        adapter = IndiMountParkAdapter("127.0.0.1", 1)
+        status = adapter.status()
+        assert status.available is False
+        assert status.parked is False
+        assert status.tracking is False
+
+    def test_park_is_a_safe_no_op(self) -> None:
+        adapter = IndiMountParkAdapter("127.0.0.1", 1)
+        adapter.park()  # must not raise
+
+    def test_unpark_is_a_safe_no_op(self) -> None:
+        adapter = IndiMountParkAdapter("127.0.0.1", 1)
+        adapter.unpark()  # must not raise
+
+    def test_connect_to_nothing_listening_raises_connection_error(self) -> None:
+        adapter = IndiMountParkAdapter("127.0.0.1", 1, connect_timeout_s=0.5)
+        with pytest.raises(ConnectionError):
+            adapter.connect()
+
+
+class TestConnected:
+    def test_connect_makes_the_mount_available(self, mount: IndiMountParkAdapter) -> None:
+        mount.connect()
+        assert mount.is_available is True
+
+    def test_starts_parked_with_tracking_off(self, mount: IndiMountParkAdapter) -> None:
+        mount.connect()
+        status = mount.status()
+        assert status.parked is True
+        assert status.tracking is False
+
+    def test_unpark_clears_parked_state(self, mount: IndiMountParkAdapter) -> None:
+        mount.connect()
+        mount.unpark()
+        _wait_until(lambda: not mount.status().parked)
+        assert mount.status().parked is False
+
+    def test_unpark_directly_deactivates_tracking(self, server: FakeIndiServer) -> None:
+        # Simulate the mount having been left tracking (e.g. a prior
+        # session) -- unpark() must turn it off regardless, per
+        # MountParkPort.unpark()'s contract, not just leave whatever
+        # tracking state the mount happened to already report.
+        mount = IndiMountParkAdapter(server.host, server.port, connect_timeout_s=2.0)
+        mount.connect()
+        server._tracking = True  # noqa: SLF001 -- test setup, simulating prior state
+        mount.unpark()
+        _wait_until(lambda: not mount.status().tracking)
+        assert mount.status().tracking is False
+        mount.disconnect()
+
+    def test_park_sets_parked_state(self, mount: IndiMountParkAdapter) -> None:
+        mount.connect()
+        mount.unpark()
+        _wait_until(lambda: not mount.status().parked)
+        mount.park()
+        _wait_until(lambda: mount.status().parked)
+        assert mount.status().parked is True
+
+    def test_disconnect_makes_the_mount_unavailable(self, mount: IndiMountParkAdapter) -> None:
+        mount.connect()
+        mount.disconnect()
+        assert mount.is_available is False
+
+
+class TestMountInterfaceUnavailable:
+    def test_connect_succeeds_but_mount_is_not_available(self) -> None:
+        fake = FakeIndiServer(mount_available=False)
+        fake.start()
+        try:
+            adapter = IndiMountParkAdapter(fake.host, fake.port, connect_timeout_s=2.0)
+            adapter.connect()
+            try:
+                assert adapter.is_available is False
+                status = adapter.status()
+                assert status.available is False
+                assert status.parked is False
+                assert status.tracking is False
+                adapter.park()  # must not raise
+                adapter.unpark()  # must not raise
+            finally:
+                adapter.disconnect()
+        finally:
+            fake.stop()
+
+
+def _wait_until(
+    predicate: Callable[[], bool], timeout_s: float = 2.0, message: str = "condition never met"
+) -> None:
+    deadline = time.monotonic() + timeout_s
+    while not predicate():
+        assert time.monotonic() < deadline, message
+        time.sleep(0.01)

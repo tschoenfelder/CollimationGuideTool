@@ -48,6 +48,16 @@ over the main optical train's OnStep focuser, connected via a real
 indiserver — see `astrotool_core.focus.indi_focuser_adapter`'s docstring
 for why this one, unlike `mount/indi_adapter.py`, genuinely speaks INDI.
 
+Mount: `MountParkPanel` (`mount` constructor param, defaulting to
+`NoMountPark`) gives park/unpark-only control over the OnStep mount, over
+the same real indiserver connection as the focuser (a separate
+`IndiClient` socket to the same device) — see
+`astrotool_core.mount.indi_mount_park_adapter` and `MountParkPort`'s own
+docstring for why this is a deliberately separate, narrower port than
+`MountPort` (which is guiding-pulse-only). Unparking always immediately
+deactivates tracking too, rather than trusting the mount's own
+post-unpark default.
+
 Startup settings restore: each panel's connected camera (by camera_id)
 plus exposure/gain/auto-exposure is saved to
 `~/.CollimationGuideTool/config.toml` (`camera_settings_path`, injectable
@@ -96,6 +106,8 @@ from astrotool_core.diagnostics import DiagnosticService
 from astrotool_core.focus.no_focuser import NoFocuser
 from astrotool_core.focus.port import FocuserPort
 from astrotool_core.frames.frame import Frame
+from astrotool_core.mount.no_mount_park import NoMountPark
+from astrotool_core.mount.park_port import MountParkPort
 from astrotool_core.optics import load_pixel_scale_arcsec
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QCloseEvent
@@ -116,6 +128,7 @@ from collimation_tool.ui.focuser_panel import FocuserPanel
 from collimation_tool.ui.fov_calibrator import FovCalibrator
 from collimation_tool.ui.fov_overlay import compute_fov_overlay_rect
 from collimation_tool.ui.fov_registration import FovRegistrationResult, registration_corners
+from collimation_tool.ui.mount_park_panel import MountParkPanel
 
 _CALIBRATION_POLL_INTERVAL_MS = 200
 
@@ -129,6 +142,7 @@ class MainWindow(QMainWindow):
         *,
         guide_camera: CameraPort | None = None,
         focuser: FocuserPort | None = None,
+        mount: MountParkPort | None = None,
         device_lister: Callable[[], list[TouptekDeviceInfo]] = _list_touptek_devices,
         camera_factory: Callable[[str], CameraPort] = default_camera_factory,
         diagnostics: DiagnosticService | None = None,
@@ -172,6 +186,7 @@ class MainWindow(QMainWindow):
         self._right_panel.connected_device_changed.connect(self._on_right_camera_changed)
 
         self._focuser_panel = FocuserPanel(focuser if focuser is not None else NoFocuser())
+        self._mount_panel = MountParkPanel(mount if mount is not None else NoMountPark())
 
         # Restore last session's connected camera + exposure/gain/
         # auto-exposure per panel — see module docstring's "Startup
@@ -251,6 +266,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(diagnostics_row)
         layout.addLayout(calibration_row)
         layout.addWidget(self._focuser_panel)
+        layout.addWidget(self._mount_panel)
         layout.addLayout(panels_row, stretch=1)
 
         central = QWidget()
@@ -366,6 +382,7 @@ class MainWindow(QMainWindow):
             "left": self._left_panel.diagnostic_context(),
             "right": self._right_panel.diagnostic_context(),
             "focuser": self._focuser_panel.diagnostic_context(),
+            "mount": self._mount_panel.diagnostic_context(),
         }
         if self._last_calibration_result is not None:
             # The calibration result behind whatever polygon the guide
@@ -426,4 +443,5 @@ class MainWindow(QMainWindow):
         self._left_panel.stop()
         self._right_panel.stop()
         self._focuser_panel.stop()
+        self._mount_panel.stop()
         super().closeEvent(event)

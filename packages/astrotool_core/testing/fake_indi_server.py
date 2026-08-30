@@ -5,11 +5,14 @@ in tests, on any platform (no indiserver/libindi install needed).
 Simulates one device (default `"LX200 OnStep"`, matching the real rig's
 INDI OnStep driver — see `IndiFocuserAdapter`'s docstring) with a
 `CONNECTION` switch vector always present, and — only after a simulated
-connect, mirroring the real driver's own "focuser probed after connect"
-behavior — the standard libindi Focuser Interface vectors
+connect, mirroring the real driver's own "interfaces probed after
+connect" behavior — the standard libindi Focuser Interface vectors
 (`ABS_FOCUS_POSITION`, `FOCUS_MAX`, `FOCUS_MOTION`, `REL_FOCUS_POSITION`,
 `FOCUS_ABORT_MOTION`), unless `focuser_available=False` (simulating "no
-focuser hardware detected").
+focuser hardware detected"), and the standard libindi Telescope
+Interface's park/tracking vectors (`TELESCOPE_PARK`,
+`TELESCOPE_TRACK_STATE` — see `IndiMountParkAdapter`), unless
+`mount_available=False`.
 
 Ported in spirit from `fake_touptek.py`'s configurable-failure-mode
 style: construct with the failure mode you want, `start()`, point an
@@ -37,12 +40,19 @@ class FakeIndiServer:
         start_position: int = 5000,
         max_position: int = 50000,
         move_delay_s: float = 0.05,
+        mount_available: bool = True,
+        start_parked: bool = True,
+        park_delay_s: float = 0.05,
     ) -> None:
         self._device_name = device_name
         self._focuser_available = focuser_available
         self._position = start_position
         self._max_position = max_position
         self._move_delay_s = move_delay_s
+        self._mount_available = mount_available
+        self._parked = start_parked
+        self._tracking = False
+        self._park_delay_s = park_delay_s
 
         self._connected = False
         self._direction_outward = True
@@ -166,6 +176,18 @@ class FakeIndiServer:
         )
         if self._connected and self._focuser_available:
             self._send_focuser_properties()
+        if self._connected and self._mount_available:
+            self._send_mount_properties()
+
+    def _send_mount_properties(self) -> None:
+        self._def_switch_vector(
+            "TELESCOPE_PARK", "Ok", {"PARK": self._parked, "UNPARK": not self._parked}
+        )
+        self._def_switch_vector(
+            "TELESCOPE_TRACK_STATE",
+            "Ok",
+            {"TRACK_ON": self._tracking, "TRACK_OFF": not self._tracking},
+        )
 
     def _send_focuser_properties(self) -> None:
         self._def_number_vector(
@@ -190,6 +212,20 @@ class FakeIndiServer:
             )
             if self._connected and self._focuser_available:
                 self._send_focuser_properties()
+            if self._connected and self._mount_available:
+                self._send_mount_properties()
+        elif name == "TELESCOPE_PARK":
+            if elements.get("UNPARK") == "On":
+                self._set_parked(False)
+            elif elements.get("PARK") == "On":
+                self._set_parked(True)
+        elif name == "TELESCOPE_TRACK_STATE":
+            self._tracking = elements.get("TRACK_ON") == "On"
+            self._send_switch_vector(
+                "TELESCOPE_TRACK_STATE",
+                "Ok",
+                {"TRACK_ON": self._tracking, "TRACK_OFF": not self._tracking},
+            )
         elif name == "FOCUS_MOTION":
             self._direction_outward = elements.get("FOCUS_OUTWARD") == "On"
             self._send_switch_vector(
@@ -227,6 +263,22 @@ class FakeIndiServer:
             )
 
         timer = threading.Timer(self._move_delay_s, _finish)
+        timer.daemon = True
+        self._pending_timers.append(timer)
+        timer.start()
+
+    def _set_parked(self, parked: bool) -> None:
+        self._send_switch_vector(
+            "TELESCOPE_PARK", "Busy", {"PARK": parked, "UNPARK": not parked}
+        )
+
+        def _finish() -> None:
+            self._parked = parked
+            self._send_switch_vector(
+                "TELESCOPE_PARK", "Ok", {"PARK": self._parked, "UNPARK": not self._parked}
+            )
+
+        timer = threading.Timer(self._park_delay_s, _finish)
         timer.daemon = True
         self._pending_timers.append(timer)
         timer.start()

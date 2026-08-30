@@ -13,6 +13,8 @@ from astrotool_core.config import load_camera_settings
 from astrotool_core.diagnostics import DiagnosticService
 from astrotool_core.focus.fake_focuser import FakeFocuser
 from astrotool_core.focus.port import FocuserStatus
+from astrotool_core.mount.park_port import MountParkStatus
+from astrotool_core.testing.fake_mount_park import FakeMountPark
 from astrotool_core.testing.fake_touptek import FakeTouptekCamera
 from astrotool_core.testing.frame_factory import donut_image
 from collimation_tool.ui.main_window import MainWindow
@@ -1463,3 +1465,220 @@ class TestFocuserOneMoveAtATime:
         panel._move_issued_at = time.monotonic() - 999.0  # simulate elapsed time
         panel._poll_status()
         assert panel._out_button.isEnabled()
+
+
+class _ScriptedTransitioningMountPark(FakeMountPark):
+    """FakeMountPark's park()/unpark() settle instantly, which can't
+    exercise a genuine Busy->Ok transition. This reports the *opposite*
+    of the requested parked state for `busy_polls` simulated poll cycles
+    after each park()/unpark() call before settling — mirroring
+    _ScriptedMovingFocuser's role for the focuser panel. `tick()` once
+    per simulated poll cycle, decoupled from however many times
+    MountParkPanel itself happens to read status() within one real
+    _poll_status() call."""
+
+    def __init__(self, *, busy_polls: int = 2, start_parked: bool = True) -> None:
+        super().__init__(start_parked=start_parked)
+        self._busy_polls = busy_polls
+        self._remaining_busy = 0
+        self._pending_parked: bool | None = None
+
+    def park(self) -> None:
+        self._pending_parked = True
+        self._remaining_busy = self._busy_polls
+
+    def unpark(self) -> None:
+        self._pending_parked = False
+        self._remaining_busy = self._busy_polls
+        self._tracking = False
+
+    def status(self) -> MountParkStatus:
+        base = super().status()
+        if self._remaining_busy > 0 and self._pending_parked is not None:
+            return MountParkStatus(
+                available=base.available, parked=not self._pending_parked, tracking=base.tracking
+            )
+        return base
+
+    def tick(self) -> None:
+        if self._remaining_busy > 0:
+            self._remaining_busy -= 1
+            if self._remaining_busy == 0 and self._pending_parked is not None:
+                self._parked = self._pending_parked
+                self._pending_parked = None
+
+
+class TestMountParkPanel:
+    """Park/unpark-only control for the OnStep mount — see
+    MountParkPanel's docstring. FakeMountPark stands in for a real
+    IndiMountParkAdapter here; the INDI wire protocol itself is covered
+    by tests/core/mount and tests/contracts instead."""
+
+    def test_starts_disconnected_with_action_buttons_disabled(self, qapp: object) -> None:
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)), device_lister=lambda: [], mount=FakeMountPark()
+        )
+        panel = window._mount_panel
+        assert not panel._park_button.isEnabled()
+        assert not panel._unpark_button.isEnabled()
+
+    def test_connecting_while_parked_enables_only_unpark(self, qapp: object) -> None:
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)),
+            device_lister=lambda: [],
+            mount=FakeMountPark(start_parked=True),
+        )
+        panel = window._mount_panel
+        panel._connect_button.setChecked(True)
+        assert not panel._park_button.isEnabled()
+        assert panel._unpark_button.isEnabled()
+        window.close()  # stop the panel's poll timer — see conftest.py's Qt-flush fixture
+
+    def test_connecting_while_unparked_enables_only_park(self, qapp: object) -> None:
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)),
+            device_lister=lambda: [],
+            mount=FakeMountPark(start_parked=False),
+        )
+        panel = window._mount_panel
+        panel._connect_button.setChecked(True)
+        assert panel._park_button.isEnabled()
+        assert not panel._unpark_button.isEnabled()
+        window.close()
+
+    def test_connect_failure_keeps_buttons_disabled_and_shows_the_error(
+        self, qapp: object
+    ) -> None:
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)),
+            device_lister=lambda: [],
+            mount=FakeMountPark(fail_connect=True),
+        )
+        panel = window._mount_panel
+        panel._connect_button.setChecked(True)
+        assert not panel._park_button.isEnabled()
+        assert not panel._unpark_button.isEnabled()
+        assert "failed" in panel._status_label.text().lower()
+
+    def test_unpark_clears_parked_state_and_deactivates_tracking(self, qapp: object) -> None:
+        mount = FakeMountPark(start_parked=True)
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [], mount=mount)
+        panel = window._mount_panel
+        panel._connect_button.setChecked(True)
+        mount._tracking = True  # simulate a prior session left tracking on  # noqa: SLF001
+        panel._unpark_button.click()
+        assert mount.status().parked is False
+        assert mount.status().tracking is False
+        window.close()
+
+    def test_park_sets_parked_state(self, qapp: object) -> None:
+        mount = FakeMountPark(start_parked=False)
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [], mount=mount)
+        panel = window._mount_panel
+        panel._connect_button.setChecked(True)
+        panel._park_button.click()
+        assert mount.status().parked is True
+        window.close()
+
+    def test_a_mount_with_no_interface_detected_keeps_buttons_disabled(
+        self, qapp: object
+    ) -> None:
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)),
+            device_lister=lambda: [],
+            mount=FakeMountPark(available=False),
+        )
+        panel = window._mount_panel
+        panel._connect_button.setChecked(True)
+        assert not panel._park_button.isEnabled()
+        assert not panel._unpark_button.isEnabled()
+        assert "no mount interface" in panel._status_label.text().lower()
+        window.close()
+
+    def test_diagnostic_context_includes_mount_state(self, qapp: object) -> None:
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)), device_lister=lambda: [], mount=FakeMountPark()
+        )
+        window._mount_panel._connect_button.setChecked(True)
+        context = window._diagnostic_context()
+        assert context["mount"]["available"] is True
+        window.close()
+
+    def test_closing_the_window_disconnects_the_mount(self, qapp: object) -> None:
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)), device_lister=lambda: [], mount=FakeMountPark()
+        )
+        window._mount_panel._connect_button.setChecked(True)
+        window.close()
+        assert not window._mount_panel._connected
+
+
+class TestMountParkOneActionAtATime:
+    """Same class of protection as TestFocuserOneMoveAtATime, for the
+    same reason: park/unpark is a slow, real hardware transition, so a
+    second click must not be able to race the first."""
+
+    def test_action_buttons_disable_immediately_on_click(self, qapp: object) -> None:
+        mount = _ScriptedTransitioningMountPark(start_parked=True)
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [], mount=mount)
+        panel = window._mount_panel
+        panel._connect_button.setChecked(True)
+        panel._unpark_button.click()
+        assert not panel._park_button.isEnabled()
+        assert not panel._unpark_button.isEnabled()
+        window.close()
+
+    def test_a_click_while_an_action_is_in_flight_is_ignored(self, qapp: object) -> None:
+        mount = _ScriptedTransitioningMountPark(start_parked=True, busy_polls=5)
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [], mount=mount)
+        panel = window._mount_panel
+        panel._connect_button.setChecked(True)
+        panel._unpark_button.click()
+        panel._park_button.click()  # disabled -- Qt refuses to fire clicked()
+        mount.tick()
+        mount.tick()
+        mount.tick()
+        mount.tick()
+        mount.tick()
+        panel._poll_status()
+        assert mount.status().parked is False  # the ignored park() never took effect
+        window.close()
+
+    def test_buttons_reenable_after_a_genuine_busy_then_ok_transition(
+        self, qapp: object
+    ) -> None:
+        mount = _ScriptedTransitioningMountPark(start_parked=True, busy_polls=2)
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [], mount=mount)
+        panel = window._mount_panel
+        panel._connect_button.setChecked(True)
+        panel._unpark_button.click()
+        assert not panel._unpark_button.isEnabled()
+
+        panel._poll_status()
+        assert not panel._park_button.isEnabled()
+        mount.tick()
+        panel._poll_status()
+        assert not panel._park_button.isEnabled()
+
+        mount.tick()  # settles: busy_polls exhausted
+        panel._poll_status()
+        assert panel._park_button.isEnabled()
+        assert not panel._unpark_button.isEnabled()
+        window.close()
+
+    def test_a_stuck_busy_signal_is_released_by_the_confirmation_timeout(
+        self, qapp: object
+    ) -> None:
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)),
+            device_lister=lambda: [],
+            mount=FakeMountPark(start_parked=True),
+        )
+        panel = window._mount_panel
+        panel._connect_button.setChecked(True)
+        panel._unpark_button.click()
+
+        panel._action_issued_at = time.monotonic() - 999.0  # simulate elapsed time
+        panel._poll_status()
+        assert panel._park_button.isEnabled()
+        window.close()

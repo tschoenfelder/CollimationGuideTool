@@ -19,6 +19,8 @@ from astrotool_core.camera.replay_camera import ReplayCamera
 from astrotool_core.diagnostics import DiagnosticService, RecentLogHandler
 from astrotool_core.focus.indi_focuser_adapter import IndiFocuserAdapter
 from astrotool_core.focus.port import FocuserPort
+from astrotool_core.mount.indi_mount_park_adapter import IndiMountParkAdapter
+from astrotool_core.mount.park_port import MountParkPort
 from astrotool_core.testing.frame_factory import donut_image
 from PySide6.QtWidgets import QApplication
 
@@ -62,6 +64,15 @@ def _default_focuser() -> FocuserPort:
     (e.g. for `NoFocuser()`) is a one-line change here; no other file
     needs to know."""
     return IndiFocuserAdapter()
+
+
+def _default_mount() -> MountParkPort:
+    """The OnStep mount, park/unpark only — over the same real indiserver
+    as the focuser (see `IndiMountParkAdapter`'s docstring), a separate
+    connection to the same device. Swapping this out (e.g. for
+    `NoMountPark()`) is a one-line change here; no other file needs to
+    know."""
+    return IndiMountParkAdapter()
 
 
 def _install_excepthook(diagnostics: DiagnosticService) -> None:
@@ -121,6 +132,7 @@ def main() -> None:
         _default_camera(),
         guide_camera=_default_camera(),
         focuser=_default_focuser(),
+        mount=_default_mount(),
         diagnostics=diagnostics,
     )
     window.show()
