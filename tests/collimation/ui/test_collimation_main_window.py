@@ -1750,6 +1750,10 @@ class TestMountTestMovePanel:
         window._test_move_panel._connect_button.setChecked(True)
         assert not window._test_move_panel._test_move_button.isEnabled()
         assert "failed" in window._test_move_panel._status_label.text().lower()
+        # mount_park's own connect succeeded (only pulse_mount fails) --
+        # its poll timer is running and must be stopped, see conftest.py's
+        # Qt-flush fixture / the segfault class this class of leak causes.
+        window.close()
 
     def test_clicking_test_move_pulses_the_selected_direction(self, qapp: object) -> None:
         pulse_mount = FakeMountAdapter()
