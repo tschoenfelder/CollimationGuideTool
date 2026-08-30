@@ -137,11 +137,13 @@ class TestNotConnected:
         c = IndiClient("127.0.0.1", 1)
         assert c.get_vector("LX200 OnStep", "CONNECTION") is None
 
-    def test_connect_to_a_closed_port_raises_connection_error(self) -> None:
-        fake = FakeIndiServer()
-        fake.start()
-        port = fake.port
-        fake.stop()
-        c = IndiClient("127.0.0.1", port)
+    def test_connect_to_nothing_listening_raises_connection_error(self) -> None:
+        # Port 1 is a reserved system port essentially never listened on —
+        # unlike "start a FakeIndiServer, stop it, reconnect to its freed
+        # ephemeral port" (tried first here), which is a genuine race: the
+        # OS can and does hand that just-freed port straight back out to
+        # the *next* ephemeral bind (e.g. another test's own FakeIndiServer)
+        # before this test's connection attempt lands, seen flaking on CI.
+        c = IndiClient("127.0.0.1", 1)
         with pytest.raises(ConnectionError):
             c.connect()
