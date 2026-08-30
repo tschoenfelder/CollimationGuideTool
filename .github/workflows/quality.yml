@@ -21,7 +21,18 @@ jobs:
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.13"
+          # Pinned to an exact patch, not floating "3.13": CI started
+          # segfaulting (SIGSEGV, exit 139) reliably in
+          # tests/guide/application/test_guide_controller.py once GitHub's
+          # runner picked up 3.13.15 — two different crash sites across
+          # runs (once deep in numpy via smarttscope_live_analysis, once
+          # in plain threading.Condition.wait(), neither touching code
+          # this project changed), consistent with a regression in that
+          # specific patch rather than a bug in our own threading. Local
+          # dev machines on 3.13.13 (Windows) and 3.13.5 (Pi) don't
+          # reproduce it. Bump deliberately, not automatically, once a
+          # later patch is confirmed not to regress this again.
+          python-version: "3.13.13"
 
       - name: Install Qt runtime libraries
         # PySide6 dynamically links EGL/xcb system libraries even under
