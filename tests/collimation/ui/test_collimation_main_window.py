@@ -12,6 +12,7 @@ from astrotool_core.camera.touptek_adapter import TouptekDeviceInfo
 from astrotool_core.config import load_camera_settings
 from astrotool_core.diagnostics import DiagnosticService
 from astrotool_core.focus.fake_focuser import FakeFocuser
+from astrotool_core.focus.port import FocuserStatus
 from astrotool_core.testing.fake_touptek import FakeTouptekCamera
 from astrotool_core.testing.frame_factory import donut_image
 from collimation_tool.ui.main_window import MainWindow
@@ -1221,6 +1222,48 @@ class TestCameraSettingsPersistence:
         assert not window._left_panel._auto_exposure_checkbox.isChecked()
 
 
+class _ScriptedMovingFocuser(FakeFocuser):
+    """FakeFocuser reports is_moving()==False always (moves complete
+    instantly), which can't exercise a genuine Busy->Ok transition. This
+    reports is_moving()==True for `busy_polls` simulated poll cycles
+    after each move() before settling, so tests can observe FocuserPanel's
+    _move_in_flight reacting to real Busy->Ok timing — see incident
+    87349fd3. `is_moving()`/`status()` are plain, repeatable *reads* of
+    the current busy state (like real cached hardware status) — call
+    `tick()` once per simulated poll cycle to advance it, decoupled from
+    however many times FocuserPanel itself happens to read is_moving()
+    within one real _poll_status() call."""
+
+    def __init__(self, *, busy_polls: int = 2) -> None:
+        super().__init__()
+        self._busy_polls = busy_polls
+        self._remaining_busy = 0
+
+    def move(self, steps: int) -> None:
+        super().move(steps)
+        self._remaining_busy = self._busy_polls
+
+    def is_moving(self) -> bool:
+        return self._remaining_busy > 0
+
+    def status(self) -> FocuserStatus:
+        # FakeFocuser.status() hardcodes moving=False regardless of
+        # is_moving() (fine for its own always-instant-move purpose) --
+        # FocuserPanel's busy-tracking reads status.moving, not
+        # is_moving() directly, so this must actually delegate.
+        base = super().status()
+        return FocuserStatus(
+            available=base.available,
+            position=base.position,
+            max_position=base.max_position,
+            moving=self.is_moving(),
+        )
+
+    def tick(self) -> None:
+        if self._remaining_busy > 0:
+            self._remaining_busy -= 1
+
+
 class TestFocuserPanel:
     """Manual in/out jog control for the main optical train's OnStep
     focuser — see FocuserPanel's docstring. FakeFocuser stands in for a
@@ -1345,3 +1388,78 @@ class TestFocuserPanel:
         window._focuser_panel._connect_button.setChecked(True)
         window.close()
         assert not window._focuser_panel._connected
+
+
+class TestFocuserOneMoveAtATime:
+    """Regression for incident 87349fd3: two relative moves issued to the
+    real OnStep driver while the first is still in flight were found, on
+    real hardware, to silently corrupt the result (only one of two 50-step
+    moves actually landed, no error at all) -- see FocuserPanel's "One
+    move at a time" docstring section."""
+
+    def test_move_buttons_disable_immediately_on_click(self, qapp: object) -> None:
+        focuser = _ScriptedMovingFocuser()
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)), device_lister=lambda: [], focuser=focuser
+        )
+        panel = window._focuser_panel
+        panel._connect_button.setChecked(True)
+        panel._out_button.click()
+        assert not panel._in_button.isEnabled()
+        assert not panel._out_button.isEnabled()
+
+    def test_a_click_while_a_move_is_in_flight_is_ignored(self, qapp: object) -> None:
+        focuser = _ScriptedMovingFocuser(busy_polls=5)
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)), device_lister=lambda: [], focuser=focuser
+        )
+        panel = window._focuser_panel
+        panel._connect_button.setChecked(True)
+        panel._out_button.click()
+        assert focuser.get_position() == 1
+        panel._out_button.click()  # disabled -- Qt refuses to fire clicked()
+        assert focuser.get_position() == 1
+
+    def test_buttons_reenable_after_a_genuine_busy_then_ok_transition(
+        self, qapp: object
+    ) -> None:
+        focuser = _ScriptedMovingFocuser(busy_polls=2)
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)), device_lister=lambda: [], focuser=focuser
+        )
+        panel = window._focuser_panel
+        panel._connect_button.setChecked(True)
+        panel._out_button.click()
+        assert not panel._out_button.isEnabled()
+
+        # Genuinely busy for a couple of poll cycles first (the whole
+        # point of this fixture) — not just re-enabled on the very next
+        # poll regardless.
+        panel._poll_status()
+        assert not panel._out_button.isEnabled()
+        focuser.tick()
+        panel._poll_status()
+        assert not panel._out_button.isEnabled()
+
+        focuser.tick()  # settles: busy_polls exhausted
+        panel._poll_status()
+        assert panel._out_button.isEnabled()
+
+    def test_a_stuck_busy_signal_is_released_by_the_confirmation_timeout(
+        self, qapp: object
+    ) -> None:
+        """A focuser whose is_moving() never reports True at all (moves
+        settle faster than this panel could ever observe) must not leave
+        the buttons stuck disabled forever — see
+        _MOVE_CONFIRMATION_TIMEOUT_S's docstring."""
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)), device_lister=lambda: [], focuser=FakeFocuser()
+        )
+        panel = window._focuser_panel
+        panel._connect_button.setChecked(True)
+        panel._out_button.click()
+        assert not panel._out_button.isEnabled()
+
+        panel._move_issued_at = time.monotonic() - 999.0  # simulate elapsed time
+        panel._poll_status()
+        assert panel._out_button.isEnabled()

@@ -10,10 +10,27 @@ after which "In"/"Out" buttons jog the focuser by a selectable step size.
 
 Sign convention (see `IndiFocuserAdapter`'s own docstring, since it's
 otherwise adapter-arbitrary): positive `move()` steps are outward.
+
+One move at a time (issue #87349fd3): a second relative move issued to
+the real OnStep INDI driver *while the first is still in flight* was
+found, on real hardware, to silently corrupt the result -- e.g. two
+rapid `move(50)` calls landed only 50 steps out, not 100, with no error
+of any kind. The driver's own async status (`is_moving()`) lags a real
+click by tens of milliseconds before it first reports Busy, so relying
+on it alone to disable the buttons leaves a real window in which a fast
+second click (or double-click) reaches the driver before the first
+move's Busy state was ever observed. `_move_in_flight` closes that
+window by disabling In/Out synchronously, in the same click handler that
+issues the move -- before the event loop can ever deliver a second
+click -- and keeps them disabled until a genuine Busy→Ok transition (or
+a generous timeout, in case a future driver settles too fast for this
+panel's poll to ever observe Busy at all) confirms the move is actually
+done.
 """
 
 from __future__ import annotations
 
+import time
 from typing import Any
 
 from astrotool_core.focus.port import FocuserPort
@@ -30,6 +47,12 @@ from PySide6.QtWidgets import (
 _POLL_INTERVAL_MS = 250
 _STEP_SIZES = (1, 5, 10, 50)
 _DEFAULT_STEP_SIZE = _STEP_SIZES[0]
+#: Safety net for _move_in_flight — see module docstring's "One move at a
+#: time". Generous relative to this rig's real settle time (~1-2s, gated
+#: by the driver's own 1s polling period) without risking a stuck-disabled
+#: button forever if a future driver's move completes faster than this
+#: panel's poll interval can ever catch a Busy state.
+_MOVE_CONFIRMATION_TIMEOUT_S = 10.0
 
 
 class FocuserPanel(QWidget):
@@ -37,6 +60,10 @@ class FocuserPanel(QWidget):
         super().__init__()
         self._focuser = focuser
         self._connected = False
+        #: See module docstring's "One move at a time".
+        self._move_in_flight = False
+        self._seen_busy_since_move = False
+        self._move_issued_at: float | None = None
 
         self._title_label = QLabel(f"<b>{title}</b>")
         self._connect_button = QPushButton("Connect")
@@ -103,6 +130,7 @@ class FocuserPanel(QWidget):
                 self._update_move_buttons_enabled()
                 return
             self._connected = True
+            self._move_in_flight = False
             self._connect_button.setText("Disconnect")
             self._timer.start()
             self._poll_status()
@@ -110,17 +138,27 @@ class FocuserPanel(QWidget):
             self._timer.stop()
             self._focuser.disconnect()
             self._connected = False
+            self._move_in_flight = False
             self._connect_button.setText("Connect")
             self._status_label.setText("Not connected.")
         self._update_move_buttons_enabled()
 
-    def _on_move_in(self) -> None:
-        self._focuser.move(-self._selected_step())
+    def _begin_move(self, steps: int) -> None:
+        # Disable synchronously, before issuing the move -- see module
+        # docstring's "One move at a time". Qt delivers input on this one
+        # thread, so a button already disabled here cannot receive a second
+        # click before this handler returns.
+        self._move_in_flight = True
+        self._seen_busy_since_move = False
+        self._move_issued_at = time.monotonic()
         self._update_move_buttons_enabled()
+        self._focuser.move(steps)
+
+    def _on_move_in(self) -> None:
+        self._begin_move(-self._selected_step())
 
     def _on_move_out(self) -> None:
-        self._focuser.move(self._selected_step())
-        self._update_move_buttons_enabled()
+        self._begin_move(self._selected_step())
 
     def _poll_status(self) -> None:
         if not self._connected:
@@ -133,10 +171,26 @@ class FocuserPanel(QWidget):
             self._status_label.setText(
                 f"Position {status.position} / {status.max_position}{moving}"
             )
+        if self._move_in_flight:
+            if status.moving:
+                self._seen_busy_since_move = True
+            elif self._seen_busy_since_move:
+                self._move_in_flight = False
+            elif (
+                self._move_issued_at is not None
+                and time.monotonic() - self._move_issued_at > _MOVE_CONFIRMATION_TIMEOUT_S
+            ):
+                # Safety net — see _MOVE_CONFIRMATION_TIMEOUT_S's docstring.
+                self._move_in_flight = False
         self._update_move_buttons_enabled()
 
     def _update_move_buttons_enabled(self) -> None:
-        available = self._connected and self._focuser.is_available and not self._focuser.is_moving()
+        available = (
+            self._connected
+            and self._focuser.is_available
+            and not self._focuser.is_moving()
+            and not self._move_in_flight
+        )
         self._in_button.setEnabled(available)
         self._out_button.setEnabled(available)
 
