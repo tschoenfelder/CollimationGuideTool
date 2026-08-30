@@ -43,7 +43,7 @@ connected camera changes (its sensor resolution is the other input).
 
 Focuser: `FocuserPanel` (`focuser` constructor param, defaulting to
 `NoFocuser` — a `FocuserPort`, same injectable-default pattern as
-`camera`/`guide_camera`) gives manual in/out jog control (1/5/10 steps)
+`camera`/`guide_camera`) gives manual in/out jog control (1/5/10/50 steps)
 over the main optical train's OnStep focuser, connected via a real
 indiserver — see `astrotool_core.focus.indi_focuser_adapter`'s docstring
 for why this one, unlike `mount/indi_adapter.py`, genuinely speaks INDI.

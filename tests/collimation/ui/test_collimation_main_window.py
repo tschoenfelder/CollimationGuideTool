@@ -1279,6 +1279,17 @@ class TestFocuserPanel:
         panel._in_button.click()
         assert focuser.get_position() == -10
 
+    def test_step_size_of_50_is_offered(self, qapp: object) -> None:
+        focuser = FakeFocuser()
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)), device_lister=lambda: [], focuser=focuser
+        )
+        panel = window._focuser_panel
+        panel._connect_button.setChecked(True)
+        panel._step_group.button(50).setChecked(True)
+        panel._out_button.click()
+        assert focuser.get_position() == 50
+
     def test_default_step_size_is_one(self, qapp: object) -> None:
         focuser = FakeFocuser()
         window = MainWindow(

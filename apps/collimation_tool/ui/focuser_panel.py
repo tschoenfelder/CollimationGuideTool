@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 _POLL_INTERVAL_MS = 250
-_STEP_SIZES = (1, 5, 10)
+_STEP_SIZES = (1, 5, 10, 50)
 _DEFAULT_STEP_SIZE = _STEP_SIZES[0]
 
 
