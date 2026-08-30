@@ -20,7 +20,9 @@ from astrotool_core.diagnostics import DiagnosticService, RecentLogHandler
 from astrotool_core.focus.indi_focuser_adapter import IndiFocuserAdapter
 from astrotool_core.focus.port import FocuserPort
 from astrotool_core.mount.indi_mount_park_adapter import IndiMountParkAdapter
+from astrotool_core.mount.indi_mount_pulse_adapter import IndiMountPulseAdapter
 from astrotool_core.mount.park_port import MountParkPort
+from astrotool_core.mount.port import MountPort
 from astrotool_core.testing.frame_factory import donut_image
 from PySide6.QtWidgets import QApplication
 
@@ -73,6 +75,16 @@ def _default_mount() -> MountParkPort:
     `NoMountPark()`) is a one-line change here; no other file needs to
     know."""
     return IndiMountParkAdapter()
+
+
+def _default_pulse_mount() -> MountPort:
+    """The OnStep mount's directional-motion side, for the "Test Move"
+    axis-calibration panel only — a separate real-INDI connection from
+    `_default_mount()`'s park/unpark one, same device (see
+    `IndiMountPulseAdapter`'s docstring). Swapping this out (e.g. for
+    `NoMountAdapter()`) is a one-line change here; no other file needs to
+    know."""
+    return IndiMountPulseAdapter()
 
 
 def _install_excepthook(diagnostics: DiagnosticService) -> None:
@@ -133,6 +145,7 @@ def main() -> None:
         guide_camera=_default_camera(),
         focuser=_default_focuser(),
         mount=_default_mount(),
+        pulse_mount=_default_pulse_mount(),
         diagnostics=diagnostics,
     )
     window.show()

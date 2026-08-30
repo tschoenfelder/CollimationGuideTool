@@ -11,8 +11,9 @@ connect" behavior — the standard libindi Focuser Interface vectors
 `FOCUS_ABORT_MOTION`), unless `focuser_available=False` (simulating "no
 focuser hardware detected"), and the standard libindi Telescope
 Interface's park/tracking vectors (`TELESCOPE_PARK`,
-`TELESCOPE_TRACK_STATE` — see `IndiMountParkAdapter`), unless
-`mount_available=False`.
+`TELESCOPE_TRACK_STATE` — see `IndiMountParkAdapter`) and motion vectors
+(`TELESCOPE_SLEW_RATE`, `TELESCOPE_MOTION_NS`/`_WE` — see
+`IndiMountPulseAdapter`), unless `mount_available=False`.
 
 Ported in spirit from `fake_touptek.py`'s configurable-failure-mode
 style: construct with the failure mode you want, `start()`, point an
@@ -61,6 +62,11 @@ class FakeIndiServer:
         #: that don't do this -- set for regression tests covering
         #: `IndiMountParkAdapter.unpark()`'s retry behavior.
         self._auto_track_on_after_unpark_delay_s = auto_track_on_after_unpark_delay_s
+        #: Mirrors the real rig's TELESCOPE_SLEW_RATE default ("9" / Max
+        #: was On when probed) and starts both motion switches off.
+        self._slew_rate = "9"
+        self._motion_ns = {"MOTION_NORTH": False, "MOTION_SOUTH": False}
+        self._motion_we = {"MOTION_WEST": False, "MOTION_EAST": False}
 
         self._connected = False
         self._direction_outward = True
@@ -196,6 +202,11 @@ class FakeIndiServer:
             "Ok",
             {"TRACK_ON": self._tracking, "TRACK_OFF": not self._tracking},
         )
+        self._def_switch_vector(
+            "TELESCOPE_SLEW_RATE", "Ok", {str(n): str(n) == self._slew_rate for n in range(10)}
+        )
+        self._def_switch_vector("TELESCOPE_MOTION_NS", "Idle", self._motion_ns)
+        self._def_switch_vector("TELESCOPE_MOTION_WE", "Idle", self._motion_we)
 
     def _send_focuser_properties(self) -> None:
         self._def_number_vector(
@@ -234,6 +245,27 @@ class FakeIndiServer:
                 "Ok",
                 {"TRACK_ON": self._tracking, "TRACK_OFF": not self._tracking},
             )
+        elif name == "TELESCOPE_SLEW_RATE":
+            selected = next((el for el, val in elements.items() if val == "On"), None)
+            if selected is not None:
+                self._slew_rate = selected
+            self._send_switch_vector(
+                "TELESCOPE_SLEW_RATE",
+                "Ok",
+                {str(n): str(n) == self._slew_rate for n in range(10)},
+            )
+        elif name == "TELESCOPE_MOTION_NS":
+            self._motion_ns = {
+                "MOTION_NORTH": elements.get("MOTION_NORTH") == "On",
+                "MOTION_SOUTH": elements.get("MOTION_SOUTH") == "On",
+            }
+            self._send_switch_vector("TELESCOPE_MOTION_NS", "Ok", self._motion_ns)
+        elif name == "TELESCOPE_MOTION_WE":
+            self._motion_we = {
+                "MOTION_WEST": elements.get("MOTION_WEST") == "On",
+                "MOTION_EAST": elements.get("MOTION_EAST") == "On",
+            }
+            self._send_switch_vector("TELESCOPE_MOTION_WE", "Ok", self._motion_we)
         elif name == "FOCUS_MOTION":
             self._direction_outward = elements.get("FOCUS_OUTWARD") == "On"
             self._send_switch_vector(

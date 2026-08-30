@@ -1,5 +1,12 @@
+import math
+
 import pytest
-from astrotool_core.mount.axis_calibration import calibrate_axes, calibrate_axis
+from astrotool_core.mount.axis_calibration import (
+    AxisResponse,
+    calibrate_axes,
+    calibrate_axis,
+    calibrate_axis_multi,
+)
 from astrotool_core.mount.port import AxisDirection, MountAxis
 from astrotool_core.testing.fake_mount import FakeMountAdapter
 
@@ -95,6 +102,83 @@ def test_calibrate_axes_covers_every_axis_direction_combination() -> None:
     }
     for response in matrix.responses.values():
         assert response.dx_px == pytest.approx(10.0)
+
+
+def test_axis_response_magnitude_and_angle() -> None:
+    response = AxisResponse(
+        axis=MountAxis.AXIS1,
+        direction=AxisDirection.POSITIVE,
+        duration_ms=500,
+        dx_px=3.0,
+        dy_px=4.0,
+        px_per_ms=0.01,
+    )
+    assert response.magnitude_px == pytest.approx(5.0)
+    assert response.angle_degrees == pytest.approx(math.degrees(math.atan2(4.0, 3.0)))
+
+
+def test_axis_response_angle_is_zero_for_no_motion() -> None:
+    response = AxisResponse(
+        axis=MountAxis.AXIS1,
+        direction=AxisDirection.POSITIVE,
+        duration_ms=500,
+        dx_px=0.0,
+        dy_px=0.0,
+        px_per_ms=0.0,
+    )
+    assert response.angle_degrees == 0.0
+
+
+def test_axis_response_angle_is_normalized_to_0_360() -> None:
+    # dx negative, dy negative -> third quadrant, atan2 alone would be
+    # negative; angle_degrees must normalize into [0, 360).
+    response = AxisResponse(
+        axis=MountAxis.AXIS1,
+        direction=AxisDirection.POSITIVE,
+        duration_ms=500,
+        dx_px=-1.0,
+        dy_px=-1.0,
+        px_per_ms=0.0,
+    )
+    assert 180.0 < response.angle_degrees < 270.0
+
+
+def test_calibrate_axis_multi_pulses_once_and_measures_every_measurer() -> None:
+    mount = FakeMountAdapter()
+    mount.connect()
+    left_positions = iter([(0.0, 0.0), (10.0, 0.0)])
+    right_positions = iter([(5.0, 5.0), (5.0, 15.0)])
+
+    responses = calibrate_axis_multi(
+        mount,
+        MountAxis.AXIS2,
+        AxisDirection.POSITIVE,
+        measures={
+            "left": lambda: next(left_positions),
+            "right": lambda: next(right_positions),
+        },
+        pulse_ms=500,
+    )
+
+    # Exactly one pulse for the whole call, not one per measurer.
+    assert mount.pulse_log == [(MountAxis.AXIS2, AxisDirection.POSITIVE, 500)]
+    assert set(responses) == {"left", "right"}
+    assert responses["left"].dx_px == pytest.approx(10.0)
+    assert responses["left"].dy_px == pytest.approx(0.0)
+    assert responses["right"].dx_px == pytest.approx(0.0)
+    assert responses["right"].dy_px == pytest.approx(10.0)
+
+
+def test_calibrate_axis_multi_raises_when_pulse_rejected() -> None:
+    mount = FakeMountAdapter()  # never connected -> pulse_axis always rejects
+    with pytest.raises(RuntimeError, match="pulse rejected"):
+        calibrate_axis_multi(
+            mount,
+            MountAxis.AXIS1,
+            AxisDirection.POSITIVE,
+            measures={"left": lambda: (0.0, 0.0)},
+            pulse_ms=500,
+        )
 
 
 def test_calibration_matrix_response_for_looks_up_by_axis_and_direction() -> None:

@@ -16,6 +16,7 @@ function.
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable
 from dataclasses import dataclass
 
@@ -34,6 +35,22 @@ class AxisResponse:
     dx_px: float
     dy_px: float
     px_per_ms: float
+
+    @property
+    def magnitude_px(self) -> float:
+        return math.hypot(self.dx_px, self.dy_px)
+
+    @property
+    def angle_degrees(self) -> float:
+        """Direction of the measured displacement in frame space, as
+        degrees counterclockwise from image +x (standard array axes: x
+        right, y down) — i.e. atan2(dy, dx), normalized to [0, 360).
+        Which way the mount's pulse points *in the picture*, not any
+        real-sky bearing. 0.0 for a zero-length response (no motion
+        detected) since the direction is undefined."""
+        if self.dx_px == 0.0 and self.dy_px == 0.0:
+            return 0.0
+        return math.degrees(math.atan2(self.dy_px, self.dx_px)) % 360.0
 
 
 @dataclass(frozen=True)
@@ -67,6 +84,36 @@ def calibrate_axis(
         )
     after = measure()
     return _response_from_positions(axis, direction, pulse_ms, before, after)
+
+
+def calibrate_axis_multi(
+    mount: MountPort,
+    axis: MountAxis,
+    direction: AxisDirection,
+    *,
+    measures: dict[str, PositionMeasurer],
+    pulse_ms: int,
+) -> dict[str, AxisResponse]:
+    """Like `calibrate_axis`, but for a *single* pulse observed through
+    several measurers at once (e.g. two cameras watching the same mount
+    move) — `calibrate_axis` called once per measurer would pulse the
+    mount once per measurer too, which is not the same move.
+
+    All `measures["before"]`-equivalent reads happen first, then one
+    pulse, then all "after" reads — every measurer sees the same single
+    pulse, not a pulse-per-measurer.
+    """
+    before = {key: measurer() for key, measurer in measures.items()}
+    result = mount.pulse_axis(axis, direction, pulse_ms)
+    if not result.accepted:
+        raise RuntimeError(
+            f"axis_calibration: pulse rejected for {axis.name} {direction.name}: {result.message}"
+        )
+    after = {key: measurer() for key, measurer in measures.items()}
+    return {
+        key: _response_from_positions(axis, direction, pulse_ms, before[key], after[key])
+        for key in measures
+    }
 
 
 def calibrate_axes(

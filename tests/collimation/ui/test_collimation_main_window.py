@@ -14,9 +14,11 @@ from astrotool_core.diagnostics import DiagnosticService
 from astrotool_core.focus.fake_focuser import FakeFocuser
 from astrotool_core.focus.port import FocuserStatus
 from astrotool_core.mount.park_port import MountParkStatus
+from astrotool_core.mount.port import AxisDirection, MountAxis
+from astrotool_core.testing.fake_mount import FakeMountAdapter
 from astrotool_core.testing.fake_mount_park import FakeMountPark
 from astrotool_core.testing.fake_touptek import FakeTouptekCamera
-from astrotool_core.testing.frame_factory import donut_image
+from astrotool_core.testing.frame_factory import donut_image, single_star_image
 from collimation_tool.ui.main_window import MainWindow
 
 _SHAPE = (240, 240)
@@ -33,6 +35,11 @@ def _donut_camera(offset: tuple[float, float]) -> ReplayCamera:
         peak=3000.0,
         background=100.0,
     )
+    return ReplayCamera.from_arrays([array], cycle=True)
+
+
+def _star_camera(x: float, y: float) -> ReplayCamera:
+    array = single_star_image((120, 120), x=x, y=y, peak=2000.0, sigma=2.5, background=100.0)
     return ReplayCamera.from_arrays([array], cycle=True)
 
 
@@ -1682,3 +1689,116 @@ class TestMountParkOneActionAtATime:
         panel._poll_status()
         assert panel._park_button.isEnabled()
         window.close()
+
+
+class TestMountTestMovePanel:
+    """Axis-calibration "test move" diagnostic — see MountTestMovePanel's
+    docstring. FakeMountAdapter stands in for a real IndiMountPulseAdapter
+    here; the INDI wire protocol itself is covered by tests/core/mount
+    and tests/contracts instead. Real detection/measurement correctness
+    is covered by test_mount_test_move_runner.py; these tests are about
+    the panel's own wiring (connect lifecycle, the parked-gate, direction
+    selection, result rendering)."""
+
+    def _window(self, *, mount_park: FakeMountPark, pulse_mount: FakeMountAdapter) -> MainWindow:
+        return MainWindow(
+            _star_camera(50.0, 50.0),
+            guide_camera=_star_camera(20.0, 30.0),
+            device_lister=lambda: [],
+            mount=mount_park,
+            pulse_mount=pulse_mount,
+        )
+
+    def _connect_and_stream_cameras(self, window: MainWindow) -> None:
+        window._left_panel._start_button.setChecked(True)
+        window._right_panel._start_button.setChecked(True)
+        window._left_panel._poll_frame()
+        window._right_panel._poll_frame()
+
+    def test_starts_disconnected_with_test_move_button_disabled(self, qapp: object) -> None:
+        window = self._window(mount_park=FakeMountPark(), pulse_mount=FakeMountAdapter())
+        assert not window._test_move_panel._test_move_button.isEnabled()
+
+    def test_button_disabled_when_connected_but_the_mount_is_not_parked(
+        self, qapp: object
+    ) -> None:
+        window = self._window(
+            mount_park=FakeMountPark(start_parked=False), pulse_mount=FakeMountAdapter()
+        )
+        window._mount_panel._connect_button.setChecked(True)
+        window._test_move_panel._connect_button.setChecked(True)
+        assert not window._test_move_panel._test_move_button.isEnabled()
+        window.close()
+
+    def test_button_enabled_once_connected_and_parked(self, qapp: object) -> None:
+        window = self._window(
+            mount_park=FakeMountPark(start_parked=True), pulse_mount=FakeMountAdapter()
+        )
+        window._mount_panel._connect_button.setChecked(True)
+        window._test_move_panel._connect_button.setChecked(True)
+        assert window._test_move_panel._test_move_button.isEnabled()
+        window.close()
+
+    def test_connect_failure_keeps_the_button_disabled_and_shows_the_error(
+        self, qapp: object
+    ) -> None:
+        window = self._window(
+            mount_park=FakeMountPark(start_parked=True),
+            pulse_mount=FakeMountAdapter(fail_connect=True),
+        )
+        window._mount_panel._connect_button.setChecked(True)
+        window._test_move_panel._connect_button.setChecked(True)
+        assert not window._test_move_panel._test_move_button.isEnabled()
+        assert "failed" in window._test_move_panel._status_label.text().lower()
+
+    def test_clicking_test_move_pulses_the_selected_direction(self, qapp: object) -> None:
+        pulse_mount = FakeMountAdapter()
+        window = self._window(mount_park=FakeMountPark(start_parked=True), pulse_mount=pulse_mount)
+        self._connect_and_stream_cameras(window)
+        window._mount_panel._connect_button.setChecked(True)
+        window._test_move_panel._connect_button.setChecked(True)
+        panel = window._test_move_panel
+
+        # id 2 is "E" -> (AXIS1, POSITIVE) — see _DIRECTIONS.
+        panel._direction_group.button(2).setChecked(True)
+        panel._test_move_button.click()
+
+        deadline = time.monotonic() + 5.0
+        while panel._runner.is_busy:
+            assert time.monotonic() < deadline, "test move never completed"
+            time.sleep(0.01)
+        panel._poll()
+
+        assert pulse_mount.pulse_log == [(MountAxis.AXIS1, AxisDirection.POSITIVE, 500)]
+        assert "Main" in panel._result_label.text()
+        assert "Guide" in panel._result_label.text()
+        window.close()
+
+    def test_diagnostic_context_includes_the_last_result(self, qapp: object) -> None:
+        window = self._window(
+            mount_park=FakeMountPark(start_parked=True), pulse_mount=FakeMountAdapter()
+        )
+        self._connect_and_stream_cameras(window)
+        window._mount_panel._connect_button.setChecked(True)
+        window._test_move_panel._connect_button.setChecked(True)
+        panel = window._test_move_panel
+        panel._test_move_button.click()
+
+        deadline = time.monotonic() + 5.0
+        while panel._runner.is_busy:
+            assert time.monotonic() < deadline, "test move never completed"
+            time.sleep(0.01)
+        panel._poll()
+
+        context = window._diagnostic_context()
+        assert context["mount_test_move"]["last_result"] is not None
+        assert set(context["mount_test_move"]["last_result"]) == {"left", "right"}
+        window.close()
+
+    def test_closing_the_window_disconnects_the_pulse_mount(self, qapp: object) -> None:
+        window = self._window(
+            mount_park=FakeMountPark(start_parked=True), pulse_mount=FakeMountAdapter()
+        )
+        window._test_move_panel._connect_button.setChecked(True)
+        window.close()
+        assert not window._test_move_panel._connected

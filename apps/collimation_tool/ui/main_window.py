@@ -106,8 +106,10 @@ from astrotool_core.diagnostics import DiagnosticService
 from astrotool_core.focus.no_focuser import NoFocuser
 from astrotool_core.focus.port import FocuserPort
 from astrotool_core.frames.frame import Frame
+from astrotool_core.mount.no_mount import NoMountAdapter
 from astrotool_core.mount.no_mount_park import NoMountPark
 from astrotool_core.mount.park_port import MountParkPort
+from astrotool_core.mount.port import MountPort
 from astrotool_core.optics import load_pixel_scale_arcsec
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QCloseEvent
@@ -129,6 +131,7 @@ from collimation_tool.ui.fov_calibrator import FovCalibrator
 from collimation_tool.ui.fov_overlay import compute_fov_overlay_rect
 from collimation_tool.ui.fov_registration import FovRegistrationResult, registration_corners
 from collimation_tool.ui.mount_park_panel import MountParkPanel
+from collimation_tool.ui.mount_test_move_panel import MountTestMovePanel
 
 _CALIBRATION_POLL_INTERVAL_MS = 200
 
@@ -143,6 +146,7 @@ class MainWindow(QMainWindow):
         guide_camera: CameraPort | None = None,
         focuser: FocuserPort | None = None,
         mount: MountParkPort | None = None,
+        pulse_mount: MountPort | None = None,
         device_lister: Callable[[], list[TouptekDeviceInfo]] = _list_touptek_devices,
         camera_factory: Callable[[str], CameraPort] = default_camera_factory,
         diagnostics: DiagnosticService | None = None,
@@ -187,6 +191,12 @@ class MainWindow(QMainWindow):
 
         self._focuser_panel = FocuserPanel(focuser if focuser is not None else NoFocuser())
         self._mount_panel = MountParkPanel(mount if mount is not None else NoMountPark())
+        self._test_move_panel = MountTestMovePanel(
+            pulse_mount if pulse_mount is not None else NoMountAdapter(),
+            get_parked=self._mount_panel.is_parked,
+            get_left_frame=self._left_panel.latest_mono_frame,
+            get_right_frame=self._right_panel.latest_mono_frame,
+        )
 
         # Restore last session's connected camera + exposure/gain/
         # auto-exposure per panel — see module docstring's "Startup
@@ -267,6 +277,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(calibration_row)
         layout.addWidget(self._focuser_panel)
         layout.addWidget(self._mount_panel)
+        layout.addWidget(self._test_move_panel)
         layout.addLayout(panels_row, stretch=1)
 
         central = QWidget()
@@ -383,6 +394,7 @@ class MainWindow(QMainWindow):
             "right": self._right_panel.diagnostic_context(),
             "focuser": self._focuser_panel.diagnostic_context(),
             "mount": self._mount_panel.diagnostic_context(),
+            "mount_test_move": self._test_move_panel.diagnostic_context(),
         }
         if self._last_calibration_result is not None:
             # The calibration result behind whatever polygon the guide
@@ -444,4 +456,5 @@ class MainWindow(QMainWindow):
         self._right_panel.stop()
         self._focuser_panel.stop()
         self._mount_panel.stop()
+        self._test_move_panel.stop()
         super().closeEvent(event)

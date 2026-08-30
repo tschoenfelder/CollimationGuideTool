@@ -1,19 +1,24 @@
 """Shared MountPort contract — every mount adapter must satisfy this.
 
-no_mount_factory / fake_mount_factory run hardware-free. indi_mount_factory
-is real-hardware and skipif-guarded — no OnStep mount/serial port is
-present in this Windows dev environment (set ASTROTOOL_ONSTEP_PORT to
-exercise it against real hardware).
+no_mount_factory / fake_mount_factory / indi_pulse_mount_factory (real
+INDI, against a real in-process FakeIndiServer) run hardware-free.
+indi_mount_factory (native OnStep serial via onstep-adapter) is
+real-hardware and skipif-guarded — no OnStep mount/serial port is present
+in this Windows dev environment (set ASTROTOOL_ONSTEP_PORT to exercise it
+against real hardware).
 """
 
 from __future__ import annotations
 
 import os
+import weakref
 from collections.abc import Callable
 
 import pytest
 from astrotool_core.mount import AxisDirection, MountAxis, MountPort, NoMountAdapter
 from astrotool_core.mount.indi_adapter import IndiMountAdapter
+from astrotool_core.mount.indi_mount_pulse_adapter import IndiMountPulseAdapter
+from astrotool_core.testing.fake_indi_server import FakeIndiServer
 from astrotool_core.testing.fake_mount import FakeMountAdapter
 
 MountFactory = Callable[[], MountPort]
@@ -29,12 +34,22 @@ def fake_mount_factory() -> MountPort:
     return FakeMountAdapter()
 
 
+def indi_pulse_mount_factory() -> MountPort:
+    # See test_focuser_contract.py's indi_focuser_factory for why the
+    # FakeIndiServer's lifetime is tied to the adapter via weakref.finalize.
+    fake = FakeIndiServer()
+    fake.start()
+    adapter = IndiMountPulseAdapter(fake.host, fake.port, connect_timeout_s=2.0)
+    weakref.finalize(adapter, fake.stop)
+    return adapter
+
+
 def indi_mount_factory() -> MountPort:
     assert _ONSTEP_PORT is not None
     return IndiMountAdapter(_ONSTEP_PORT)
 
 
-MOUNT_FACTORIES = [no_mount_factory, fake_mount_factory]
+MOUNT_FACTORIES = [no_mount_factory, fake_mount_factory, indi_pulse_mount_factory]
 REAL_MOUNT_FACTORIES = [
     pytest.param(
         indi_mount_factory,

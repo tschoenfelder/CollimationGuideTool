@@ -157,6 +157,12 @@ class MountParkPanel(QWidget):
         self._park_button.setEnabled(not parked)
         self._unpark_button.setEnabled(parked)
 
+    def is_parked(self) -> bool:
+        """Live parked status — for `MountTestMovePanel`'s "only when
+        parked" safety gate, without coupling that panel to
+        `MountParkPort` directly (see its own docstring)."""
+        return self._connected and self._mount.status().parked
+
     def diagnostic_context(self) -> dict[str, Any]:
         status = self._mount.status()
         return {

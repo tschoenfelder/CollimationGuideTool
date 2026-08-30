@@ -96,6 +96,7 @@ source_modules = [
   "astrotool_core.mount.indi_adapter",
   "astrotool_core.focus.indi_focuser_adapter",
   "astrotool_core.mount.indi_mount_park_adapter",
+  "astrotool_core.mount.indi_mount_pulse_adapter",
   "astrotool_core.indi.client",
 ]
 forbidden_modules = ["PySide6"]
