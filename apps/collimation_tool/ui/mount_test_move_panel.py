@@ -21,9 +21,11 @@ independently-connected copy of the same park/unpark state). The gate
 directly for the same reason.
 
 The mount actually has to be *unparked* to move at all — a real-hardware
-check found OnStep's driver flatly refuses `TELESCOPE_MOTION_NS`/`_WE`
-while parked — so `MountTestMoveRunner` unparks before pulsing and
-re-parks after, every run; see its own docstring.
+check found OnStep's driver refuses `TELESCOPE_MOTION_NS`/`_WE` while
+parked, a deliberate safety interlock (not a defect) — so
+`MountTestMoveRunner` unparks before pulsing and re-parks after, every
+run, respecting that interlock rather than routing around it; see its
+own docstring.
 
 Frame capture happens *here*, on the Qt main thread, both before
 submitting the pulse and again once the runner reports it finished —

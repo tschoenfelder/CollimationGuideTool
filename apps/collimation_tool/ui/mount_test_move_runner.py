@@ -24,18 +24,20 @@ unlike FOV registration's search, not to need its own thread). This
 runner's only job is the unpark/pulse/re-park timing.
 
 Unparks first, pulses, then re-parks — a real-hardware check (see
-incident notes on `IndiMountPulseAdapter`) found OnStep's driver flatly
-refuses `TELESCOPE_MOTION_NS`/`_WE` while parked ("Please unpark the
-mount before issuing any motion/sync commands"), logging the refusal but
-still reporting the command as accepted at the INDI level — so "move the
-mount while parked", taken literally, is a silent no-op on real hardware.
-This runner does the unpark/re-park itself instead (reusing
-`IndiMountParkAdapter.unpark()`'s already-durable TRACK_OFF), so from the
-button's perspective the mount still starts and ends parked — "when
-parked" describes the resting state around the test, not a precondition
-the pulse itself can honor. `park()` always runs in a `finally`, even if
-the pulse itself failed, so a mid-run error can't strand the mount
-unparked.
+incident notes on `IndiMountPulseAdapter`) found OnStep's driver refuses
+`TELESCOPE_MOTION_NS`/`_WE` while parked ("Please unpark the mount before
+issuing any motion/sync commands"). That refusal is a deliberate safety
+interlock, not a defect — parked is supposed to mean "don't move" — so
+this runner works *with* it rather than around it: it still reports the
+switch command accepted at the INDI level even though nothing moved, so
+a caller can't tell from the ack alone, which is why this runner does the
+unpark/re-park itself instead (reusing `IndiMountParkAdapter.unpark()`'s
+already-durable TRACK_OFF), so from the button's perspective the mount
+still starts and ends parked — "when parked" describes the resting state
+around the test, not a precondition the pulse itself can honor, and the
+interlock stays intact and respected throughout. `park()` always runs in
+a `finally`, even if the pulse itself failed, so a mid-run error can't
+strand the mount unparked.
 """
 
 from __future__ import annotations
