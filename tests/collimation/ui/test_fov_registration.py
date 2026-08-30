@@ -15,6 +15,7 @@ import pytest
 from collimation_tool.ui.fov_registration import (
     _resize_bilinear,
     _rotate_bilinear,
+    _sharpness_ratio,
     register_main_frame_in_guide_frame,
     registration_corners,
 )
@@ -257,6 +258,87 @@ class TestNoConfidentMatch:
             angle_range_deg=(-30, 30),
         )
         assert result is None
+
+
+class TestSharpnessRatio:
+    """See the real-world "FOV calibrated wrongly" report and
+    datasets/fov_registration/out_of_focus_daytime/README.md: a smooth
+    brightness gradient (e.g. sky glow) can carry plenty of standard
+    deviation — enough to pass the contrast floor — without any genuine
+    high-frequency detail to register against. _sharpness_ratio measures
+    that detail directly, as gradient energy relative to variance."""
+
+    def test_a_starfield_scores_much_higher_than_a_smooth_gradient(self) -> None:
+        starfield = _starfield(100, 100, n_stars=30, seed=60)
+        gradient = np.linspace(0.0, 1000.0, 100).reshape(1, 100) * np.ones((100, 1))
+
+        star_ratio = _sharpness_ratio(starfield)
+        gradient_ratio = _sharpness_ratio(gradient)
+
+        assert star_ratio > 0.1
+        assert gradient_ratio < 0.01
+        assert star_ratio > gradient_ratio * 50
+
+    def test_a_perfectly_flat_image_scores_zero_not_a_division_error(self) -> None:
+        assert _sharpness_ratio(np.full((20, 20), 500.0)) == 0.0
+
+    def test_register_rejects_a_smooth_gradient_guide_even_with_a_textured_template(
+        self,
+    ) -> None:
+        # The template (main) has real structure; the "guide" is a smooth
+        # brightness ramp with real standard deviation but no genuine
+        # detail — exactly the shape of the real incident (sky glow, not
+        # stars). Must be rejected regardless of the template's own
+        # quality, since there's nothing reliable to match it against.
+        smooth_guide = np.linspace(0.0, 2000.0, 150).reshape(1, 150) * np.ones((150, 1))
+        main = _starfield(40, 40, n_stars=15, seed=61)
+
+        result = register_main_frame_in_guide_frame(
+            main,
+            smooth_guide,
+            approx_scale=1.0,
+            scale_steps=1,
+            angle_step_deg=30.0,
+            angle_range_deg=(-30, 30),
+        )
+        assert result is None
+
+    def test_register_rejects_a_smooth_gradient_template_even_with_a_textured_guide(
+        self,
+    ) -> None:
+        guide = _starfield(150, 150, n_stars=40, seed=62)
+        smooth_main = np.linspace(0.0, 2000.0, 40).reshape(1, 40) * np.ones((40, 1))
+
+        result = register_main_frame_in_guide_frame(
+            smooth_main,
+            guide,
+            approx_scale=1.0,
+            scale_steps=1,
+            angle_step_deg=30.0,
+            angle_range_deg=(-30, 30),
+        )
+        assert result is None
+
+    def test_a_custom_lower_threshold_lets_the_search_actually_run(self) -> None:
+        # Proves the parameter is genuinely load-bearing (not a no-op):
+        # with the default floor, this low-sharpness guide is rejected
+        # before the search starts and progress_callback never fires;
+        # with the floor disabled (0.0), the search actually runs.
+        smooth_guide = np.linspace(0.0, 2000.0, 150).reshape(1, 150) * np.ones((150, 1))
+        main = _starfield(40, 40, n_stars=15, seed=61)
+        calls: list[tuple[int, int]] = []
+
+        register_main_frame_in_guide_frame(
+            main,
+            smooth_guide,
+            approx_scale=1.0,
+            scale_steps=1,
+            angle_step_deg=30.0,
+            angle_range_deg=(-30, 30),
+            min_sharpness_ratio=0.0,
+            progress_callback=lambda completed, total: calls.append((completed, total)),
+        )
+        assert len(calls) > 0
 
 
 class TestSearchDownsample:

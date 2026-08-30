@@ -41,3 +41,31 @@ def qapp() -> Iterator[object]:
 
     app = QApplication.instance() or QApplication([])
     yield app
+
+
+@pytest.fixture(autouse=True)
+def _flush_qt_events_after_each_test() -> Iterator[None]:
+    """Process any pending Qt events after every test, not just the one
+    test in this whole suite that happens to call processEvents() itself.
+
+    Investigating a segfault (Windows access violation, later also a
+    Linux SIGSEGV) that reproduced at that one call: hundreds of other
+    tests create and destroy QWidgets/QPixmaps/QTimers via plain Python
+    refcounting without ever running the Qt event loop, so any
+    deleteLater()-deferred cleanup Qt itself queues along the way never
+    gets flushed — it just accumulates for the entire session until the
+    first processEvents() call has to process all of it at once, by
+    which point some of it may reference memory Python's own GC already
+    freed. Flushing incrementally after each test keeps that backlog
+    from ever building up. A no-op for tests that never touch Qt (no
+    QApplication instance exists yet, so there's nothing to flush).
+    """
+    yield
+    try:
+        from PySide6.QtWidgets import QApplication
+
+        app = QApplication.instance()
+        if app is not None:
+            app.processEvents()
+    except ImportError:
+        pass

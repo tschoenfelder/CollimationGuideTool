@@ -188,6 +188,41 @@ def _normalized_cross_correlation_surface(search: np.ndarray, template: np.ndarr
 #: regions" docstring section.
 _DEFAULT_MIN_RELATIVE_CONTRAST = 0.05
 
+#: Below this, an image is treated as lacking genuine star-like
+#: high-frequency detail regardless of its overall contrast — see
+#: register_main_frame_in_guide_frame's "Out-of-focus/low-detail
+#: images" docstring section. Every synthetic starfield this module's
+#: own test suite uses (several sizes/star counts/seeds) scores
+#: 0.16-0.23; a real, heavily out-of-focus daytime capture (sky and a
+#: blurred landscape, no resolved stars — see the incident this was
+#: added for) scored ~0.002, over 75x lower. 0.02 leaves a wide margin
+#: on both sides.
+_DEFAULT_MIN_SHARPNESS_RATIO = 0.02
+
+
+def _sharpness_ratio(image: np.ndarray) -> float:
+    """High-frequency (pixel-to-pixel gradient) energy relative to the
+    image's own overall variance — see _DEFAULT_MIN_SHARPNESS_RATIO.
+
+    Deliberately a *ratio* to variance, not a raw gradient magnitude:
+    a smooth image can still have large overall variance (e.g. a bright
+    sky next to a dark landscape) without having any genuine fine
+    detail to register against, which a raw contrast/std check alone
+    (see min_relative_contrast) cannot distinguish from real texture —
+    confirmed on the real incident this was added for: the problem
+    guide frame's own local window at the (wrong) best-matching position
+    had plenty of standard deviation, comfortably above the contrast
+    floor, but almost all of it came from a smooth brightness gradient
+    rather than any real structure.
+    """
+    variance = float(image.var())
+    if variance <= 0.0:
+        return 0.0
+    grad_x = np.diff(image, axis=1)
+    grad_y = np.diff(image, axis=0)
+    energy = float(np.mean(grad_x**2)) + float(np.mean(grad_y**2))
+    return energy / variance
+
 
 def register_main_frame_in_guide_frame(
     main_mono: np.ndarray,
@@ -200,6 +235,7 @@ def register_main_frame_in_guide_frame(
     angle_range_deg: tuple[float, float] = (-180.0, 180.0),
     min_score: float = 0.3,
     min_relative_contrast: float = _DEFAULT_MIN_RELATIVE_CONTRAST,
+    min_sharpness_ratio: float = _DEFAULT_MIN_SHARPNESS_RATIO,
     search_downsample: int = 1,
     progress_callback: Callable[[int, int], None] | None = None,
 ) -> FovRegistrationResult | None:
@@ -256,13 +292,28 @@ def register_main_frame_in_guide_frame(
     against" the same as "no confident match" rather than reporting a
     location with nothing actually recognizable there.
 
+    Out-of-focus/low-detail images: a real incident with a heavily
+    out-of-focus main camera (sky and a blurred landscape/utility pole,
+    no resolved stars) still scored a "confident" ~0.65 — the matched
+    window had plenty of standard deviation (passing the contrast floor
+    above with room to spare), but almost all of it came from a smooth
+    brightness gradient (sky glow, or landscape-to-sky transition) that
+    happened to weakly resemble the template's own blur, not from
+    genuine matchable structure. Overall contrast can't tell a smooth
+    gradient apart from real detail; this instead requires both images'
+    ``_sharpness_ratio`` (high-frequency gradient energy relative to
+    variance — see that function) to reach ``min_sharpness_ratio``,
+    checked once up front (before the search starts, so a hopeless pair
+    fails fast rather than after a full search).
+
     Returns ``None`` if no candidate reaches ``min_score`` (a real match
     typically scores well above it; unrelated frames score near 0) — the
     caller should keep whatever rectangle it already had rather than
     trust a bad match. Also returns ``None`` if every candidate scale
     would make the resized template larger than the guide frame on
     either axis (an ``approx_scale`` far too large for this pair of
-    frames), or if every candidate scale fails the contrast floor above.
+    frames), if every candidate scale fails the contrast floor above, or
+    if either image fails the sharpness check above.
 
     ``progress_callback``, if given, is called as ``callback(completed,
     total)`` after each (scale, angle) candidate is scored — the search
@@ -278,6 +329,14 @@ def register_main_frame_in_guide_frame(
         raise ValueError("main_mono and guide_mono must be 2D mono arrays")
     if approx_scale <= 0.0:
         raise ValueError("approx_scale must be positive")
+
+    if (
+        _sharpness_ratio(main_mono) < min_sharpness_ratio
+        or _sharpness_ratio(guide_mono) < min_sharpness_ratio
+    ):
+        # Fail fast, before the (slow) search — see "Out-of-focus/
+        # low-detail images" above.
+        return None
 
     downsample = max(1, int(search_downsample))
     if downsample > 1:
