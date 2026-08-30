@@ -21,11 +21,28 @@ than trusting the mount's own post-unpark default (OnStep, like many
 mounts, can auto-enable tracking as soon as it registers unparked) — sent
 right after, not waiting for UNPARK to be confirmed first, so there is no
 window where tracking could already be running unnoticed.
+
+That first TRACK_OFF is not enough on its own, though: a real-hardware
+trace (incident 25446102, "Shows unparked, tracking, but don't stop
+tracking") caught OnStep's own driver overriding it — about 1.5s after
+the adapter's TRACK_OFF, the driver pushes its *own* `TRACK_ON`/Busy
+update as a side effect of unparking, and that state then persists
+indefinitely (observed unchanged for a full 60s) since nothing ever
+corrects it again. A single fire-and-forget TRACK_OFF sent alongside
+UNPARK therefore loses this race. `unpark()` compensates by re-sending
+TRACK_OFF a few more times over the following seconds
+(`_TRACK_OFF_RETRY_DELAYS_S`), on a background timer, so whichever one
+lands after the driver's own override still wins. Harmless if it turns
+out the mount never overrides tracking on a given run (or was already
+re-parked by the user by the time a retry fires) — TRACK_OFF is
+idempotent.
 """
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import threading
 
 from astrotool_core.indi.client import IndiClient
 from astrotool_core.mount.park_port import MountParkPort, MountParkStatus
@@ -36,6 +53,12 @@ _DEFAULT_DEVICE_NAME = "LX200 OnStep"
 _DEFAULT_PORT = 7624
 _CONNECT_TIMEOUT_S = 10.0
 _MOUNT_PROBE_TIMEOUT_S = 3.0
+#: How long after UNPARK to re-send TRACK_OFF, to outlast OnStep's own
+#: delayed auto-tracking-on override — see module docstring. Observed
+#: override landed ~1.5s post-UNPARK on the real rig; three retries
+#: spread out past that give margin for run-to-run timing variance
+#: without hammering the driver.
+_TRACK_OFF_RETRY_DELAYS_S = (2.0, 5.0, 10.0)
 
 
 class IndiMountParkAdapter(MountParkPort):
@@ -52,6 +75,7 @@ class IndiMountParkAdapter(MountParkPort):
         self._client = IndiClient(host, port)
         self._connected = False
         self._available = False
+        self._pending_track_off_retries: list[threading.Timer] = []
 
     def connect(self) -> None:
         self._client.connect()
@@ -89,6 +113,7 @@ class IndiMountParkAdapter(MountParkPort):
             )
 
     def disconnect(self) -> None:
+        self._cancel_pending_track_off_retries()
         if self._connected:
             self._client.send_new_switch_vector(
                 self._device_name, "CONNECTION", {"DISCONNECT": True}
@@ -121,6 +146,7 @@ class IndiMountParkAdapter(MountParkPort):
     def park(self) -> None:
         if not self.is_available:
             return
+        self._cancel_pending_track_off_retries()
         _log.info("IndiMountParkAdapter.park(): parking %r", self._device_name)
         self._client.send_new_switch_vector(self._device_name, "TELESCOPE_PARK", {"PARK": True})
 
@@ -131,7 +157,26 @@ class IndiMountParkAdapter(MountParkPort):
             "IndiMountParkAdapter.unpark(): unparking %r and deactivating tracking",
             self._device_name,
         )
+        self._cancel_pending_track_off_retries()
         self._client.send_new_switch_vector(self._device_name, "TELESCOPE_PARK", {"UNPARK": True})
-        self._client.send_new_switch_vector(
-            self._device_name, "TELESCOPE_TRACK_STATE", {"TRACK_OFF": True}
-        )
+        self._send_track_off()
+        for delay_s in _TRACK_OFF_RETRY_DELAYS_S:
+            timer = threading.Timer(delay_s, self._send_track_off)
+            timer.daemon = True
+            self._pending_track_off_retries.append(timer)
+            timer.start()
+
+    def _send_track_off(self) -> None:
+        # Runs on the timer thread for retries -- the client/socket may
+        # already be closed (disconnect, or a slow-to-cancel timer racing
+        # it) by the time this fires, which would otherwise surface as an
+        # unhandled exception on a background thread.
+        with contextlib.suppress(ConnectionError, OSError):
+            self._client.send_new_switch_vector(
+                self._device_name, "TELESCOPE_TRACK_STATE", {"TRACK_OFF": True}
+            )
+
+    def _cancel_pending_track_off_retries(self) -> None:
+        for timer in self._pending_track_off_retries:
+            timer.cancel()
+        self._pending_track_off_retries = []

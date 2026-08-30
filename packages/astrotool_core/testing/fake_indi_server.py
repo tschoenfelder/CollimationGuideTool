@@ -43,6 +43,7 @@ class FakeIndiServer:
         mount_available: bool = True,
         start_parked: bool = True,
         park_delay_s: float = 0.05,
+        auto_track_on_after_unpark_delay_s: float | None = None,
     ) -> None:
         self._device_name = device_name
         self._focuser_available = focuser_available
@@ -53,6 +54,13 @@ class FakeIndiServer:
         self._parked = start_parked
         self._tracking = False
         self._park_delay_s = park_delay_s
+        #: Simulates the real OnStep driver's observed quirk (incident
+        #: 25446102): shortly after UNPARK settles, it pushes its own
+        #: TRACK_ON as a side effect, overriding any TRACK_OFF the client
+        #: already sent. None (default) reproduces the simpler drivers
+        #: that don't do this -- set for regression tests covering
+        #: `IndiMountParkAdapter.unpark()`'s retry behavior.
+        self._auto_track_on_after_unpark_delay_s = auto_track_on_after_unpark_delay_s
 
         self._connected = False
         self._direction_outward = True
@@ -277,8 +285,26 @@ class FakeIndiServer:
             self._send_switch_vector(
                 "TELESCOPE_PARK", "Ok", {"PARK": self._parked, "UNPARK": not self._parked}
             )
+            if not parked and self._auto_track_on_after_unpark_delay_s is not None:
+                self._schedule_auto_track_on()
 
         timer = threading.Timer(self._park_delay_s, _finish)
+        timer.daemon = True
+        self._pending_timers.append(timer)
+        timer.start()
+
+    def _schedule_auto_track_on(self) -> None:
+        def _override() -> None:
+            # Mirrors the real driver: pushes TRACK_ON as a Busy,
+            # transitional-looking update and then just... never follows
+            # up with an Ok -- see the class docstring's incident note.
+            self._tracking = True
+            self._send_switch_vector(
+                "TELESCOPE_TRACK_STATE", "Busy", {"TRACK_ON": True, "TRACK_OFF": False}
+            )
+
+        assert self._auto_track_on_after_unpark_delay_s is not None
+        timer = threading.Timer(self._auto_track_on_after_unpark_delay_s, _override)
         timer.daemon = True
         self._pending_timers.append(timer)
         timer.start()

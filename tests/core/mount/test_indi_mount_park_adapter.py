@@ -100,6 +100,43 @@ class TestConnected:
         assert mount.is_available is False
 
 
+class TestUnparkOvercomesDriverTrackOnOverride:
+    """Regression test for incident 25446102 ("Shows unparked, tracking,
+    but don't stop tracking") -- a real-hardware trace caught OnStep's
+    driver pushing its own delayed TRACK_ON shortly after UNPARK,
+    overriding the adapter's own TRACK_OFF. `unpark()`'s retries (see its
+    docstring) must win the race once the driver's override has landed."""
+
+    def test_tracking_ends_up_off_despite_a_delayed_driver_override(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import astrotool_core.mount.indi_mount_park_adapter as adapter_module
+
+        # Real delays (seconds, not fractions) would make this test slow
+        # for no benefit -- only the "does a retry land after the
+        # override" behavior is under test here.
+        monkeypatch.setattr(adapter_module, "_TRACK_OFF_RETRY_DELAYS_S", (0.15,))
+        fake = FakeIndiServer(
+            start_parked=True, park_delay_s=0.05, auto_track_on_after_unpark_delay_s=0.05
+        )
+        fake.start()
+        try:
+            mount = IndiMountParkAdapter(fake.host, fake.port, connect_timeout_s=2.0)
+            mount.connect()
+            mount.unpark()
+            # The driver's own override should land first, same as on
+            # the real rig -- confirming the test double actually
+            # reproduces the race before checking the fix overcomes it.
+            _wait_until(
+                lambda: mount.status().tracking, message="driver override never observed"
+            )
+            _wait_until(lambda: not mount.status().tracking, message="retry never landed")
+            assert mount.status().tracking is False
+            mount.disconnect()
+        finally:
+            fake.stop()
+
+
 class TestMountInterfaceUnavailable:
     def test_connect_succeeds_but_mount_is_not_available(self) -> None:
         fake = FakeIndiServer(mount_available=False)
