@@ -11,15 +11,29 @@ Own `MountPort` connection, separate from `MountParkPanel`'s
 INDI properties this drives (`TELESCOPE_SLEW_RATE` fixed at its "20x"
 preset, `TELESCOPE_MOTION_NS`/`_WE` for direction).
 
-Gated on the mount being parked (`get_parked` constructor param, a plain
-callable rather than coupling this panel to `MountParkPanel`/
-`MountParkPort` directly) — a deliberate safety precondition for this
-diagnostic action, requested alongside the feature itself, not something
-`IndiMountPulseAdapter` enforces on its own.
+Also takes the *same* `MountParkPort` object `MountParkPanel` uses
+(`mount_park` constructor param — deliberately the shared instance, not
+this panel's own connection: `MountTestMoveRunner` drives it directly,
+and it's simplest for that to be the one connection already managed by
+`MountParkPanel`'s own Connect button rather than a second,
+independently-connected copy of the same park/unpark state). The gate
+("Test Move" only enabled while parked) reads `mount_park.status()`
+directly for the same reason.
 
-The actual pulse-and-measure work runs on `MountTestMoveRunner`'s
-background thread (see that module's docstring for why) — this panel
-just submits, polls for the result, and renders it.
+The mount actually has to be *unparked* to move at all — a real-hardware
+check found OnStep's driver flatly refuses `TELESCOPE_MOTION_NS`/`_WE`
+while parked — so `MountTestMoveRunner` unparks before pulsing and
+re-parks after, every run; see its own docstring.
+
+Frame capture happens *here*, on the Qt main thread, both before
+submitting the pulse and again once the runner reports it finished —
+deliberately never on the runner's background thread (a real crash was
+traced to exactly that: calling `CameraPanel.latest_mono_frame()`
+concurrently from a background thread while the same panel's own poll
+timer delivers frames on the main thread — see `MountTestMoveRunner`'s
+docstring). Detection (`detect_sources`) is fast enough for a single
+frame that doing it twice inline on the UI thread doesn't freeze
+anything, unlike FOV registration's multi-candidate search.
 """
 
 from __future__ import annotations
@@ -27,16 +41,17 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Any
 
-from astrotool_core.mount.axis_calibration import AxisResponse
+import numpy as np
+from astrotool_core.mount.axis_calibration import AxisResponse, response_from_positions
+from astrotool_core.mount.park_port import MountParkPort
 from astrotool_core.mount.port import AxisDirection, MountAxis, MountPort
+from astrotool_core.target.detector import detect_sources
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QButtonGroup, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
-from collimation_tool.ui.mount_test_move_runner import (
-    FrameGetter,
-    MountTestMoveOutcome,
-    MountTestMoveRunner,
-)
+from collimation_tool.ui.mount_test_move_runner import MountTestMoveRunner
+
+FrameGetter = Callable[[], np.ndarray | None]
 
 _POLL_INTERVAL_MS = 250
 _PULSE_MS = 500
@@ -52,13 +67,15 @@ _DIRECTIONS: tuple[tuple[str, MountAxis, AxisDirection], ...] = (
     ("W", MountAxis.AXIS1, AxisDirection.NEGATIVE),
 )
 
+_CAMERA_LABELS = {"left": "Main", "right": "Guide"}
+
 
 class MountTestMovePanel(QWidget):
     def __init__(
         self,
         mount: MountPort,
         *,
-        get_parked: Callable[[], bool],
+        mount_park: MountParkPort,
         get_left_frame: FrameGetter,
         get_right_frame: FrameGetter,
         title: str = "Test Move",
@@ -66,12 +83,15 @@ class MountTestMovePanel(QWidget):
     ) -> None:
         super().__init__()
         self._mount = mount
-        self._get_parked = get_parked
+        self._mount_park = mount_park
         self._get_left_frame = get_left_frame
         self._get_right_frame = get_right_frame
         self._runner = runner if runner is not None else MountTestMoveRunner()
         self._connected = False
-        self._last_outcome: MountTestMoveOutcome | None = None
+        self._pending_before: dict[str, tuple[float, float]] | None = None
+        self._pending_direction: tuple[MountAxis, AxisDirection] | None = None
+        self._last_responses: dict[str, AxisResponse] | None = None
+        self._last_error: str | None = None
 
         self._title_label = QLabel(f"<b>{title}</b>")
         self._connect_button = QPushButton("Connect")
@@ -144,12 +164,27 @@ class MountTestMovePanel(QWidget):
         return axis, direction
 
     def _on_test_move(self) -> None:
-        axis, direction = self._selected_direction()
-        started = self._runner.submit(
-            self._mount, axis, direction, _PULSE_MS, self._get_left_frame, self._get_right_frame
-        )
+        # Captured here, on the Qt main thread -- see module docstring
+        # for why this must never happen on the runner's background one.
+        before_raw = {
+            "left": _measure_brightest_source(self._get_left_frame()),
+            "right": _measure_brightest_source(self._get_right_frame()),
+        }
+        missing = [key for key, position in before_raw.items() if position is None]
+        if missing:
+            # Don't bother moving the real mount if there's already
+            # nothing to measure a displacement against.
+            self._last_responses = None
+            self._last_error = f"no star detected in: {', '.join(missing)}"
+            self._result_label.setText(f"Test move failed: {self._last_error}")
+            return
+        before: dict[str, tuple[float, float]] = before_raw  # type: ignore[assignment]
+        direction = self._selected_direction()
+        started = self._runner.submit(self._mount_park, self._mount, *direction, _PULSE_MS)
         if not started:
             return  # a test move is already running
+        self._pending_before = before
+        self._pending_direction = direction
         self._result_label.setText("Testing…")
         self._update_buttons_enabled()
 
@@ -158,19 +193,64 @@ class MountTestMovePanel(QWidget):
             return
         outcome = self._runner.take_latest()
         if outcome is not None:
-            self._last_outcome = outcome
-            self._result_label.setText(_format_outcome(outcome))
+            self._finish_test_move(pulsed=outcome.pulsed, pulse_error=outcome.error)
         self._update_buttons_enabled()
 
+    def _finish_test_move(self, *, pulsed: bool, pulse_error: str | None) -> None:
+        before = self._pending_before
+        direction = self._pending_direction
+        self._pending_before = None
+        self._pending_direction = None
+        if before is None or direction is None:
+            return  # defensive -- take_latest() without a matching submit()
+        if not pulsed:
+            self._last_responses = None
+            self._last_error = pulse_error or "pulse failed"
+            self._result_label.setText(f"Test move failed: {self._last_error}")
+            return
+
+        axis, mount_direction = direction
+        after_raw = {
+            "left": _measure_brightest_source(self._get_left_frame()),
+            "right": _measure_brightest_source(self._get_right_frame()),
+        }
+        missing = [key for key, position in after_raw.items() if position is None]
+        if missing:
+            self._last_responses = None
+            self._last_error = f"no star detected (after the move) in: {', '.join(missing)}"
+            self._result_label.setText(f"Test move failed: {self._last_error}")
+            return
+        after: dict[str, tuple[float, float]] = after_raw  # type: ignore[assignment]
+
+        responses = {
+            key: response_from_positions(
+                axis, mount_direction, _PULSE_MS, before[key], after[key]
+            )
+            for key in ("left", "right")
+        }
+        self._last_responses = responses
+        self._last_error = None
+        parts = [
+            f"{_CAMERA_LABELS[key]}: {_format_response(response)}"
+            for key, response in responses.items()
+        ]
+        self._result_label.setText(" | ".join(parts))
+
     def _update_buttons_enabled(self) -> None:
-        can_test = self._connected and self._get_parked() and not self._runner.is_busy
+        park_status = self._mount_park.status()
+        can_test = (
+            self._connected
+            and park_status.available
+            and park_status.parked
+            and not self._runner.is_busy
+        )
         self._test_move_button.setEnabled(can_test)
 
     def diagnostic_context(self) -> dict[str, Any]:
-        if self._last_outcome is None:
+        if self._last_error is not None:
+            return {"last_result": {"error": self._last_error}}
+        if self._last_responses is None:
             return {"last_result": None}
-        if self._last_outcome.error is not None:
-            return {"last_result": {"error": self._last_outcome.error}}
         return {
             "last_result": {
                 key: {
@@ -179,7 +259,7 @@ class MountTestMovePanel(QWidget):
                     "magnitude_px": response.magnitude_px,
                     "angle_degrees": response.angle_degrees,
                 }
-                for key, response in self._last_outcome.responses.items()
+                for key, response in self._last_responses.items()
             }
         }
 
@@ -191,17 +271,14 @@ class MountTestMovePanel(QWidget):
             self._connected = False
 
 
-def _format_outcome(outcome: MountTestMoveOutcome) -> str:
-    if outcome.error is not None:
-        return f"Test move failed: {outcome.error}"
-    parts = [
-        f"{_CAMERA_LABELS.get(key, key)}: {_format_response(response)}"
-        for key, response in outcome.responses.items()
-    ]
-    return " | ".join(parts)
-
-
-_CAMERA_LABELS = {"left": "Main", "right": "Guide"}
+def _measure_brightest_source(frame: np.ndarray | None) -> tuple[float, float] | None:
+    if frame is None:
+        return None
+    result = detect_sources(frame)
+    if not result.sources:
+        return None
+    brightest = max(result.sources, key=lambda source: source.peak)
+    return (brightest.x, brightest.y)
 
 
 def _format_response(response: AxisResponse) -> str:

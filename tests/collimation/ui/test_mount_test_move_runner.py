@@ -1,25 +1,11 @@
 import time
 from collections.abc import Callable
 
-import numpy as np
-import pytest
+from astrotool_core.mount.park_port import MountParkPort, MountParkStatus
 from astrotool_core.mount.port import AxisDirection, MountAxis
 from astrotool_core.testing.fake_mount import FakeMountAdapter
-from astrotool_core.testing.frame_factory import single_star_image
+from astrotool_core.testing.fake_mount_park import FakeMountPark
 from collimation_tool.ui.mount_test_move_runner import MountTestMoveRunner
-
-_SHAPE = (120, 120)
-
-
-def _star(x: float, y: float) -> np.ndarray:
-    return single_star_image(_SHAPE, x=x, y=y, peak=2000.0, sigma=2.5, background=100.0)
-
-
-def _frame_pair(
-    before_xy: tuple[float, float], after_xy: tuple[float, float]
-) -> Callable[[], np.ndarray]:
-    frames = iter([_star(*before_xy), _star(*after_xy)])
-    return lambda: next(frames)
 
 
 def _wait_for(predicate: Callable[[], bool], *, timeout_s: float = 5.0) -> bool:
@@ -31,31 +17,50 @@ def _wait_for(predicate: Callable[[], bool], *, timeout_s: float = 5.0) -> bool:
     return predicate()
 
 
+class _NeverUnparks(MountParkPort):
+    """Simulates OnStep's real refusal-to-move-while-parked quirk taken
+    to its extreme: unpark() is accepted at the INDI level but never
+    actually settles — pins MountTestMoveRunner's own timeout/abort path,
+    since a hung real mount must not hang this runner forever."""
+
+    def connect(self) -> None:
+        pass
+
+    def disconnect(self) -> None:
+        pass
+
+    @property
+    def is_available(self) -> bool:
+        return True
+
+    def status(self) -> MountParkStatus:
+        return MountParkStatus(available=True, parked=True, tracking=False)
+
+    def park(self) -> None:
+        pass
+
+    def unpark(self) -> None:
+        pass  # status() always reports parked regardless
+
+
 class TestMountTestMoveRunner:
-    def test_submit_then_take_latest_measures_both_cameras_around_one_pulse(self) -> None:
+    def test_submit_unparks_pulses_and_reparks(self) -> None:
+        mount_park = FakeMountPark(start_parked=True)
         mount = FakeMountAdapter()
         mount.connect()
         runner = MountTestMoveRunner()
 
-        started = runner.submit(
-            mount,
-            MountAxis.AXIS1,
-            AxisDirection.POSITIVE,
-            500,
-            _frame_pair((50.0, 50.0), (60.0, 50.0)),
-            _frame_pair((20.0, 30.0), (20.0, 45.0)),
-        )
+        started = runner.submit(mount_park, mount, MountAxis.AXIS1, AxisDirection.POSITIVE, 500)
 
         assert started is True
         assert _wait_for(lambda: not runner.is_busy)
         outcome = runner.take_latest()
         assert outcome is not None
+        assert outcome.pulsed is True
         assert outcome.error is None
-        assert outcome.responses["left"].dx_px == pytest.approx(10.0, abs=0.5)
-        assert outcome.responses["left"].dy_px == pytest.approx(0.0, abs=0.5)
-        assert outcome.responses["right"].dx_px == pytest.approx(0.0, abs=0.5)
-        assert outcome.responses["right"].dy_px == pytest.approx(15.0, abs=0.5)
         assert mount.pulse_log == [(MountAxis.AXIS1, AxisDirection.POSITIVE, 500)]
+        # Ends parked again, same as it started — see module docstring.
+        assert mount_park.status().parked is True
 
     def test_take_latest_returns_none_when_nothing_has_completed_yet(self) -> None:
         assert MountTestMoveRunner().take_latest() is None
@@ -65,12 +70,7 @@ class TestMountTestMoveRunner:
         mount.connect()
         runner = MountTestMoveRunner()
         runner.submit(
-            mount,
-            MountAxis.AXIS1,
-            AxisDirection.POSITIVE,
-            500,
-            _frame_pair((0.0, 0.0), (0.0, 0.0)),
-            _frame_pair((0.0, 0.0), (0.0, 0.0)),
+            FakeMountPark(start_parked=True), mount, MountAxis.AXIS1, AxisDirection.POSITIVE, 500
         )
         assert _wait_for(lambda: not runner.is_busy)
         assert runner.take_latest() is not None
@@ -82,65 +82,41 @@ class TestMountTestMoveRunner:
         mount = FakeMountAdapter()
         mount.connect()
         started = runner.submit(
-            mount,
-            MountAxis.AXIS1,
-            AxisDirection.POSITIVE,
-            500,
-            lambda: _star(0.0, 0.0),
-            lambda: _star(0.0, 0.0),
+            FakeMountPark(start_parked=True), mount, MountAxis.AXIS1, AxisDirection.POSITIVE, 500
         )
         assert started is False
 
-    def test_rejected_pulse_reports_an_error_and_no_responses(self) -> None:
+    def test_rejected_pulse_reports_an_error_but_still_reparks(self) -> None:
         mount = FakeMountAdapter()  # never connected -> pulse_axis always rejects
+        mount_park = FakeMountPark(start_parked=True)
         runner = MountTestMoveRunner()
-        runner.submit(
-            mount,
-            MountAxis.AXIS1,
-            AxisDirection.POSITIVE,
-            500,
-            lambda: _star(0.0, 0.0),
-            lambda: _star(0.0, 0.0),
-        )
+        runner.submit(mount_park, mount, MountAxis.AXIS1, AxisDirection.POSITIVE, 500)
         assert _wait_for(lambda: not runner.is_busy)
         outcome = runner.take_latest()
         assert outcome is not None
+        assert outcome.pulsed is False
         assert outcome.error is not None
-        assert outcome.responses == {}
+        # A pulse rejection still must not strand the mount unparked.
+        assert mount_park.status().parked is True
 
-    def test_no_frame_captured_yet_reports_an_error(self) -> None:
+    def test_a_mount_that_never_unparks_times_out_instead_of_hanging(self) -> None:
         mount = FakeMountAdapter()
         mount.connect()
         runner = MountTestMoveRunner()
-        runner.submit(
-            mount,
-            MountAxis.AXIS1,
-            AxisDirection.POSITIVE,
-            500,
-            lambda: None,
-            lambda: _star(0.0, 0.0),
-        )
-        assert _wait_for(lambda: not runner.is_busy)
-        outcome = runner.take_latest()
-        assert outcome is not None
-        assert outcome.error is not None
-        assert "no frame" in outcome.error
+        # Keep the test itself fast — the real timeout constants are
+        # seconds long, which would make this test unnecessarily slow.
+        import collimation_tool.ui.mount_test_move_runner as runner_module
 
-    def test_no_star_detected_reports_an_error(self) -> None:
-        mount = FakeMountAdapter()
-        mount.connect()
-        blank = np.full(_SHAPE, 100.0, dtype=np.float64)
-        runner = MountTestMoveRunner()
-        runner.submit(
-            mount,
-            MountAxis.AXIS1,
-            AxisDirection.POSITIVE,
-            500,
-            lambda: blank,
-            lambda: _star(0.0, 0.0),
-        )
-        assert _wait_for(lambda: not runner.is_busy)
+        original_timeout = runner_module._UNPARK_TIMEOUT_S
+        runner_module._UNPARK_TIMEOUT_S = 0.1
+        try:
+            runner.submit(_NeverUnparks(), mount, MountAxis.AXIS1, AxisDirection.POSITIVE, 500)
+            assert _wait_for(lambda: not runner.is_busy, timeout_s=2.0)
+        finally:
+            runner_module._UNPARK_TIMEOUT_S = original_timeout
         outcome = runner.take_latest()
         assert outcome is not None
+        assert outcome.pulsed is False
         assert outcome.error is not None
-        assert "no point source" in outcome.error
+        assert "unpark" in outcome.error
+        assert mount.pulse_log == []  # never reached the pulse

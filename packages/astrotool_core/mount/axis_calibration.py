@@ -83,7 +83,7 @@ def calibrate_axis(
             f"axis_calibration: pulse rejected for {axis.name} {direction.name}: {result.message}"
         )
     after = measure()
-    return _response_from_positions(axis, direction, pulse_ms, before, after)
+    return response_from_positions(axis, direction, pulse_ms, before, after)
 
 
 def calibrate_axis_multi(
@@ -111,7 +111,7 @@ def calibrate_axis_multi(
         )
     after = {key: measurer() for key, measurer in measures.items()}
     return {
-        key: _response_from_positions(axis, direction, pulse_ms, before[key], after[key])
+        key: response_from_positions(axis, direction, pulse_ms, before[key], after[key])
         for key in measures
     }
 
@@ -134,13 +134,19 @@ def calibrate_axes(
     return CalibrationMatrix(responses=responses)
 
 
-def _response_from_positions(
+def response_from_positions(
     axis: MountAxis,
     direction: AxisDirection,
     pulse_ms: int,
     before: tuple[float, float],
     after: tuple[float, float],
 ) -> AxisResponse:
+    """Public so a caller that must split "measure before" / pulse /
+    "measure after" across its own scheduling (e.g. `MountTestMovePanel`,
+    which measures on the Qt main thread but pulses on a background one
+    — see that module's docstring for why) can still build the same
+    `AxisResponse` this module's own `calibrate_axis`/`calibrate_axis_multi`
+    produce, without duplicating the math."""
     dx = after[0] - before[0]
     dy = after[1] - before[1]
     magnitude = (dx**2 + dy**2) ** 0.5

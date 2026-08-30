@@ -10,6 +10,7 @@ from astrotool_core.mount.axis_calibration import (
     calibrate_axes,
     calibrate_axis,
     calibrate_axis_multi,
+    response_from_positions,
 )
 from astrotool_core.mount.indi_adapter import IndiMountAdapter
 from astrotool_core.mount.indi_mount_park_adapter import IndiMountParkAdapter
@@ -45,4 +46,5 @@ __all__ = [
     "calibrate_axes",
     "calibrate_axis",
     "calibrate_axis_multi",
+    "response_from_positions",
 ]

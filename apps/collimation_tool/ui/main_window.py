@@ -190,10 +190,15 @@ class MainWindow(QMainWindow):
         self._right_panel.connected_device_changed.connect(self._on_right_camera_changed)
 
         self._focuser_panel = FocuserPanel(focuser if focuser is not None else NoFocuser())
-        self._mount_panel = MountParkPanel(mount if mount is not None else NoMountPark())
+        # Shared with _test_move_panel below -- see MountTestMovePanel's
+        # own docstring for why that panel drives this same MountParkPort
+        # rather than owning a second, independently-connected copy of
+        # the same park/unpark state.
+        mount_park_port = mount if mount is not None else NoMountPark()
+        self._mount_panel = MountParkPanel(mount_park_port)
         self._test_move_panel = MountTestMovePanel(
             pulse_mount if pulse_mount is not None else NoMountAdapter(),
-            get_parked=self._mount_panel.is_parked,
+            mount_park=mount_park_port,
             get_left_frame=self._left_panel.latest_mono_frame,
             get_right_frame=self._right_panel.latest_mono_frame,
         )

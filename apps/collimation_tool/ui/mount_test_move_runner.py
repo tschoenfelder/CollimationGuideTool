@@ -1,81 +1,100 @@
-"""MountTestMoveRunner — runs one mount test-move-and-measure pass on a
-background thread, off the UI thread.
+"""MountTestMoveRunner — runs one mount unpark/pulse/re-park sequence on
+a background thread, off the UI thread.
 
 Mirrors `FovCalibrator`'s shape (submit()/take_latest()/is_busy, "run at
 most one at a time", daemon background thread) for the same reason: the
 pulse itself blocks for the requested duration
 (`IndiMountPulseAdapter.pulse_axis` deliberately sleeps out the full
-pulse — see that module's docstring) and detection runs on top of that,
-so doing this inline from a button click would freeze the window for the
-whole test.
+pulse — see that module's docstring), so doing this inline from a button
+click would freeze the window for the whole test.
 
-Uses `astrotool_core.mount.axis_calibration.calibrate_axis_multi` so both
-cameras are measured around the *same* single pulse, not one pulse per
-camera — see that function's own docstring for why a naive two-calls
-approach would be wrong here.
+Deliberately does *not* touch any camera/frame accessor, unlike an
+earlier version of this module — a real crash was traced to exactly
+that: calling `CameraPanel.latest_mono_frame()` from this background
+thread while the same panel's own Qt poll timer was concurrently
+delivering new frames on the main thread (both touch the panel's
+captured-frame state; `FovCalibrator`'s own established pattern never
+has this problem because its background thread only ever processes
+plain numpy arrays already captured on the main thread before submit()).
+So here: `MountTestMovePanel` captures the "before" frames itself on the
+main thread, submits only the mount sequence to this runner, and — once
+`take_latest()` reports the pulse finished — captures the "after" frames
+and computes the response itself, also on the main thread (fast enough,
+unlike FOV registration's search, not to need its own thread). This
+runner's only job is the unpark/pulse/re-park timing.
+
+Unparks first, pulses, then re-parks — a real-hardware check (see
+incident notes on `IndiMountPulseAdapter`) found OnStep's driver flatly
+refuses `TELESCOPE_MOTION_NS`/`_WE` while parked ("Please unpark the
+mount before issuing any motion/sync commands"), logging the refusal but
+still reporting the command as accepted at the INDI level — so "move the
+mount while parked", taken literally, is a silent no-op on real hardware.
+This runner does the unpark/re-park itself instead (reusing
+`IndiMountParkAdapter.unpark()`'s already-durable TRACK_OFF), so from the
+button's perspective the mount still starts and ends parked — "when
+parked" describes the resting state around the test, not a precondition
+the pulse itself can honor. `park()` always runs in a `finally`, even if
+the pulse itself failed, so a mid-run error can't strand the mount
+unparked.
 """
 
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable
+import time
 from dataclasses import dataclass
 
-import numpy as np
-from astrotool_core.mount.axis_calibration import AxisResponse, calibrate_axis_multi
+from astrotool_core.mount.park_port import MountParkPort
 from astrotool_core.mount.port import AxisDirection, MountAxis, MountPort
-from astrotool_core.target.detector import detect_sources
 
-FrameGetter = Callable[[], np.ndarray | None]
+_UNPARK_TIMEOUT_S = 5.0
+_REPARK_TIMEOUT_S = 5.0
+_PARK_POLL_INTERVAL_S = 0.1
 
 
 @dataclass(frozen=True)
-class MountTestMoveOutcome:
-    """`responses` is empty and `error` set if the pulse itself was
-    rejected or either camera couldn't be measured (before or after) —
-    see module docstring: one shared pulse, so a measurement failure on
-    either camera fails the whole attempt rather than reporting a partial
-    result for just the other one."""
+class MountPulseOutcome:
+    """`pulsed` is False and `error` set if the mount never confirmed
+    unparked or the pulse itself was rejected — see module docstring for
+    why re-parking is always attempted regardless."""
 
-    responses: dict[str, AxisResponse]
+    pulsed: bool
     error: str | None = None
 
 
-def _measure_brightest_source(get_frame: FrameGetter) -> tuple[float, float]:
-    frame = get_frame()
-    if frame is None:
-        raise RuntimeError("no frame captured yet")
-    result = detect_sources(frame)
-    if not result.sources:
-        raise RuntimeError("no point source detected in frame")
-    brightest = max(result.sources, key=lambda source: source.peak)
-    return (brightest.x, brightest.y)
+def _wait_for_parked(mount_park: MountParkPort, *, want_parked: bool, timeout_s: float) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while True:
+        if mount_park.status().parked == want_parked:
+            return True
+        if time.monotonic() >= deadline:
+            return False
+        time.sleep(_PARK_POLL_INTERVAL_S)
 
 
 class MountTestMoveRunner:
     def __init__(self) -> None:
         self._lock = threading.Lock()
         self._busy = False
-        self._latest_outcome: MountTestMoveOutcome | None = None
+        self._latest_outcome: MountPulseOutcome | None = None
 
     def submit(
         self,
+        mount_park: MountParkPort,
         mount: MountPort,
         axis: MountAxis,
         direction: AxisDirection,
         pulse_ms: int,
-        get_left_frame: FrameGetter,
-        get_right_frame: FrameGetter,
     ) -> bool:
-        """Start a test move in the background. Returns False (a no-op)
-        if one is already running."""
+        """Start an unpark/pulse/re-park sequence in the background.
+        Returns False (a no-op) if one is already running."""
         with self._lock:
             if self._busy:
                 return False
             self._busy = True
         threading.Thread(
             target=self._run,
-            args=(mount, axis, direction, pulse_ms, get_left_frame, get_right_frame),
+            args=(mount_park, mount, axis, direction, pulse_ms),
             daemon=True,
             name="mount-test-move",
         ).start()
@@ -83,33 +102,38 @@ class MountTestMoveRunner:
 
     def _run(
         self,
+        mount_park: MountParkPort,
         mount: MountPort,
         axis: MountAxis,
         direction: AxisDirection,
         pulse_ms: int,
-        get_left_frame: FrameGetter,
-        get_right_frame: FrameGetter,
     ) -> None:
-        responses: dict[str, AxisResponse] = {}
+        pulsed = False
         error: str | None = None
+        mount_park.unpark()
         try:
-            responses = calibrate_axis_multi(
-                mount,
-                axis,
-                direction,
-                measures={
-                    "left": lambda: _measure_brightest_source(get_left_frame),
-                    "right": lambda: _measure_brightest_source(get_right_frame),
-                },
-                pulse_ms=pulse_ms,
-            )
-        except RuntimeError as exc:
-            error = str(exc)
+            if not _wait_for_parked(mount_park, want_parked=False, timeout_s=_UNPARK_TIMEOUT_S):
+                error = "mount did not confirm unparked in time -- aborting test move"
+            else:
+                result = mount.pulse_axis(axis, direction, pulse_ms)
+                if not result.accepted:
+                    error = (
+                        f"pulse rejected for {axis.name} {direction.name}: {result.message}"
+                    )
+                else:
+                    pulsed = True
+        finally:
+            # Always try to leave the mount parked again, even if the
+            # pulse failed above -- see module docstring.
+            mount_park.park()
+            if not _wait_for_parked(mount_park, want_parked=True, timeout_s=_REPARK_TIMEOUT_S):
+                error = error or "mount did not confirm re-parked in time"
+
         with self._lock:
-            self._latest_outcome = MountTestMoveOutcome(responses=responses, error=error)
+            self._latest_outcome = MountPulseOutcome(pulsed=pulsed, error=error)
             self._busy = False
 
-    def take_latest(self) -> MountTestMoveOutcome | None:
+    def take_latest(self) -> MountPulseOutcome | None:
         """Return and clear the latest completed outcome, if any — None
         means no test move has finished since the last call."""
         with self._lock:
