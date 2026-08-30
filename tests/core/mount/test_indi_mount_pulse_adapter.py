@@ -155,6 +155,20 @@ class TestConnected:
         mount.disconnect()
         assert mount.is_available is False
 
+    def test_abort_stops_an_in_progress_motion(
+        self, mount: IndiMountPulseAdapter, server: FakeIndiServer
+    ) -> None:
+        mount.connect()
+        # Simulate a motion in progress -- what abort() is for.
+        server._motion_we = {"MOTION_WEST": False, "MOTION_EAST": True}  # noqa: SLF001
+        mount.abort()
+        _wait_until(
+            lambda: server._motion_we == {"MOTION_WEST": False, "MOTION_EAST": False}  # noqa: SLF001
+        )
+
+    def test_abort_before_connect_is_a_safe_no_op(self) -> None:
+        IndiMountPulseAdapter("127.0.0.1", 1).abort()  # must not raise
+
 
 class TestMountInterfaceUnavailable:
     def test_connect_succeeds_but_mount_is_not_available(self) -> None:

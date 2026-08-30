@@ -29,6 +29,11 @@ class FakeMountAdapter:
         self._connected = False
         self._tracking = False
         self.pulse_log: list[tuple[MountAxis, AxisDirection, int]] = []
+        #: Not part of MountPort (see IndiMountPulseAdapter.abort()'s own
+        #: docstring on why) -- present here purely so
+        #: MountTestMovePanel's duck-typed "Stop" button is testable
+        #: against a fake instead of only the real INDI adapter.
+        self.abort_log: list[None] = []
 
     def connect(self) -> None:
         if self._fail_connect:
@@ -56,3 +61,6 @@ class FakeMountAdapter:
             return CommandResult(accepted=False, message="not connected")
         self.pulse_log.append((axis, direction, duration_ms))
         return CommandResult(accepted=True)
+
+    def abort(self) -> None:
+        self.abort_log.append(None)

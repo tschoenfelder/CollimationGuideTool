@@ -207,6 +207,7 @@ class FakeIndiServer:
         )
         self._def_switch_vector("TELESCOPE_MOTION_NS", "Idle", self._motion_ns)
         self._def_switch_vector("TELESCOPE_MOTION_WE", "Idle", self._motion_we)
+        self._def_switch_vector("TELESCOPE_ABORT_MOTION", "Idle", {"ABORT": False})
 
     def _send_focuser_properties(self) -> None:
         self._def_number_vector(
@@ -266,6 +267,12 @@ class FakeIndiServer:
                 "MOTION_EAST": elements.get("MOTION_EAST") == "On",
             }
             self._send_switch_vector("TELESCOPE_MOTION_WE", "Ok", self._motion_we)
+        elif name == "TELESCOPE_ABORT_MOTION":
+            self._motion_ns = {"MOTION_NORTH": False, "MOTION_SOUTH": False}
+            self._motion_we = {"MOTION_WEST": False, "MOTION_EAST": False}
+            self._send_switch_vector("TELESCOPE_MOTION_NS", "Ok", self._motion_ns)
+            self._send_switch_vector("TELESCOPE_MOTION_WE", "Ok", self._motion_we)
+            self._send_switch_vector("TELESCOPE_ABORT_MOTION", "Ok", {"ABORT": False})
         elif name == "FOCUS_MOTION":
             self._direction_outward = elements.get("FOCUS_OUTWARD") == "On"
             self._send_switch_vector(

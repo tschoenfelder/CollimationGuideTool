@@ -16,9 +16,8 @@ Also takes the *same* `MountParkPort` object `MountParkPanel` uses
 this panel's own connection: `MountTestMoveRunner` drives it directly,
 and it's simplest for that to be the one connection already managed by
 `MountParkPanel`'s own Connect button rather than a second,
-independently-connected copy of the same park/unpark state). The gate
-("Test Move" only enabled while parked) reads `mount_park.status()`
-directly for the same reason.
+independently-connected copy of the same park/unpark state). The
+direction buttons only enable while parked, for the same reason.
 
 The mount actually has to be *unparked* to move at all — a real-hardware
 check found OnStep's driver refuses `TELESCOPE_MOTION_NS`/`_WE` while
@@ -26,6 +25,27 @@ parked, a deliberate safety interlock (not a defect) — so
 `MountTestMoveRunner` unparks before pulsing and re-parks after, every
 run, respecting that interlock rather than routing around it; see its
 own docstring.
+
+Direction buttons fire immediately on click (N/S/E/W, like Park/Unpark
+are direct actions) rather than "select a direction, then press a
+separate confirm button" — a real user report (incident 9551627f) found
+that select-then-confirm shape confusing on its own (a checked/exclusive
+button "staying pressed" read as stuck, not as a live selection) and,
+combined with the confirm button being silently disabled whenever the
+mount wasn't parked with no explanation why, effectively unusable
+("connect doesn't react to directions"). `_status_label` now always
+explains *why* the direction buttons are disabled when they are (not
+connected / mount unavailable / not parked / a move already in
+progress), rather than just sitting there mute.
+
+Same incident asked for a Stop control — real hardware motion with no
+way to interrupt it once started is a real safety gap, not a nice-to-have
+— see the "Stop" button, wired to `IndiMountPulseAdapter.abort()`
+(`TELESCOPE_ABORT_MOTION`) via duck-typing (`getattr`, not a `MountPort`
+Protocol method — that Protocol is the architecture doc's literal
+contract, not something to extend unilaterally for one adapter's extra
+capability). A no-op if the injected `mount` doesn't have `abort()` (e.g.
+`NoMountAdapter`/`FakeMountAdapter` unless a test adds one).
 
 Frame capture happens *here*, on the Qt main thread, both before
 submitting the pulse and again once the runner reports it finished —
@@ -49,7 +69,7 @@ from astrotool_core.mount.park_port import MountParkPort
 from astrotool_core.mount.port import AxisDirection, MountAxis, MountPort
 from astrotool_core.target.detector import detect_sources
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QButtonGroup, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from collimation_tool.ui.mount_test_move_runner import MountTestMoveRunner
 
@@ -58,10 +78,9 @@ FrameGetter = Callable[[], np.ndarray | None]
 _POLL_INTERVAL_MS = 250
 _PULSE_MS = 500
 
-#: Direction button order/ids -- see IndiMountPulseAdapter's own
-#: docstring for the (axis, direction) <-> compass-direction convention
-#: this matches (AXIS1=RA/azimuth east/west, AXIS2=Dec/altitude
-#: north/south).
+#: Direction button order -- see IndiMountPulseAdapter's own docstring
+#: for the (axis, direction) <-> compass-direction convention this
+#: matches (AXIS1=RA/azimuth east/west, AXIS2=Dec/altitude north/south).
 _DIRECTIONS: tuple[tuple[str, MountAxis, AxisDirection], ...] = (
     ("N", MountAxis.AXIS2, AxisDirection.POSITIVE),
     ("S", MountAxis.AXIS2, AxisDirection.NEGATIVE),
@@ -92,6 +111,7 @@ class MountTestMovePanel(QWidget):
         self._connected = False
         self._pending_before: dict[str, tuple[float, float]] | None = None
         self._pending_direction: tuple[MountAxis, AxisDirection] | None = None
+        self._pending_label: str | None = None
         self._last_responses: dict[str, AxisResponse] | None = None
         self._last_error: str | None = None
 
@@ -101,20 +121,22 @@ class MountTestMovePanel(QWidget):
         self._connect_button.toggled.connect(self._on_toggle_connect)
         self._status_label = QLabel("Not connected.")
 
-        self._direction_group = QButtonGroup(self)
-        self._direction_group.setExclusive(True)
+        self._direction_buttons: list[QPushButton] = []
         direction_row = QHBoxLayout()
-        direction_row.addWidget(QLabel("Direction"))
-        for index, (label, _axis, _direction) in enumerate(_DIRECTIONS):
+        direction_row.addWidget(QLabel(f"Test Move ({_PULSE_MS}ms, 20x)"))
+        for label, axis, direction in _DIRECTIONS:
             button = QPushButton(label)
-            button.setCheckable(True)
-            button.setChecked(index == 0)
-            self._direction_group.addButton(button, index)
+            button.clicked.connect(
+                lambda _checked=False, a=axis, d=direction, lbl=label: self._on_direction_clicked(
+                    a, d, lbl
+                )
+            )
+            self._direction_buttons.append(button)
             direction_row.addWidget(button)
+        self._stop_button = QPushButton("Stop")
+        self._stop_button.clicked.connect(self._on_stop)
+        direction_row.addWidget(self._stop_button)
         direction_row.addStretch(1)
-
-        self._test_move_button = QPushButton(f"Test Move ({_PULSE_MS}ms, 20x)")
-        self._test_move_button.clicked.connect(self._on_test_move)
 
         self._result_label = QLabel("")
         self._result_label.setWordWrap(True)
@@ -127,7 +149,6 @@ class MountTestMovePanel(QWidget):
         layout = QVBoxLayout()
         layout.addLayout(top_row)
         layout.addLayout(direction_row)
-        layout.addWidget(self._test_move_button)
         layout.addWidget(self._result_label)
         self.setLayout(layout)
 
@@ -160,12 +181,7 @@ class MountTestMovePanel(QWidget):
             self._status_label.setText("Not connected.")
         self._update_buttons_enabled()
 
-    def _selected_direction(self) -> tuple[MountAxis, AxisDirection]:
-        index = self._direction_group.checkedId()
-        _label, axis, direction = _DIRECTIONS[index]
-        return axis, direction
-
-    def _on_test_move(self) -> None:
+    def _on_direction_clicked(self, axis: MountAxis, direction: AxisDirection, label: str) -> None:
         # Captured here, on the Qt main thread -- see module docstring
         # for why this must never happen on the runner's background one.
         before_raw = {
@@ -181,14 +197,21 @@ class MountTestMovePanel(QWidget):
             self._result_label.setText(f"Test move failed: {self._last_error}")
             return
         before: dict[str, tuple[float, float]] = before_raw  # type: ignore[assignment]
-        direction = self._selected_direction()
-        started = self._runner.submit(self._mount_park, self._mount, *direction, _PULSE_MS)
+        started = self._runner.submit(self._mount_park, self._mount, axis, direction, _PULSE_MS)
         if not started:
             return  # a test move is already running
         self._pending_before = before
-        self._pending_direction = direction
-        self._result_label.setText("Testing…")
+        self._pending_direction = (axis, direction)
+        self._pending_label = label
+        self._result_label.setText(f"Testing ({label})…")
         self._update_buttons_enabled()
+
+    def _on_stop(self) -> None:
+        # Duck-typed -- see module docstring's "Stop" section for why
+        # this isn't a MountPort Protocol method.
+        abort = getattr(self._mount, "abort", None)
+        if callable(abort):
+            abort()
 
     def _poll(self) -> None:
         if not self._connected:
@@ -203,6 +226,7 @@ class MountTestMovePanel(QWidget):
         direction = self._pending_direction
         self._pending_before = None
         self._pending_direction = None
+        self._pending_label = None
         if before is None or direction is None:
             return  # defensive -- take_latest() without a matching submit()
         if not pulsed:
@@ -225,9 +249,7 @@ class MountTestMovePanel(QWidget):
         after: dict[str, tuple[float, float]] = after_raw  # type: ignore[assignment]
 
         responses = {
-            key: response_from_positions(
-                axis, mount_direction, _PULSE_MS, before[key], after[key]
-            )
+            key: response_from_positions(axis, mount_direction, _PULSE_MS, before[key], after[key])
             for key in ("left", "right")
         }
         self._last_responses = responses
@@ -240,13 +262,22 @@ class MountTestMovePanel(QWidget):
 
     def _update_buttons_enabled(self) -> None:
         park_status = self._mount_park.status()
-        can_test = (
-            self._connected
-            and park_status.available
-            and park_status.parked
-            and not self._runner.is_busy
-        )
-        self._test_move_button.setEnabled(can_test)
+        busy = self._runner.is_busy
+        can_test = self._connected and park_status.available and park_status.parked and not busy
+        for button in self._direction_buttons:
+            button.setEnabled(can_test)
+        self._stop_button.setEnabled(self._connected and busy)
+
+        # Explain *why* the direction buttons are disabled, rather than
+        # leaving them silently unresponsive -- see module docstring's
+        # incident note. Never stomps a "Testing…"/result/error message
+        # that's still relevant (busy, or idle-and-eligible).
+        if busy or can_test or not self._connected:
+            return
+        if not park_status.available:
+            self._result_label.setText("Mount interface not available.")
+        elif not park_status.parked:
+            self._result_label.setText("Park the mount (see Mount panel above) to test a move.")
 
     def diagnostic_context(self) -> dict[str, Any]:
         if self._last_error is not None:

@@ -1691,6 +1691,17 @@ class TestMountParkOneActionAtATime:
         window.close()
 
 
+class _SlowMountPark(FakeMountPark):
+    """FakeMountPark whose unpark() takes a moment to settle -- a plain
+    FakeMountPark/FakeMountAdapter pair settle instantly, so
+    MountTestMoveRunner's background thread can finish before a test's
+    own next line runs; this keeps it observably busy for a beat."""
+
+    def unpark(self) -> None:
+        time.sleep(0.3)
+        super().unpark()
+
+
 class TestMountTestMovePanel:
     """Axis-calibration "test move" diagnostic — see MountTestMovePanel's
     docstring. FakeMountAdapter stands in for a real IndiMountPulseAdapter
@@ -1715,11 +1726,11 @@ class TestMountTestMovePanel:
         window._left_panel._poll_frame()
         window._right_panel._poll_frame()
 
-    def test_starts_disconnected_with_test_move_button_disabled(self, qapp: object) -> None:
+    def test_starts_disconnected_with_direction_buttons_disabled(self, qapp: object) -> None:
         window = self._window(mount_park=FakeMountPark(), pulse_mount=FakeMountAdapter())
-        assert not window._test_move_panel._test_move_button.isEnabled()
+        assert all(not b.isEnabled() for b in window._test_move_panel._direction_buttons)
 
-    def test_button_disabled_when_connected_but_the_mount_is_not_parked(
+    def test_buttons_disabled_when_connected_but_the_mount_is_not_parked(
         self, qapp: object
     ) -> None:
         window = self._window(
@@ -1727,19 +1738,24 @@ class TestMountTestMovePanel:
         )
         window._mount_panel._connect_button.setChecked(True)
         window._test_move_panel._connect_button.setChecked(True)
-        assert not window._test_move_panel._test_move_button.isEnabled()
+        panel = window._test_move_panel
+        assert all(not b.isEnabled() for b in panel._direction_buttons)
+        # Real user report (incident 9551627f): disabled with no
+        # explanation read as "connect doesn't react to directions" --
+        # must now say why.
+        assert "park" in panel._result_label.text().lower()
         window.close()
 
-    def test_button_enabled_once_connected_and_parked(self, qapp: object) -> None:
+    def test_buttons_enabled_once_connected_and_parked(self, qapp: object) -> None:
         window = self._window(
             mount_park=FakeMountPark(start_parked=True), pulse_mount=FakeMountAdapter()
         )
         window._mount_panel._connect_button.setChecked(True)
         window._test_move_panel._connect_button.setChecked(True)
-        assert window._test_move_panel._test_move_button.isEnabled()
+        assert all(b.isEnabled() for b in window._test_move_panel._direction_buttons)
         window.close()
 
-    def test_connect_failure_keeps_the_button_disabled_and_shows_the_error(
+    def test_connect_failure_keeps_buttons_disabled_and_shows_the_error(
         self, qapp: object
     ) -> None:
         window = self._window(
@@ -1748,14 +1764,17 @@ class TestMountTestMovePanel:
         )
         window._mount_panel._connect_button.setChecked(True)
         window._test_move_panel._connect_button.setChecked(True)
-        assert not window._test_move_panel._test_move_button.isEnabled()
-        assert "failed" in window._test_move_panel._status_label.text().lower()
+        panel = window._test_move_panel
+        assert all(not b.isEnabled() for b in panel._direction_buttons)
+        assert "failed" in panel._status_label.text().lower()
         # mount_park's own connect succeeded (only pulse_mount fails) --
         # its poll timer is running and must be stopped, see conftest.py's
         # Qt-flush fixture / the segfault class this class of leak causes.
         window.close()
 
-    def test_clicking_test_move_pulses_the_selected_direction(self, qapp: object) -> None:
+    def test_clicking_a_direction_button_pulses_that_direction_immediately(
+        self, qapp: object
+    ) -> None:
         pulse_mount = FakeMountAdapter()
         window = self._window(mount_park=FakeMountPark(start_parked=True), pulse_mount=pulse_mount)
         self._connect_and_stream_cameras(window)
@@ -1763,9 +1782,10 @@ class TestMountTestMovePanel:
         window._test_move_panel._connect_button.setChecked(True)
         panel = window._test_move_panel
 
-        # id 2 is "E" -> (AXIS1, POSITIVE) — see _DIRECTIONS.
-        panel._direction_group.button(2).setChecked(True)
-        panel._test_move_button.click()
+        # index 2 is "E" -> (AXIS1, POSITIVE) — see _DIRECTIONS. No
+        # separate select-then-confirm step (incident 9551627f) -- one
+        # click both selects and fires.
+        panel._direction_buttons[2].click()
 
         deadline = time.monotonic() + 5.0
         while panel._runner.is_busy:
@@ -1778,6 +1798,44 @@ class TestMountTestMovePanel:
         assert "Guide" in panel._result_label.text()
         window.close()
 
+    def test_direction_buttons_disable_and_stop_enables_while_a_move_is_in_flight(
+        self, qapp: object
+    ) -> None:
+        # A plain FakeMountPark/FakeMountAdapter settle instantly, so the
+        # runner's background thread can finish before this test's own
+        # next line runs -- _SlowMountPark keeps it busy long enough to
+        # actually observe the in-flight button states.
+        window = self._window(
+            mount_park=_SlowMountPark(start_parked=True), pulse_mount=FakeMountAdapter()
+        )
+        self._connect_and_stream_cameras(window)
+        window._mount_panel._connect_button.setChecked(True)
+        window._test_move_panel._connect_button.setChecked(True)
+        panel = window._test_move_panel
+        assert not panel._stop_button.isEnabled()
+
+        panel._direction_buttons[0].click()
+        # _on_direction_clicked() updates button state synchronously,
+        # right after submit() -- no poll tick needed to see this.
+        assert panel._stop_button.isEnabled()
+        assert all(not b.isEnabled() for b in panel._direction_buttons)
+
+        deadline = time.monotonic() + 5.0
+        while panel._runner.is_busy:
+            assert time.monotonic() < deadline, "test move never completed"
+            time.sleep(0.01)
+        panel._poll()
+        assert not panel._stop_button.isEnabled()
+        window.close()
+
+    def test_stop_calls_abort_on_the_pulse_mount(self, qapp: object) -> None:
+        pulse_mount = FakeMountAdapter()
+        window = self._window(mount_park=FakeMountPark(start_parked=True), pulse_mount=pulse_mount)
+        window._test_move_panel._connect_button.setChecked(True)
+        window._test_move_panel._on_stop()
+        assert pulse_mount.abort_log == [None]
+        window.close()
+
     def test_diagnostic_context_includes_the_last_result(self, qapp: object) -> None:
         window = self._window(
             mount_park=FakeMountPark(start_parked=True), pulse_mount=FakeMountAdapter()
@@ -1786,7 +1844,7 @@ class TestMountTestMovePanel:
         window._mount_panel._connect_button.setChecked(True)
         window._test_move_panel._connect_button.setChecked(True)
         panel = window._test_move_panel
-        panel._test_move_button.click()
+        panel._direction_buttons[0].click()
 
         deadline = time.monotonic() + 5.0
         while panel._runner.is_busy:

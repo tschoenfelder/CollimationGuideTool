@@ -146,6 +146,24 @@ class IndiMountPulseAdapter:
             return MountStatus(connected=False, tracking=False, slewing=False)
         return MountStatus(connected=True, tracking=False, slewing=False)
 
+    def abort(self) -> None:
+        """Immediately stop any in-progress motion — not part of the
+        `MountPort` Protocol (that's the architecture doc's literal
+        contract, not something to extend unilaterally), so callers that
+        want this reach for it directly on this concrete class, or
+        duck-type it (`MountTestMovePanel`'s "Stop" button does the
+        latter, since it's typed against `MountPort` generically).
+        `pulse_axis()`'s own blocking sleep can't be interrupted, but the
+        *physical* motion stops right away regardless — the sleep just
+        finishes out harmlessly (turning an already-stopped direction
+        switch off again, restoring the rate) once its time is up."""
+        if not self.is_available:
+            return
+        _log.info("IndiMountPulseAdapter.abort(): aborting motion on %r", self._device_name)
+        self._client.send_new_switch_vector(
+            self._device_name, "TELESCOPE_ABORT_MOTION", {"ABORT": True}
+        )
+
     def pulse_axis(
         self,
         axis: MountAxis,
