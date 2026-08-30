@@ -179,6 +179,7 @@ class DiagnosticService:
         self._recent_logs = recent_logs
         self._context_provider: Callable[[], dict[str, Any]] | None = None
         self._frame_provider: Callable[[], Sequence[Frame]] | None = None
+        self._image_provider: Callable[[], dict[str, bytes]] | None = None
         # Monotonic per-instance tie-breaker for retention ordering: wall-clock
         # timestamps alone can collide at Windows' clock resolution when
         # several bundles are captured in a tight loop (e.g. tests).
@@ -202,12 +203,27 @@ class DiagnosticService:
         """
         self._frame_provider = provider
 
+    def set_image_provider(self, provider: Callable[[], dict[str, bytes]] | None) -> None:
+        """Register a callback returning named image byte blobs (PNG,
+        typically) to save alongside a captured bundle's raw frames.
+
+        Distinct from the frame provider: a raw ``Frame`` is unstretched
+        sensor data with no demosaicing, measurement overlay, or FOV
+        overlay applied — none of what a report like "wrong position
+        picked" needs to actually see. This is deliberately UI-agnostic
+        (plain ``bytes`` in, written verbatim to a file) so this core
+        module never needs to import a UI toolkit; the caller (typically
+        a PySide6 window) does the pixmap-to-PNG-bytes conversion itself.
+        """
+        self._image_provider = provider
+
     def capture_exception(
         self,
         exc: BaseException,
         *,
         context: dict[str, Any] | None = None,
         frames: Sequence[Frame] | None = None,
+        images: dict[str, bytes] | None = None,
     ) -> DiagnosticBundle | None:
         """Capture a bundle for *exc*. Never raises — see module docstring."""
         resolved_context = (
@@ -216,12 +232,16 @@ class DiagnosticService:
         resolved_frames = (
             frames if frames is not None else self._safe_provider(self._frame_provider, [])
         )
+        resolved_images = (
+            images if images is not None else self._safe_provider(self._image_provider, {})
+        )
         return self._capture(
             trigger="exception",
             exception=exc,
             reason=None,
             context=resolved_context,
             frames=resolved_frames,
+            images=resolved_images,
         )
 
     def capture_manual(
@@ -230,6 +250,7 @@ class DiagnosticService:
         reason: str,
         context: dict[str, Any] | None = None,
         frames: Sequence[Frame] | None = None,
+        images: dict[str, bytes] | None = None,
     ) -> DiagnosticBundle | None:
         """Capture a bundle for a manual "Capture diagnostics" action.
 
@@ -242,12 +263,16 @@ class DiagnosticService:
         resolved_frames = (
             frames if frames is not None else self._safe_provider(self._frame_provider, [])
         )
+        resolved_images = (
+            images if images is not None else self._safe_provider(self._image_provider, {})
+        )
         return self._capture(
             trigger="manual",
             exception=None,
             reason=reason,
             context=merged_context,
             frames=resolved_frames,
+            images=resolved_images,
         )
 
     def find_bundle(self, incident_id: str) -> Path | None:
@@ -273,6 +298,7 @@ class DiagnosticService:
         reason: str | None,
         context: dict[str, Any],
         frames: Sequence[Frame],
+        images: dict[str, bytes] | None = None,
     ) -> DiagnosticBundle | None:
         try:
             incident_id = str(uuid.uuid4())
@@ -302,6 +328,7 @@ class DiagnosticService:
             (bundle_dir / "application.log").write_text("\n".join(log_lines), encoding="utf-8")
 
             self._save_frames(bundle_dir, frames)
+            self._save_images(bundle_dir, images or {})
 
             _log.error("Diagnostic incident %s captured at %s", incident_id, bundle_dir)
             self._prune_old_bundles()
@@ -321,6 +348,18 @@ class DiagnosticService:
                 (frames_dir / f"frame_{index}.fits").write_bytes(frame.to_fits_bytes())
             except Exception:
                 _log.warning("Diagnostics: failed to save frame %d", index, exc_info=True)
+
+    @staticmethod
+    def _save_images(bundle_dir: Path, images: dict[str, bytes]) -> None:
+        if not images:
+            return
+        images_dir = bundle_dir / "images"
+        images_dir.mkdir(exist_ok=True)
+        for name, data in images.items():
+            try:
+                (images_dir / name).write_bytes(data)
+            except Exception:
+                _log.warning("Diagnostics: failed to save image %s", name, exc_info=True)
 
     @staticmethod
     def _bundle_sort_key(bundle_dir: Path) -> tuple[float, int]:

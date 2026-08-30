@@ -184,7 +184,8 @@ boundary is genuinely never hit).
 `astrotool_core.diagnostics.DiagnosticService` (issue #10) writes a
 self-contained, UUID-named bundle to
 `~/.CollimationGuideTool/diagnostics/<uuid>/` — structured `incident.json`,
-a bounded recent-log tail, and any recent frames as FITS — whenever:
+a bounded recent-log tail, any recent frames as raw FITS (`frames/`), and
+any provided images as PNG (`images/`) — whenever:
 
 - an unhandled exception reaches the app's `sys.excepthook` boundary
   (installed in each app's `main.py`), or
@@ -192,11 +193,20 @@ a bounded recent-log tail, and any recent frames as FITS — whenever:
 
 Both paths go through the same `DiagnosticService._capture()`, so bundle
 format never diverges between automatic and manual capture. Each
-`MainWindow` registers itself as the service's context/frame provider
-(`set_context_provider`/`set_frame_provider`) so an automatic capture —
-which has no call-site context of its own — still gets the latest known
-measurement/state and a small bounded recent-frame buffer (kept in the UI
-layer, not the service: see each `MainWindow`'s docstring).
+`MainWindow` registers itself as the service's context/frame/image
+provider (`set_context_provider`/`set_frame_provider`/
+`set_image_provider`) so an automatic capture — which has no call-site
+context of its own — still gets the latest known measurement/state, a
+small bounded recent-frame buffer (kept in the UI layer, not the
+service: see each `MainWindow`'s docstring), and (CollimationTool only)
+each panel's actually-*displayed* pixmap as PNG. That last one matters
+specifically for FOV-overlay reports: `frames/*.fits` is raw,
+unstretched sensor data with no demosaicing or overlay drawn — it can't
+show whether a "Calibrate FOV" polygon looks visually wrong, only
+`images/*_display.png` can. `incident.json`'s context also includes
+`fov_calibration` (the `FovRegistrationResult` behind whatever polygon
+is currently shown, if any) once CollimationTool has completed at least
+one calibration.
 
 Retention is local and bounded — bundles older than 7 days, or beyond the
 most recent 20, are pruned on every capture (`DEFAULT_MAX_AGE_DAYS`/

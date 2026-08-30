@@ -156,6 +156,60 @@ class TestManualCapture:
         assert (bundle.path / "frames" / "frame_1.fits").is_file()
 
 
+class TestImageCapture:
+    """See the real-world question this was added for: "Are you stored
+    the frames display and the calibration result as well?" — the
+    answer was no, only raw unstretched sensor data (`frames/`) and
+    per-camera settings; this adds a place for whatever's actually
+    *displayed* (stretched, demosaiced, with overlays drawn)."""
+
+    def test_manual_capture_saves_explicitly_passed_images(self, tmp_path: Path) -> None:
+        service = DiagnosticService(app_name="CollimationTool", diagnostics_dir=tmp_path)
+        bundle = service.capture_manual(
+            reason="wrong overlay", images={"left_display.png": b"fake-png-bytes"}
+        )
+        assert bundle is not None
+        saved = bundle.path / "images" / "left_display.png"
+        assert saved.is_file()
+        assert saved.read_bytes() == b"fake-png-bytes"
+
+    def test_capture_exception_uses_the_registered_image_provider(self, tmp_path: Path) -> None:
+        service = DiagnosticService(app_name="CollimationTool", diagnostics_dir=tmp_path)
+        service.set_image_provider(lambda: {"right_display.png": b"guide-panel-bytes"})
+        bundle = service.capture_exception(ValueError("boom"))
+        assert bundle is not None
+        saved = bundle.path / "images" / "right_display.png"
+        assert saved.is_file()
+        assert saved.read_bytes() == b"guide-panel-bytes"
+
+    def test_explicit_images_override_the_registered_provider(self, tmp_path: Path) -> None:
+        service = DiagnosticService(app_name="CollimationTool", diagnostics_dir=tmp_path)
+        service.set_image_provider(lambda: {"left_display.png": b"from-provider"})
+        bundle = service.capture_manual(
+            reason="explicit wins", images={"left_display.png": b"from-call-site"}
+        )
+        assert bundle is not None
+        saved = bundle.path / "images" / "left_display.png"
+        assert saved.read_bytes() == b"from-call-site"
+
+    def test_a_broken_image_provider_does_not_prevent_capture(self, tmp_path: Path) -> None:
+        service = DiagnosticService(app_name="CollimationTool", diagnostics_dir=tmp_path)
+
+        def _broken() -> dict[str, bytes]:
+            raise RuntimeError("provider exploded")
+
+        service.set_image_provider(_broken)
+        bundle = service.capture_manual(reason="should not crash")
+        assert bundle is not None
+        assert not (bundle.path / "images").exists()
+
+    def test_no_images_means_no_images_directory(self, tmp_path: Path) -> None:
+        service = DiagnosticService(app_name="CollimationTool", diagnostics_dir=tmp_path)
+        bundle = service.capture_manual(reason="nothing to show")
+        assert bundle is not None
+        assert not (bundle.path / "images").exists()
+
+
 class TestContextSerialization:
     def test_dataclasses_enums_and_numpy_values_serialize_without_error(
         self, tmp_path: Path

@@ -90,7 +90,7 @@ from PySide6.QtWidgets import (
 from collimation_tool.ui.camera_panel import CameraPanel, default_camera_factory
 from collimation_tool.ui.fov_calibrator import FovCalibrator
 from collimation_tool.ui.fov_overlay import compute_fov_overlay_rect
-from collimation_tool.ui.fov_registration import registration_corners
+from collimation_tool.ui.fov_registration import FovRegistrationResult, registration_corners
 
 _CALIBRATION_POLL_INTERVAL_MS = 200
 
@@ -159,10 +159,17 @@ class MainWindow(QMainWindow):
         self._calibrate_fov_poll_timer = QTimer(self)
         self._calibrate_fov_poll_timer.setInterval(_CALIBRATION_POLL_INTERVAL_MS)
         self._calibrate_fov_poll_timer.timeout.connect(self._poll_fov_calibration)
+        #: The result behind whatever polygon _right_panel is currently
+        #: drawing (see _poll_fov_calibration) — set only on a confident
+        #: match, never cleared by a later "no match" run, so this always
+        #: explains the *currently shown* overlay for diagnostics. None
+        #: until the first successful calibration.
+        self._last_calibration_result: FovRegistrationResult | None = None
 
         self._diagnostics = diagnostics or DiagnosticService(app_name="CollimationTool")
         self._diagnostics.set_context_provider(self._diagnostic_context)
         self._diagnostics.set_frame_provider(self._all_recent_frames)
+        self._diagnostics.set_image_provider(self._diagnostic_images)
 
         self._diagnostics_note = QLineEdit()
         self._diagnostics_note.setPlaceholderText("What looked wrong? (optional)")
@@ -292,6 +299,7 @@ class MainWindow(QMainWindow):
                 f"scale {result.scale:.4f}, score {result.score:.2f}"
             )
             self._right_panel.set_fov_polygon(registration_corners(result))
+            self._last_calibration_result = result
 
         if self._auto_recalibrate_checkbox.isChecked():
             # Restart regardless of whether this run found a match —
@@ -304,13 +312,28 @@ class MainWindow(QMainWindow):
             self._on_calibrate_fov()
 
     def _diagnostic_context(self) -> dict[str, Any]:
-        return {
+        context: dict[str, Any] = {
             "left": self._left_panel.diagnostic_context(),
             "right": self._right_panel.diagnostic_context(),
         }
+        if self._last_calibration_result is not None:
+            # The calibration result behind whatever polygon the guide
+            # panel is currently drawing — see _last_calibration_result's
+            # docstring. Without this, a "wrong position/rotation picked"
+            # report has no record of what was actually picked at all.
+            context["fov_calibration"] = self._last_calibration_result
+        return context
 
     def _all_recent_frames(self) -> list[Frame]:
         return self._left_panel.recent_frames() + self._right_panel.recent_frames()
+
+    def _diagnostic_images(self) -> dict[str, bytes]:
+        images: dict[str, bytes] = {}
+        for name, panel in (("left", self._left_panel), ("right", self._right_panel)):
+            png_bytes = panel.displayed_image_png()
+            if png_bytes is not None:
+                images[f"{name}_display.png"] = png_bytes
+        return images
 
     def _on_capture_diagnostics(self) -> None:
         reason = self._diagnostics_note.text().strip() or _DEFAULT_MANUAL_REASON

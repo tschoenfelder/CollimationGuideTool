@@ -351,6 +351,86 @@ class TestDiagnosticsCapture:
         assert frames_dir.is_dir()
         assert len(list(frames_dir.iterdir())) >= 1
 
+    def test_capture_includes_the_displayed_image_for_a_streaming_panel(
+        self, qapp: object, tmp_path: Path
+    ) -> None:
+        """See the real-world question this was added for: "Are you
+        stored the frames display and the calibration result as well?"
+        — the raw FITS in frames/ is unstretched sensor data with no
+        overlay; images/*_display.png is what the operator actually saw."""
+        diagnostics = DiagnosticService(app_name="CollimationTool", diagnostics_dir=tmp_path)
+        window = MainWindow(
+            _donut_camera((5.0, -2.0)), device_lister=lambda: [], diagnostics=diagnostics
+        )
+        panel = window._left_panel
+        panel._start_button.setChecked(True)
+        try:
+            deadline = time.monotonic() + 2.0
+            while panel._live_view._base_pixmap is None:
+                assert time.monotonic() < deadline, "no frame ever displayed"
+                time.sleep(0.02)
+                panel._poll_frame()
+        finally:
+            panel._start_button.setChecked(False)
+
+        window._on_capture_diagnostics()
+        bundle_dir = next(tmp_path.iterdir())
+        image_path = bundle_dir / "images" / "left_display.png"
+        assert image_path.is_file()
+        # A real PNG, not an empty/placeholder file.
+        assert image_path.read_bytes().startswith(b"\x89PNG")
+
+    def test_capture_omits_fov_calibration_context_when_none_has_run_yet(
+        self, qapp: object, tmp_path: Path
+    ) -> None:
+        diagnostics = DiagnosticService(app_name="CollimationTool", diagnostics_dir=tmp_path)
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)), device_lister=lambda: [], diagnostics=diagnostics
+        )
+        window._on_capture_diagnostics()
+        bundle_dir = next(tmp_path.iterdir())
+        incident = json.loads((bundle_dir / "incident.json").read_text(encoding="utf-8"))
+        assert "fov_calibration" not in incident["context"]
+
+    def test_capture_includes_the_fov_calibration_result_once_one_has_run(
+        self, qapp: object, tmp_path: Path
+    ) -> None:
+        guide = _starfield(80, 80, n_stars=30, seed=50)
+        main_array = guide[20:60, 15:65].copy()
+        diagnostics = DiagnosticService(app_name="CollimationTool", diagnostics_dir=tmp_path)
+        window = MainWindow(
+            ReplayCamera.from_arrays([main_array], cycle=True),
+            guide_camera=ReplayCamera.from_arrays([guide], cycle=True),
+            device_lister=lambda: [],
+            diagnostics=diagnostics,
+            main_pixel_scale_arcsec=1.0,
+            guide_pixel_scale_arcsec=1.0,
+        )
+        window._left_panel._start_button.setChecked(True)
+        window._right_panel._start_button.setChecked(True)
+        try:
+            window._left_panel._poll_frame()
+            window._right_panel._poll_frame()
+        finally:
+            window._left_panel._start_button.setChecked(False)
+            window._right_panel._start_button.setChecked(False)
+
+        window._on_calibrate_fov()
+        deadline = time.monotonic() + 15.0
+        while window._calibrate_fov_poll_timer.isActive():
+            assert time.monotonic() < deadline, "calibration never completed"
+            time.sleep(0.02)
+            window._poll_fov_calibration()
+        assert window._last_calibration_result is not None  # sanity: a match was found
+
+        window._on_capture_diagnostics()
+        bundle_dir = next(tmp_path.iterdir())
+        incident = json.loads((bundle_dir / "incident.json").read_text(encoding="utf-8"))
+        calibration = incident["context"]["fov_calibration"]
+        assert calibration["rotation_deg"] == window._last_calibration_result.rotation_deg
+        assert calibration["scale"] == window._last_calibration_result.scale
+        assert calibration["score"] == window._last_calibration_result.score
+
     def test_recent_frame_buffer_is_bounded_per_panel(self, qapp: object, tmp_path: Path) -> None:
         expected_capacity = 3
         diagnostics = DiagnosticService(app_name="CollimationTool", diagnostics_dir=tmp_path)

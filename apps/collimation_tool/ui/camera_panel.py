@@ -63,7 +63,7 @@ from astrotool_core.camera import (
 )
 from astrotool_core.frames import demosaic, rgb_to_luma
 from astrotool_core.frames.frame import Frame
-from PySide6.QtCore import QTimer, Signal
+from PySide6.QtCore import QBuffer, QIODevice, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -376,6 +376,29 @@ class CameraPanel(QWidget):
 
     def recent_frames(self) -> list[Frame]:
         return list(self._recent_frames)
+
+    def displayed_image_png(self) -> bytes | None:
+        """PNG bytes of this panel's currently displayed frame — the
+        actual stretched, demosaiced-if-color, overlay-drawn pixmap the
+        operator sees, not the raw sensor data `recent_frames()` exposes.
+
+        For diagnostics: a report like "wrong position and rotation
+        picked" is about what's on screen (the FOV overlay's placement
+        relative to the visible content), which a raw FITS frame alone
+        can't show — no stretch, no color, no overlay at all. None if
+        nothing has been displayed yet.
+        """
+        pixmap = self._live_view._base_pixmap
+        if pixmap is None or pixmap.isNull():
+            return None
+        buffer = QBuffer()
+        buffer.open(QIODevice.OpenModeFlag.WriteOnly)
+        try:
+            pixmap.save(buffer, "PNG")
+            data: bytes = bytes(buffer.data().data())
+            return data
+        finally:
+            buffer.close()
 
     def camera_descriptor(self) -> CameraDescriptor:
         return self._camera.get_descriptor()
