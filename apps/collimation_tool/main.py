@@ -102,6 +102,15 @@ def main() -> None:
 
     log_handler = RecentLogHandler()
     logging.getLogger().addHandler(log_handler)
+    # The root logger's default level (WARNING) silently drops every
+    # _log.info() call in this app's/astrotool_core's own code before it
+    # ever reaches log_handler above — found investigating a focuser
+    # incident whose application.log showed only WARNING/ERROR lines,
+    # never the INFO-level move-by-move detail that had just been added
+    # for exactly this purpose. Scoped to our own namespaces (not the
+    # bare root) so third-party libraries' own INFO chatter stays quiet.
+    logging.getLogger("astrotool_core").setLevel(logging.INFO)
+    logging.getLogger("collimation_tool").setLevel(logging.INFO)
     diagnostics = DiagnosticService(app_name="CollimationTool", recent_logs=log_handler.lines)
     _install_excepthook(diagnostics)
 

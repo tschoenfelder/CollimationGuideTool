@@ -59,6 +59,12 @@ def main() -> None:
 
     log_handler = RecentLogHandler()
     logging.getLogger().addHandler(log_handler)
+    # See CollimationTool's main.py for why this is needed: the root
+    # logger's default level (WARNING) otherwise silently drops every
+    # _log.info() call in this app's/astrotool_core's own code (e.g.
+    # guide_controller.py's) before it ever reaches log_handler above.
+    logging.getLogger("astrotool_core").setLevel(logging.INFO)
+    logging.getLogger("guide_tool").setLevel(logging.INFO)
     diagnostics = DiagnosticService(app_name="GuideTool", recent_logs=log_handler.lines)
     _install_excepthook(diagnostics)
 
