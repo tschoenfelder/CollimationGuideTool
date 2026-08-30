@@ -91,7 +91,12 @@ forbidden_modules = ["collimation_tool", "guide_tool"]
 [[tool.importlinter.contracts]]
 name = "adapters never import a UI toolkit"
 type = "forbidden"
-source_modules = ["astrotool_core.camera.touptek_adapter", "astrotool_core.mount.indi_adapter"]
+source_modules = [
+  "astrotool_core.camera.touptek_adapter",
+  "astrotool_core.mount.indi_adapter",
+  "astrotool_core.focus.indi_focuser_adapter",
+  "astrotool_core.indi.client",
+]
 forbidden_modules = ["PySide6"]
 
 [[tool.importlinter.contracts]]

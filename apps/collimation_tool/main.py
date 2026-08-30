@@ -17,6 +17,8 @@ from types import TracebackType
 from astrotool_core.camera.port import CameraPort
 from astrotool_core.camera.replay_camera import ReplayCamera
 from astrotool_core.diagnostics import DiagnosticService, RecentLogHandler
+from astrotool_core.focus.indi_focuser_adapter import IndiFocuserAdapter
+from astrotool_core.focus.port import FocuserPort
 from astrotool_core.testing.frame_factory import donut_image
 from PySide6.QtWidgets import QApplication
 
@@ -50,6 +52,16 @@ def _default_camera() -> CameraPort:
         for dx, dy in offsets
     ]
     return ReplayCamera.from_arrays(arrays, cycle=True)
+
+
+def _default_focuser() -> FocuserPort:
+    """The main optical train's OnStep focuser, over a real indiserver
+    this app never starts itself — see `IndiFocuserAdapter`'s docstring.
+    Expected to already be running locally (`indiserver -v
+    indi_lx200_OnStep`) on the Pi this app runs on. Swapping this out
+    (e.g. for `NoFocuser()`) is a one-line change here; no other file
+    needs to know."""
+    return IndiFocuserAdapter()
 
 
 def _install_excepthook(diagnostics: DiagnosticService) -> None:
@@ -96,7 +108,12 @@ def main() -> None:
     # Two independent ReplayCamera instances — the guide panel's demo
     # camera can't be the same object as the main panel's (see
     # CameraPanel's docstring: each panel owns its own StreamController).
-    window = MainWindow(_default_camera(), guide_camera=_default_camera(), diagnostics=diagnostics)
+    window = MainWindow(
+        _default_camera(),
+        guide_camera=_default_camera(),
+        focuser=_default_focuser(),
+        diagnostics=diagnostics,
+    )
     window.show()
     sys.exit(app.exec())
 

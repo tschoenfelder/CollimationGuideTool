@@ -11,6 +11,7 @@ from astrotool_core.camera.replay_camera import ReplayCamera
 from astrotool_core.camera.touptek_adapter import TouptekDeviceInfo
 from astrotool_core.config import load_camera_settings
 from astrotool_core.diagnostics import DiagnosticService
+from astrotool_core.focus.fake_focuser import FakeFocuser
 from astrotool_core.testing.fake_touptek import FakeTouptekCamera
 from astrotool_core.testing.frame_factory import donut_image
 from collimation_tool.ui.main_window import MainWindow
@@ -1218,3 +1219,118 @@ class TestCameraSettingsPersistence:
         window = MainWindow(demo, device_lister=lambda: [])
         assert window._left_panel._camera is demo
         assert not window._left_panel._auto_exposure_checkbox.isChecked()
+
+
+class TestFocuserPanel:
+    """Manual in/out jog control for the main optical train's OnStep
+    focuser — see FocuserPanel's docstring. FakeFocuser stands in for a
+    real IndiFocuserAdapter here; the INDI wire protocol itself is
+    covered by tests/core/indi and tests/core/focus instead."""
+
+    def test_starts_disconnected_with_move_buttons_disabled(self, qapp: object) -> None:
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)), device_lister=lambda: [], focuser=FakeFocuser()
+        )
+        panel = window._focuser_panel
+        assert not panel._in_button.isEnabled()
+        assert not panel._out_button.isEnabled()
+
+    def test_connecting_enables_move_buttons(self, qapp: object) -> None:
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)), device_lister=lambda: [], focuser=FakeFocuser()
+        )
+        panel = window._focuser_panel
+        panel._connect_button.setChecked(True)
+        assert panel._in_button.isEnabled()
+        assert panel._out_button.isEnabled()
+
+    def test_connect_failure_keeps_buttons_disabled_and_shows_the_error(
+        self, qapp: object
+    ) -> None:
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)),
+            device_lister=lambda: [],
+            focuser=FakeFocuser(fail_connect=True),
+        )
+        panel = window._focuser_panel
+        panel._connect_button.setChecked(True)
+        assert not panel._in_button.isEnabled()
+        assert "failed" in panel._status_label.text().lower()
+
+    def test_out_button_moves_outward_by_the_selected_step_size(self, qapp: object) -> None:
+        focuser = FakeFocuser()
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)), device_lister=lambda: [], focuser=focuser
+        )
+        panel = window._focuser_panel
+        panel._connect_button.setChecked(True)
+        panel._step_group.button(5).setChecked(True)
+        panel._out_button.click()
+        assert focuser.get_position() == 5
+
+    def test_in_button_moves_inward_by_the_selected_step_size(self, qapp: object) -> None:
+        focuser = FakeFocuser()
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)), device_lister=lambda: [], focuser=focuser
+        )
+        panel = window._focuser_panel
+        panel._connect_button.setChecked(True)
+        panel._step_group.button(10).setChecked(True)
+        panel._in_button.click()
+        assert focuser.get_position() == -10
+
+    def test_default_step_size_is_one(self, qapp: object) -> None:
+        focuser = FakeFocuser()
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)), device_lister=lambda: [], focuser=focuser
+        )
+        panel = window._focuser_panel
+        panel._connect_button.setChecked(True)
+        panel._out_button.click()
+        assert focuser.get_position() == 1
+
+    def test_status_label_shows_position_after_connecting(self, qapp: object) -> None:
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)), device_lister=lambda: [], focuser=FakeFocuser()
+        )
+        panel = window._focuser_panel
+        panel._connect_button.setChecked(True)
+        assert "0" in panel._status_label.text()
+
+    def test_disconnecting_disables_move_buttons_again(self, qapp: object) -> None:
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)), device_lister=lambda: [], focuser=FakeFocuser()
+        )
+        panel = window._focuser_panel
+        panel._connect_button.setChecked(True)
+        panel._connect_button.setChecked(False)
+        assert not panel._in_button.isEnabled()
+
+    def test_a_focuser_with_no_hardware_detected_keeps_buttons_disabled(
+        self, qapp: object
+    ) -> None:
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)),
+            device_lister=lambda: [],
+            focuser=FakeFocuser(available=False),
+        )
+        panel = window._focuser_panel
+        panel._connect_button.setChecked(True)
+        assert not panel._in_button.isEnabled()
+        assert "no focuser hardware" in panel._status_label.text().lower()
+
+    def test_diagnostic_context_includes_focuser_state(self, qapp: object) -> None:
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)), device_lister=lambda: [], focuser=FakeFocuser()
+        )
+        window._focuser_panel._connect_button.setChecked(True)
+        context = window._diagnostic_context()
+        assert context["focuser"]["available"] is True
+
+    def test_closing_the_window_disconnects_the_focuser(self, qapp: object) -> None:
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)), device_lister=lambda: [], focuser=FakeFocuser()
+        )
+        window._focuser_panel._connect_button.setChecked(True)
+        window.close()
+        assert not window._focuser_panel._connected

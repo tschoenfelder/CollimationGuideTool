@@ -3,6 +3,7 @@
 Synthetic frame factory, replay dataset loader, fake camera/mount.
 """
 
+from astrotool_core.testing.fake_indi_server import FakeIndiServer
 from astrotool_core.testing.fake_mount import FakeMountAdapter
 from astrotool_core.testing.fake_touptek import FakeTouptekCamera
 from astrotool_core.testing.frame_factory import (
@@ -22,6 +23,7 @@ from astrotool_core.testing.replay_dataset import (
 )
 
 __all__ = [
+    "FakeIndiServer",
     "FakeMountAdapter",
     "FakeTouptekCamera",
     "StarSpec",

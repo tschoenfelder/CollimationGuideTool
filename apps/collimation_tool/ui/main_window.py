@@ -41,6 +41,13 @@ frame or per poll; a config change requires restarting the app, same as
 any other startup-read config. Recomputed only when either panel's
 connected camera changes (its sensor resolution is the other input).
 
+Focuser: `FocuserPanel` (`focuser` constructor param, defaulting to
+`NoFocuser` — a `FocuserPort`, same injectable-default pattern as
+`camera`/`guide_camera`) gives manual in/out jog control (1/5/10 steps)
+over the main optical train's OnStep focuser, connected via a real
+indiserver — see `astrotool_core.focus.indi_focuser_adapter`'s docstring
+for why this one, unlike `mount/indi_adapter.py`, genuinely speaks INDI.
+
 Startup settings restore: each panel's connected camera (by camera_id)
 plus exposure/gain/auto-exposure is saved to
 `~/.CollimationGuideTool/config.toml` (`camera_settings_path`, injectable
@@ -86,6 +93,8 @@ from astrotool_core.config import (
     save_camera_settings,
 )
 from astrotool_core.diagnostics import DiagnosticService
+from astrotool_core.focus.no_focuser import NoFocuser
+from astrotool_core.focus.port import FocuserPort
 from astrotool_core.frames.frame import Frame
 from astrotool_core.optics import load_pixel_scale_arcsec
 from PySide6.QtCore import QTimer
@@ -103,6 +112,7 @@ from PySide6.QtWidgets import (
 )
 
 from collimation_tool.ui.camera_panel import CameraPanel, default_camera_factory
+from collimation_tool.ui.focuser_panel import FocuserPanel
 from collimation_tool.ui.fov_calibrator import FovCalibrator
 from collimation_tool.ui.fov_overlay import compute_fov_overlay_rect
 from collimation_tool.ui.fov_registration import FovRegistrationResult, registration_corners
@@ -118,6 +128,7 @@ class MainWindow(QMainWindow):
         camera: CameraPort,
         *,
         guide_camera: CameraPort | None = None,
+        focuser: FocuserPort | None = None,
         device_lister: Callable[[], list[TouptekDeviceInfo]] = _list_touptek_devices,
         camera_factory: Callable[[str], CameraPort] = default_camera_factory,
         diagnostics: DiagnosticService | None = None,
@@ -159,6 +170,8 @@ class MainWindow(QMainWindow):
         )
         self._left_panel.connected_device_changed.connect(self._on_left_camera_changed)
         self._right_panel.connected_device_changed.connect(self._on_right_camera_changed)
+
+        self._focuser_panel = FocuserPanel(focuser if focuser is not None else NoFocuser())
 
         # Restore last session's connected camera + exposure/gain/
         # auto-exposure per panel — see module docstring's "Startup
@@ -237,6 +250,7 @@ class MainWindow(QMainWindow):
         layout = QVBoxLayout()
         layout.addLayout(diagnostics_row)
         layout.addLayout(calibration_row)
+        layout.addWidget(self._focuser_panel)
         layout.addLayout(panels_row, stretch=1)
 
         central = QWidget()
@@ -351,6 +365,7 @@ class MainWindow(QMainWindow):
         context: dict[str, Any] = {
             "left": self._left_panel.diagnostic_context(),
             "right": self._right_panel.diagnostic_context(),
+            "focuser": self._focuser_panel.diagnostic_context(),
         }
         if self._last_calibration_result is not None:
             # The calibration result behind whatever polygon the guide
@@ -410,4 +425,5 @@ class MainWindow(QMainWindow):
         self._calibrate_fov_poll_timer.stop()
         self._left_panel.stop()
         self._right_panel.stop()
+        self._focuser_panel.stop()
         super().closeEvent(event)
