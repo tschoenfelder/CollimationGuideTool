@@ -114,10 +114,18 @@ class TestConnected:
         _spy_on_sleep(monkeypatch)
         result = mount.pulse_axis(axis, direction, 500)
         assert result.accepted is True
-        # By the time pulse_axis returns, the pulse is over -- direction
-        # switches back off and the original ("9"/Max) rate restored.
-        assert server._motion_ns == {"MOTION_NORTH": False, "MOTION_SOUTH": False}  # noqa: SLF001
-        assert server._motion_we == {"MOTION_WEST": False, "MOTION_EAST": False}  # noqa: SLF001
+        # pulse_axis's final "turn the direction back off"/"restore the
+        # rate" sends are both fire-and-forget (same as every other
+        # command this adapter sends) -- give the fake server's accept
+        # thread a moment to process them before asserting, rather than
+        # assuming they've already landed the instant pulse_axis returns
+        # (flaky on a loaded/shared CI runner -- see _wait_until).
+        _wait_until(
+            lambda: server._motion_ns == {"MOTION_NORTH": False, "MOTION_SOUTH": False}  # noqa: SLF001
+        )
+        _wait_until(
+            lambda: server._motion_we == {"MOTION_WEST": False, "MOTION_EAST": False}  # noqa: SLF001
+        )
         _wait_until(lambda: server._slew_rate == "9")  # noqa: SLF001
 
     def test_pulse_axis_selects_20x_preset_mid_pulse(
