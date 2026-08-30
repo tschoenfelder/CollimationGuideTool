@@ -182,6 +182,13 @@ def _normalized_cross_correlation_surface(search: np.ndarray, template: np.ndarr
     return result
 
 
+#: Below this fraction of the guide frame's own overall standard
+#: deviation, a candidate template is treated as carrying no usable
+#: signal — see register_main_frame_in_guide_frame's "Featureless
+#: regions" docstring section.
+_DEFAULT_MIN_RELATIVE_CONTRAST = 0.05
+
+
 def register_main_frame_in_guide_frame(
     main_mono: np.ndarray,
     guide_mono: np.ndarray,
@@ -192,6 +199,8 @@ def register_main_frame_in_guide_frame(
     angle_step_deg: float = 5.0,
     angle_range_deg: tuple[float, float] = (-180.0, 180.0),
     min_score: float = 0.3,
+    min_relative_contrast: float = _DEFAULT_MIN_RELATIVE_CONTRAST,
+    search_downsample: int = 1,
     progress_callback: Callable[[int, int], None] | None = None,
 ) -> FovRegistrationResult | None:
     """Find where ``main_mono``'s content appears within ``guide_mono``,
@@ -209,14 +218,43 @@ def register_main_frame_in_guide_frame(
 
     Performance: measured on a real rig (ATR585M 3840x2160 main,
     GPCMOS02000KPA 1920x1080 guide) at ~0.6s per (scale, angle)
-    correlation — the defaults above (72 angles x 3 scales = 216
-    candidates) take roughly two real minutes end to end. The rotation
-    range defaults to the full circle since a guide scope's mounting
-    angle relative to the main OTA isn't assumed to be small; narrow
-    ``angle_range_deg`` if you already have a rough idea (e.g. after an
-    initial calibration, to refine it faster), or widen
-    ``angle_step_deg``/reduce ``scale_steps`` for a quicker, coarser
-    pass. Always call this off the UI thread — see `FovCalibrator`.
+    correlation at full resolution — the defaults above (72 angles x 3
+    scales = 216 candidates) take roughly two real minutes end to end,
+    reported by real-world use as "very slow" for an interactive tool.
+    ``search_downsample`` (see below) is the main lever for that; the
+    rotation range itself defaults to the full circle since a guide
+    scope's mounting angle relative to the main OTA isn't assumed to be
+    small — narrow ``angle_range_deg`` if you already have a rough idea
+    (e.g. after an initial calibration, to refine it faster), or widen
+    ``angle_step_deg``/reduce ``scale_steps`` for an even coarser pass.
+    Always call this off the UI thread — see `FovCalibrator`.
+
+    ``search_downsample`` (an integer factor, e.g. 4) shrinks both
+    images before searching — FFT cost drops roughly with the square of
+    it, so 4x fewer pixels per axis is roughly 16x less work per
+    candidate — then scales the returned rectangle's position/size back
+    up to ``guide_mono``'s original resolution. Rotation accuracy is
+    unaffected (it doesn't depend on resolution); position accuracy
+    degrades by up to ``search_downsample`` guide-pixels, which a visual
+    overlay guide doesn't need to be exact to. Defaults to 1 (no
+    downsampling, exact) since this is also used directly in tests that
+    check exact pixel positions — `FovCalibrator`'s production caller
+    passes a larger value.
+
+    Featureless regions: if the main camera happens to be framed on an
+    area with little real structure (e.g. a flat twilight sky, or a
+    landscape crushed to near-black by exposure tuned for a much
+    brighter sky elsewhere in the same guide frame — confirmed by real
+    use), naive NCC can still report a spuriously "confident" match:
+    dividing two near-zero numbers (a near-flat template's tiny residual
+    noise against an equally near-flat window) is numerically unstable
+    and can land anywhere. Before scoring a given scale's resized
+    template at all, this requires its standard deviation to be at least
+    ``min_relative_contrast`` times ``guide_mono``'s own overall standard
+    deviation — a self-calibrating floor (no absolute units/exposure
+    assumptions needed) that treats "not enough real signal to match
+    against" the same as "no confident match" rather than reporting a
+    location with nothing actually recognizable there.
 
     Returns ``None`` if no candidate reaches ``min_score`` (a real match
     typically scores well above it; unrelated frames score near 0) — the
@@ -224,7 +262,7 @@ def register_main_frame_in_guide_frame(
     trust a bad match. Also returns ``None`` if every candidate scale
     would make the resized template larger than the guide frame on
     either axis (an ``approx_scale`` far too large for this pair of
-    frames).
+    frames), or if every candidate scale fails the contrast floor above.
 
     ``progress_callback``, if given, is called as ``callback(completed,
     total)`` after each (scale, angle) candidate is scored — the search
@@ -240,8 +278,27 @@ def register_main_frame_in_guide_frame(
         raise ValueError("main_mono and guide_mono must be 2D mono arrays")
     if approx_scale <= 0.0:
         raise ValueError("approx_scale must be positive")
-    main_h, main_w = main_mono.shape
-    guide_h, guide_w = guide_mono.shape
+
+    downsample = max(1, int(search_downsample))
+    if downsample > 1:
+        main_search = _resize_bilinear(
+            main_mono,
+            max(1, main_mono.shape[0] // downsample),
+            max(1, main_mono.shape[1] // downsample),
+        )
+        guide_search = _resize_bilinear(
+            guide_mono,
+            max(1, guide_mono.shape[0] // downsample),
+            max(1, guide_mono.shape[1] // downsample),
+        )
+    else:
+        main_search = main_mono
+        guide_search = guide_mono
+
+    main_h, main_w = main_search.shape
+    guide_h, guide_w = guide_search.shape
+    guide_std = float(guide_search.std())
+    contrast_floor = min_relative_contrast * guide_std if guide_std > 0.0 else 0.0
 
     if scale_steps <= 1:
         scale_candidates = [approx_scale]
@@ -252,33 +309,37 @@ def register_main_frame_in_guide_frame(
 
     angles = np.arange(angle_range_deg[0], angle_range_deg[1], angle_step_deg)
 
-    # Filter out-of-range scales up front so the total candidate count —
-    # and therefore progress — is known before the (slow) search starts,
-    # rather than discovered candidate by candidate.
+    # Filter out-of-range and too-flat-to-match scales up front so the
+    # total candidate count — and therefore progress — is known before
+    # the (slow) search starts, rather than discovered candidate by
+    # candidate.
     valid_scales: list[tuple[float, int, int]] = []
     for scale in scale_candidates:
         scaled_h = max(1, round(main_h * scale))
         scaled_w = max(1, round(main_w * scale))
-        if scaled_h <= guide_h and scaled_w <= guide_w:
-            valid_scales.append((scale, scaled_h, scaled_w))
+        if scaled_h > guide_h or scaled_w > guide_w:
+            continue
+        if float(_resize_bilinear(main_search, scaled_h, scaled_w).std()) < contrast_floor:
+            continue
+        valid_scales.append((scale, scaled_h, scaled_w))
     total_candidates = len(valid_scales) * len(angles)
 
     best: FovRegistrationResult | None = None
     completed = 0
     for scale, scaled_h, scaled_w in valid_scales:
-        resized = _resize_bilinear(main_mono, scaled_h, scaled_w)
+        resized = _resize_bilinear(main_search, scaled_h, scaled_w)
         fill_value = float(resized.mean())
         for angle in angles:
             rotated = _rotate_bilinear(resized, float(angle), fill_value)
-            surface = _normalized_cross_correlation_surface(guide_mono, rotated)
+            surface = _normalized_cross_correlation_surface(guide_search, rotated)
             row, col = np.unravel_index(int(np.argmax(surface)), surface.shape)
             score = float(surface[row, col])
             if best is None or score > best.score:
                 best = FovRegistrationResult(
-                    center_x_px=col + scaled_w / 2.0,
-                    center_y_px=row + scaled_h / 2.0,
-                    width_px=float(scaled_w),
-                    height_px=float(scaled_h),
+                    center_x_px=(col + scaled_w / 2.0) * downsample,
+                    center_y_px=(row + scaled_h / 2.0) * downsample,
+                    width_px=float(scaled_w) * downsample,
+                    height_px=float(scaled_h) * downsample,
                     rotation_deg=float(angle),
                     scale=float(scale),
                     score=score,

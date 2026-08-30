@@ -224,6 +224,110 @@ class TestNoConfidentMatch:
         )
         assert result is None
 
+    def test_a_featureless_region_of_a_real_scene_returns_none(self) -> None:
+        """Real-world bug: a guide frame showing sky above a landscape
+        crushed dark by exposure tuned for the much brighter sky (a
+        genuine daytime/twilight test scene, not a pure starfield) let a
+        near-flat main-camera crop score a spuriously "confident" match
+        somewhere with no real content — dividing two near-zero
+        correlation terms (a near-flat template's tiny residual noise
+        against an equally near-flat window) is numerically unstable and
+        can land anywhere. The main crop here has genuine but tiny
+        (0.5 ADU) noise — enough to dodge the *perfectly* flat template's
+        own zero-variance short-circuit, which is exactly the gap the
+        contrast floor exists to close."""
+        rng = np.random.default_rng(11)
+        guide = np.full((120, 200), 800.0)  # bright "sky"
+        guide[70:, :] = 50.0  # dark "landscape" — no stars/texture here
+        # Real stars, sky half only.
+        guide += _starfield(120, 200, n_stars=25, seed=11) - 100.0
+        # Landscape stays ~flat (tiny noise only).
+        guide[70:, :] = 50.0 + rng.normal(0.0, 0.5, size=guide[70:, :].shape)
+
+        # A main-camera crop pointed entirely at the landscape: almost no
+        # real structure to match against, unlike the starry sky above it.
+        featureless_main = guide[80:110, 60:140].copy()
+
+        result = register_main_frame_in_guide_frame(
+            featureless_main,
+            guide,
+            approx_scale=1.0,
+            scale_steps=1,
+            angle_step_deg=15.0,
+            angle_range_deg=(-30, 30),
+        )
+        assert result is None
+
+
+class TestSearchDownsample:
+    """See the real-world "very slow" report: search_downsample trades a
+    bounded amount of position precision for a large (roughly quadratic)
+    speedup — see the module docstring's "Performance"."""
+
+    def test_recovers_the_approximate_location_with_downsampling(self) -> None:
+        guide = _starfield(400, 400, n_stars=150, seed=30)
+        main = guide[120:280, 100:300].copy()  # h=160, w=200, top-left (120, 100)
+
+        result = register_main_frame_in_guide_frame(
+            main,
+            guide,
+            approx_scale=1.0,
+            scale_steps=1,
+            angle_step_deg=10.0,
+            angle_range_deg=(-10, 10),
+            search_downsample=4,
+        )
+
+        assert result is not None
+        # Position precision degrades by up to the downsample factor —
+        # not exact like the sample_downsample=1 (default) tests above.
+        assert result.center_x_px == pytest.approx(100 + 200 / 2.0, abs=8.0)
+        assert result.center_y_px == pytest.approx(120 + 160 / 2.0, abs=8.0)
+        assert result.score > 0.5
+
+    def test_downsample_of_one_is_the_no_downsampling_default(self) -> None:
+        guide = _starfield(200, 200, n_stars=60, seed=31)
+        main = guide[80:140, 60:130].copy()
+
+        with_default = register_main_frame_in_guide_frame(
+            main,
+            guide,
+            approx_scale=1.0,
+            scale_steps=1,
+            angle_step_deg=5.0,
+            angle_range_deg=(-5, 5),
+        )
+        with_explicit_one = register_main_frame_in_guide_frame(
+            main,
+            guide,
+            approx_scale=1.0,
+            scale_steps=1,
+            angle_step_deg=5.0,
+            angle_range_deg=(-5, 5),
+            search_downsample=1,
+        )
+
+        assert with_default is not None
+        assert with_explicit_one is not None
+        assert with_default.center_x_px == with_explicit_one.center_x_px
+        assert with_default.center_y_px == with_explicit_one.center_y_px
+
+    def test_a_non_positive_downsample_is_treated_as_one(self) -> None:
+        guide = _starfield(100, 100, n_stars=30, seed=32)
+        main = guide[30:70, 20:80].copy()
+
+        result = register_main_frame_in_guide_frame(
+            main,
+            guide,
+            approx_scale=1.0,
+            scale_steps=1,
+            angle_step_deg=5.0,
+            angle_range_deg=(-5, 5),
+            search_downsample=0,
+        )
+        assert result is not None
+        assert result.center_x_px == pytest.approx(20 + 60 / 2.0, abs=0.5)
+
 
 class TestProgressCallback:
     """See the real bug this was added for: "Calibration started but

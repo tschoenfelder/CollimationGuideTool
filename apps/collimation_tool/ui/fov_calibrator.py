@@ -1,15 +1,19 @@
 """FovCalibrator — runs fov_registration.register_main_frame_in_guide_frame
 on a background thread, off the UI thread.
 
-Even with fairly coarse default search parameters, a full rotation+scale
-search over real camera-sized frames takes on the order of two real
-minutes (see `fov_registration`'s module docstring — measured on a real
-rig) — long enough to freeze the window's event loop if run inline from
-a button click, exactly the UI-responsiveness class of bug this project
-already had to fix once for the per-frame analysis pipeline (see
-`FrameAnalyzer`, which this mirrors: same submit()/take_latest()/is_busy
-shape, "run at most one at a time" semantics, and daemon background
-thread).
+Even at full resolution the default search parameters take on the order
+of two real minutes on real camera-sized frames (see
+`fov_registration`'s module docstring — measured on a real rig, and
+reported by real-world use as "very slow"), long enough to freeze the
+window's event loop if run inline from a button click — exactly the
+UI-responsiveness class of bug this project already had to fix once for
+the per-frame analysis pipeline (see `FrameAnalyzer`, which this
+mirrors: same submit()/take_latest()/is_busy shape, "run at most one at
+a time" semantics, and daemon background thread). This is also where
+`_DEFAULT_SEARCH_DOWNSAMPLE` lives: `fov_registration`'s own default
+(1, exact) is right for tests that check precise pixel positions, but
+production calibration should search at reduced resolution for speed —
+see that constant's docstring.
 
 Also forwards fov_registration's progress_callback so a caller can show
 something better than a static "working" message for those two minutes
@@ -30,6 +34,31 @@ from collimation_tool.ui.fov_registration import (
     FovRegistrationResult,
     register_main_frame_in_guide_frame,
 )
+
+#: Target size (pixels) for the guide frame's larger dimension after
+#: downsampling — see _auto_search_downsample and
+#: fov_registration.register_main_frame_in_guide_frame's
+#: "search_downsample" docstring section: FFT cost drops roughly with
+#: the square of the downsample factor, so a real ~1920px guide frame
+#: landing near this target (factor ~4) cuts the full default search
+#: from ~2 minutes towards single-digit seconds. Position accuracy
+#: degrades by up to the resulting factor in guide-pixels, which a
+#: visual overlay guide doesn't need to be exact to; rotation accuracy
+#: is unaffected.
+_TARGET_SEARCH_DIMENSION = 480
+
+
+def _auto_search_downsample(guide_mono: np.ndarray) -> int:
+    """Downsample factor bringing guide_mono's larger dimension down to
+    roughly _TARGET_SEARCH_DIMENSION pixels. Deliberately never
+    downsamples an already-small image (factor 1 minimum) — a fixed
+    factor here once made small test/synthetic frames lose so much
+    detail that unrelated noise could pass the contrast floor and score
+    a false match (a 20x25 template downsampled by a blanket factor of 4
+    became 5x6 pixels, with almost nothing left to be selective about).
+    """
+    largest = int(max(guide_mono.shape))
+    return max(1, round(largest / _TARGET_SEARCH_DIMENSION))
 
 
 @dataclass(frozen=True)
@@ -55,12 +84,29 @@ class FovCalibrator:
         #: candidate of a run has been scored.
         self._progress: tuple[int, int] | None = None
 
-    def submit(self, main_mono: np.ndarray, guide_mono: np.ndarray, *, approx_scale: float) -> bool:
+    def submit(
+        self,
+        main_mono: np.ndarray,
+        guide_mono: np.ndarray,
+        *,
+        approx_scale: float,
+        search_downsample: int | None = None,
+    ) -> bool:
         """Start a calibration in the background. Returns False (a no-op)
         if one is already running — matches FrameAnalyzer's
         drop-rather-than-queue behavior, appropriate here too since this
         is explicitly triggered (see the "Calibrate FOV" button), not a
-        per-frame submission that will naturally get a fresher retry."""
+        per-frame submission that will naturally get a fresher retry.
+
+        ``search_downsample`` defaults to None, meaning "compute from
+        guide_mono's own size" (see _auto_search_downsample) rather than
+        a fixed factor — pass an explicit value to override.
+        """
+        downsample = (
+            search_downsample
+            if search_downsample is not None
+            else _auto_search_downsample(guide_mono)
+        )
         with self._lock:
             if self._busy:
                 return False
@@ -68,7 +114,7 @@ class FovCalibrator:
             self._progress = None
         threading.Thread(
             target=self._run,
-            args=(main_mono, guide_mono, approx_scale),
+            args=(main_mono, guide_mono, approx_scale, downsample),
             daemon=True,
             name="fov-calibrator",
         ).start()
@@ -78,13 +124,20 @@ class FovCalibrator:
         with self._lock:
             self._progress = (completed, total)
 
-    def _run(self, main_mono: np.ndarray, guide_mono: np.ndarray, approx_scale: float) -> None:
+    def _run(
+        self,
+        main_mono: np.ndarray,
+        guide_mono: np.ndarray,
+        approx_scale: float,
+        search_downsample: int,
+    ) -> None:
         result: FovRegistrationResult | None = None
         try:
             result = register_main_frame_in_guide_frame(
                 main_mono,
                 guide_mono,
                 approx_scale=approx_scale,
+                search_downsample=search_downsample,
                 progress_callback=self._on_progress,
             )
         except ValueError:

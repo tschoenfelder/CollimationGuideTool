@@ -2,7 +2,7 @@ import time
 from collections.abc import Callable
 
 import numpy as np
-from collimation_tool.ui.fov_calibrator import FovCalibrator
+from collimation_tool.ui.fov_calibrator import FovCalibrator, _auto_search_downsample
 
 
 def _starfield(height: int, width: int, *, n_stars: int, seed: int) -> np.ndarray:
@@ -128,3 +128,37 @@ class TestLatestProgress:
         assert _wait_for(lambda: not calibrator.is_busy)
 
         assert calibrator.latest_progress() is None
+
+
+class TestAutoSearchDownsample:
+    """See the real-world "very slow" report: production calibration
+    should search at reduced resolution by default, but never so
+    aggressively that a small/test-scale frame loses all its structure
+    (a blanket factor once let unrelated noise score a false match on a
+    20x25 test template shrunk to 5x6 pixels)."""
+
+    def test_a_real_camera_sized_guide_frame_downsamples(self) -> None:
+        guide = np.zeros((1080, 1920))
+        assert _auto_search_downsample(guide) == 4
+
+    def test_a_small_test_scale_guide_frame_is_not_downsampled(self) -> None:
+        guide = np.zeros((60, 60))
+        assert _auto_search_downsample(guide) == 1
+
+    def test_exactly_at_the_target_dimension_is_not_downsampled(self) -> None:
+        guide = np.zeros((480, 480))
+        assert _auto_search_downsample(guide) == 1
+
+    def test_submit_without_an_explicit_downsample_still_finds_a_real_match(self) -> None:
+        # End-to-end: submit() with no search_downsample override must
+        # actually use the auto-computed factor and still work.
+        guide = _starfield(60, 60, n_stars=15, seed=42)
+        main = guide[15:45, 10:50].copy()
+        calibrator = FovCalibrator()
+
+        calibrator.submit(main, guide, approx_scale=1.0)
+        assert _wait_for(lambda: not calibrator.is_busy)
+
+        outcome = calibrator.take_latest()
+        assert outcome is not None
+        assert outcome.result is not None
