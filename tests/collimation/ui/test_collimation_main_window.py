@@ -43,6 +43,16 @@ def _star_camera(x: float, y: float) -> ReplayCamera:
     return ReplayCamera.from_arrays([array], cycle=True)
 
 
+def _textured_camera(seed: int) -> ReplayCamera:
+    """Plain textured noise, not a star -- detect_sources() finds nothing
+    in this (confirmed: 0 sources, "too dark"), standing in for ordinary
+    terrestrial content Test Move's "Terrestrial" toggle is for (see
+    MountTestMovePanel's own docstring, incident 6fa2aa59)."""
+    rng = np.random.default_rng(seed)
+    array = rng.normal(loc=500.0, scale=80.0, size=(120, 120))
+    return ReplayCamera.from_arrays([array], cycle=True)
+
+
 def test_window_starts_idle(qapp: object) -> None:
     window = MainWindow(_donut_camera((0.0, 0.0)))
     assert window._left_panel._recommendation_label.text() == "Start the stream to begin."
@@ -1973,3 +1983,78 @@ class TestMountTestMovePanel:
         window._test_move_panel._connect_button.setChecked(True)
         window.close()
         assert not window._test_move_panel._connected
+
+    def test_target_defaults_to_star(self, qapp: object) -> None:
+        window = self._window(mount_park=FakeMountPark(), pulse_mount=FakeMountAdapter())
+        panel = window._test_move_panel
+        assert panel._star_button.isChecked()
+        assert not panel._terrestrial_button.isChecked()
+        assert panel._target_mode() == "star"
+
+    def test_selecting_terrestrial_switches_the_mode(self, qapp: object) -> None:
+        window = self._window(mount_park=FakeMountPark(), pulse_mount=FakeMountAdapter())
+        panel = window._test_move_panel
+        panel._terrestrial_button.click()
+        assert panel._target_mode() == "terrestrial"
+        assert not panel._star_button.isChecked()
+
+    def test_star_mode_refuses_a_textureless_camera_with_no_point_source(
+        self, qapp: object
+    ) -> None:
+        """Real incident 6fa2aa59: a daytime/indoor capture with no star
+        correctly refuses rather than moving the real mount for nothing —
+        this is the failure Terrestrial mode exists to work around."""
+        window = MainWindow(
+            _textured_camera(seed=10),
+            guide_camera=_textured_camera(seed=11),
+            device_lister=lambda: [],
+            mount=FakeMountPark(start_parked=True),
+            pulse_mount=FakeMountAdapter(),
+        )
+        self._connect_and_stream_cameras(window)
+        window._mount_panel._connect_button.setChecked(True)
+        window._test_move_panel._connect_button.setChecked(True)
+        panel = window._test_move_panel
+
+        panel._direction_buttons[0].click()
+
+        assert "no star detected" in panel._result_label.text()
+        assert not panel._runner.is_busy  # never submitted -- no pulse issued
+        window.close()
+
+    def test_terrestrial_mode_measures_the_same_textureless_camera_via_cross_correlation(
+        self, qapp: object
+    ) -> None:
+        pulse_mount = FakeMountAdapter()
+        window = MainWindow(
+            _textured_camera(seed=10),
+            guide_camera=_textured_camera(seed=11),
+            device_lister=lambda: [],
+            mount=FakeMountPark(start_parked=True),
+            pulse_mount=pulse_mount,
+        )
+        self._connect_and_stream_cameras(window)
+        window._mount_panel._connect_button.setChecked(True)
+        window._test_move_panel._connect_button.setChecked(True)
+        panel = window._test_move_panel
+        panel._terrestrial_button.click()
+
+        panel._direction_buttons[0].click()
+
+        deadline = time.monotonic() + 5.0
+        while panel._runner.is_busy:
+            assert time.monotonic() < deadline, "test move never completed"
+            time.sleep(0.01)
+        panel._poll()
+
+        assert pulse_mount.pulse_log == [(MountAxis.AXIS2, AxisDirection.POSITIVE, 500)]
+        assert "Main" in panel._result_label.text()
+        assert "Guide" in panel._result_label.text()
+        assert "Test move failed" not in panel._result_label.text()
+        window.close()
+
+    def test_diagnostic_context_reports_the_current_target_mode(self, qapp: object) -> None:
+        window = self._window(mount_park=FakeMountPark(), pulse_mount=FakeMountAdapter())
+        window._test_move_panel._terrestrial_button.click()
+        context = window._diagnostic_context()
+        assert context["mount_test_move"]["target_mode"] == "terrestrial"

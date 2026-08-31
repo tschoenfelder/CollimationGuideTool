@@ -56,24 +56,59 @@ timer delivers frames on the main thread — see `MountTestMoveRunner`'s
 docstring). Detection (`detect_sources`) is fast enough for a single
 frame that doing it twice inline on the UI thread doesn't freeze
 anything, unlike FOV registration's multi-candidate search.
+
+Target: "Star"/"Terrestrial" toggle (real user report, incident
+6fa2aa59: a daytime/indoor test correctly refused with "no star
+detected" -- not a bug, but there was no way to actually exercise this
+feature without a real star in view). "Star" (default, unchanged
+behavior) measures a point-source centroid via `detect_sources()`.
+"Terrestrial" instead cross-correlates the whole before/after frame via
+`astrotool_core.target.translation_offset.measure_translation_offset` --
+works against any textured scene, whole-pixel precision only (vs. Star's
+sub-pixel centroid). Both modes build the same `AxisResponse` via
+`response_from_positions()`; terrestrial mode just calls it with
+`(0, 0)` -> `(dx_px, dy_px)` instead of two absolute centroid positions,
+since a whole-frame correlation already *is* the displacement, not two
+positions to subtract.
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any
+from typing import Any, Literal
 
 import numpy as np
 from astrotool_core.mount.axis_calibration import AxisResponse, response_from_positions
 from astrotool_core.mount.park_port import MountParkPort
 from astrotool_core.mount.port import AxisDirection, MountAxis, MountPort
 from astrotool_core.target.detector import detect_sources
+from astrotool_core.target.translation_offset import measure_translation_offset
 from PySide6.QtCore import QTimer
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QButtonGroup,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from collimation_tool.ui.mount_test_move_runner import MountTestMoveRunner
 
 FrameGetter = Callable[[], np.ndarray | None]
+
+#: "star" measures a point-source centroid via detect_sources() (precise,
+#: but needs an actual star -- see incident 6fa2aa59: correctly refuses
+#: otherwise). "terrestrial" instead cross-correlates the whole before/
+#: after frame via measure_translation_offset() -- works on any textured
+#: scene (indoors, daytime), whole-pixel precision only. See
+#: MountTestMovePanel's own "Target" toggle.
+TargetMode = Literal["star", "terrestrial"]
+
+#: What a captured "before"/"after" measurement looks like in each mode --
+#: a star's (x, y) centroid, or the whole mono frame to cross-correlate
+#: against later.
+_Measurement = tuple[float, float] | np.ndarray
 
 _POLL_INTERVAL_MS = 250
 _PULSE_MS = 500
@@ -109,9 +144,10 @@ class MountTestMovePanel(QWidget):
         self._get_right_frame = get_right_frame
         self._runner = runner if runner is not None else MountTestMoveRunner()
         self._connected = False
-        self._pending_before: dict[str, tuple[float, float]] | None = None
+        self._pending_before: dict[str, _Measurement] | None = None
         self._pending_direction: tuple[MountAxis, AxisDirection] | None = None
         self._pending_label: str | None = None
+        self._pending_mode: TargetMode | None = None
         self._last_responses: dict[str, AxisResponse] | None = None
         self._last_error: str | None = None
 
@@ -120,6 +156,21 @@ class MountTestMovePanel(QWidget):
         self._connect_button.setCheckable(True)
         self._connect_button.toggled.connect(self._on_toggle_connect)
         self._status_label = QLabel("Not connected.")
+
+        self._target_group = QButtonGroup(self)
+        self._target_group.setExclusive(True)
+        self._star_button = QPushButton("Star")
+        self._star_button.setCheckable(True)
+        self._star_button.setChecked(True)  # default -- unchanged prior behavior
+        self._target_group.addButton(self._star_button)
+        self._terrestrial_button = QPushButton("Terrestrial")
+        self._terrestrial_button.setCheckable(True)
+        self._target_group.addButton(self._terrestrial_button)
+        target_row = QHBoxLayout()
+        target_row.addWidget(QLabel("Target"))
+        target_row.addWidget(self._star_button)
+        target_row.addWidget(self._terrestrial_button)
+        target_row.addStretch(1)
 
         self._direction_buttons: list[QPushButton] = []
         direction_row = QHBoxLayout()
@@ -148,6 +199,7 @@ class MountTestMovePanel(QWidget):
 
         layout = QVBoxLayout()
         layout.addLayout(top_row)
+        layout.addLayout(target_row)
         layout.addLayout(direction_row)
         layout.addWidget(self._result_label)
         self.setLayout(layout)
@@ -181,28 +233,44 @@ class MountTestMovePanel(QWidget):
             self._status_label.setText("Not connected.")
         self._update_buttons_enabled()
 
+    def _target_mode(self) -> TargetMode:
+        return "terrestrial" if self._terrestrial_button.isChecked() else "star"
+
+    def _capture(self, mode: TargetMode, frame: np.ndarray | None) -> _Measurement | None:
+        """One camera's "before"/"after" measurement in the given mode --
+        a star centroid, or the whole frame itself (to cross-correlate
+        against its counterpart later, in `_finish_test_move`)."""
+        if mode == "star":
+            return _measure_brightest_source(frame)
+        return frame  # "terrestrial" -- any frame at all is usable here
+
+    def _missing_label(self, mode: TargetMode) -> str:
+        return "no star detected" if mode == "star" else "no frame available"
+
     def _on_direction_clicked(self, axis: MountAxis, direction: AxisDirection, label: str) -> None:
         # Captured here, on the Qt main thread -- see module docstring
         # for why this must never happen on the runner's background one.
+        mode = self._target_mode()
         before_raw = {
-            "left": _measure_brightest_source(self._get_left_frame()),
-            "right": _measure_brightest_source(self._get_right_frame()),
+            "left": self._capture(mode, self._get_left_frame()),
+            "right": self._capture(mode, self._get_right_frame()),
         }
-        missing = [key for key, position in before_raw.items() if position is None]
+        missing = [key for key, measurement in before_raw.items() if measurement is None]
         if missing:
             # Don't bother moving the real mount if there's already
             # nothing to measure a displacement against.
             self._last_responses = None
-            self._last_error = f"no star detected in: {', '.join(missing)}"
+            self._last_error = f"{self._missing_label(mode)} in: {', '.join(missing)}"
             self._result_label.setText(f"Test move failed: {self._last_error}")
             return
-        before: dict[str, tuple[float, float]] = before_raw  # type: ignore[assignment]
+        before: dict[str, _Measurement] = before_raw  # type: ignore[assignment]
         started = self._runner.submit(self._mount_park, self._mount, axis, direction, _PULSE_MS)
         if not started:
             return  # a test move is already running
         self._pending_before = before
         self._pending_direction = (axis, direction)
         self._pending_label = label
+        self._pending_mode = mode
         self._result_label.setText(f"Testing ({label})…")
         self._update_buttons_enabled()
 
@@ -224,10 +292,12 @@ class MountTestMovePanel(QWidget):
     def _finish_test_move(self, *, pulsed: bool, pulse_error: str | None) -> None:
         before = self._pending_before
         direction = self._pending_direction
+        mode = self._pending_mode
         self._pending_before = None
         self._pending_direction = None
         self._pending_label = None
-        if before is None or direction is None:
+        self._pending_mode = None
+        if before is None or direction is None or mode is None:
             return  # defensive -- take_latest() without a matching submit()
         if not pulsed:
             self._last_responses = None
@@ -237,21 +307,35 @@ class MountTestMovePanel(QWidget):
 
         axis, mount_direction = direction
         after_raw = {
-            "left": _measure_brightest_source(self._get_left_frame()),
-            "right": _measure_brightest_source(self._get_right_frame()),
+            "left": self._capture(mode, self._get_left_frame()),
+            "right": self._capture(mode, self._get_right_frame()),
         }
-        missing = [key for key, position in after_raw.items() if position is None]
+        missing = [key for key, measurement in after_raw.items() if measurement is None]
         if missing:
             self._last_responses = None
-            self._last_error = f"no star detected (after the move) in: {', '.join(missing)}"
+            self._last_error = (
+                f"{self._missing_label(mode)} (after the move) in: {', '.join(missing)}"
+            )
             self._result_label.setText(f"Test move failed: {self._last_error}")
             return
-        after: dict[str, tuple[float, float]] = after_raw  # type: ignore[assignment]
+        after: dict[str, _Measurement] = after_raw  # type: ignore[assignment]
 
-        responses = {
-            key: response_from_positions(axis, mount_direction, _PULSE_MS, before[key], after[key])
-            for key in ("left", "right")
-        }
+        responses: dict[str, AxisResponse] = {}
+        failed: list[str] = []
+        for key in ("left", "right"):
+            response = self._build_response(mode, axis, mount_direction, before[key], after[key])
+            if response is None:
+                failed.append(key)
+            else:
+                responses[key] = response
+        if failed:
+            self._last_responses = None
+            self._last_error = (
+                f"not enough structure to measure a displacement in: {', '.join(failed)}"
+            )
+            self._result_label.setText(f"Test move failed: {self._last_error}")
+            return
+
         self._last_responses = responses
         self._last_error = None
         parts = [
@@ -259,6 +343,33 @@ class MountTestMovePanel(QWidget):
             for key, response in responses.items()
         ]
         self._result_label.setText(" | ".join(parts))
+
+    def _build_response(
+        self,
+        mode: TargetMode,
+        axis: MountAxis,
+        direction: AxisDirection,
+        before: _Measurement,
+        after: _Measurement,
+    ) -> AxisResponse | None:
+        """Build one camera's `AxisResponse` from its before/after
+        measurement -- star mode already has two absolute centroid
+        positions to hand `response_from_positions()` directly; terrestrial
+        mode's whole-frame correlation already *is* the displacement, so
+        it hands that in as the "after" position relative to a `(0, 0)`
+        "before" instead. Returns None if terrestrial mode's correlation
+        didn't find enough shared structure to trust (see
+        `measure_translation_offset`'s own docstring)."""
+        if mode == "star":
+            assert isinstance(before, tuple) and isinstance(after, tuple)
+            return response_from_positions(axis, direction, _PULSE_MS, before, after)
+        assert isinstance(before, np.ndarray) and isinstance(after, np.ndarray)
+        offset = measure_translation_offset(before, after)
+        if offset is None:
+            return None
+        return response_from_positions(
+            axis, direction, _PULSE_MS, (0.0, 0.0), (offset.dx_px, offset.dy_px)
+        )
 
     def _update_buttons_enabled(self) -> None:
         park_status = self._mount_park.status()
@@ -280,12 +391,13 @@ class MountTestMovePanel(QWidget):
             self._result_label.setText("Park the mount (see Mount panel above) to test a move.")
 
     def diagnostic_context(self) -> dict[str, Any]:
+        context: dict[str, Any] = {"target_mode": self._target_mode()}
         if self._last_error is not None:
-            return {"last_result": {"error": self._last_error}}
-        if self._last_responses is None:
-            return {"last_result": None}
-        return {
-            "last_result": {
+            context["last_result"] = {"error": self._last_error}
+        elif self._last_responses is None:
+            context["last_result"] = None
+        else:
+            context["last_result"] = {
                 key: {
                     "dx_px": response.dx_px,
                     "dy_px": response.dy_px,
@@ -294,7 +406,7 @@ class MountTestMovePanel(QWidget):
                 }
                 for key, response in self._last_responses.items()
             }
-        }
+        return context
 
     def stop(self) -> None:
         """Stop polling and disconnect. Safe to call whether or not connected."""
