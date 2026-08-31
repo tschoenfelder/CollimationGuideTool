@@ -47,6 +47,11 @@ Focuser: `FocuserPanel` (`focuser` constructor param, defaulting to
 over the main optical train's OnStep focuser, connected via a real
 indiserver — see `astrotool_core.focus.indi_focuser_adapter`'s docstring
 for why this one, unlike `mount/indi_adapter.py`, genuinely speaks INDI.
+Since the focuser sits in the main train only, `_left_panel` (Main) pauses
+its own poll loop for the duration of every jog (`FocuserPanel.
+move_in_flight_changed` -> `CameraPanel.set_updates_paused`) so live
+analysis/display never runs on a frame captured mid-move; `_right_panel`
+(Guide) is unaffected.
 
 Mount: `MountParkPanel` (`mount` constructor param, defaulting to
 `NoMountPark`) gives park/unpark-only control over the OnStep mount, over
@@ -190,6 +195,10 @@ class MainWindow(QMainWindow):
         self._right_panel.connected_device_changed.connect(self._on_right_camera_changed)
 
         self._focuser_panel = FocuserPanel(focuser if focuser is not None else NoFocuser())
+        # The focuser lives on the main optical train only (see
+        # FocuserPanel's own docstring) -- pause just the Main camera's
+        # analysis/display while it's moving, not the Guide panel.
+        self._focuser_panel.move_in_flight_changed.connect(self._left_panel.set_updates_paused)
         # Shared with _test_move_panel below -- see MountTestMovePanel's
         # own docstring for why that panel drives this same MountParkPort
         # rather than owning a second, independently-connected copy of

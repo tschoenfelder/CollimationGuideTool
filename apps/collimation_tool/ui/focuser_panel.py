@@ -34,7 +34,7 @@ import time
 from typing import Any
 
 from astrotool_core.focus.port import FocuserPort
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
     QHBoxLayout,
@@ -56,6 +56,17 @@ _MOVE_CONFIRMATION_TIMEOUT_S = 10.0
 
 
 class FocuserPanel(QWidget):
+    #: Fires whenever "one move at a time"'s own in-flight window opens
+    #: or closes -- issued (or resumed after connect/disconnect) True,
+    #: confirmed-done (or the safety-net timeout) False. MainWindow wires
+    #: this to the paired camera panel's `set_updates_paused()` so a jog
+    #: doesn't drive live analysis off a frame captured mid-move. Fires on
+    #: the issuing click, not the driver's own (laggy) first Busy report --
+    #: see module docstring's "One move at a time" for why relying on
+    #: Busy alone leaves a real window where physical motion has already
+    #: started.
+    move_in_flight_changed = Signal(bool)
+
     def __init__(self, focuser: FocuserPort, *, title: str = "Focuser") -> None:
         super().__init__()
         self._focuser = focuser
@@ -110,6 +121,12 @@ class FocuserPanel(QWidget):
 
         self._update_move_buttons_enabled()
 
+    def _set_move_in_flight(self, value: bool) -> None:
+        if value == self._move_in_flight:
+            return
+        self._move_in_flight = value
+        self.move_in_flight_changed.emit(value)
+
     def _selected_step(self) -> int:
         step_id = self._step_group.checkedId()
         return step_id if step_id != -1 else _DEFAULT_STEP_SIZE
@@ -130,7 +147,7 @@ class FocuserPanel(QWidget):
                 self._update_move_buttons_enabled()
                 return
             self._connected = True
-            self._move_in_flight = False
+            self._set_move_in_flight(False)
             self._connect_button.setText("Disconnect")
             self._timer.start()
             self._poll_status()
@@ -138,7 +155,7 @@ class FocuserPanel(QWidget):
             self._timer.stop()
             self._focuser.disconnect()
             self._connected = False
-            self._move_in_flight = False
+            self._set_move_in_flight(False)
             self._connect_button.setText("Connect")
             self._status_label.setText("Not connected.")
         self._update_move_buttons_enabled()
@@ -148,7 +165,7 @@ class FocuserPanel(QWidget):
         # docstring's "One move at a time". Qt delivers input on this one
         # thread, so a button already disabled here cannot receive a second
         # click before this handler returns.
-        self._move_in_flight = True
+        self._set_move_in_flight(True)
         self._seen_busy_since_move = False
         self._move_issued_at = time.monotonic()
         self._update_move_buttons_enabled()
@@ -175,13 +192,13 @@ class FocuserPanel(QWidget):
             if status.moving:
                 self._seen_busy_since_move = True
             elif self._seen_busy_since_move:
-                self._move_in_flight = False
+                self._set_move_in_flight(False)
             elif (
                 self._move_issued_at is not None
                 and time.monotonic() - self._move_issued_at > _MOVE_CONFIRMATION_TIMEOUT_S
             ):
                 # Safety net — see _MOVE_CONFIRMATION_TIMEOUT_S's docstring.
-                self._move_in_flight = False
+                self._set_move_in_flight(False)
         self._update_move_buttons_enabled()
 
     def _update_move_buttons_enabled(self) -> None:

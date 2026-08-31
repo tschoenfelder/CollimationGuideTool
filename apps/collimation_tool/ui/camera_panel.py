@@ -154,6 +154,11 @@ class CameraPanel(QWidget):
         self._last_recommendation: CollimationRecommendation | None = None
         self._recent_frames: deque[Frame] = deque(maxlen=_RECENT_FRAMES_KEPT)
         self._auto_exposure_config = auto_exposure_config or AutoExposureConfig()
+        #: Set by MainWindow via set_updates_paused() -- see that
+        #: method's docstring. Tracked separately from `_timer.isActive()`
+        #: so `_on_toggle_stream` knows whether to (re)start the timer
+        #: when a stream starts/stops while paused.
+        self._updates_paused = False
         #: Set by MainWindow via set_fov_overlay() — see its docstring's
         #: "Guide-frame FOV overlay". None on the left/main panel always;
         #: on the right/guide panel, None means no overlay data available.
@@ -270,7 +275,8 @@ class CameraPanel(QWidget):
             self._stream.start_stream(self._exposure_spin.value() / 1000.0, cadence_s=0.2)
             self._last_sequence = 0
             self._start_button.setText("Stop stream")
-            self._timer.start()
+            if not self._updates_paused:
+                self._timer.start()
         else:
             self._timer.stop()
             if self._stream is not None:
@@ -428,6 +434,7 @@ class CameraPanel(QWidget):
             "gain": self._gain_spin.value(),
             "streaming": self._stream is not None,
             "auto_exposure_enabled": self._auto_exposure_checkbox.isChecked(),
+            "updates_paused": self._updates_paused,
         }
         if self._last_result is not None:
             context["measurement_result"] = self._last_result
@@ -477,6 +484,29 @@ class CameraPanel(QWidget):
         `set_fov_overlay`'s docstring (this takes precedence when both
         are set). Takes effect on the next polled frame."""
         self._fov_polygon = corners
+
+    def set_updates_paused(self, paused: bool) -> None:
+        """Pause/resume this panel's poll loop without touching the camera
+        connection or `StreamController` -- for MainWindow to call while a
+        focuser paired with this camera is moving (see
+        `FocuserPanel.move_in_flight_changed`), so a jog doesn't drive live
+        analysis/display off a frame captured mid-move. The stream itself,
+        if running, keeps capturing in the background; resuming just picks
+        up whatever frame is most recent at that point -- there's no
+        backlog to catch up on, since the mailbox only ever holds the
+        latest frame (see `_poll_frame`'s docstring).
+
+        A no-op if already in the requested state, so a caller doesn't
+        need to track this panel's own state to avoid redundant calls."""
+        if paused == self._updates_paused:
+            return
+        self._updates_paused = paused
+        if paused:
+            self._timer.stop()
+            if self._stream is not None:
+                self._recommendation_label.setText("Paused — focuser moving…")
+        elif self._stream is not None:
+            self._timer.start()
 
     def latest_mono_frame(self) -> np.ndarray | None:
         """The most recently captured frame's mono representation

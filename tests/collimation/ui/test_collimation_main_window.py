@@ -1474,6 +1474,115 @@ class TestFocuserOneMoveAtATime:
         assert panel._out_button.isEnabled()
 
 
+class TestFocuserPausesMainCamera:
+    """The focuser sits on the main optical train only — MainWindow wires
+    FocuserPanel.move_in_flight_changed to _left_panel.set_updates_paused
+    (see both modules' docstrings) so live analysis/display never runs on
+    a frame captured mid-jog. _right_panel (Guide) has no focuser and must
+    be unaffected."""
+
+    def test_a_jog_pauses_the_main_panel_but_not_the_guide_panel(self, qapp: object) -> None:
+        focuser = _ScriptedMovingFocuser(busy_polls=5)
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)), device_lister=lambda: [], focuser=focuser
+        )
+        window._focuser_panel._connect_button.setChecked(True)
+        assert not window._left_panel._updates_paused
+        window._focuser_panel._out_button.click()
+        assert window._left_panel._updates_paused
+        assert not window._right_panel._updates_paused
+
+    def test_resumes_once_the_move_settles(self, qapp: object) -> None:
+        focuser = _ScriptedMovingFocuser(busy_polls=2)
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)), device_lister=lambda: [], focuser=focuser
+        )
+        window._focuser_panel._connect_button.setChecked(True)
+        window._focuser_panel._out_button.click()
+        assert window._left_panel._updates_paused
+
+        focuser.tick()
+        window._focuser_panel._poll_status()
+        assert window._left_panel._updates_paused  # still busy_polls=2 -> 1 remaining
+
+        focuser.tick()  # settles
+        window._focuser_panel._poll_status()
+        assert not window._left_panel._updates_paused
+
+    def test_pausing_stops_the_main_panels_poll_timer_while_streaming(self, qapp: object) -> None:
+        focuser = _ScriptedMovingFocuser(busy_polls=5)
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)), device_lister=lambda: [], focuser=focuser
+        )
+        window._focuser_panel._connect_button.setChecked(True)
+        window._left_panel._start_button.setChecked(True)
+        try:
+            window._focuser_panel._out_button.click()
+            assert not window._left_panel._timer.isActive()
+            assert "focuser moving" in window._left_panel._recommendation_label.text().lower()
+        finally:
+            window._left_panel._start_button.setChecked(False)
+
+
+class TestCameraPanelSetUpdatesPaused:
+    """CameraPanel.set_updates_paused() directly — the guard behavior
+    TestFocuserPausesMainCamera doesn't need a real focuser to exercise."""
+
+    def test_pausing_while_not_streaming_leaves_the_timer_stopped(self, qapp: object) -> None:
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+        panel = window._left_panel
+        panel.set_updates_paused(True)
+        assert panel._updates_paused
+        assert not panel._timer.isActive()
+
+    def test_resuming_does_not_start_the_timer_when_not_streaming(self, qapp: object) -> None:
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+        panel = window._left_panel
+        panel.set_updates_paused(True)
+        panel.set_updates_paused(False)
+        assert not panel._updates_paused
+        assert not panel._timer.isActive()
+
+    def test_starting_the_stream_while_paused_does_not_start_the_timer(self, qapp: object) -> None:
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+        panel = window._left_panel
+        panel.set_updates_paused(True)
+        panel._start_button.setChecked(True)
+        try:
+            assert not panel._timer.isActive()
+        finally:
+            panel._start_button.setChecked(False)
+
+    def test_resuming_while_streaming_restarts_the_timer(self, qapp: object) -> None:
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+        panel = window._left_panel
+        panel._start_button.setChecked(True)
+        try:
+            panel.set_updates_paused(True)
+            assert not panel._timer.isActive()
+            panel.set_updates_paused(False)
+            assert panel._timer.isActive()
+        finally:
+            panel._start_button.setChecked(False)
+
+    def test_pausing_twice_is_a_no_op(self, qapp: object) -> None:
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+        panel = window._left_panel
+        panel._start_button.setChecked(True)
+        try:
+            panel.set_updates_paused(True)
+            panel._recommendation_label.setText("sentinel")
+            panel.set_updates_paused(True)  # no-op -- must not touch the label again
+            assert panel._recommendation_label.text() == "sentinel"
+        finally:
+            panel._start_button.setChecked(False)
+
+    def test_diagnostic_context_reports_paused_state(self, qapp: object) -> None:
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+        window._left_panel.set_updates_paused(True)
+        assert window._diagnostic_context()["left"]["updates_paused"] is True
+
+
 class _ScriptedTransitioningMountPark(FakeMountPark):
     """FakeMountPark's park()/unpark() settle instantly, which can't
     exercise a genuine Busy->Ok transition. This reports the *opposite*
