@@ -14,10 +14,20 @@ a closed PID loop. The caller (a UI) applies the returned exposure/gain to
 the `CameraPort` and updates its controls; nothing here touches a camera
 directly, so it needs no hardware/mocks to test.
 
-Scope trim: this does not "unwind" gain back toward 100 once conditions
-improve (e.g. a brighter object framed after gain was raised for a dimmer
-one) — each call only reacts to the current frame being outside the target
-band. Revisit if that turns out to matter in practice.
+Gain unwinds back toward `default_gain` once conditions allow it, not just
+up: real report (diagnostic fa1167b4) -- a rig can end up with gain raised
+from an earlier dim/pinned-exposure correction, then exposure alone comes
+back down to handle a brighter scene without ever revisiting that now-
+unnecessary gain, leaving exposure/gain at a working point (e.g. 2ms at
+gain 3990) that produces mostly amplified read noise instead of real
+signal even though the *metric* itself reads fine. When a frame is
+already in-band and `current_gain > default_gain`, one `gain_step` is
+unwound off gain while exposure is scaled up to compensate (same linear
+signal-vs-exposure/gain assumption the escalation path already makes),
+as long as the compensated exposure still fits under the live-view
+ceiling -- so gain only ever settles as low as exposure has genuine room
+to cover for. This was originally scoped out ("revisit if it matters in
+practice" -- it now does) rather than removed outright.
 
 Gain step is adaptive, not a fixed +/-10 (real request: a fixed step either
 crawls painfully slowly toward the target on a camera whose gain barely
@@ -175,6 +185,33 @@ def _adaptive_gain_step(
     return config.gain_step if metric < target_mid else -config.gain_step
 
 
+def _unwind_gain(
+    current_exposure_ms: float,
+    current_gain: int,
+    effective_max_exposure_ms: float,
+    config: AutoExposureConfig,
+) -> tuple[float, int] | None:
+    """One `gain_step` off `current_gain`, with `current_exposure_ms`
+    scaled up to compensate -- see the module docstring's "Gain unwinds"
+    section. Returns None (no-op) if gain is already at `default_gain`,
+    or if the compensated exposure wouldn't fit under the live-view
+    ceiling (gain stays right where it is rather than partially unwinding
+    into an under-exposed frame the caller never asked for).
+    """
+    if current_gain <= config.default_gain:
+        return None
+    step = min(config.gain_step, current_gain - config.default_gain)
+    candidate_gain = current_gain - step
+    # Same linear signal-vs-exposure/gain assumption the escalation path
+    # already makes (see compute_auto_exposure's own exposure `scale`
+    # step) -- less gain needs proportionally more exposure to land the
+    # same measured signal.
+    candidate_exposure = current_exposure_ms * (current_gain / candidate_gain)
+    if candidate_exposure > effective_max_exposure_ms:
+        return None
+    return (candidate_exposure, candidate_gain)
+
+
 def compute_auto_exposure(
     pixels: np.ndarray,
     *,
@@ -199,12 +236,16 @@ def compute_auto_exposure(
     """
     metric = _measure(pixels, bit_depth, config.percentile)
 
-    if config.target_low <= metric <= config.target_high:
-        return AutoExposureResult(current_exposure_ms, current_gain, changed=False, metric=metric)
-
     # The live-view ceiling, not the camera's own (often huge) hardware
     # max — see the module docstring's "Live-view exposure ceiling".
     effective_max_exposure_ms = min(capabilities.max_exposure_ms, config.max_auto_exposure_ms)
+
+    if config.target_low <= metric <= config.target_high:
+        unwound = _unwind_gain(current_exposure_ms, current_gain, effective_max_exposure_ms, config)
+        if unwound is not None:
+            new_exposure, new_gain = unwound
+            return AutoExposureResult(new_exposure, new_gain, changed=True, metric=metric)
+        return AutoExposureResult(current_exposure_ms, current_gain, changed=False, metric=metric)
 
     target_mid = (config.target_low + config.target_high) / 2
     if metric <= 0.0:

@@ -473,6 +473,111 @@ class TestAdaptiveGainStep:
         assert result.changed is True
 
 
+class TestGainUnwind:
+    """Real report (diagnostic fa1167b4): gain could be left stuck high
+    from an earlier correction (e.g. exposure was once pinned at the
+    ceiling) even after exposure alone has since come back down to a
+    normal value handling a brighter scene -- the metric reads fine, but
+    the actual working point (very short exposure, very high gain) is
+    mostly amplified read noise. compute_auto_exposure now walks gain
+    back toward default_gain one gain_step at a time whenever a frame is
+    already in-band and exposure has room to compensate."""
+
+    def test_in_band_with_elevated_gain_unwinds_one_step_and_scales_exposure_up(self) -> None:
+        result = compute_auto_exposure(
+            _frame(0.6),  # squarely in the default [0.50, 0.70] band
+            bit_depth=_BIT_DEPTH,
+            current_exposure_ms=100.0,
+            current_gain=200,
+            capabilities=_CAPS,
+        )
+        assert result.changed is True
+        assert result.gain == 190  # default gain_step=10
+        # Same linear signal-vs-exposure/gain model the escalation path
+        # already uses: exposure scales up by the same ratio gain scaled
+        # down, to preserve the same measured signal.
+        assert result.exposure_ms == 100.0 * (200 / 190)
+
+    def test_in_band_at_default_gain_does_not_unwind(self) -> None:
+        result = compute_auto_exposure(
+            _frame(0.6),
+            bit_depth=_BIT_DEPTH,
+            current_exposure_ms=1000.0,
+            current_gain=AutoExposureConfig().default_gain,
+            capabilities=_CAPS,
+        )
+        assert result.changed is False
+        assert result.gain == AutoExposureConfig().default_gain
+        assert result.exposure_ms == 1000.0
+
+    def test_unwind_is_skipped_when_the_compensated_exposure_would_exceed_the_ceiling(
+        self,
+    ) -> None:
+        config = AutoExposureConfig()
+        # Already close to the live-view ceiling -- scaling exposure up
+        # by 200/190 would push it past 2000ms.
+        result = compute_auto_exposure(
+            _frame(0.6),
+            bit_depth=_BIT_DEPTH,
+            current_exposure_ms=config.max_auto_exposure_ms - 1.0,
+            current_gain=200,
+            capabilities=_CAPS,
+            config=config,
+        )
+        assert result.changed is False
+        assert result.gain == 200
+        assert result.exposure_ms == config.max_auto_exposure_ms - 1.0
+
+    def test_a_zero_gain_step_never_overshoots_below_default_gain(self) -> None:
+        # Only 5 gain above default -- the fixed gain_step (10) would
+        # overshoot past it if not clamped to the remaining gap.
+        result = compute_auto_exposure(
+            _frame(0.6),
+            bit_depth=_BIT_DEPTH,
+            current_exposure_ms=100.0,
+            current_gain=AutoExposureConfig().default_gain + 5,
+            capabilities=_CAPS,
+        )
+        assert result.gain == AutoExposureConfig().default_gain
+
+    def test_repeated_in_band_corrections_eventually_settle_at_default_gain(self) -> None:
+        # Simulates several polled frames in a row, all reading in-band --
+        # gain should walk itself all the way back down over time, not
+        # just once.
+        exposure_ms = 50.0
+        gain = 200
+        config = AutoExposureConfig()
+        for _ in range(20):
+            result = compute_auto_exposure(
+                _frame(0.6),
+                bit_depth=_BIT_DEPTH,
+                current_exposure_ms=exposure_ms,
+                current_gain=gain,
+                capabilities=_CAPS,
+                config=config,
+            )
+            exposure_ms, gain = result.exposure_ms, result.gain
+            if not result.changed:
+                break
+        assert gain == config.default_gain
+
+    def test_an_out_of_band_frame_still_gets_its_normal_correction_regardless_of_gain(
+        self,
+    ) -> None:
+        # Unwinding must never pre-empt the normal too-dim/too-bright
+        # correction path -- this frame is genuinely too dim and needs
+        # *more* exposure, not a gain unwind.
+        result = compute_auto_exposure(
+            _frame(0.10),
+            bit_depth=_BIT_DEPTH,
+            current_exposure_ms=1000.0,
+            current_gain=200,
+            capabilities=_CAPS,
+        )
+        assert result.exposure_ms > 1000.0
+        assert result.gain == 200  # untouched -- exposure has headroom
+
+
 def test_custom_target_band_is_respected() -> None:
     config = AutoExposureConfig(target_low=0.2, target_high=0.3)
     result = compute_auto_exposure(
