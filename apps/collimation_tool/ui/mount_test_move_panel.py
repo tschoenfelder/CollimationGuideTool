@@ -160,6 +160,8 @@ _Measurement = tuple[float, float] | np.ndarray
 _POLL_INTERVAL_MS = 250
 
 _CAMERA_LABELS = {"left": "Main", "right": "Guide"}
+_AXIS_LABELS = {MountAxis.AXIS1: "RA-axis", MountAxis.AXIS2: "Dec-axis"}
+_OTHER_CAMERA = {"left": "right", "right": "left"}
 
 #: Right/Left are the horizontal frame axis, Down/Up the vertical one, in
 #: the same x-right/y-down image-space convention as `AxisResponse.angle_degrees`.
@@ -609,9 +611,9 @@ class MountTestMovePanel(QWidget):
                 continue  # shouldn't happen unless _abort_calibration already fired
             if is_degenerate(axis1, axis2):
                 lines.append(
-                    f"{_CAMERA_LABELS[key]}: RA-axis and Dec-axis too close to parallel -- "
-                    "one axis may not have moved anything real even though the pulse was "
-                    "accepted; check the mount directly, or try Run Calibration again."
+                    _degenerate_calibration_message(
+                        key, axis1, axis2, self._calibration_partial[_OTHER_CAMERA[key]]
+                    )
                 )
                 continue
             self._calibration[key] = CalibrationMatrix(
@@ -852,6 +854,54 @@ def _format_response(response: AxisResponse) -> str:
         f"dx={response.dx_px:+.1f}px dy={response.dy_px:+.1f}px "
         f"({response.magnitude_px:.1f}px @ {response.angle_degrees:.0f}°)"
     )
+
+
+def _degenerate_calibration_message(
+    camera_key: str,
+    axis1: AxisResponse,
+    axis2: AxisResponse,
+    other_camera_responses: dict[MountAxis, AxisResponse],
+) -> str:
+    """Real report (diagnostic 0270868c): AXIS2 measured zero on Main but
+    a large real shift on Guide from the *same* pulse -- Main's much
+    finer plate scale had likely panned that same real motion entirely
+    out of frame overlap, not a mount/hardware problem. Guide's own
+    reading for whichever axis measured exactly zero here tells the
+    difference, without needing to estimate a replacement vector for the
+    degenerate camera (deliberately not attempted -- the two cameras
+    aren't guaranteed to share the same rotational alignment to the
+    mount axes, so a scale-only estimate could get the *direction*
+    wrong; see compose_screen_move's own docstring for why that
+    rotation is solved per-camera in the first place): zero on both
+    cameras is a real, actionable "check the mount" signal; zero here
+    but real motion confirmed on the other camera points at this
+    camera's own framing/plate-scale instead.
+    """
+    zero_axes = [
+        axis
+        for axis, response in ((MountAxis.AXIS1, axis1), (MountAxis.AXIS2, axis2))
+        if response.magnitude_px == 0.0
+    ]
+    other_label = _CAMERA_LABELS[_OTHER_CAMERA[camera_key]]
+    notes: list[str] = []
+    for axis in zero_axes:
+        other = other_camera_responses.get(axis)
+        if other is not None and other.magnitude_px > 0.0:
+            notes.append(
+                f"{_AXIS_LABELS[axis]} measured no motion here, but {other_label} confirms "
+                "real motion on it -- likely this camera's own framing/plate scale, not a "
+                "mount issue."
+            )
+        else:
+            notes.append(
+                f"{_AXIS_LABELS[axis]} measured no motion on either camera -- may be a "
+                "real mount/cable issue; check the mount directly."
+            )
+    detail = " ".join(notes) if notes else (
+        "one axis may not have moved anything real even though the pulse was accepted; "
+        "check the mount directly, or try Run Calibration again."
+    )
+    return f"{_CAMERA_LABELS[camera_key]}: RA-axis and Dec-axis too close to parallel -- {detail}"
 
 
 def _response_dict(response: AxisResponse) -> dict[str, float]:

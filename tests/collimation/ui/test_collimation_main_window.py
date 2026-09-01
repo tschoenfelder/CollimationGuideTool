@@ -28,6 +28,7 @@ from collimation_tool.ui.camera_panel import CameraPanel
 from collimation_tool.ui.focuser_panel import FocuserPanel
 from collimation_tool.ui.main_window import MainWindow
 from collimation_tool.ui.mount_park_panel import MountParkPanel
+from collimation_tool.ui.mount_test_move_panel import _degenerate_calibration_message
 
 _SHAPE = (240, 240)
 _CENTER = (120.0, 120.0)
@@ -59,6 +60,55 @@ def _textured_camera(seed: int) -> ReplayCamera:
     rng = np.random.default_rng(seed)
     array = rng.normal(loc=500.0, scale=80.0, size=(120, 120))
     return ReplayCamera.from_arrays([array], cycle=True)
+
+
+def _axis_response(axis: MountAxis, dx_px: float, dy_px: float) -> AxisResponse:
+    return AxisResponse(
+        axis=axis, direction=AxisDirection.POSITIVE, duration_ms=1000,
+        dx_px=dx_px, dy_px=dy_px, px_per_ms=0.0,
+    )
+
+
+class TestDegenerateCalibrationMessage:
+    """Direct unit coverage for _degenerate_calibration_message() -- the
+    panel-level tests in TestMountTestMovePanel exercise it end-to-end
+    through a real (fake) calibration run; these pin its actual wording
+    per case without needing to drive a full Run Calibration each time."""
+
+    def test_zero_on_both_cameras_gets_the_mount_cable_note(self) -> None:
+        axis1 = _axis_response(MountAxis.AXIS1, 0.0, 0.0)
+        axis2 = _axis_response(MountAxis.AXIS2, 0.0, 5.0)
+        message = _degenerate_calibration_message(
+            "left", axis1, axis2, {MountAxis.AXIS1: _axis_response(MountAxis.AXIS1, 0.0, 0.0)}
+        )
+        assert "RA-axis measured no motion on either camera" in message
+        assert "mount/cable issue" in message
+
+    def test_zero_here_but_real_on_the_other_camera_gets_the_framing_note(self) -> None:
+        axis1 = _axis_response(MountAxis.AXIS1, 0.0, 0.0)
+        axis2 = _axis_response(MountAxis.AXIS2, 5.0, 0.0)
+        message = _degenerate_calibration_message(
+            "left", axis1, axis2, {MountAxis.AXIS1: _axis_response(MountAxis.AXIS1, 3.0, 0.0)}
+        )
+        assert "RA-axis measured no motion here, but Guide confirms real motion" in message
+        assert "framing/plate scale" in message
+
+    def test_names_the_correct_other_camera_for_the_right_side(self) -> None:
+        axis1 = _axis_response(MountAxis.AXIS1, 0.0, 0.0)
+        axis2 = _axis_response(MountAxis.AXIS2, 5.0, 0.0)
+        message = _degenerate_calibration_message(
+            "right", axis1, axis2, {MountAxis.AXIS1: _axis_response(MountAxis.AXIS1, 3.0, 0.0)}
+        )
+        assert "Main confirms real motion" in message
+
+    def test_missing_other_camera_data_falls_back_to_the_mount_cable_note(self) -> None:
+        # No calibration_partial entry at all for the other camera's AXIS1
+        # (e.g. that camera never even connected) -- must not crash, and
+        # must not claim a confirmation that was never actually measured.
+        axis1 = _axis_response(MountAxis.AXIS1, 0.0, 0.0)
+        axis2 = _axis_response(MountAxis.AXIS2, 5.0, 0.0)
+        message = _degenerate_calibration_message("left", axis1, axis2, {})
+        assert "RA-axis measured no motion on either camera" in message
 
 
 def test_window_starts_idle(qapp: object) -> None:
@@ -2762,11 +2812,78 @@ class TestMountTestMovePanel:
         assert not panel._nudge_buttons["left"]["Right"].isEnabled()
         assert not panel._nudge_buttons["right"]["Right"].isEnabled()
         assert "too close to parallel" in panel._result_label.text()
-        assert "may not have moved anything real" in panel._result_label.text()
+        # AXIS1 (the zero one here) measured nothing on either camera --
+        # the "may be a real mount/cable issue" branch, not the "confirmed
+        # by the other camera" one (see the cross-camera test below).
+        assert "measured no motion on either camera" in panel._result_label.text()
+        assert "mount/cable issue" in panel._result_label.text()
         # Not the generic "not enough structure" wording -- that's a
         # different failure path (a rejected/low-confidence measurement),
         # not this one (a confidently-measured zero).
         assert "not enough structure" not in panel._result_label.text()
+        window.close()
+
+    def test_degenerate_axis_message_distinguishes_a_real_cross_camera_confirmation(
+        self, qapp: object
+    ) -> None:
+        """Real report, diagnostic 0270868c: AXIS2 measured a confident
+        zero on Main but a large real shift on Guide from the *same*
+        pulse -- Main's much finer plate scale had likely panned that
+        same real motion entirely out of frame overlap, not a mount
+        problem. AXIS1 measured zero on *both* cameras that same run --
+        a real, actionable "check the mount" signal, unlike AXIS2's. The
+        message must tell these two apart per axis, not lump every zero
+        reading into one generic "check the mount" line."""
+        pulse_mount = FakeMountAdapter()
+        window = MainWindow(
+            _textured_camera(seed=10),
+            guide_camera=_textured_camera(seed=11),
+            device_lister=lambda: [],
+            mount=FakeMountPark(start_parked=True),
+            pulse_mount=pulse_mount,
+        )
+        self._connect_and_stream_cameras(window)
+        window._mount_panel._connect_button.setChecked(True)
+        window._test_move_panel._connect_button.setChecked(True)
+        panel = window._test_move_panel
+        panel._terrestrial_button.click()
+
+        rng = np.random.default_rng(14)
+        base = rng.normal(loc=500.0, scale=80.0, size=(120, 120))
+        # AXIS1 identical (no motion) on both cameras; AXIS2 identical on
+        # Main but genuinely differs on Guide -- exactly diagnostic
+        # 0270868c's own pattern.
+        left_shifts = iter([(0, 0), (0, 0), (0, 0), (0, 0)])
+        right_shifts = iter([(0, 0), (0, 0), (0, 0), (6, 0)])
+
+        def stepped_left_frame() -> np.ndarray:
+            dy, dx = next(left_shifts)
+            return np.roll(np.roll(base, dy, axis=0), dx, axis=1)
+
+        def stepped_right_frame() -> np.ndarray:
+            dy, dx = next(right_shifts)
+            return np.roll(np.roll(base, dy, axis=0), dx, axis=1)
+
+        panel._get_left_frame = stepped_left_frame
+        panel._get_right_frame = stepped_right_frame
+
+        self._run_calibration_to_completion(panel)
+
+        assert "left" not in panel._calibration
+        assert "right" not in panel._calibration
+        lines = {line.split(":", 1)[0]: line for line in panel._result_label.text().split("\n")}
+        # Main: AXIS1 zero on both cameras -- the mount/cable-issue note.
+        # AXIS2 zero on Main but confirmed real on Guide -- the framing note.
+        assert "RA-axis measured no motion on either camera" in lines["Main"]
+        assert "mount/cable issue" in lines["Main"]
+        assert "Dec-axis measured no motion here, but Guide confirms real motion" in lines["Main"]
+        # Guide: only AXIS1 is zero for it too (its own AXIS2 was real) --
+        # no per-axis note about AXIS2 should appear on Guide's own line
+        # ("Dec-axis" still appears in the fixed "RA-axis and Dec-axis too
+        # close to parallel" preamble every line has, so check for the
+        # absence of an actual Dec-axis *note* specifically).
+        assert "RA-axis measured no motion on either camera" in lines["Guide"]
+        assert "Dec-axis measured" not in lines["Guide"]
         window.close()
 
     def test_diagnostic_context_reports_the_current_target_mode(self, qapp: object) -> None:
