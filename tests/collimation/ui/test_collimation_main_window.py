@@ -2316,12 +2316,19 @@ class TestMountTestMovePanel:
         window._left_panel._poll_frame()
         window._right_panel._poll_frame()
 
-    def _run_calibration_to_completion(self, panel: object, *, timeout_s: float = 5.0) -> None:
+    def _run_calibration_to_completion(self, panel: object, *, timeout_s: float = 15.0) -> None:
         """Click Run Calibration and drive the panel's poll loop until the
         whole 4-step sequence finishes (or the timeout fires) -- mirrors
         the existing "while runner.is_busy: sleep; poll()" pattern used
         throughout this file for a single pulse, just repeated across the
-        sequence's several pulses."""
+        sequence's several pulses.
+
+        `timeout_s` default raised from 5.0: MountAlignmentSettings'
+        default settle_ms (1000ms, real -- see that module's own
+        docstring) is a genuine per-step delay in MountTestMoveRunner
+        itself, not something a fake mount/park speeds up -- 4 real
+        calibration steps alone already cost ~4s before any other
+        overhead (frame capture, a slow mount_park fake, etc.)."""
         panel._run_calibration_button.click()  # type: ignore[attr-defined]
         deadline = time.monotonic() + timeout_s
         while panel._calibration_queue or panel._pending is not None:  # type: ignore[attr-defined]

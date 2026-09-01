@@ -39,7 +39,10 @@ _DEFAULT_NUDGE_TARGET_PX = 10.0
 #: for mechanical settle (backlash/vibration damping out) between the
 #: motor physically stopping and the mount actually being at rest. See
 #: MountTestMoveRunner's own docstring for where this is applied.
-_DEFAULT_SETTLE_MS = 300
+#: Real follow-up request: "if the calibration runs for x ms, ... take a
+#: frame after x + 1 sec ... for the telescope to stop" -- raised from
+#: the original 300ms guess to a full second.
+_DEFAULT_SETTLE_MS = 1000
 
 
 @dataclass(frozen=True)
