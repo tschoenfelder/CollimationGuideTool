@@ -191,6 +191,51 @@ class TestConnected:
         assert focuser.is_available is False
 
 
+class TestPropertyRefresh:
+    """Regression coverage for the real report: "Calling the APP still
+    shows focuser as moving ... The state should always been taken from
+    indiserver." status() must not trust a client-side cache forever once
+    thrown off -- see _PROPERTY_REFRESH_INTERVAL_S's own docstring."""
+
+    def test_status_self_corrects_a_stale_busy_cache_after_the_refresh_interval(
+        self, focuser: IndiFocuserAdapter
+    ) -> None:
+        from astrotool_core.indi.client import VectorState
+
+        focuser.connect()
+        assert focuser.status().moving is False
+        # Pin the throttle window deterministically right after a real
+        # refresh, then poke the cache stuck-Busy *without* going through
+        # the server -- simulating exactly the reported symptom (shows
+        # "moving" forever) with nothing of the driver's own prompting a
+        # correction.
+        focuser._last_property_refresh = time.monotonic()  # noqa: SLF001
+        focuser._client._vectors[(focuser._device_name, "ABS_FOCUS_POSITION")] = VectorState(  # noqa: SLF001
+            state="Busy", elements={"FOCUS_ABSOLUTE_POSITION": "5000"}
+        )
+        assert focuser.status().moving is True  # confirms the poke really is what's cached
+
+        time.sleep(0.25)
+        assert focuser.status().moving is False  # re-announced by the real (idle) server
+
+    def test_status_does_not_refresh_faster_than_the_throttle_interval(
+        self, focuser: IndiFocuserAdapter
+    ) -> None:
+        focuser.connect()
+        focuser.status()  # the very first status() call always refreshes once (see __init__)
+        sent: list[str | None] = []
+        original = focuser._client.send_get_properties
+
+        def spy(device: str | None = None) -> None:
+            sent.append(device)
+            original(device)
+
+        focuser._client.send_get_properties = spy  # type: ignore[method-assign]
+        focuser.status()
+        focuser.status()
+        assert sent == []  # well within the real (multi-second) default throttle window
+
+
 class TestFocuserUnavailable:
     def test_connect_succeeds_but_focuser_is_not_available(self) -> None:
         fake = FakeIndiServer(focuser_available=False)

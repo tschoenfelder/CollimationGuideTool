@@ -35,7 +35,9 @@ file.
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import time
 
 from astrotool_core.focus.port import FocuserMoveResult, FocuserPort, FocuserStatus
 from astrotool_core.indi.client import IndiClient, VectorState
@@ -46,6 +48,15 @@ _DEFAULT_DEVICE_NAME = "LX200 OnStep"
 _DEFAULT_PORT = 7624
 _CONNECT_TIMEOUT_S = 10.0
 _FOCUSER_PROBE_TIMEOUT_S = 3.0
+#: Real report: "Calling the APP still shows focuser as moving ... The
+#: state should always been taken from indiserver." Same gap as
+#: `IndiMountParkAdapter._PROPERTY_REFRESH_INTERVAL_S` (see that constant's
+#: docstring for the full reasoning) -- `IndiClient` only ever tracks what
+#: the driver last *pushed*, and never re-asks on its own. `status()` now
+#: re-sends getProperties for this device at most once every this many
+#: seconds, so a stale/stuck ABS_FOCUS_POSITION Busy state can't be cached
+#: forever with no way to notice.
+_PROPERTY_REFRESH_INTERVAL_S = 2.0
 
 
 class IndiFocuserAdapter(FocuserPort):
@@ -62,6 +73,7 @@ class IndiFocuserAdapter(FocuserPort):
         self._client = IndiClient(host, port)
         self._connected = False
         self._available = False
+        self._last_property_refresh: float = 0.0
 
     def connect(self) -> None:
         self._client.connect()
@@ -143,12 +155,27 @@ class IndiFocuserAdapter(FocuserPort):
         return self._connected and self._available
 
     def status(self) -> FocuserStatus:
+        self._maybe_refresh_properties()
         return FocuserStatus(
             available=self.is_available,
             position=self.get_position(),
             max_position=self.get_max_position(),
             moving=self.is_moving(),
         )
+
+    def _maybe_refresh_properties(self) -> None:
+        # See _PROPERTY_REFRESH_INTERVAL_S's docstring -- forces indiserver
+        # to re-announce this device's properties so a stale/stuck value
+        # can't be cached forever. Throttled so a UI polling status()
+        # frequently doesn't hammer the driver.
+        if not self._connected:
+            return
+        now = time.monotonic()
+        if now - self._last_property_refresh < _PROPERTY_REFRESH_INTERVAL_S:
+            return
+        self._last_property_refresh = now
+        with contextlib.suppress(ConnectionError, OSError):
+            self._client.send_get_properties(self._device_name)
 
     def get_position(self) -> int:
         vector = self._get_abs_position_vector()

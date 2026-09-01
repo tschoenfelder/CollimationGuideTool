@@ -43,6 +43,7 @@ from __future__ import annotations
 import contextlib
 import logging
 import threading
+import time
 
 from astrotool_core.indi.client import IndiClient
 from astrotool_core.mount.park_port import MountParkPort, MountParkStatus
@@ -59,6 +60,21 @@ _MOUNT_PROBE_TIMEOUT_S = 3.0
 #: spread out past that give margin for run-to-run timing variance
 #: without hammering the driver.
 _TRACK_OFF_RETRY_DELAYS_S = (2.0, 5.0, 10.0)
+#: Real report: "Calling the APP still shows ... mount as being unparked,
+#: even so I left it parked. The state should always been taken from
+#: indiserver." IndiClient only ever tracks whatever a driver *pushes*
+#: (def*Vector at connect, set*Vector on change) -- it never re-asks. If
+#: the driver's very first TELESCOPE_PARK report (right after CONNECT,
+#: while it may still be settling/querying the mount over serial) is
+#: stale or wrong, and the driver has no reason of its own to push a
+#: correction (nothing changed from *its* perspective), this app would
+#: cache that wrong value forever with no way to notice. status() now
+#: re-sends getProperties for this device at most once every this many
+#: seconds, forcing the driver to re-announce its actual current
+#: property values -- a normal, expected INDI client operation (real
+#: INDI clients like KStars/Ekos do the same), not a driver-specific
+#: workaround.
+_PROPERTY_REFRESH_INTERVAL_S = 2.0
 
 
 class IndiMountParkAdapter(MountParkPort):
@@ -76,6 +92,7 @@ class IndiMountParkAdapter(MountParkPort):
         self._connected = False
         self._available = False
         self._pending_track_off_retries: list[threading.Timer] = []
+        self._last_property_refresh: float = 0.0
 
     def connect(self) -> None:
         self._client.connect()
@@ -127,9 +144,24 @@ class IndiMountParkAdapter(MountParkPort):
         return self._connected and self._available
 
     def status(self) -> MountParkStatus:
+        self._maybe_refresh_properties()
         return MountParkStatus(
             available=self.is_available, parked=self._is_parked(), tracking=self._is_tracking()
         )
+
+    def _maybe_refresh_properties(self) -> None:
+        # See _PROPERTY_REFRESH_INTERVAL_S's docstring -- forces indiserver
+        # to re-announce this device's properties so a stale/wrong initial
+        # push (or a missed update) can't be cached forever. Throttled so
+        # a UI polling status() frequently doesn't hammer the driver.
+        if not self._connected:
+            return
+        now = time.monotonic()
+        if now - self._last_property_refresh < _PROPERTY_REFRESH_INTERVAL_S:
+            return
+        self._last_property_refresh = now
+        with contextlib.suppress(ConnectionError, OSError):
+            self._client.send_get_properties(self._device_name)
 
     def _is_parked(self) -> bool:
         if not self.is_available:

@@ -181,6 +181,52 @@ class TestUnparkOvercomesDriverTrackOnOverride:
             fake.stop()
 
 
+class TestPropertyRefresh:
+    """Regression coverage for the real report: "Calling the APP still
+    shows ... mount as being unparked, even so I left it parked. The
+    state should always been taken from indiserver." status() must not
+    trust a client-side cache forever once thrown off -- see
+    _PROPERTY_REFRESH_INTERVAL_S's own docstring for the reasoning."""
+
+    def test_status_self_corrects_a_stale_cached_value_after_the_refresh_interval(
+        self, mount: IndiMountParkAdapter
+    ) -> None:
+        from astrotool_core.indi.client import VectorState
+
+        mount.connect()
+        assert mount.status().parked is True
+        # Pin the throttle window deterministically (rather than relying
+        # on real elapsed time not crossing it by accident) right after a
+        # real refresh, then poke the cache stale *without* going through
+        # the server -- simulating a driver's post-connect report having
+        # been wrong with nothing of its own prompting a correction.
+        mount._last_property_refresh = time.monotonic()  # noqa: SLF001
+        mount._client._vectors[(mount._device_name, "TELESCOPE_PARK")] = VectorState(  # noqa: SLF001
+            state="Ok", elements={"PARK": "Off", "UNPARK": "On"}
+        )
+        assert mount.status().parked is False  # confirms the poke really is what's cached
+
+        time.sleep(0.25)
+        assert mount.status().parked is True  # re-announced by the real (still-parked) server
+
+    def test_status_does_not_refresh_faster_than_the_throttle_interval(
+        self, mount: IndiMountParkAdapter
+    ) -> None:
+        mount.connect()
+        mount.status()  # the very first status() call always refreshes once (see __init__)
+        sent: list[str | None] = []
+        original = mount._client.send_get_properties
+
+        def spy(device: str | None = None) -> None:
+            sent.append(device)
+            original(device)
+
+        mount._client.send_get_properties = spy  # type: ignore[method-assign]
+        mount.status()
+        mount.status()
+        assert sent == []  # well within the real (multi-second) default throttle window
+
+
 class TestMountInterfaceUnavailable:
     def test_connect_succeeds_but_mount_is_not_available(self) -> None:
         fake = FakeIndiServer(mount_available=False)
