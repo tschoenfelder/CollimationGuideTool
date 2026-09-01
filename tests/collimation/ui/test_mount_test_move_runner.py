@@ -196,3 +196,62 @@ class TestMountTestMoveRunner:
         assert outcome.error is not None
         assert "unpark" in outcome.error
         assert mount.pulse_log == []  # never reached the pulse
+
+    def test_a_transiently_rejected_pulse_is_retried_until_it_succeeds(self) -> None:
+        # Real report 45e5ae86 ("SEV 1"): "Shows unparked but fails for
+        # parked" -- confirmed live (this same session) that a pulse can
+        # still get rejected for a real, if short, window even after
+        # status().parked has already settled to False. A single-shot
+        # pulse_axis() call isn't reliable through that window; this
+        # confirms the runner retries instead of giving up on the first
+        # rejection.
+        mount = FakeMountAdapter(reject_first_n_pulses=2)
+        mount.connect()
+        runner = MountTestMoveRunner()
+        import collimation_tool.ui.mount_test_move_runner as runner_module
+
+        original_delay = runner_module._PULSE_REJECTION_RETRY_DELAY_S
+        runner_module._PULSE_REJECTION_RETRY_DELAY_S = 0.01  # keep the test fast
+        try:
+            runner.submit(
+                FakeMountPark(start_parked=True),
+                mount,
+                MountAxis.AXIS1,
+                AxisDirection.POSITIVE,
+                500,
+            )
+            assert _wait_for(lambda: not runner.is_busy)
+        finally:
+            runner_module._PULSE_REJECTION_RETRY_DELAY_S = original_delay
+        outcome = runner.take_latest()
+        assert outcome is not None
+        assert outcome.pulsed is True
+        assert outcome.error is None
+        # The 3rd attempt (index 2) is the one that actually landed.
+        assert mount.pulse_log == [(MountAxis.AXIS1, AxisDirection.POSITIVE, 500)]
+
+    def test_a_pulse_rejected_on_every_attempt_still_gives_up_eventually(self) -> None:
+        mount = FakeMountAdapter(reject_first_n_pulses=999)  # never accepts
+        mount.connect()
+        runner = MountTestMoveRunner()
+        import collimation_tool.ui.mount_test_move_runner as runner_module
+
+        original_delay = runner_module._PULSE_REJECTION_RETRY_DELAY_S
+        runner_module._PULSE_REJECTION_RETRY_DELAY_S = 0.01
+        try:
+            runner.submit(
+                FakeMountPark(start_parked=True),
+                mount,
+                MountAxis.AXIS1,
+                AxisDirection.POSITIVE,
+                500,
+            )
+            assert _wait_for(lambda: not runner.is_busy)
+        finally:
+            runner_module._PULSE_REJECTION_RETRY_DELAY_S = original_delay
+        outcome = runner.take_latest()
+        assert outcome is not None
+        assert outcome.pulsed is False
+        assert outcome.error is not None
+        assert "rejected" in outcome.error
+        assert mount.pulse_log == []  # never actually accepted

@@ -54,11 +54,22 @@ import time
 from dataclasses import dataclass
 
 from astrotool_core.mount.park_port import MountParkPort
-from astrotool_core.mount.port import AxisDirection, MountAxis, MountPort
+from astrotool_core.mount.port import AxisDirection, CommandResult, MountAxis, MountPort
 
 _UNPARK_TIMEOUT_S = 5.0
 _REPARK_TIMEOUT_S = 5.0
 _PARK_POLL_INTERVAL_S = 0.1
+#: Real report 45e5ae86 ("SEV 1"): "Shows unparked but fails for parked."
+#: Confirmed live against the real rig: status().parked can settle to
+#: False while a pulse moments later still gets rejected -- the driver's
+#: own "unparked" announcement and its internal motion-gate (what
+#: IndiMountPulseAdapter.pulse_axis() actually gets rejected against, see
+#: that module's own docstring) aren't perfectly synced. _wait_for_parked
+#: above already waits out the *announcement*; this retries through the
+#: *gate* separately, since they're evidently not the same thing landing
+#: at the same time.
+_PULSE_REJECTION_RETRIES = 6
+_PULSE_REJECTION_RETRY_DELAY_S = 0.3
 
 #: One pulse within a submitted sequence: (axis, direction, duration_ms).
 PulseStep = tuple[MountAxis, AxisDirection, int]
@@ -82,6 +93,26 @@ def _wait_for_parked(mount_park: MountParkPort, *, want_parked: bool, timeout_s:
         if time.monotonic() >= deadline:
             return False
         time.sleep(_PARK_POLL_INTERVAL_S)
+
+
+def _pulse_with_retry(
+    mount: MountPort,
+    axis: MountAxis,
+    direction: AxisDirection,
+    pulse_ms: int,
+    rate_preset: str | None,
+) -> CommandResult:
+    """Retries a *rejected* pulse_axis() call a few times before giving
+    up -- see `_PULSE_REJECTION_RETRIES`'s own docstring for why. An
+    accepted result returns immediately on the first attempt; no retry
+    overhead for the common case."""
+    result = mount.pulse_axis(axis, direction, pulse_ms, rate_preset=rate_preset)
+    attempt = 1
+    while not result.accepted and attempt < _PULSE_REJECTION_RETRIES:
+        time.sleep(_PULSE_REJECTION_RETRY_DELAY_S)
+        result = mount.pulse_axis(axis, direction, pulse_ms, rate_preset=rate_preset)
+        attempt += 1
+    return result
 
 
 class MountTestMoveRunner:
@@ -166,12 +197,11 @@ class MountTestMoveRunner:
                 # caller treating "not fully pulsed" as "don't trust an
                 # after-measurement" is the safer default.
                 for axis, direction, pulse_ms in steps:
-                    result = mount.pulse_axis(
-                        axis, direction, pulse_ms, rate_preset=rate_preset
-                    )
+                    result = _pulse_with_retry(mount, axis, direction, pulse_ms, rate_preset)
                     if not result.accepted:
                         error = (
-                            f"pulse rejected for {axis.name} {direction.name}: {result.message}"
+                            f"pulse rejected for {axis.name} {direction.name} "
+                            f"after {_PULSE_REJECTION_RETRIES} attempts: {result.message}"
                         )
                         break
                 else:
