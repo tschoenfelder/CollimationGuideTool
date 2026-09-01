@@ -7,6 +7,7 @@ from astrotool_core.mount.axis_calibration import (
     calibrate_axis,
     calibrate_axis_multi,
     compose_screen_move,
+    is_degenerate,
 )
 from astrotool_core.mount.port import AxisDirection, MountAxis
 from astrotool_core.testing.fake_mount import FakeMountAdapter
@@ -238,6 +239,32 @@ def test_compose_screen_move_raises_for_near_parallel_axes() -> None:
 
     with pytest.raises(ValueError, match="parallel"):
         compose_screen_move(axis1, axis2, target_dx_px=10.0, target_dy_px=0.0)
+
+
+def test_is_degenerate_true_for_near_parallel_axes() -> None:
+    axis1 = _response(MountAxis.AXIS1, dx_px=100.0, dy_px=0.0)
+    axis2 = _response(MountAxis.AXIS2, dx_px=200.0, dy_px=0.0)
+
+    assert is_degenerate(axis1, axis2) is True
+
+
+def test_is_degenerate_true_when_one_response_is_exactly_zero() -> None:
+    # Real report (diagnostic 0270868c): the driver reported AXIS1's pulse
+    # fully accepted, but the measured displacement came back exactly
+    # (0, 0) on both cameras -- a confidently-measured "no real motion"
+    # reading, not a rejected/low-confidence one. AXIS2 alone (a real,
+    # nonzero response) can't be inverted against a zero vector.
+    axis1 = _response(MountAxis.AXIS1, dx_px=0.0, dy_px=0.0)
+    axis2 = _response(MountAxis.AXIS2, dx_px=0.0, dy_px=150.0)
+
+    assert is_degenerate(axis1, axis2) is True
+
+
+def test_is_degenerate_false_for_well_separated_orthogonal_axes() -> None:
+    axis1 = _response(MountAxis.AXIS1, dx_px=100.0, dy_px=0.0)
+    axis2 = _response(MountAxis.AXIS2, dx_px=0.0, dy_px=100.0)
+
+    assert is_degenerate(axis1, axis2) is False
 
 
 def test_compose_screen_move_rejects_a_zero_duration_calibration_response() -> None:

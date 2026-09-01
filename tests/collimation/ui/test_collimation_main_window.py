@@ -2280,6 +2280,32 @@ class TestMountTestMovePanel:
         window._test_move_panel._connect_button.setChecked(True)
         panel = window._test_move_panel
 
+        # A real, non-degenerate calibration needs AXIS1's and AXIS2's own
+        # measured responses to actually differ -- this file's shared
+        # _star_camera fixture is a single static frame (same star, same
+        # position, every capture), which would make every axis response
+        # exactly (0, 0) and silently exercise the *degenerate* case
+        # instead (see is_degenerate() and the new
+        # test_run_calibration_reports_a_degenerate_axis... below). Fake
+        # real per-axis motion by returning a star at a different position
+        # each capture -- same monkeypatch pattern as flaky_get_left_frame
+        # a few tests below. Capture order per camera: axis1 before,
+        # axis1 after, axis2 before, axis2 after (the return steps take no
+        # measurement).
+        left_positions = iter([(50.0, 50.0), (60.0, 50.0), (50.0, 50.0), (50.0, 60.0)])
+        right_positions = iter([(50.0, 50.0), (60.0, 50.0), (50.0, 50.0), (50.0, 60.0)])
+
+        def stepped_left_frame() -> np.ndarray:
+            x, y = next(left_positions)
+            return single_star_image((120, 120), x=x, y=y, peak=2000.0, sigma=2.5, background=100.0)
+
+        def stepped_right_frame() -> np.ndarray:
+            x, y = next(right_positions)
+            return single_star_image((120, 120), x=x, y=y, peak=2000.0, sigma=2.5, background=100.0)
+
+        panel._get_left_frame = stepped_left_frame
+        panel._get_right_frame = stepped_right_frame
+
         self._run_calibration_to_completion(panel)
 
         settings = MountAlignmentSettings()
@@ -2598,10 +2624,94 @@ class TestMountTestMovePanel:
         panel = window._test_move_panel
         panel._terrestrial_button.click()
 
+        # Same reasoning as the star-mode calibration test above: a real,
+        # non-degenerate matrix needs AXIS1's and AXIS2's own measured
+        # shift to differ, not the shared static _textured_camera fixture
+        # replayed unchanged for every capture. np.roll gives an exact
+        # circular shift, matching measure_translation_offset()'s own
+        # documented assumption for a small pulse.
+        rng = np.random.default_rng(12)
+        base = rng.normal(loc=500.0, scale=80.0, size=(120, 120))
+        # (dy, dx) per capture, one independent sequence per camera --
+        # each camera gets its own 4 calls (axis1 before/after, axis2
+        # before/after), not one shared between both.
+        left_shifts = iter([(0, 0), (0, 6), (0, 0), (6, 0)])
+        right_shifts = iter([(0, 0), (0, 6), (0, 0), (6, 0)])
+
+        def stepped_left_frame() -> np.ndarray:
+            dy, dx = next(left_shifts)
+            return np.roll(np.roll(base, dy, axis=0), dx, axis=1)
+
+        def stepped_right_frame() -> np.ndarray:
+            dy, dx = next(right_shifts)
+            return np.roll(np.roll(base, dy, axis=0), dx, axis=1)
+
+        panel._get_left_frame = stepped_left_frame
+        panel._get_right_frame = stepped_right_frame
+
         self._run_calibration_to_completion(panel)
 
         assert set(panel._calibration) == {"left", "right"}
         assert "Calibration failed" not in panel._result_label.text()
+        window.close()
+
+    def test_run_calibration_reports_a_degenerate_axis_instead_of_silently_succeeding(
+        self, qapp: object
+    ) -> None:
+        """Real report, diagnostic 0270868c: the driver reported AXIS1's
+        pulse fully accepted (both motion-on and motion-off confirmed --
+        see IndiMountPulseAdapter's own docstring), but produced no real,
+        measurable motion -- a confidently-measured (0, 0), not a
+        rejected/low-confidence one. Storing that as a "successful"
+        calibration anyway used to only surface the problem later,
+        confusingly, the first time a nudge button called
+        compose_screen_move() and hit the same degenerate-matrix check for
+        a different reason. It must be caught right here instead."""
+        pulse_mount = FakeMountAdapter()
+        window = MainWindow(
+            _textured_camera(seed=10),
+            guide_camera=_textured_camera(seed=11),
+            device_lister=lambda: [],
+            mount=FakeMountPark(start_parked=True),
+            pulse_mount=pulse_mount,
+        )
+        self._connect_and_stream_cameras(window)
+        window._mount_panel._connect_button.setChecked(True)
+        window._test_move_panel._connect_button.setChecked(True)
+        panel = window._test_move_panel
+        panel._terrestrial_button.click()
+
+        rng = np.random.default_rng(13)
+        base = rng.normal(loc=500.0, scale=80.0, size=(120, 120))
+        # AXIS1's before/after are identical -- no real motion, matching
+        # the incident exactly -- while AXIS2's genuinely differ. One
+        # independent sequence per camera, same reasoning as above.
+        left_shifts = iter([(0, 0), (0, 0), (0, 0), (6, 0)])
+        right_shifts = iter([(0, 0), (0, 0), (0, 0), (6, 0)])
+
+        def stepped_left_frame() -> np.ndarray:
+            dy, dx = next(left_shifts)
+            return np.roll(np.roll(base, dy, axis=0), dx, axis=1)
+
+        def stepped_right_frame() -> np.ndarray:
+            dy, dx = next(right_shifts)
+            return np.roll(np.roll(base, dy, axis=0), dx, axis=1)
+
+        panel._get_left_frame = stepped_left_frame
+        panel._get_right_frame = stepped_right_frame
+
+        self._run_calibration_to_completion(panel)
+
+        assert "left" not in panel._calibration
+        assert "right" not in panel._calibration
+        assert not panel._nudge_buttons["left"]["Right"].isEnabled()
+        assert not panel._nudge_buttons["right"]["Right"].isEnabled()
+        assert "too close to parallel" in panel._result_label.text()
+        assert "may not have moved anything real" in panel._result_label.text()
+        # Not the generic "not enough structure" wording -- that's a
+        # different failure path (a rejected/low-confidence measurement),
+        # not this one (a confidently-measured zero).
+        assert "not enough structure" not in panel._result_label.text()
         window.close()
 
     def test_diagnostic_context_reports_the_current_target_mode(self, qapp: object) -> None:

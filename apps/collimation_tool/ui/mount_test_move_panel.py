@@ -123,6 +123,7 @@ from astrotool_core.mount.axis_calibration import (
     AxisResponse,
     CalibrationMatrix,
     compose_screen_move,
+    is_degenerate,
     response_from_positions,
 )
 from astrotool_core.mount.park_port import MountParkPort
@@ -584,6 +585,21 @@ class MountTestMovePanel(QWidget):
         self._start_next_calibration_step()
 
     def _finish_calibration(self) -> None:
+        """Build each camera's `CalibrationMatrix`, unless its own
+        AXIS1/AXIS2 responses are degenerate -- real report (diagnostic
+        0270868c): the driver can report a pulse fully accepted (both
+        motion-on and motion-off confirmed) while producing no real,
+        measurable mount motion (most likely a real, intermittent
+        mount/cable issue given the pattern recurring across sessions on
+        alternating axes -- not a rejected-pulse case, which
+        `MountTestMoveRunner` already retries through separately). Storing
+        that as a "successful" matrix anyway used to only surface the
+        problem later, confusingly, the first time a nudge button called
+        `compose_screen_move` and hit this exact same check for a
+        different reason. Checking it here, right when calibration
+        finishes, means the affected camera's nudge buttons simply never
+        enable (same as the no-matrix state) and the user sees a specific,
+        actionable message immediately instead."""
         self._calibration = {}
         lines: list[str] = []
         for key in ("left", "right"):
@@ -591,6 +607,13 @@ class MountTestMovePanel(QWidget):
             axis2 = self._calibration_partial[key].get(MountAxis.AXIS2)
             if axis1 is None or axis2 is None:
                 continue  # shouldn't happen unless _abort_calibration already fired
+            if is_degenerate(axis1, axis2):
+                lines.append(
+                    f"{_CAMERA_LABELS[key]}: RA-axis and Dec-axis too close to parallel -- "
+                    "one axis may not have moved anything real even though the pulse was "
+                    "accepted; check the mount directly, or try Run Calibration again."
+                )
+                continue
             self._calibration[key] = CalibrationMatrix(
                 responses={
                     (MountAxis.AXIS1, AxisDirection.POSITIVE): axis1,
@@ -775,16 +798,21 @@ class MountTestMovePanel(QWidget):
 
     def diagnostic_context(self) -> dict[str, Any]:
         context: dict[str, Any] = {"target_mode": self._target_mode()}
+        # Deliberately sourced from _calibration_partial (every axis
+        # response actually measured), not self._calibration (only the
+        # non-degenerate matrices -- see is_degenerate() and
+        # _finish_calibration()'s own docstring). A degenerate run is
+        # exactly the case a diagnostic bundle most needs the raw numbers
+        # for: diagnostic 0270868c's own root cause (AXIS1 measured a
+        # confident (0, 0) on both cameras) was only readable from these
+        # exact axis1/axis2 values.
         context["calibration"] = {
             key: {
-                "axis1": _response_dict(
-                    matrix.response_for(MountAxis.AXIS1, AxisDirection.POSITIVE)
-                ),
-                "axis2": _response_dict(
-                    matrix.response_for(MountAxis.AXIS2, AxisDirection.POSITIVE)
-                ),
+                "axis1": _response_dict(responses[MountAxis.AXIS1]),
+                "axis2": _response_dict(responses[MountAxis.AXIS2]),
             }
-            for key, matrix in self._calibration.items()
+            for key, responses in self._calibration_partial.items()
+            if MountAxis.AXIS1 in responses and MountAxis.AXIS2 in responses
         }
         if self._last_error is not None:
             context["last_result"] = {"error": self._last_error}

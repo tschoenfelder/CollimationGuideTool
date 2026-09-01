@@ -144,6 +144,31 @@ def calibrate_axes(
 _MIN_DETERMINANT_RATIO = 1e-3
 
 
+def is_degenerate(axis1_response: AxisResponse, axis2_response: AxisResponse) -> bool:
+    """True if `axis1_response`'s and `axis2_response`'s measured rate
+    vectors are too close to parallel (or either is exactly zero) to
+    invert reliably -- the same guard `compose_screen_move` itself needs,
+    exposed separately so a caller can check this right when a calibration
+    completes, without needing a target displacement to try to solve for.
+
+    Real report (diagnostic 0270868c): a completed calibration silently
+    accepted a fully degenerate AXIS1/AXIS2 pair (the mount's driver
+    reported the pulse accepted, but no real motion was measured) as
+    "successful" -- the problem only surfaced later, confusingly, the
+    first time a nudge button called `compose_screen_move` and hit this
+    exact check for a different reason (solving for a target, not just
+    validating). Callers should run this check right after calibration,
+    not only defer to `compose_screen_move`'s own use of it.
+    """
+    rate1_dx = axis1_response.dx_px / axis1_response.duration_ms
+    rate1_dy = axis1_response.dy_px / axis1_response.duration_ms
+    rate2_dx = axis2_response.dx_px / axis2_response.duration_ms
+    rate2_dy = axis2_response.dy_px / axis2_response.duration_ms
+    determinant = rate1_dx * rate2_dy - rate2_dx * rate1_dy
+    scale = math.hypot(rate1_dx, rate1_dy) * math.hypot(rate2_dx, rate2_dy)
+    return scale == 0.0 or abs(determinant) < _MIN_DETERMINANT_RATIO * scale
+
+
 def compose_screen_move(
     axis1_response: AxisResponse,
     axis2_response: AxisResponse,
@@ -177,18 +202,17 @@ def compose_screen_move(
     if axis1_response.duration_ms <= 0 or axis2_response.duration_ms <= 0:
         raise ValueError("compose_screen_move: calibration responses need a positive duration_ms")
 
-    rate1_dx = axis1_response.dx_px / axis1_response.duration_ms
-    rate1_dy = axis1_response.dy_px / axis1_response.duration_ms
-    rate2_dx = axis2_response.dx_px / axis2_response.duration_ms
-    rate2_dy = axis2_response.dy_px / axis2_response.duration_ms
-
-    determinant = rate1_dx * rate2_dy - rate2_dx * rate1_dy
-    scale = math.hypot(rate1_dx, rate1_dy) * math.hypot(rate2_dx, rate2_dy)
-    if scale == 0.0 or abs(determinant) < _MIN_DETERMINANT_RATIO * scale:
+    if is_degenerate(axis1_response, axis2_response):
         raise ValueError(
             "compose_screen_move: AXIS1 and AXIS2 responses are too close to parallel to "
             "invert reliably -- recalibrate (one axis may not have moved anything real)"
         )
+
+    rate1_dx = axis1_response.dx_px / axis1_response.duration_ms
+    rate1_dy = axis1_response.dy_px / axis1_response.duration_ms
+    rate2_dx = axis2_response.dx_px / axis2_response.duration_ms
+    rate2_dy = axis2_response.dy_px / axis2_response.duration_ms
+    determinant = rate1_dx * rate2_dy - rate2_dx * rate1_dy
 
     t1_ms = (target_dx_px * rate2_dy - target_dy_px * rate2_dx) / determinant
     t2_ms = (rate1_dx * target_dy_px - rate1_dy * target_dx_px) / determinant
