@@ -183,7 +183,15 @@ class TestConnected:
         )
         assert rate_index < motion_on_index  # rate selected before motion starts
         assert sent[rate_index][1] == {"6": True}  # the confirmed "20x" preset element
-        _wait_until(lambda: server._slew_rate == "6")  # noqa: SLF001
+        # Settles back to the fake server's own default ("9") once the
+        # pulse finishes and pulse_axis() restores whatever rate preceded
+        # it -- "6" (this pulse's own selected rate) is only ever a
+        # transient mid-pulse state, not the final one; waiting for "6"
+        # here was actually racing that restore rather than genuinely
+        # confirming ordering (occasionally caught the transient window,
+        # occasionally didn't -- a real, if latent, flake this pulse's
+        # own new confirmation waits made more likely to surface).
+        _wait_until(lambda: server._slew_rate == "9")  # noqa: SLF001
 
     def test_disconnect_makes_the_mount_unavailable(self, mount: IndiMountPulseAdapter) -> None:
         mount.connect()
@@ -248,6 +256,71 @@ class TestParkedRejection:
         result = mount.pulse_axis(MountAxis.AXIS1, AxisDirection.POSITIVE, 500)
         assert result.accepted is True
         assert result.message == ""
+
+
+class TestMotionOffConfirmation:
+    """The same class of gap that motivated TestParkedRejection above, on
+    the *other* side of a pulse: turning the direction switch back off
+    after the pulse duration was still fire-and-forget -- if that command
+    never lands, the mount keeps physically moving with no way for
+    anything in this app to notice, let alone stop it. Arguably worse
+    than the motion-on gap: that one meant "reports success but nothing
+    moved"; this one means "reports success while the mount may still be
+    moving uncommanded"."""
+
+    def test_pulse_axis_falls_back_to_abort_when_turning_motion_off_never_confirms(
+        self, mount: IndiMountPulseAdapter, server: FakeIndiServer, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import astrotool_core.mount.indi_mount_pulse_adapter as adapter_module
+
+        # Small, not the real 2.0s ceiling -- this test deliberately lets
+        # the off-confirmation wait actually time out.
+        monkeypatch.setattr(adapter_module, "_MOTION_CONFIRM_TIMEOUT_S", 0.2)
+        mount.connect()
+        _spy_on_sleep(monkeypatch)
+        original_send = mount._client.send_new_switch_vector  # noqa: SLF001
+
+        def dropping_send(device: str, name: str, elements: dict[str, bool]) -> None:
+            # Drop only the "turn motion off" send -- simulate it never
+            # reaching/being processed by the driver. Everything else
+            # (rate select, motion-on, abort()'s own TELESCOPE_ABORT_MOTION)
+            # goes through normally.
+            if name == "TELESCOPE_MOTION_WE" and elements.get("MOTION_EAST") is False:
+                return
+            original_send(device, name, elements)
+
+        mount._client.send_new_switch_vector = dropping_send  # type: ignore[method-assign]  # noqa: SLF001
+
+        result = mount.pulse_axis(MountAxis.AXIS1, AxisDirection.POSITIVE, 100)
+
+        assert result.accepted is True  # the pulse itself genuinely happened
+        # abort() must have fired as the safety fallback -- the dropped
+        # off-command never reset the server's own motion state, so this
+        # can only be true if TELESCOPE_ABORT_MOTION's own reset landed.
+        _wait_until(
+            lambda: server._motion_we == {"MOTION_WEST": False, "MOTION_EAST": False}  # noqa: SLF001
+        )
+
+    def test_pulse_axis_does_not_call_abort_when_motion_off_confirms_normally(
+        self, mount: IndiMountPulseAdapter, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Regression guard against the fallback firing on every pulse --
+        # a normal, unimpeded pulse must not trigger abort() at all.
+        mount.connect()
+        _spy_on_sleep(monkeypatch)
+        abort_calls: list[None] = []
+        original_abort = mount.abort
+
+        def spy_abort() -> None:
+            abort_calls.append(None)
+            original_abort()
+
+        monkeypatch.setattr(mount, "abort", spy_abort)
+
+        result = mount.pulse_axis(MountAxis.AXIS1, AxisDirection.POSITIVE, 500)
+
+        assert result.accepted is True
+        assert abort_calls == []
 
 
 class TestMountInterfaceUnavailable:

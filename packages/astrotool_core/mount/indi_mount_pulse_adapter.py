@@ -321,7 +321,34 @@ class IndiMountPulseAdapter:
                 accepted=False, message="mount rejected the motion command -- still parked?"
             )
         time.sleep(clamped_ms / 1000.0)
+        # Same class of gap as the motion-on check above, on the other
+        # side of the pulse -- arguably worse: if this specific send is
+        # ever lost (dropped packet, driver hiccup, anything), the mount
+        # keeps physically moving with nothing in this app aware of it,
+        # let alone able to stop it. Verifies the driver actually
+        # confirms turning it back off; if it doesn't within
+        # _MOTION_CONFIRM_TIMEOUT_S, falls back to abort() -- the one
+        # mechanism (TELESCOPE_ABORT_MOTION) that doesn't depend on this
+        # specific switch send having landed at all.
+        previous_motion_vector_off = self._client.get_vector(self._device_name, vector_name)
         self._client.send_new_switch_vector(self._device_name, vector_name, {element: False})
+        confirmed_off = self._client.wait_for_vector(
+            self._device_name,
+            vector_name,
+            timeout_s=_MOTION_CONFIRM_TIMEOUT_S,
+            predicate=lambda v: v is not previous_motion_vector_off
+            and v.elements.get(element) == "Off",
+        )
+        if confirmed_off is None:
+            _log.error(
+                "IndiMountPulseAdapter.pulse_axis(): %s (%s) on %r did not confirm turning "
+                "motion OFF within %ss after the pulse -- calling abort() as a safety fallback",
+                axis.name,
+                direction.name,
+                self._device_name,
+                _MOTION_CONFIRM_TIMEOUT_S,
+            )
+            self.abort()
         if previous_rate is not None and previous_rate != selected_rate:
             self._client.send_new_switch_vector(
                 self._device_name, "TELESCOPE_SLEW_RATE", {previous_rate: True}
