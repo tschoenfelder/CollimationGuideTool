@@ -94,6 +94,30 @@ class TestConnected:
         _wait_until(lambda: mount.status().parked)
         assert mount.status().parked is True
 
+    def test_status_stays_parked_while_the_unpark_transition_is_still_busy(self) -> None:
+        # Real report 1bb412ae: "You report unparked even so the wlan
+        # connected app shows parked." OnStep's driver echoes the
+        # requested PARK/UNPARK elements back optimistically in a "Busy"
+        # vector immediately on receiving the command, well before the
+        # mount has actually finished the physical transition -- a
+        # generous park_delay_s here makes that window observable rather
+        # than racing past it in a few milliseconds.
+        fake = FakeIndiServer(start_parked=True, park_delay_s=0.3)
+        fake.start()
+        try:
+            mount = IndiMountParkAdapter(fake.host, fake.port, connect_timeout_s=2.0)
+            mount.connect()
+            mount.unpark()
+            # Immediately after unpark() -- the driver's optimistic Busy
+            # echo may already have landed, but the transition is not
+            # really done yet, so status() must still report parked.
+            assert mount.status().parked is True
+            _wait_until(lambda: not mount.status().parked, timeout_s=2.0)
+            assert mount.status().parked is False  # now genuinely settled (Ok)
+            mount.disconnect()
+        finally:
+            fake.stop()
+
     def test_disconnect_makes_the_mount_unavailable(self, mount: IndiMountParkAdapter) -> None:
         mount.connect()
         mount.disconnect()

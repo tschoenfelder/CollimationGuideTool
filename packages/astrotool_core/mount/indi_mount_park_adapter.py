@@ -167,7 +167,27 @@ class IndiMountParkAdapter(MountParkPort):
         if not self.is_available:
             return False
         vector = self._client.get_vector(self._device_name, "TELESCOPE_PARK")
-        return vector is not None and vector.elements.get("PARK") == "On"
+        if vector is None or vector.state == "Busy":
+            # Real report 1bb412ae: "You report unparked even so the wlan
+            # connected app shows parked." This rig's driver echoes the
+            # PARK/UNPARK elements back optimistically -- matching what
+            # was just requested -- in a "Busy" vector the instant it
+            # receives the command, well before the mount has physically
+            # finished the transition (the same Busy-vs-Ok distinction
+            # IndiFocuserAdapter.is_moving() already makes for
+            # ABS_FOCUS_POSITION; this adapter never made it for
+            # TELESCOPE_PARK). Trusting the elements during that Busy
+            # window let MountTestMoveRunner's _wait_for_parked() (reading
+            # status().parked) believe unparking had already finished and
+            # start pulsing the mount while it may still have been
+            # mechanically parked, hitting OnStep's own parked-motion
+            # interlock -- a strong unifying candidate for this session's
+            # whole "pulses barely move the mount" investigation. Treat
+            # Busy (or no report received yet) as "still parked" -- the
+            # safer read either way, and the one that makes
+            # `_wait_for_parked` actually wait for the real transition.
+            return True
+        return vector.elements.get("PARK") == "On"
 
     def _is_tracking(self) -> bool:
         if not self.is_available:
