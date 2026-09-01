@@ -397,11 +397,40 @@ class MountTestMovePanel(QWidget):
         )
         self._update_buttons_enabled()
 
-    def _abort_calibration(self, message: str) -> None:
+    def _abort_calibration(self, message: str, *, strand_return_step: bool = False) -> None:
+        """Stop the calibration sequence and report `message`.
+
+        `strand_return_step`: real incident a082144a -- if the step that
+        just failed was a "test" pulse whose forward move already
+        succeeded (only the *measurement* failed, after the fact), the
+        mount is now sitting off its original position with its own
+        paired "move back" return step still next in the queue. Clearing
+        the whole queue unconditionally (the old behavior) silently
+        dropped that return step too, leaving the mount stranded --
+        "not returning to start point" was a real, reproducible bug, not
+        user error. When true, that one return step (still at the front
+        of `_calibration_queue`, by construction of `_CALIBRATION_STEPS`
+        -- always immediately follows its own axis's test step) is
+        submitted before the queue is cleared, fire-and-forget: nothing
+        further in this calibration attempt depends on its outcome, and
+        `_poll()` already tolerates a completion with no matching
+        `_pending` (this is the same shape as any other untracked pulse).
+        """
+        return_step = self._calibration_queue[0] if strand_return_step else None
         self._calibration_queue = []
         self._pending = None
         self._last_error = message
         self._result_label.setText(f"Calibration failed: {message}")
+        if return_step is not None:
+            self._runner.submit(
+                self._mount_park,
+                self._mount,
+                return_step.axis,
+                return_step.direction,
+                self._settings.pulse_ms,
+                rate_preset=self._settings.rate_preset,
+                park_after=False,
+            )
         self._update_buttons_enabled()
 
     def _finish_calibration_step(
@@ -416,7 +445,8 @@ class MountTestMovePanel(QWidget):
             after = self._capture_both(pending.mode)
             if after is None:
                 self._abort_calibration(
-                    f"{self._missing_label(pending.mode)} after the move"
+                    f"{self._missing_label(pending.mode)} after the move",
+                    strand_return_step=True,
                 )
                 return
             responses: dict[str, AxisResponse] = {}
@@ -432,7 +462,8 @@ class MountTestMovePanel(QWidget):
                     responses[key] = response
             if failed:
                 self._abort_calibration(
-                    f"not enough structure to measure a displacement in: {', '.join(failed)}"
+                    f"not enough structure to measure a displacement in: {', '.join(failed)}",
+                    strand_return_step=True,
                 )
                 return
             for key, response in responses.items():

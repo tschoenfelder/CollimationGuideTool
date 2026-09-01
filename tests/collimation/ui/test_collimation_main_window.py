@@ -2101,6 +2101,59 @@ class TestMountTestMovePanel:
         assert mount_park.status().parked is False
         window.close()
 
+    def test_a_measurement_failure_after_a_successful_pulse_still_returns_that_axis(
+        self, qapp: object
+    ) -> None:
+        """Regression test for diagnostic a082144a: "with failed
+        calibration not returning to start point". AXIS2's forward pulse
+        succeeds, but its own "after" measurement fails on the 4th frame
+        capture (simulated by having the left camera's frame getter go
+        missing exactly then) -- the old _abort_calibration cleared the
+        whole remaining queue unconditionally, silently dropping AXIS2's
+        own already-queued return pulse and leaving the mount stranded
+        off its start position. It must still be sent."""
+        pulse_mount = FakeMountAdapter()
+        mount_park = FakeMountPark(start_parked=True)
+        window = self._window(mount_park=mount_park, pulse_mount=pulse_mount)
+        self._connect_and_stream_cameras(window)
+        window._mount_panel._connect_button.setChecked(True)
+        window._test_move_panel._connect_button.setChecked(True)
+        panel = window._test_move_panel
+
+        # Capture order is: AXIS1 before, AXIS1 after, [AXIS1 return has no
+        # capture], AXIS2 before, AXIS2 after -- the 4th left-camera call.
+        # Fail exactly that one so AXIS1 completes normally and AXIS2's
+        # forward pulse has already been sent before anything fails.
+        real_get_left_frame = panel._get_left_frame
+        call_count = 0
+
+        def flaky_get_left_frame() -> np.ndarray | None:
+            nonlocal call_count
+            call_count += 1
+            return None if call_count >= 4 else real_get_left_frame()
+
+        panel._get_left_frame = flaky_get_left_frame
+
+        self._run_calibration_to_completion(panel)
+        # The stranded-return pulse is fire-and-forget (no _pending to
+        # track), so _run_calibration_to_completion's queue/pending-based
+        # wait can return before it actually finishes -- wait for the
+        # runner directly too.
+        deadline = time.monotonic() + 5.0
+        while panel._runner.is_busy:
+            assert time.monotonic() < deadline, "stranded return pulse never completed"
+            time.sleep(0.01)
+
+        settings = MountAlignmentSettings()
+        assert pulse_mount.pulse_log == [
+            (MountAxis.AXIS1, AxisDirection.POSITIVE, settings.pulse_ms),
+            (MountAxis.AXIS1, AxisDirection.NEGATIVE, settings.pulse_ms),
+            (MountAxis.AXIS2, AxisDirection.POSITIVE, settings.pulse_ms),
+            (MountAxis.AXIS2, AxisDirection.NEGATIVE, settings.pulse_ms),
+        ]
+        assert "Calibration failed" in panel._result_label.text()
+        window.close()
+
     def test_run_calibration_button_and_nudge_pads_disable_and_stop_enables_mid_sequence(
         self, qapp: object
     ) -> None:

@@ -28,12 +28,33 @@ import numpy as np
 #: Below this, the correlation peak is treated as noise rather than a
 #: real match -- two frames with no shared structure (most notably a
 #: flat/featureless pair, e.g. a saturated or signal-less capture)
-#: correlate near 0 by construction (see measure_translation_offset's
-#: "Rejects" section); a real match on genuine shared content reads well
-#: above it. Picked with this module's own test suite (synthetic shifted
-#: textures score >=0.3; flat/uncorrelated pairs score <1e-3) leaving a
-#: wide margin on both sides.
-_DEFAULT_MIN_SCORE = 0.05
+#: correlate near 0 by construction (see measure_translation_offset's own
+#: docstring); a real match on genuine shared content reads well above it.
+#:
+#: 0.05 was this module's original value, picked against its own test
+#: suite's synthetic per-pixel-independent Gaussian noise (shifted copies
+#: score >=0.3; a *flat* uncorrelated pair -- np.full(), truly constant --
+#: scores <1e-3). Real incident a082144a found this doesn't generalize to
+#: real camera frames: pulled consecutive live frames (no mount motion
+#: between them, so a real match this module's own dx=0/dy=0 recovery
+#: confirmed was correct) straight from a diagnostic bundle and measured
+#: them directly -- GPCMOS02000KPA scored ~0.070, comfortably above the
+#: old floor, so its rejection wasn't this module's fault (see the same
+#: bundle's ATR585M frame, ~0.030 -- that camera's own frame was visibly
+#: defocused/blurry in the saved image, plausibly just genuinely
+#: low-structure content, not a threshold bug). The real gap to calibrate
+#: against turned out to be different: *unrelated* synthetic noise pairs
+#: (independent per-pixel Gaussian, not flat) score ~0.03-0.036 -- a real,
+#: nonzero noise floor for noise-like content that the original "<1e-3"
+#: reasoning (measured only against perfectly flat arrays) never
+#: accounted for. 0.045 sits in the empirically-confirmed gap between
+#: that floor (max observed 0.0357 across 8 unrelated-seed samples) and
+#: a genuine real-camera match (min observed 0.070) -- some margin below
+#: the previous 0.05 default, not the much larger drop first attempted
+#: and reverted after it broke the unrelated-pair rejection test. See
+#: tests/core/target/test_translation_offset.py for both sides of this
+#: regression coverage.
+_DEFAULT_MIN_SCORE = 0.045
 
 
 @dataclass(frozen=True)
