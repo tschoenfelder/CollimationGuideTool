@@ -186,7 +186,19 @@ class CameraPanel(QWidget):
 
         self._exposure_spin = QDoubleSpinBox()
         self._exposure_spin.setSuffix(" ms")
-        self._exposure_spin.setDecimals(1)
+        # 3, not 1 -- a real-hardware bug (diagnostic 79bcc6a8): the
+        # GPCMOS02000KPA's own min_exposure_ms is 0.105 (105us from the
+        # SDK's ExpTimeRange, see touptek_adapter.py's get_descriptor()).
+        # With 1 decimal, QDoubleSpinBox.setValue(0.105) silently rounds
+        # to 0.1ms before valueChanged ever fires -- 0.1ms round-trips
+        # through set_exposure_ms()'s ms->us conversion as 100us, 5us
+        # under the camera's real floor, which the SDK rejects
+        # (HRESULTException / E_INVALIDARG). Auto-exposure hit exactly
+        # this trying to clamp down to the camera's minimum while the
+        # frame was fully saturated -- the exposure-set raised before
+        # the gain-set below it ever ran (see _apply_auto_exposure),
+        # permanently freezing gain high on a blown-out white frame.
+        self._exposure_spin.setDecimals(3)
         self._gain_spin = QSpinBox()
         self._init_camera_controls()
         self._exposure_spin.valueChanged.connect(self._on_exposure_changed)
@@ -263,8 +275,21 @@ class CameraPanel(QWidget):
             config=self._auto_exposure_config,
         )
         if result.changed:
-            self._exposure_spin.setValue(result.exposure_ms)
+            # Gain before exposure -- real incident 79bcc6a8: the
+            # exposure-set below can reject a value the hardware doesn't
+            # actually accept (a rounded-off exposure landed a few
+            # microseconds under the camera's true floor). Confirmed by a
+            # direct PySide6 probe that a raising valueChanged slot is
+            # swallowed at Qt's signal-dispatch boundary rather than
+            # propagated to the caller, so today this specific ordering
+            # bug can't actually block the line after it either way --
+            # but that swallowing is an implementation detail of this Qt
+            # binding/version, not a documented guarantee. Gain first
+            # means its own correction never depends on whether the
+            # unrelated exposure line below it happens to raise, here or
+            # in some future environment that doesn't swallow it.
             self._gain_spin.setValue(result.gain)
+            self._exposure_spin.setValue(result.exposure_ms)
 
     def _on_toggle_stream(self, checked: bool) -> None:
         self._camera_combo.setEnabled(not checked)

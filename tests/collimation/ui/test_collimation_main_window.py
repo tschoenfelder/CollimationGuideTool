@@ -1,6 +1,7 @@
 import json
 import time
 from pathlib import Path
+from typing import cast
 
 import numpy as np
 import pytest
@@ -496,6 +497,24 @@ class TestDiagnosticsCapture:
         assert window._diagnostics is not None
 
 
+class _CallOrderSpyCamera(ReplayCamera):
+    """Records which of set_gain()/set_exposure_ms() was actually called
+    first -- see _apply_auto_exposure's own comment (diagnostic 79bcc6a8)
+    for why gain must go first. `call_order` is set by the test right
+    after construction (via .from_arrays()), not here, to avoid
+    reproducing ReplayCamera's own multi-parameter __init__."""
+
+    call_order: list[str]
+
+    def set_gain(self, gain: int) -> None:
+        self.call_order.append("gain")
+        super().set_gain(gain)
+
+    def set_exposure_ms(self, ms: float) -> None:
+        self.call_order.append("exposure")
+        super().set_exposure_ms(ms)
+
+
 class TestAutoExposure:
     """See the follow-up to issue #10: histogram-based auto exposure/gain."""
 
@@ -621,6 +640,57 @@ class TestAutoExposure:
             panel._start_button.setChecked(False)
         assert panel._exposure_spin.value() <= panel._auto_exposure_config.max_auto_exposure_ms
         assert panel._gain_spin.value() > 100
+
+    def test_exposure_spin_can_represent_a_cameras_fractional_minimum_exactly(
+        self, qapp: object
+    ) -> None:
+        """Regression test for diagnostic 79bcc6a8: with only 1 decimal,
+        clamping to a real camera's own minimum (GPCMOS02000KPA's is
+        0.105ms) silently rounded to 0.1ms -- below the camera's actual
+        hardware floor, which the SDK then rejected."""
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+        panel = window._left_panel
+        panel._exposure_spin.setValue(0.105)
+        assert panel._exposure_spin.value() == 0.105
+
+    def test_gain_is_corrected_before_exposure_within_one_auto_exposure_step(
+        self, qapp: object
+    ) -> None:
+        """Regression test for diagnostic 79bcc6a8: _apply_auto_exposure
+        used to set exposure before gain. A real ToupTek SDK rejection of
+        a rounded-off exposure value (HRESULTException/E_INVALIDARG, a
+        few microseconds under the camera's true floor) turned out not
+        to actually block the line after it -- a direct PySide6 probe
+        confirmed a raising valueChanged slot is swallowed at Qt's
+        signal-dispatch boundary, not propagated -- but that's an
+        implementation detail of this Qt binding, not a guarantee. Gain
+        must not depend on it: it's applied first, unconditionally."""
+        # A saturated frame at minimum exposure drives both corrections
+        # in one step -- see compute_auto_exposure's "too bright even at
+        # minimum exposure" case.
+        array = np.full((64, 64), 65534.0, dtype=np.float32)  # fully saturated, 16-bit
+        # from_arrays() is typed to return the base ReplayCamera (it has
+        # no Self-typed classmethod signature) even though it correctly
+        # constructs this subclass at runtime -- cast narrows it back.
+        camera = cast(_CallOrderSpyCamera, _CallOrderSpyCamera.from_arrays([array], cycle=True))
+        camera.call_order = []
+        # Above the camera's min_exposure_ms (0.1) so the correction
+        # actually changes exposure too, not just gain -- see
+        # compute_auto_exposure's "too bright even at minimum exposure"
+        # case: 0.15 * 0.6 = 0.09, clamped up to the 0.1 floor.
+        camera._exposure_ms = 0.15
+        window = MainWindow(camera, device_lister=lambda: [])
+        panel = window._left_panel
+        panel._auto_exposure_checkbox.setChecked(True)
+        panel._gain_spin.setValue(2060)
+        camera.call_order.clear()  # drop the setup calls above
+        panel._start_button.setChecked(True)
+        try:
+            panel._poll_frame()
+        finally:
+            panel._start_button.setChecked(False)
+        assert camera.call_order == ["gain", "exposure"]
+        assert panel._camera.get_gain() < 2060
 
 
 class TestRightPanel:
