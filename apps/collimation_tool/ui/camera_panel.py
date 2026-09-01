@@ -44,10 +44,26 @@ before analysis. Demosaicing was implemented and is unit-tested, but
 not yet proven against a real color sensor — no color camera was free
 to test against during development (see the commit that introduced
 this for which real cameras were checked and their result).
+
+Stream health: `StreamController`'s background capture thread exits
+permanently, silently, on any `capture()` exception (see that class's
+own docstring). `_poll_frame()` checks `pop_stream_error()` on every
+tick and, if the thread has died, runs `_handle_stream_error()` --
+real incident 79bcc6a8: without this, the panel just stopped receiving
+frames forever while `diagnostic_context()`'s `"streaming"` flag kept
+reporting `True` (it only ever checked `self._stream is not None`, not
+whether the thread behind it was actually still alive), leaving
+auto-exposure stuck on a frozen frame with zero visibility into why.
+Recovery is manual (the panel returns to the same idle state a manual
+"Stop stream" click leaves it in; click "Start stream" again) rather
+than automatic -- a `capture()` failure can mean the camera handle
+itself is now in a bad state, which blindly retrying wouldn't fix and
+could mask.
 """
 
 from __future__ import annotations
 
+import logging
 from collections import deque
 from collections.abc import Callable
 from typing import Any
@@ -88,6 +104,8 @@ from collimation_tool.domain.collimation_state import CollimationRecommendation
 from collimation_tool.ui.fov_overlay import FovOverlayRect
 from collimation_tool.ui.frame_analyzer import FrameAnalyzer
 from collimation_tool.ui.live_view import LiveViewLabel
+
+_log = logging.getLogger(__name__)
 
 _POLL_INTERVAL_MS = 100
 _RECENT_FRAMES_KEPT = 3
@@ -148,6 +166,14 @@ class CameraPanel(QWidget):
         self._connected_device: TouptekDeviceInfo | None = None
         self._stream: StreamController | None = None
         self._last_sequence = 0
+        #: Set by _handle_stream_error() when the background capture
+        #: thread has died (see StreamController._run()'s own docstring:
+        #: any capture() exception kills it permanently, silently) --
+        #: real incident 79bcc6a8, where "streaming: true" in diagnostics
+        #: (previously just `self._stream is not None`) kept reporting
+        #: true for two minutes after the thread had already exited.
+        #: Cleared on the next successful stream start.
+        self._last_stream_error: str | None = None
         self._controller = CollimationController()
         self._analyzer = FrameAnalyzer(self._controller)
         self._last_result: DonutAnalysisResult | None = None
@@ -299,6 +325,7 @@ class CameraPanel(QWidget):
             self._stream = StreamController(self._camera, name="collimation")
             self._stream.start_stream(self._exposure_spin.value() / 1000.0, cadence_s=0.2)
             self._last_sequence = 0
+            self._last_stream_error = None
             self._start_button.setText("Stop stream")
             if not self._updates_paused:
                 self._timer.start()
@@ -379,6 +406,10 @@ class CameraPanel(QWidget):
         whichever analysis most recently finished, if any."""
         if self._stream is None:
             return
+        stream_error = self._stream.pop_stream_error()
+        if stream_error is not None:
+            self._handle_stream_error(stream_error)
+            return
         mailbox_frame = self._stream.mailbox.wait_latest(
             after_sequence=self._last_sequence, timeout_s=0.0
         )
@@ -408,6 +439,34 @@ class CameraPanel(QWidget):
             self._recommendation_label.setText(
                 _format_recommendation(outcome.result, outcome.recommendation)
             )
+
+    def _handle_stream_error(self, error: Exception) -> None:
+        """The background capture thread has died permanently (see
+        StreamController._run()'s own docstring: any capture() exception
+        kills it, silently, with nothing surfaced anywhere) -- without
+        this, the panel just stops receiving frames forever while
+        diagnostic_context()'s "streaming" flag keeps reporting True,
+        since the StreamController object itself is still around even
+        though its thread exited (real incident: diagnostic 79bcc6a8 --
+        auto-exposure got stuck on a frozen frame for two minutes with
+        zero visibility into why).
+
+        Mirrors a manual "Stop stream" click's own cleanup exactly (same
+        `_start_button.setChecked(False)` path, so this panel returns to
+        a normal, re-connectable idle state) but reports the real reason
+        instead of the generic "Stream stopped." text, and keeps it in
+        `diagnostic_context()` so a future incident bundle shows the
+        actual cause directly instead of needing log archaeology.
+        Recovery stays manual (click "Start stream" again) rather than
+        auto-restarting -- a capture() failure can mean the camera
+        handle itself is now in a bad state, which blindly retrying
+        wouldn't fix and could mask.
+        """
+        stream_name = self._stream.name if self._stream is not None else "?"
+        _log.error("stream-%s: background capture failed: %s", stream_name, error)
+        self._last_stream_error = str(error)
+        self._start_button.setChecked(False)
+        self._recommendation_label.setText(f"Stream stopped (error): {error}")
 
     def current_settings(self) -> CameraPanelSettings:
         """This panel's state, for persisting as this session's default
@@ -461,6 +520,8 @@ class CameraPanel(QWidget):
             "auto_exposure_enabled": self._auto_exposure_checkbox.isChecked(),
             "updates_paused": self._updates_paused,
         }
+        if self._last_stream_error is not None:
+            context["stream_error"] = self._last_stream_error
         if self._last_result is not None:
             context["measurement_result"] = self._last_result
         if self._last_recommendation is not None:

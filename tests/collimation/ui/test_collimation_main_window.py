@@ -5,6 +5,7 @@ from typing import cast
 
 import numpy as np
 import pytest
+from astrotool_core.acquisition.acquisition_state import AcquisitionState
 from astrotool_core.acquisition.auto_exposure import AutoExposureConfig
 from astrotool_core.camera.capabilities import CameraCapabilities
 from astrotool_core.camera.port import CameraPort
@@ -14,6 +15,7 @@ from astrotool_core.config import MountAlignmentSettings, load_camera_settings
 from astrotool_core.diagnostics import DiagnosticService
 from astrotool_core.focus.fake_focuser import FakeFocuser
 from astrotool_core.focus.port import FocuserStatus
+from astrotool_core.frames.frame import Frame
 from astrotool_core.mount.axis_calibration import AxisResponse, CalibrationMatrix
 from astrotool_core.mount.park_port import MountParkStatus
 from astrotool_core.mount.port import AxisDirection, MountAxis
@@ -691,6 +693,75 @@ class TestAutoExposure:
             panel._start_button.setChecked(False)
         assert camera.call_order == ["gain", "exposure"]
         assert panel._camera.get_gain() < 2060
+
+
+class _CaptureFailingCamera(ReplayCamera):
+    """capture() always raises -- simulates StreamController's background
+    capture thread dying permanently on a real hardware failure (see that
+    class's own docstring; real incident 79bcc6a8's follow-up)."""
+
+    def capture(self, exposure_seconds: float) -> Frame:
+        raise RuntimeError("simulated capture failure")
+
+
+class TestStreamErrorVisibility:
+    """Regression tests for diagnostic 79bcc6a8's follow-up: a dead
+    background capture thread used to be completely invisible --
+    diagnostic_context()'s "streaming" flag kept reporting True forever,
+    since it only checked `self._stream is not None`. See
+    CameraPanel._handle_stream_error's own docstring."""
+
+    def _wait_for_stream_error(self, panel: object, *, timeout_s: float = 5.0) -> None:
+        stream = panel._stream  # type: ignore[attr-defined]
+        assert stream is not None
+        deadline = time.monotonic() + timeout_s
+        while stream.state != AcquisitionState.ERROR:
+            assert time.monotonic() < deadline, "capture thread never reported an error"
+            time.sleep(0.01)
+
+    def test_a_dead_capture_thread_is_surfaced_and_the_panel_resets(
+        self, qapp: object
+    ) -> None:
+        camera = _CaptureFailingCamera.from_arrays(
+            [np.zeros((8, 8), dtype=np.float32)], cycle=True
+        )
+        window = MainWindow(camera, device_lister=lambda: [])
+        panel = window._left_panel
+        panel._start_button.setChecked(True)
+        self._wait_for_stream_error(panel)
+
+        panel._poll_frame()
+
+        assert panel._stream is None
+        assert not panel._start_button.isChecked()
+        assert panel._start_button.text() == "Start stream"
+        assert panel._camera_combo.isEnabled()
+        assert panel._connect_button.isEnabled()
+        assert "error" in panel._recommendation_label.text().lower()
+        assert "simulated capture failure" in panel._recommendation_label.text()
+        assert panel.diagnostic_context()["stream_error"] == "simulated capture failure"
+        assert panel.diagnostic_context()["streaming"] is False
+        window.close()
+
+    def test_no_stream_error_key_when_nothing_has_failed(self, qapp: object) -> None:
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+        assert "stream_error" not in window._left_panel.diagnostic_context()
+
+    def test_a_fresh_stream_start_clears_a_previous_error(self, qapp: object) -> None:
+        camera = _CaptureFailingCamera.from_arrays(
+            [np.zeros((8, 8), dtype=np.float32)], cycle=True
+        )
+        window = MainWindow(camera, device_lister=lambda: [])
+        panel = window._left_panel
+        panel._start_button.setChecked(True)
+        self._wait_for_stream_error(panel)
+        panel._poll_frame()
+        assert "stream_error" in panel.diagnostic_context()
+
+        panel._start_button.setChecked(True)  # restart, still the same failing camera
+
+        assert "stream_error" not in panel.diagnostic_context()
+        window.close()
 
 
 class TestRightPanel:
