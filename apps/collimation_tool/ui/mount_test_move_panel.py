@@ -80,6 +80,16 @@ Detection (`detect_sources`) is fast enough for a single frame that doing it
 twice inline on the UI thread doesn't freeze anything, unlike FOV
 registration's multi-candidate search.
 
+Every captured before/after frame pair is also kept, raw, in
+`diagnostic_frames()` -- real incident de271da5: a pulled diagnostic
+bundle's `frames/` only ever held "whatever's currently streaming" (each
+panel's own recent-frames buffer), not necessarily the specific pair a
+failed calibration/nudge measurement actually used, making the actual
+`measure_translation_offset()`/`detect_sources()` failure impossible to
+re-run locally without reproducing it live. `MainWindow` folds these into
+the same bundle now, labelled (e.g. `"axis1_before_left"`,
+`"nudge_after_right"`) so a future incident carries the exact inputs.
+
 Target: "Star"/"Terrestrial" toggle (real user report, incident 6fa2aa59: a
 daytime/indoor test correctly refused with "no star detected" -- not a bug,
 but there was no way to actually exercise this feature without a real star
@@ -227,6 +237,8 @@ class MountTestMovePanel(QWidget):
         self._calibration: dict[str, CalibrationMatrix] = {}
         self._last_responses: dict[str, AxisResponse] | None = None
         self._last_error: str | None = None
+        #: See diagnostic_frames()'s own docstring.
+        self._last_diagnostic_frames: dict[str, np.ndarray] = {}
 
         self._title_label = QLabel(f"<b>{title}</b>")
         self._connect_button = QPushButton("Connect")
@@ -346,18 +358,48 @@ class MountTestMovePanel(QWidget):
     def _missing_label(self, mode: TargetMode) -> str:
         return "no star detected" if mode == "star" else "no frame available"
 
-    def _capture_both(self, mode: TargetMode) -> dict[str, _Measurement] | None:
+    def _capture_both(
+        self, mode: TargetMode, *, diagnostic_label: str | None = None
+    ) -> dict[str, _Measurement] | None:
         """Capture both cameras' "before"/"after" measurement in one shot,
         or None if either is missing -- the caller decides how to phrase
-        the resulting error message (calibration-step vs. nudge)."""
+        the resulting error message (calibration-step vs. nudge).
+
+        `diagnostic_label`, when given, also stashes the *raw* frame each
+        camera returned (before `_capture()`'s mode-specific reduction to
+        a centroid or a bare array-for-correlation) into
+        `self._last_diagnostic_frames`, so `diagnostic_frames()` always
+        has the actual frame pair a measurement was just taken from --
+        see that method's own docstring for why (real incident
+        de271da5: a pulled bundle's frames were "whatever's currently
+        streaming", not necessarily what a failed measurement actually
+        used)."""
+        left_frame = self._get_left_frame()
+        right_frame = self._get_right_frame()
+        if diagnostic_label is not None:
+            if left_frame is not None:
+                self._last_diagnostic_frames[f"{diagnostic_label}_left"] = left_frame
+            if right_frame is not None:
+                self._last_diagnostic_frames[f"{diagnostic_label}_right"] = right_frame
         raw = {
-            "left": self._capture(mode, self._get_left_frame()),
-            "right": self._capture(mode, self._get_right_frame()),
+            "left": self._capture(mode, left_frame),
+            "right": self._capture(mode, right_frame),
         }
         missing = [key for key, measurement in raw.items() if measurement is None]
         if missing:
             return None
         return raw  # type: ignore[return-value]
+
+    def diagnostic_frames(self) -> dict[str, np.ndarray]:
+        """The raw before/after frame pair(s) from the most recent
+        calibration step(s) and/or nudge -- labelled e.g.
+        `"axis1_before_left"`, `"nudge_after_right"`. `MainWindow`'s own
+        diagnostic capture folds these into the saved bundle's `frames/`
+        alongside the regular per-camera recent-frames, so a failed
+        measurement can be re-run directly against
+        `measure_translation_offset()`/`detect_sources()` from a pulled
+        bundle without needing to reproduce it live."""
+        return dict(self._last_diagnostic_frames)
 
     def _on_run_calibration_clicked(self) -> None:
         self._calibration_queue = list(_CALIBRATION_STEPS)
@@ -373,7 +415,8 @@ class MountTestMovePanel(QWidget):
         mode = self._target_mode()
         before: dict[str, _Measurement] = {}
         if step.measure:
-            captured = self._capture_both(mode)
+            label = f"{step.axis.name.lower()}_before"
+            captured = self._capture_both(mode, diagnostic_label=label)
             if captured is None:
                 self._abort_calibration(f"{self._missing_label(mode)} before pulsing")
                 return
@@ -442,7 +485,9 @@ class MountTestMovePanel(QWidget):
             self._abort_calibration(pulse_error or "pulse failed")
             return
         if step.measure:
-            after = self._capture_both(pending.mode)
+            after = self._capture_both(
+                pending.mode, diagnostic_label=f"{step.axis.name.lower()}_after"
+            )
             if after is None:
                 self._abort_calibration(
                     f"{self._missing_label(pending.mode)} after the move",
@@ -517,7 +562,7 @@ class MountTestMovePanel(QWidget):
             return
 
         mode = self._target_mode()
-        before = self._capture_both(mode)
+        before = self._capture_both(mode, diagnostic_label="nudge_before")
         if before is None:
             self._last_error = f"{self._missing_label(mode)} before pulsing"
             self._result_label.setText(f"Move failed: {self._last_error}")
@@ -546,7 +591,7 @@ class MountTestMovePanel(QWidget):
             self._last_error = pulse_error or "pulse failed"
             self._result_label.setText(f"Move failed: {self._last_error}")
             return
-        after = self._capture_both(pending.mode)
+        after = self._capture_both(pending.mode, diagnostic_label="nudge_after")
         if after is None:
             self._last_error = f"{self._missing_label(pending.mode)} after the move"
             self._result_label.setText(f"Move failed: {self._last_error}")

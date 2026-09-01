@@ -97,6 +97,8 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
+import numpy as np
+from astropy.io import fits
 from astrotool_core.acquisition.auto_exposure import AutoExposureConfig
 from astrotool_core.camera import CameraPort, FakeCamera, TouptekDeviceInfo
 from astrotool_core.camera import (
@@ -444,7 +446,34 @@ class MainWindow(QMainWindow):
         )
 
     def _all_recent_frames(self) -> list[Frame]:
-        return self._left_panel.recent_frames() + self._right_panel.recent_frames()
+        frames = self._left_panel.recent_frames() + self._right_panel.recent_frames()
+        frames.extend(self._calibration_diagnostic_frames())
+        return frames
+
+    def _calibration_diagnostic_frames(self) -> list[Frame]:
+        """The exact before/after frame pair(s) `_test_move_panel`'s last
+        calibration step(s) and/or nudge actually measured against --
+        see `MountTestMovePanel.diagnostic_frames()`'s own docstring
+        (real incident de271da5). Tagged with a CALIBSRC header keyword
+        (readable from the saved FITS file, e.g. via astropy) so a pulled
+        bundle's frames/ directory identifies each one; `bit_depth=16` is
+        a generic placeholder here, not read from either camera's real
+        descriptor -- this is diagnostic-only, `measure_translation_offset()`
+        itself never uses it.
+        """
+        frames: list[Frame] = []
+        for label, pixels in self._test_move_panel.diagnostic_frames().items():
+            header = fits.Header()
+            header["CALIBSRC"] = label
+            frames.append(
+                Frame(
+                    pixels=pixels.astype(np.float32),
+                    header=header,
+                    exposure_seconds=0.0,
+                    bit_depth=16,
+                )
+            )
+        return frames
 
     def _diagnostic_images(self) -> dict[str, bytes]:
         images: dict[str, bytes] = {}

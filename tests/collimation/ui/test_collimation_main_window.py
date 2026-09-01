@@ -5,6 +5,7 @@ from typing import cast
 
 import numpy as np
 import pytest
+from astropy.io import fits
 from astrotool_core.acquisition.acquisition_state import AcquisitionState
 from astrotool_core.acquisition.auto_exposure import AutoExposureConfig
 from astrotool_core.camera.capabilities import CameraCapabilities
@@ -2208,6 +2209,56 @@ class TestMountTestMovePanel:
         }
         assert context["mount_test_move"]["last_result"] is not None
         assert set(context["mount_test_move"]["last_result"]) == {"left", "right"}
+        window.close()
+
+    def test_diagnostic_frames_capture_the_actual_before_after_pairs_used(
+        self, qapp: object
+    ) -> None:
+        """Regression coverage for diagnostic de271da5: a pulled bundle's
+        frames used to be "whatever's currently streaming" (each camera
+        panel's own recent-frames ring buffer), not necessarily what a
+        calibration step's own measurement actually used. Every step's
+        raw before/after pair must be individually retrievable, labelled
+        by axis and before/after, for both cameras."""
+        window = self._window(
+            mount_park=FakeMountPark(start_parked=True), pulse_mount=FakeMountAdapter()
+        )
+        self._connect_and_stream_cameras(window)
+        window._mount_panel._connect_button.setChecked(True)
+        window._test_move_panel._connect_button.setChecked(True)
+        panel = window._test_move_panel
+
+        self._run_calibration_to_completion(panel)
+
+        frames = panel.diagnostic_frames()
+        assert set(frames) == {
+            "axis1_before_left", "axis1_before_right",
+            "axis1_after_left", "axis1_after_right",
+            "axis2_before_left", "axis2_before_right",
+            "axis2_after_left", "axis2_after_right",
+        }
+        assert all(isinstance(array, np.ndarray) for array in frames.values())
+        window.close()
+
+    def test_main_window_folds_calibration_diagnostic_frames_into_the_saved_bundle(
+        self, qapp: object
+    ) -> None:
+        window = self._window(
+            mount_park=FakeMountPark(start_parked=True), pulse_mount=FakeMountAdapter()
+        )
+        self._connect_and_stream_cameras(window)
+        window._mount_panel._connect_button.setChecked(True)
+        window._test_move_panel._connect_button.setChecked(True)
+        panel = window._test_move_panel
+
+        self._run_calibration_to_completion(panel)
+
+        calib_sources = set()
+        for frame in window._all_recent_frames():
+            if isinstance(frame.header, fits.Header) and "CALIBSRC" in frame.header:
+                calib_sources.add(frame.header["CALIBSRC"])
+        assert "axis1_before_left" in calib_sources
+        assert "axis2_after_right" in calib_sources
         window.close()
 
     def test_closing_the_window_disconnects_the_pulse_mount(self, qapp: object) -> None:
