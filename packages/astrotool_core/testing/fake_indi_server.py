@@ -18,6 +18,13 @@ Interface's park/tracking vectors (`TELESCOPE_PARK`,
 Ported in spirit from `fake_touptek.py`'s configurable-failure-mode
 style: construct with the failure mode you want, `start()`, point an
 `IndiClient`/`IndiFocuserAdapter` at `.host`/`.port`, `stop()` when done.
+
+`TELESCOPE_MOTION_NS`/`_WE` reject with `state="Idle"` (elements left
+unchanged, not accepted) whenever `start_parked=True`/the mount is
+currently parked -- verified directly against both the real rig and
+libindi's own `INDI::Telescope::MoveNS`/`MoveWE` source (the base class
+checks `isParked()` and returns `false` rather than accepting the
+switch) -- not a silent no-op the way this fake used to model it.
 """
 
 from __future__ import annotations
@@ -256,17 +263,13 @@ class FakeIndiServer:
                 {str(n): str(n) == self._slew_rate for n in range(10)},
             )
         elif name == "TELESCOPE_MOTION_NS":
-            self._motion_ns = {
-                "MOTION_NORTH": elements.get("MOTION_NORTH") == "On",
-                "MOTION_SOUTH": elements.get("MOTION_SOUTH") == "On",
-            }
-            self._send_switch_vector("TELESCOPE_MOTION_NS", "Ok", self._motion_ns)
+            self._handle_motion_switch(
+                "TELESCOPE_MOTION_NS", "MOTION_NORTH", "MOTION_SOUTH", elements
+            )
         elif name == "TELESCOPE_MOTION_WE":
-            self._motion_we = {
-                "MOTION_WEST": elements.get("MOTION_WEST") == "On",
-                "MOTION_EAST": elements.get("MOTION_EAST") == "On",
-            }
-            self._send_switch_vector("TELESCOPE_MOTION_WE", "Ok", self._motion_we)
+            self._handle_motion_switch(
+                "TELESCOPE_MOTION_WE", "MOTION_WEST", "MOTION_EAST", elements
+            )
         elif name == "TELESCOPE_ABORT_MOTION":
             self._motion_ns = {"MOTION_NORTH": False, "MOTION_SOUTH": False}
             self._motion_we = {"MOTION_WEST": False, "MOTION_EAST": False}
@@ -289,6 +292,29 @@ class FakeIndiServer:
                 "ABS_FOCUS_POSITION", "Ok", {"FOCUS_ABSOLUTE_POSITION": self._position}
             )
             self._send_switch_vector("FOCUS_ABORT_MOTION", "Ok", {"ABORT": False})
+
+    def _handle_motion_switch(
+        self, name: str, primary_element: str, secondary_element: str, elements: dict[str, str]
+    ) -> None:
+        """Shared TELESCOPE_MOTION_NS/_WE handling. Rejects while parked --
+        real `INDI::Telescope::MoveNS`/`MoveWE` behavior (verified against
+        both `inditelescope.cpp`'s source and the real rig -- see
+        `IndiMountPulseAdapter`'s own module docstring): resets the switch
+        back off and reports `state="Idle"`, not `"Ok"` -- not a silent
+        accept."""
+        current = self._motion_ns if name == "TELESCOPE_MOTION_NS" else self._motion_we
+        if self._parked:
+            self._send_switch_vector(name, "Idle", current)
+            return
+        updated = {
+            primary_element: elements.get(primary_element) == "On",
+            secondary_element: elements.get(secondary_element) == "On",
+        }
+        if name == "TELESCOPE_MOTION_NS":
+            self._motion_ns = updated
+        else:
+            self._motion_we = updated
+        self._send_switch_vector(name, "Ok", updated)
 
     def _handle_new_number_vector(self, name: str, elements: dict[str, str]) -> None:
         if name == "REL_FOCUS_POSITION":

@@ -15,7 +15,12 @@ from astrotool_core.testing.fake_indi_server import FakeIndiServer
 
 @pytest.fixture
 def server() -> Iterator[FakeIndiServer]:
-    fake = FakeIndiServer()
+    # start_parked=False -- parking is IndiMountParkAdapter's own concern
+    # (a separate connection in the real app), not this adapter's; these
+    # tests are about pulse mechanics, not park state, so they shouldn't
+    # incidentally depend on it. See TestParkedRejection below for the
+    # dedicated parked-specifically scenario.
+    fake = FakeIndiServer(start_parked=False)
     fake.start()
     try:
         yield fake
@@ -198,6 +203,51 @@ class TestConnected:
 
     def test_abort_before_connect_is_a_safe_no_op(self) -> None:
         IndiMountPulseAdapter("127.0.0.1", 1).abort()  # must not raise
+
+
+class TestParkedRejection:
+    """Real finding, sourced against both the real rig and libindi's own
+    `INDI::Telescope::MoveNS`/`MoveWE` (`inditelescope.cpp`): a driver
+    rejects a motion command outright while parked -- resets the switch
+    element back to Off and reports the vector's state as `"Idle"`, not
+    `"Ok"` (verified live: `MOTION_EAST=On` sent to the real parked mount
+    came back `MOTION_EAST=Off`/`state=Idle`). `pulse_axis()` never
+    checked this: it always sent, then blindly slept out the *entire*
+    requested duration regardless of whether the driver actually accepted
+    the motion, and unconditionally reported `accepted=True`."""
+
+    def test_pulse_axis_reports_rejection_when_parked_instead_of_silently_sleeping(
+        self,
+    ) -> None:
+        fake = FakeIndiServer(start_parked=True)
+        fake.start()
+        try:
+            mount = IndiMountPulseAdapter(fake.host, fake.port, connect_timeout_s=2.0)
+            mount.connect()
+            start = time_module.monotonic()
+            # A long duration -- if this silently sleeps it out despite the
+            # rejection (the old bug), this assertion's own elapsed-time
+            # check below fails loudly rather than just being slow.
+            result = mount.pulse_axis(MountAxis.AXIS1, AxisDirection.POSITIVE, 5000)
+            elapsed = time_module.monotonic() - start
+            assert result.accepted is False
+            assert "park" in result.message.lower()
+            assert elapsed < 2.0, f"blindly slept out the pulse despite rejection ({elapsed}s)"
+            mount.disconnect()
+        finally:
+            fake.stop()
+
+    def test_pulse_axis_does_not_report_rejection_when_unparked(
+        self, mount: IndiMountPulseAdapter, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The `server`/`mount` fixtures already start unparked -- this is
+        # a direct regression guard against the fix being too aggressive
+        # (e.g. misreading a normal accepted response as a rejection).
+        mount.connect()
+        _spy_on_sleep(monkeypatch)
+        result = mount.pulse_axis(MountAxis.AXIS1, AxisDirection.POSITIVE, 500)
+        assert result.accepted is True
+        assert result.message == ""
 
 
 class TestMountInterfaceUnavailable:

@@ -46,6 +46,18 @@ Direction mapping (documented since it's this adapter's own convention,
 east, NEGATIVE = west; AXIS2 (Dec/altitude) POSITIVE = north, NEGATIVE =
 south — matches `indi_adapter.py`'s existing e/w/n/s convention for the
 same (axis, direction) pairs.
+
+`pulse_axis()` checks whether the driver actually accepted the motion
+switch before sleeping out the pulse duration, rather than assuming it
+always succeeds. Sourced, not guessed: libindi's own
+`INDI::Telescope::MoveNS`/`MoveWE` (`inditelescope.cpp`) rejects the
+command outright while parked -- `MovementNSSP.setState(IPS_IDLE);
+MovementNSSP.apply(); return false;` -- resetting the switch element
+back off and reporting the vector's state as `Idle`, not `Ok`, rather
+than silently accepting it. Confirmed directly against the real rig too:
+sending `MOTION_EAST=On` to a parked mount came back `MOTION_EAST=Off`/
+`state=Idle`. Without this check, a caller had no way to tell a genuine
+pulse from one the driver quietly refused.
 """
 
 from __future__ import annotations
@@ -84,6 +96,15 @@ _DEFAULT_SLEW_RATE_ELEMENT = "6"
 #: incident 25446102) to apply some property changes with a real
 #: multi-second delay.
 _RATE_SELECT_SETTLE_S = 2.0
+#: How long to wait for TELESCOPE_MOTION_NS/_WE to confirm a pulse's
+#: motion-on switch -- either the element actually turning "On" (genuine
+#: accept), or the vector reporting state="Idle" (libindi's own
+#: MoveNS/MoveWE rejection, e.g. while parked -- see pulse_axis()'s own
+#: comment). A real transition either way should be near-instant (it's
+#: not a physical settle the way _RATE_SELECT_SETTLE_S's rate change can
+#: be), so this is a generous ceiling against a wedged connection, not a
+#: value tuned against observed real timing.
+_MOTION_CONFIRM_TIMEOUT_S = 2.0
 
 _MOTION_VECTOR: dict[tuple[MountAxis, AxisDirection], tuple[str, str]] = {
     (MountAxis.AXIS1, AxisDirection.POSITIVE): ("TELESCOPE_MOTION_WE", "MOTION_EAST"),
@@ -253,7 +274,52 @@ class IndiMountPulseAdapter:
                 _RATE_SELECT_SETTLE_S,
                 previous_rate,
             )
+        # Captured before sending -- TELESCOPE_MOTION_NS/_WE's own initial
+        # defSwitchVector (at connect time) already reports state="Idle"
+        # (elements all Off), the *same* state libindi uses for a genuine
+        # rejection. Without pinning down "the cached vector as it stood
+        # before this send", wait_for_vector's own check-current-value-
+        # first behavior could immediately match that stale leftover
+        # def-time Idle and misread it as this call's own rejection.
+        previous_motion_vector = self._client.get_vector(self._device_name, vector_name)
         self._client.send_new_switch_vector(self._device_name, vector_name, {element: True})
+        # Real finding, verified against both the real rig and libindi's
+        # own INDI::Telescope::MoveNS/MoveWE source (inditelescope.cpp):
+        # the base class rejects a motion command outright while parked --
+        # resets the switch element back to Off and reports the vector's
+        # state as "Idle", not "Ok" (confirmed live: sending MOTION_EAST=On
+        # to the real parked mount came back MOTION_EAST=Off/state=Idle).
+        # This call used to never check the response at all -- it sent,
+        # blindly slept out the *entire* requested duration regardless of
+        # whether the driver actually accepted the motion, and always
+        # returned accepted=True. Now waits for the vector to either
+        # confirm the element actually turned on, or report Idle (rejected)
+        # -- whichever comes first -- and only sleeps out the pulse
+        # duration once genuinely accepted.
+        confirmed_motion = self._client.wait_for_vector(
+            self._device_name,
+            vector_name,
+            timeout_s=_MOTION_CONFIRM_TIMEOUT_S,
+            predicate=lambda v: v is not previous_motion_vector
+            and (v.elements.get(element) == "On" or v.state == "Idle"),
+        )
+        accepted = confirmed_motion is not None and confirmed_motion.elements.get(element) == "On"
+        if not accepted:
+            _log.warning(
+                "IndiMountPulseAdapter.pulse_axis(): %s (%s) on %r rejected -- mount may still "
+                "be parked, or the driver never confirmed within %ss",
+                axis.name,
+                direction.name,
+                self._device_name,
+                _MOTION_CONFIRM_TIMEOUT_S,
+            )
+            if previous_rate is not None and previous_rate != selected_rate:
+                self._client.send_new_switch_vector(
+                    self._device_name, "TELESCOPE_SLEW_RATE", {previous_rate: True}
+                )
+            return CommandResult(
+                accepted=False, message="mount rejected the motion command -- still parked?"
+            )
         time.sleep(clamped_ms / 1000.0)
         self._client.send_new_switch_vector(self._device_name, vector_name, {element: False})
         if previous_rate is not None and previous_rate != selected_rate:
