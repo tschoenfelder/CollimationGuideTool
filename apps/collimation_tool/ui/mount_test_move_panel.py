@@ -222,12 +222,23 @@ class MountTestMovePanel(QWidget):
         runner: MountTestMoveRunner | None = None,
         set_left_auto_exposure_paused: Callable[[bool], None] | None = None,
         set_right_auto_exposure_paused: Callable[[bool], None] | None = None,
+        get_left_exposure_gain: Callable[[], tuple[float, int]] | None = None,
+        get_right_exposure_gain: Callable[[], tuple[float, int]] | None = None,
     ) -> None:
         super().__init__()
         self._mount = mount
         self._mount_park = mount_park
         self._get_left_frame = get_left_frame
         self._get_right_frame = get_right_frame
+        #: See diagnostic_camera_state()'s own docstring -- optional /
+        #: defaults to "unknown" (None) so tests and any caller that
+        #: doesn't wire a real CameraPanel don't need to supply one.
+        self._get_left_exposure_gain: Callable[[], tuple[float, int] | None] = (
+            get_left_exposure_gain or (lambda: None)
+        )
+        self._get_right_exposure_gain: Callable[[], tuple[float, int] | None] = (
+            get_right_exposure_gain or (lambda: None)
+        )
         #: Real incident ca728d27: auto-exposure roughly doubled the
         #: Guide camera's gain between a calibration step's "before" and
         #: "after" capture, pushing "after" into partial saturation --
@@ -258,6 +269,8 @@ class MountTestMovePanel(QWidget):
         self._last_error: str | None = None
         #: See diagnostic_frames()'s own docstring.
         self._last_diagnostic_frames: dict[str, np.ndarray] = {}
+        #: See diagnostic_camera_state()'s own docstring.
+        self._last_diagnostic_camera_state: dict[str, tuple[float, int]] = {}
 
         self._title_label = QLabel(f"<b>{title}</b>")
         self._connect_button = QPushButton("Connect")
@@ -398,8 +411,14 @@ class MountTestMovePanel(QWidget):
         if diagnostic_label is not None:
             if left_frame is not None:
                 self._last_diagnostic_frames[f"{diagnostic_label}_left"] = left_frame
+                left_state = self._get_left_exposure_gain()
+                if left_state is not None:
+                    self._last_diagnostic_camera_state[f"{diagnostic_label}_left"] = left_state
             if right_frame is not None:
                 self._last_diagnostic_frames[f"{diagnostic_label}_right"] = right_frame
+                right_state = self._get_right_exposure_gain()
+                if right_state is not None:
+                    self._last_diagnostic_camera_state[f"{diagnostic_label}_right"] = right_state
         raw = {
             "left": self._capture(mode, left_frame),
             "right": self._capture(mode, right_frame),
@@ -419,6 +438,20 @@ class MountTestMovePanel(QWidget):
         `measure_translation_offset()`/`detect_sources()` from a pulled
         bundle without needing to reproduce it live."""
         return dict(self._last_diagnostic_frames)
+
+    def diagnostic_camera_state(self) -> dict[str, tuple[float, int]]:
+        """The (exposure_ms, gain) each `diagnostic_frames()` entry was
+        actually captured with, keyed the same way -- e.g. real incidents
+        ca728d27/0de26787, where whether auto-exposure changed gain
+        *between* a step's "before" and "after" capture kept being the
+        open question a diagnostic bundle couldn't actually answer (the
+        saved frames alone don't carry the camera settings they were
+        taken with). `MainWindow`'s own diagnostic capture writes these
+        into each frame's own FITS header, so a future bundle settles it
+        directly instead of guessing. A label is only present here if the
+        camera that produced it had a `get_*_exposure_gain` callable
+        wired (optional -- see constructor)."""
+        return dict(self._last_diagnostic_camera_state)
 
     def _pause_auto_exposure(self) -> None:
         self._set_left_auto_exposure_paused(True)

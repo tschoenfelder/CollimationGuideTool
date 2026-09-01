@@ -236,6 +236,8 @@ class MainWindow(QMainWindow):
             settings=load_mount_alignment_settings(self._camera_settings_path),
             set_left_auto_exposure_paused=self._left_panel.set_auto_exposure_paused,
             set_right_auto_exposure_paused=self._right_panel.set_auto_exposure_paused,
+            get_left_exposure_gain=self._left_panel.current_exposure_gain,
+            get_right_exposure_gain=self._right_panel.current_exposure_gain,
         )
 
         # Restore last session's connected camera + exposure/gain/
@@ -469,16 +471,28 @@ class MainWindow(QMainWindow):
         a generic placeholder here, not read from either camera's real
         descriptor -- this is diagnostic-only, `measure_translation_offset()`
         itself never uses it.
+
+        Also tags EXPOSURE (seconds)/GAIN when known -- see
+        `MountTestMovePanel.diagnostic_camera_state()`'s own docstring
+        (real incidents ca728d27/0de26787): without this, whether
+        auto-exposure changed gain *between* a step's before/after
+        capture was a question the saved pixels alone couldn't answer.
         """
+        camera_state = self._test_move_panel.diagnostic_camera_state()
         frames: list[Frame] = []
         for label, pixels in self._test_move_panel.diagnostic_frames().items():
             header = fits.Header()
             header["CALIBSRC"] = label
+            state = camera_state.get(label)
+            if state is not None:
+                exposure_ms, gain = state
+                header["EXPOSURE"] = exposure_ms / 1000.0
+                header["GAIN"] = gain
             frames.append(
                 Frame(
                     pixels=pixels.astype(np.float32),
                     header=header,
-                    exposure_seconds=0.0,
+                    exposure_seconds=(state[0] / 1000.0) if state is not None else 0.0,
                     bit_depth=16,
                 )
             )

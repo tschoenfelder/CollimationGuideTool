@@ -618,6 +618,18 @@ class CameraPanel(QWidget):
         no-op if already in the requested state."""
         self._auto_exposure_paused = paused
 
+    def current_exposure_gain(self) -> tuple[float, int]:
+        """This panel's current exposure_ms/gain, as of right now -- for a
+        caller (MainWindow's calibration diagnostic-frame capture) that
+        wants to record what a specific captured frame was actually taken
+        with, e.g. into that frame's own FITS header, rather than relying
+        on this panel's own live spinbox values at some later, unrelated
+        moment (which could have already changed by then -- see real
+        incident ca728d27/0de26787, where whether auto-exposure changed
+        gain mid-measurement kept being the open question a diagnostic
+        bundle couldn't actually answer)."""
+        return (self._exposure_spin.value(), self._gain_spin.value())
+
     def latest_mono_frame(self) -> np.ndarray | None:
         """The most recently captured frame's mono representation
         (demosaiced luma for a color camera, raw pixels for mono) — for

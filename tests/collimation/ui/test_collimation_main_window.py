@@ -1940,6 +1940,13 @@ class TestCameraPanelSetAutoExposurePaused:
         window._left_panel.set_auto_exposure_paused(True)
         assert window._diagnostic_context()["left"]["auto_exposure_paused"] is True
 
+    def test_current_exposure_gain_reports_the_live_spinbox_values(self, qapp: object) -> None:
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+        panel = window._left_panel
+        panel._exposure_spin.setValue(12.5)
+        panel._gain_spin.setValue(250)
+        assert panel.current_exposure_gain() == (12.5, 250)
+
 
 class _ScriptedTransitioningMountPark(FakeMountPark):
     """FakeMountPark's park()/unpark() settle instantly, which can't
@@ -2493,6 +2500,36 @@ class TestMountTestMovePanel:
                 calib_sources.add(frame.header["CALIBSRC"])
         assert "axis1_before_left" in calib_sources
         assert "axis2_after_right" in calib_sources
+        window.close()
+
+    def test_calibration_diagnostic_frames_carry_the_exposure_and_gain_used(
+        self, qapp: object
+    ) -> None:
+        """Regression coverage for incidents ca728d27/0de26787: whether
+        auto-exposure changed gain *between* a step's before/after
+        capture kept being the open question a diagnostic bundle
+        couldn't actually answer -- the saved pixels alone don't carry
+        the camera settings they were taken with. Every CALIBSRC frame
+        must now also carry EXPOSURE (seconds)/GAIN."""
+        window = self._window(
+            mount_park=FakeMountPark(start_parked=True), pulse_mount=FakeMountAdapter()
+        )
+        self._connect_and_stream_cameras(window)
+        window._mount_panel._connect_button.setChecked(True)
+        window._test_move_panel._connect_button.setChecked(True)
+        panel = window._test_move_panel
+
+        self._run_calibration_to_completion(panel)
+
+        checked = 0
+        for frame in window._all_recent_frames():
+            if isinstance(frame.header, fits.Header) and "CALIBSRC" in frame.header:
+                assert "EXPOSURE" in frame.header
+                assert "GAIN" in frame.header
+                assert frame.header["EXPOSURE"] > 0.0
+                assert frame.header["GAIN"] > 0
+                checked += 1
+        assert checked == 8  # every CALIBSRC frame, not just some
         window.close()
 
     def test_closing_the_window_disconnects_the_pulse_mount(self, qapp: object) -> None:
