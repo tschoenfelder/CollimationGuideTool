@@ -641,8 +641,22 @@ class CameraPanel(QWidget):
         return pixels
 
     def stop(self) -> None:
-        """Stop streaming/polling. Safe to call whether or not streaming."""
+        """Stop streaming/polling and release the camera hardware. Safe to
+        call whether or not streaming/connected.
+
+        Real report: the camera didn't stop when quitting the app --
+        stopping the stream alone (the old behavior here) never released
+        the underlying device handle (`self._camera.disconnect()` was
+        never called anywhere on this path, not even by the "Stop stream"
+        button -- see `_on_toggle_stream`), so the real vendor SDK handle
+        (`TouptekCameraAdapter.disconnect()`'s `Stop()`/`Close()`) stayed
+        open past app exit, relying on process teardown to release it
+        instead of a clean, deterministic close. `disconnect()` is safe to
+        call unconditionally regardless of connection state -- same
+        contract every `CameraPort` implementer already provides for
+        `stop`/`park`/`unpark`-style calls elsewhere in this app."""
         self._timer.stop()
         if self._stream is not None:
             self._stream.stop_stream()
             self._stream = None
+        self._camera.disconnect()

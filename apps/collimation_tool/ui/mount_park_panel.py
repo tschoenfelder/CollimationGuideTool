@@ -166,8 +166,15 @@ class MountParkPanel(QWidget):
         }
 
     def stop(self) -> None:
-        """Stop polling and disconnect. Safe to call whether or not connected."""
+        """Stop polling and disconnect. Safe to call whether or not connected.
+
+        Deactivates tracking first -- real report: the mount kept tracking
+        after quitting the app. Deliberately doesn't park (see
+        MountParkPort.stop_tracking's own docstring for why that stays a
+        separate, explicit user action, not something quitting does on its
+        own initiative)."""
         self._timer.stop()
         if self._connected:
+            self._mount.stop_tracking()
             self._mount.disconnect()
             self._connected = False

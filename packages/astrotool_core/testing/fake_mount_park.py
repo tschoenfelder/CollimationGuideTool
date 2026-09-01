@@ -18,6 +18,7 @@ class FakeMountPark(MountParkPort):
         #: sequence unparks exactly once, not once per step.
         self.park_count = 0
         self.unpark_count = 0
+        self.stop_tracking_count = 0
 
     def connect(self) -> None:
         if self._fail_connect:
@@ -43,3 +44,7 @@ class FakeMountPark(MountParkPort):
         self.unpark_count += 1
         self._parked = False
         self._tracking = False  # see MountParkPort.unpark's docstring
+
+    def stop_tracking(self) -> None:
+        self.stop_tracking_count += 1
+        self._tracking = False

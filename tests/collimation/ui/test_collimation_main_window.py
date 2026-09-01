@@ -24,7 +24,10 @@ from astrotool_core.testing.fake_mount import FakeMountAdapter
 from astrotool_core.testing.fake_mount_park import FakeMountPark
 from astrotool_core.testing.fake_touptek import FakeTouptekCamera
 from astrotool_core.testing.frame_factory import donut_image, single_star_image
+from collimation_tool.ui.camera_panel import CameraPanel
+from collimation_tool.ui.focuser_panel import FocuserPanel
 from collimation_tool.ui.main_window import MainWindow
+from collimation_tool.ui.mount_park_panel import MountParkPanel
 
 _SHAPE = (240, 240)
 _CENTER = (120.0, 120.0)
@@ -1728,6 +1731,63 @@ class TestFocuserStop:
         )
         window._focuser_panel._on_stop()
         assert focuser.stop_log == []
+
+
+class TestQuittingStopsHardware:
+    """Real report: "stop focuser and camera when quitting the APP. As
+    well, stop the tracking on exit." closeEvent already called each
+    panel's own stop(), but those only stopped polling/disconnected the
+    INDI client socket -- none of them actually told the real hardware to
+    stop moving first. See each panel's own stop()'s updated docstring.
+
+    Constructs each panel directly (not via MainWindow) -- the changed
+    logic lives entirely inside FocuserPanel.stop()/CameraPanel.stop()/
+    MountParkPanel.stop() themselves, none of it depends on MainWindow's
+    own cross-panel signal wiring, and a standalone panel is a much
+    smaller Qt object graph. A version of this coverage built on a real
+    MainWindow (even just one panel's worth) was found by bisection to
+    measurably raise the odds of an existing, pre-existing-but-marginal
+    Qt-teardown race (see conftest.py's `_flush_qt_events_after_each_test`
+    docstring) actually reproducing under coverage instrumentation --
+    every MainWindow-based variant tried still carried non-trivial risk,
+    gone entirely once these were rewritten to skip MainWindow."""
+
+    def test_stopping_the_focuser_panel_aborts_in_flight_motion(self, qapp: object) -> None:
+        focuser = _StuckMovingFocuser()
+        panel = FocuserPanel(focuser)
+        panel._connect_button.setChecked(True)
+        panel._out_button.click()
+        assert focuser.stop_log == []
+
+        panel.stop()
+
+        assert focuser.stop_log == [None]
+
+    def test_stopping_the_camera_panel_disconnects_the_camera(self, qapp: object) -> None:
+        camera = _donut_camera((0.0, 0.0))
+        disconnects: list[None] = []
+        camera.disconnect = lambda: disconnects.append(None)  # type: ignore[method-assign]
+        panel = CameraPanel(camera, title="Main", device_lister=lambda: [])
+
+        panel.stop()
+
+        assert disconnects == [None]
+
+    def test_stopping_the_mount_panel_stops_tracking_without_parking(self, qapp: object) -> None:
+        mount_park = FakeMountPark(start_parked=False)
+        mount_park._tracking = True  # noqa: SLF001 -- simulate tracking left on
+        panel = MountParkPanel(mount_park)
+        panel._connect_button.setChecked(True)
+
+        panel.stop()
+
+        assert mount_park.stop_tracking_count == 1  # tracking stopped...
+        assert mount_park.status().tracking is False
+        assert mount_park.park_count == 0  # ...but deliberately not parked
+        # "safe no-op when never connected" is covered at the MountParkPort
+        # level instead (tests/contracts/test_mount_park_contract.py's
+        # test_stop_tracking_is_safe_to_call_before_connect) -- no need for
+        # a second panel here just to re-prove the same thing.
 
 
 class TestFocuserPausesMainCamera:

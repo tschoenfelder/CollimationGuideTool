@@ -207,6 +207,20 @@ class IndiMountParkAdapter(MountParkPort):
             self._pending_track_off_retries.append(timer)
             timer.start()
 
+    def stop_tracking(self) -> None:
+        # Real report: mount left tracking after quitting the app --
+        # closeEvent calls this (via MountParkPanel.stop()) before
+        # disconnecting, rather than only the focuser/camera. Deliberately
+        # does not park -- see MountParkPort.stop_tracking's own docstring
+        # for why that stays a separate, explicit action.
+        if not self.is_available:
+            return
+        _log.info(
+            "IndiMountParkAdapter.stop_tracking(): deactivating tracking on %r (not parking)",
+            self._device_name,
+        )
+        self._send_track_off()
+
     def _send_track_off(self) -> None:
         # Runs on the timer thread for retries -- the client/socket may
         # already be closed (disconnect, or a slow-to-cancel timer racing

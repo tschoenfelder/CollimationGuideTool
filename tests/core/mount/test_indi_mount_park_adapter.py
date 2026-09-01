@@ -99,6 +99,25 @@ class TestConnected:
         mount.disconnect()
         assert mount.is_available is False
 
+    def test_stop_tracking_deactivates_tracking_without_parking(
+        self, server: FakeIndiServer
+    ) -> None:
+        # Real report: the mount kept tracking after quitting the app.
+        mount = IndiMountParkAdapter(server.host, server.port, connect_timeout_s=2.0)
+        mount.connect()
+        mount.unpark()
+        _wait_until(lambda: not mount.status().parked)
+        server._tracking = True  # noqa: SLF001 -- simulate tracking left on
+        mount.stop_tracking()
+        _wait_until(lambda: not mount.status().tracking)
+        assert mount.status().tracking is False
+        assert mount.status().parked is False  # deliberately not parked
+        mount.disconnect()
+
+    def test_stop_tracking_on_a_disconnected_mount_is_a_safe_no_op(self) -> None:
+        adapter = IndiMountParkAdapter("127.0.0.1", 1)
+        adapter.stop_tracking()  # must not raise
+
 
 class TestUnparkOvercomesDriverTrackOnOverride:
     """Regression test for incident 25446102 ("Shows unparked, tracking,

@@ -52,3 +52,15 @@ class MountParkPort(ABC):
         the real adapter's exact ordering — directly deactivate tracking
         too, rather than trusting the mount's own post-unpark default."""
         ...
+
+    @abstractmethod
+    def stop_tracking(self) -> None:
+        """Deactivate tracking *without* parking -- for a caller that
+        wants the mount to stop moving right now (real use: MainWindow's
+        closeEvent, so tracking doesn't keep running unattended after the
+        app quits) but shouldn't also drive a park slew on its own
+        initiative -- parking stays a deliberate, explicit user action via
+        the Mount panel, same as it already is everywhere else in this
+        app. Safe to call whether or not the mount is currently tracking,
+        and a no-op if not available."""
+        ...

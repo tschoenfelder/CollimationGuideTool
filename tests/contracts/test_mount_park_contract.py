@@ -12,6 +12,7 @@ exercise it against a real indiserver.
 from __future__ import annotations
 
 import os
+import time
 import weakref
 from collections.abc import Callable
 
@@ -84,6 +85,41 @@ def test_park_and_unpark_are_safe_to_call_before_connect(
     mount = mount_park_factory()
     mount.park()  # must not raise
     mount.unpark()  # must not raise
+
+
+@pytest.mark.parametrize("mount_park_factory", MOUNT_PARK_FACTORIES)
+def test_stop_tracking_is_safe_to_call_before_connect(
+    mount_park_factory: MountParkFactory,
+) -> None:
+    mount = mount_park_factory()
+    mount.stop_tracking()  # must not raise
+
+
+@pytest.mark.parametrize("mount_park_factory", MOUNT_PARK_FACTORIES)
+def test_stop_tracking_deactivates_tracking(mount_park_factory: MountParkFactory) -> None:
+    mount = mount_park_factory()
+    mount.connect()
+    try:
+        mount.unpark()
+        # Waited, not asserted immediately -- the real INDI factory settles
+        # tracking asynchronously over its socket round-trip (unlike
+        # FakeMountPark/NoMountPark, which settle synchronously and satisfy
+        # this on the first check).
+        _wait_until(lambda: mount.status().tracking is False)
+        mount.stop_tracking()
+        _wait_until(lambda: mount.status().tracking is False)
+        assert mount.status().tracking is False
+    finally:
+        mount.disconnect()
+
+
+def _wait_until(
+    predicate: Callable[[], bool], timeout_s: float = 2.0, message: str = "condition never met"
+) -> None:
+    deadline = time.monotonic() + timeout_s
+    while not predicate():
+        assert time.monotonic() < deadline, message
+        time.sleep(0.01)
 
 
 def test_fake_mount_park_connect_failure_raises_connection_error() -> None:

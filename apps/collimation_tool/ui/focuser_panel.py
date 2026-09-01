@@ -259,8 +259,17 @@ class FocuserPanel(QWidget):
         }
 
     def stop(self) -> None:
-        """Stop polling and disconnect. Safe to call whether or not connected."""
+        """Stop polling and disconnect. Safe to call whether or not connected.
+
+        Aborts any in-flight motion first -- real report: the focuser kept
+        moving after quitting the app. disconnect() alone only closes the
+        INDI client socket; it never sends FOCUS_ABORT_MOTION, so a move
+        already in progress on the real hardware would just keep running
+        with nothing left to stop it (same underlying gap the Stop button
+        exists for, see this module's own docstring's "Stop" section --
+        just hit on quit instead of a click)."""
         self._timer.stop()
         if self._connected:
+            self._focuser.stop()
             self._focuser.disconnect()
             self._connected = False

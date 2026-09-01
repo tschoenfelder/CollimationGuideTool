@@ -42,6 +42,9 @@ class _NeverUnparks(MountParkPort):
     def unpark(self) -> None:
         pass  # status() always reports parked regardless
 
+    def stop_tracking(self) -> None:
+        pass
+
 
 class TestMountTestMoveRunner:
     def test_submit_unparks_pulses_and_reparks(self) -> None:
