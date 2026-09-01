@@ -18,8 +18,8 @@ from astrotool_core.focus.fake_focuser import FakeFocuser
 from astrotool_core.focus.port import FocuserStatus
 from astrotool_core.frames.frame import Frame
 from astrotool_core.mount.axis_calibration import AxisResponse, CalibrationMatrix
-from astrotool_core.mount.park_port import MountParkStatus
-from astrotool_core.mount.port import AxisDirection, MountAxis
+from astrotool_core.mount.park_port import MountParkPort, MountParkStatus
+from astrotool_core.mount.port import AxisDirection, MountAxis, MountPort
 from astrotool_core.testing.fake_mount import FakeMountAdapter
 from astrotool_core.testing.fake_mount_park import FakeMountPark
 from astrotool_core.testing.fake_touptek import FakeTouptekCamera
@@ -2431,6 +2431,48 @@ class TestMountTestMovePanel:
         assert "Dec-axis" in panel._result_label.text()
         window.close()
 
+    def test_calibration_steps_pass_the_configured_settle_ms_to_the_runner(
+        self, qapp: object
+    ) -> None:
+        """Real report: "calibration doesn't wait for mount to be
+        stabilized" -- confirms the configured settle_ms actually reaches
+        MountTestMoveRunner.submit() for every one of Run Calibration's
+        four steps, not just that the setting exists."""
+        pulse_mount = FakeMountAdapter()
+        mount_park = FakeMountPark(start_parked=True)
+        window = self._window(mount_park=mount_park, pulse_mount=pulse_mount)
+        self._connect_and_stream_cameras(window)
+        window._mount_panel._connect_button.setChecked(True)
+        window._test_move_panel._connect_button.setChecked(True)
+        panel = window._test_move_panel
+
+        settle_values: list[int | None] = []
+        real_submit = panel._runner.submit
+
+        def spy_submit(
+            mount_park: MountParkPort,
+            mount: MountPort,
+            axis: MountAxis,
+            direction: AxisDirection,
+            pulse_ms: int,
+            *,
+            rate_preset: str | None = None,
+            park_after: bool = True,
+            settle_ms: int = 0,
+        ) -> bool:
+            settle_values.append(settle_ms)
+            return real_submit(
+                mount_park, mount, axis, direction, pulse_ms,
+                rate_preset=rate_preset, park_after=park_after, settle_ms=settle_ms,
+            )
+
+        panel._runner.submit = spy_submit  # type: ignore[method-assign]
+
+        self._run_calibration_to_completion(panel)
+
+        assert settle_values == [MountAlignmentSettings().settle_ms] * 4
+        window.close()
+
     def test_calibration_pauses_both_cameras_auto_exposure_and_resumes_after(
         self, qapp: object
     ) -> None:
@@ -2944,6 +2986,65 @@ class TestMountTestMovePanel:
         assert "Main" in panel._result_label.text()
         assert "Guide" in panel._result_label.text()
         assert "failed" not in panel._result_label.text().lower()
+        window.close()
+
+    def test_nudge_button_passes_the_configured_settle_ms_to_the_runner(
+        self, qapp: object
+    ) -> None:
+        """Real report: "calibration doesn't wait for mount to be
+        stabilized" -- confirms the configured settle_ms actually reaches
+        MountTestMoveRunner.submit_sequence() for a nudge, not just
+        Run Calibration's own submit() calls."""
+        pulse_mount = FakeMountAdapter()
+        mount_park = FakeMountPark(start_parked=True)
+        window = self._window(mount_park=mount_park, pulse_mount=pulse_mount)
+        self._connect_and_stream_cameras(window)
+        window._mount_panel._connect_button.setChecked(True)
+        window._test_move_panel._connect_button.setChecked(True)
+        panel = window._test_move_panel
+
+        def _response(axis: MountAxis, dx_px: float, dy_px: float) -> AxisResponse:
+            return AxisResponse(
+                axis=axis, direction=AxisDirection.POSITIVE, duration_ms=1000,
+                dx_px=dx_px, dy_px=dy_px, px_per_ms=0.0,
+            )
+
+        panel._calibration["left"] = CalibrationMatrix(
+            responses={
+                (MountAxis.AXIS1, AxisDirection.POSITIVE): _response(MountAxis.AXIS1, 100.0, 0.0),
+                (MountAxis.AXIS2, AxisDirection.POSITIVE): _response(MountAxis.AXIS2, 0.0, 100.0),
+            }
+        )
+        panel._update_buttons_enabled()
+
+        settle_values: list[int | None] = []
+        real_submit_sequence = panel._runner.submit_sequence
+
+        def spy_submit_sequence(
+            mount_park: MountParkPort,
+            mount: MountPort,
+            steps: list[tuple[MountAxis, AxisDirection, int]],
+            *,
+            rate_preset: str | None = None,
+            park_after: bool = True,
+            settle_ms: int = 0,
+        ) -> bool:
+            settle_values.append(settle_ms)
+            return real_submit_sequence(
+                mount_park, mount, steps,
+                rate_preset=rate_preset, park_after=park_after, settle_ms=settle_ms,
+            )
+
+        panel._runner.submit_sequence = spy_submit_sequence  # type: ignore[method-assign]
+
+        panel._nudge_buttons["left"]["Right"].click()
+        deadline = time.monotonic() + 5.0
+        while panel._runner.is_busy:
+            assert time.monotonic() < deadline, "nudge never completed"
+            time.sleep(0.01)
+        panel._poll()
+
+        assert settle_values == [MountAlignmentSettings().settle_ms]
         window.close()
 
     def test_nudge_button_reports_an_error_for_a_degenerate_calibration(

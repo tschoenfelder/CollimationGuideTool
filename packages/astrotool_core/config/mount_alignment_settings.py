@@ -33,6 +33,13 @@ DEFAULT_CONFIG_PATH = Path.home() / ".CollimationGuideTool" / "config.toml"
 _DEFAULT_RATE_PRESET = "7"
 _DEFAULT_PULSE_MS = 1000
 _DEFAULT_NUDGE_TARGET_PX = 10.0
+#: Real report: "calibration doesn't wait for mount to be stabilized" --
+#: MountTestMoveRunner used to capture the "after" frame the instant
+#: pulse_axis() confirmed the motion switch back off, with no allowance
+#: for mechanical settle (backlash/vibration damping out) between the
+#: motor physically stopping and the mount actually being at rest. See
+#: MountTestMoveRunner's own docstring for where this is applied.
+_DEFAULT_SETTLE_MS = 300
 
 
 @dataclass(frozen=True)
@@ -42,11 +49,14 @@ class MountAlignmentSettings:
     response). `nudge_target_px` is the on-screen displacement a single
     direction-pad click aims for; `compose_screen_move` solves the
     (axis1_ms, axis2_ms) pulse pair that should produce it for that
-    camera's own calibration."""
+    camera's own calibration. `settle_ms` is how long MountTestMoveRunner
+    waits after a pulse (or composed sequence of pulses) physically stops
+    before reporting done -- see that module's own docstring."""
 
     pulse_ms: int = _DEFAULT_PULSE_MS
     rate_preset: str = _DEFAULT_RATE_PRESET
     nudge_target_px: float = _DEFAULT_NUDGE_TARGET_PX
+    settle_ms: int = _DEFAULT_SETTLE_MS
 
 
 def load_mount_alignment_settings(
@@ -80,6 +90,14 @@ def load_mount_alignment_settings(
     except (TypeError, ValueError):
         nudge_target_px = defaults.nudge_target_px
 
+    try:
+        settle_ms = int(table.get("settle_ms", defaults.settle_ms))
+    except (TypeError, ValueError):
+        settle_ms = defaults.settle_ms
+
     return MountAlignmentSettings(
-        pulse_ms=pulse_ms, rate_preset=rate_preset, nudge_target_px=nudge_target_px
+        pulse_ms=pulse_ms,
+        rate_preset=rate_preset,
+        nudge_target_px=nudge_target_px,
+        settle_ms=settle_ms,
     )

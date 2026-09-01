@@ -497,6 +497,7 @@ class MountTestMovePanel(QWidget):
             self._settings.pulse_ms,
             rate_preset=self._settings.rate_preset,
             park_after=False,
+            settle_ms=self._settings.settle_ms,
         )
         if not started:
             self._abort_calibration("mount busy — could not start calibration pulse")
@@ -668,6 +669,7 @@ class MountTestMovePanel(QWidget):
         started = self._runner.submit_sequence(
             self._mount_park, self._mount, steps,
             rate_preset=self._settings.rate_preset, park_after=False,
+            settle_ms=self._settings.settle_ms,
         )
         if not started:
             self._resume_auto_exposure()

@@ -131,17 +131,19 @@ class MountTestMoveRunner:
         *,
         rate_preset: str | None = None,
         park_after: bool = True,
+        settle_ms: int = 0,
     ) -> bool:
         """Start an unpark/pulse/(re-park unless `park_after=False`)
         sequence in the background. Returns False (a no-op) if one is
         already running. A thin one-step wrapper around `submit_sequence` —
-        see that method and the module docstring for `park_after`."""
+        see that method and the module docstring for `park_after`/`settle_ms`."""
         return self.submit_sequence(
             mount_park,
             mount,
             [(axis, direction, pulse_ms)],
             rate_preset=rate_preset,
             park_after=park_after,
+            settle_ms=settle_ms,
         )
 
     def submit_sequence(
@@ -152,12 +154,28 @@ class MountTestMoveRunner:
         *,
         rate_preset: str | None = None,
         park_after: bool = True,
+        settle_ms: int = 0,
     ) -> bool:
         """Like `submit`, but for several pulses run back-to-back after a
         single unpark (e.g. a composed two-axis direction-pad nudge) —
         `MountTestMovePanel` needs one clean before/after measurement
         bracketing the *whole* sequence, not one per sub-pulse. Returns
-        False (a no-op) if one is already running, or if `steps` is empty."""
+        False (a no-op) if one is already running, or if `steps` is empty.
+
+        `settle_ms`: real report ("calibration doesn't wait for mount to
+        be stabilized") -- the caller's "after" capture used to happen
+        the instant the last pulse's motion-off was confirmed, with no
+        allowance for mechanical settle (backlash/vibration damping out)
+        between the motor physically stopping and the mount actually
+        being at rest. When every step in `steps` succeeds, this blocks
+        (still on the background thread -- `is_busy` stays True) for
+        `settle_ms` *before* reporting done, so a caller waiting on
+        `is_busy` to capture its "after" frame naturally waits it out
+        too. Applied once after the whole sequence, not per sub-pulse.
+        Skipped entirely if the sequence was rejected (no valid "after"
+        state to settle into) or if `park_after=True` -- runs before
+        park() either way, since re-parking is itself further motion
+        that would undo any settle."""
         if not steps:
             return False
         with self._lock:
@@ -166,7 +184,7 @@ class MountTestMoveRunner:
             self._busy = True
         threading.Thread(
             target=self._run,
-            args=(mount_park, mount, steps, rate_preset, park_after),
+            args=(mount_park, mount, steps, rate_preset, park_after, settle_ms),
             daemon=True,
             name="mount-test-move",
         ).start()
@@ -179,6 +197,7 @@ class MountTestMoveRunner:
         steps: list[PulseStep],
         rate_preset: str | None,
         park_after: bool,
+        settle_ms: int,
     ) -> None:
         pulsed = False
         error: str | None = None
@@ -206,6 +225,8 @@ class MountTestMoveRunner:
                         break
                 else:
                     pulsed = True
+                    if settle_ms > 0:
+                        time.sleep(settle_ms / 1000.0)
         finally:
             if park_after:
                 # Always try to leave the mount parked again, even if the

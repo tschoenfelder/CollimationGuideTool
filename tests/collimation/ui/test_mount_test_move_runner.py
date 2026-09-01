@@ -230,6 +230,67 @@ class TestMountTestMoveRunner:
         # The 3rd attempt (index 2) is the one that actually landed.
         assert mount.pulse_log == [(MountAxis.AXIS1, AxisDirection.POSITIVE, 500)]
 
+    def test_settle_ms_delays_completion_after_a_successful_pulse(self) -> None:
+        # Real report: "calibration doesn't wait for mount to be
+        # stabilized" -- the caller's "after" capture used to happen the
+        # instant a pulse's motion-off confirmed, no allowance for
+        # mechanical settle. Confirms the runner actually blocks (stays
+        # is_busy) for settle_ms once a pulse succeeds, before reporting
+        # done -- a caller polling is_busy to know when to capture waits
+        # it out too.
+        mount = FakeMountAdapter()
+        mount.connect()
+        runner = MountTestMoveRunner()
+
+        started_at = time.monotonic()
+        runner.submit(
+            FakeMountPark(start_parked=True),
+            mount,
+            MountAxis.AXIS1,
+            AxisDirection.POSITIVE,
+            10,
+            park_after=False,
+            settle_ms=100,
+        )
+        assert _wait_for(lambda: not runner.is_busy, timeout_s=2.0)
+        elapsed_s = time.monotonic() - started_at
+
+        outcome = runner.take_latest()
+        assert outcome is not None
+        assert outcome.pulsed is True
+        assert elapsed_s >= 0.1
+
+    def test_settle_ms_is_skipped_when_the_pulse_is_rejected(self) -> None:
+        # No valid "after" state to settle into if nothing was actually
+        # pulsed -- must not add the delay on a failure path.
+        mount = FakeMountAdapter(reject_first_n_pulses=999)  # never accepts
+        mount.connect()
+        runner = MountTestMoveRunner()
+        import collimation_tool.ui.mount_test_move_runner as runner_module
+
+        original_delay = runner_module._PULSE_REJECTION_RETRY_DELAY_S
+        runner_module._PULSE_REJECTION_RETRY_DELAY_S = 0.01  # keep the test fast
+        started_at = time.monotonic()
+        try:
+            runner.submit(
+                FakeMountPark(start_parked=True),
+                mount,
+                MountAxis.AXIS1,
+                AxisDirection.POSITIVE,
+                10,
+                park_after=False,
+                settle_ms=5000,  # would dominate elapsed_s if not skipped
+            )
+            assert _wait_for(lambda: not runner.is_busy, timeout_s=2.0)
+        finally:
+            runner_module._PULSE_REJECTION_RETRY_DELAY_S = original_delay
+        elapsed_s = time.monotonic() - started_at
+
+        outcome = runner.take_latest()
+        assert outcome is not None
+        assert outcome.pulsed is False
+        assert elapsed_s < 2.0  # nowhere near the 5s settle -- correctly skipped
+
     def test_a_pulse_rejected_on_every_attempt_still_gives_up_eventually(self) -> None:
         mount = FakeMountAdapter(reject_first_n_pulses=999)  # never accepts
         mount.connect()
