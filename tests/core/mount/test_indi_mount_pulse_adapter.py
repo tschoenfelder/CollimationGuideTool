@@ -148,27 +148,37 @@ class TestConnected:
         assert "2000ms" in record.message
         assert "'7'" in record.message
 
-    def test_pulse_axis_selects_20x_preset_mid_pulse(
+    def test_pulse_axis_selects_the_rate_before_starting_motion(
         self, mount: IndiMountPulseAdapter, server: FakeIndiServer, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        # pulse_axis() now waits for the driver to actually confirm the
+        # rate change (see _RATE_SELECT_SETTLE_S's own docstring) instead
+        # of a blind fixed sleep before it -- confirm that ordering
+        # directly via the sequence of switch vectors sent, rather than
+        # by intercepting time.sleep (only the pulse-duration wait still
+        # goes through it).
         mount.connect()
-        # Capture server state at each of pulse_axis's two internal
-        # sleeps: rate-select settle, then the pulse duration itself.
-        snapshots: list[tuple[str, dict[str, bool]]] = []
+        _spy_on_sleep(monkeypatch)
+        sent: list[tuple[str, dict[str, bool]]] = []
+        original = mount._client.send_new_switch_vector  # noqa: SLF001
 
-        def fake_sleep(seconds: float) -> None:
-            _real_sleep(0.05)
-            snapshots.append((server._slew_rate, dict(server._motion_we)))  # noqa: SLF001
+        def spy(device: str, name: str, elements: dict[str, bool]) -> None:
+            sent.append((name, dict(elements)))
+            original(device, name, elements)
 
-        monkeypatch.setattr(time_module, "sleep", fake_sleep)
+        mount._client.send_new_switch_vector = spy  # type: ignore[method-assign]  # noqa: SLF001
+
         mount.pulse_axis(MountAxis.AXIS1, AxisDirection.POSITIVE, 500)
-        assert len(snapshots) == 2
-        rate_after_select, motion_after_select = snapshots[0]
-        rate_during_pulse, motion_during_pulse = snapshots[1]
-        assert rate_after_select == "6"  # the confirmed "20x" preset element
-        assert motion_after_select == {"MOTION_WEST": False, "MOTION_EAST": False}
-        assert rate_during_pulse == "6"
-        assert motion_during_pulse == {"MOTION_WEST": False, "MOTION_EAST": True}
+
+        names = [name for name, _ in sent]
+        rate_index = names.index("TELESCOPE_SLEW_RATE")
+        motion_on_index = next(
+            i for i, (name, elements) in enumerate(sent)
+            if name == "TELESCOPE_MOTION_WE" and elements.get("MOTION_EAST") is True
+        )
+        assert rate_index < motion_on_index  # rate selected before motion starts
+        assert sent[rate_index][1] == {"6": True}  # the confirmed "20x" preset element
+        _wait_until(lambda: server._slew_rate == "6")  # noqa: SLF001
 
     def test_disconnect_makes_the_mount_unavailable(self, mount: IndiMountPulseAdapter) -> None:
         mount.connect()

@@ -72,7 +72,18 @@ _MIN_PULSE_MS = 1
 _MAX_PULSE_MS = 9999
 #: The "20x" preset element of TELESCOPE_SLEW_RATE -- see module docstring.
 _DEFAULT_SLEW_RATE_ELEMENT = "6"
-_RATE_SELECT_SETTLE_S = 0.2
+#: Now a wait-for-confirmation ceiling, not a blind sleep -- pulse_axis()
+#: waits for the driver to actually echo the newly-selected rate back
+#: (returning as soon as it does, not always waiting the full window),
+#: bounded by this. Raised from the original 0.2s -- real report
+#: (rate-7/48x pulses only ever producing a couple of pixels of shift,
+#: two orders of magnitude short of what 48x sidereal should cover)
+#: raised the question of whether 0.2s was ever enough for the rate
+#: change to really land before the motion command fired; this rig's
+#: OnStep driver is already documented (IndiMountParkAdapter's own
+#: incident 25446102) to apply some property changes with a real
+#: multi-second delay.
+_RATE_SELECT_SETTLE_S = 2.0
 
 _MOTION_VECTOR: dict[tuple[MountAxis, AxisDirection], tuple[str, str]] = {
     (MountAxis.AXIS1, AxisDirection.POSITIVE): ("TELESCOPE_MOTION_WE", "MOTION_EAST"),
@@ -208,7 +219,40 @@ class IndiMountPulseAdapter:
         self._client.send_new_switch_vector(
             self._device_name, "TELESCOPE_SLEW_RATE", {selected_rate: True}
         )
-        time.sleep(_RATE_SELECT_SETTLE_S)
+        # Real report: "Move fails as AXIS1 and AXIS2 movements are too
+        # small... rate preset 7 seems very small... works via EKOS." The
+        # math backs this up: preset "7"/48x sidereal should cover an
+        # entire 3840px frame at Main's ~0.38"/px plate scale in well
+        # under a second, not the single-digit-to-low-double-digit pixel
+        # shifts actually observed over 1-2s pulses -- roughly two orders
+        # of magnitude off. A blind fixed _RATE_SELECT_SETTLE_S sleep
+        # before the motion command fires is one concrete, fixable
+        # candidate: if the real rate change takes longer than that to
+        # actually land on this rig (this driver is already documented,
+        # via IndiMountParkAdapter's own incident 25446102, to apply some
+        # property changes with a real multi-second delay), every pulse
+        # so far would have run at whatever rate was already selected
+        # beforehand -- not the one this call just asked for. Waits for
+        # the driver to actually confirm the new rate instead of assuming
+        # a fixed delay is enough; still bounded, and still proceeds
+        # (logged) rather than blocking a pulse forever if it never
+        # confirms -- not proof by itself that this was the whole story,
+        # but a real gap either way.
+        confirmed_rate = self._client.wait_for_vector(
+            self._device_name,
+            "TELESCOPE_SLEW_RATE",
+            timeout_s=_RATE_SELECT_SETTLE_S,
+            predicate=lambda v: v.elements.get(selected_rate) == "On",
+        )
+        if confirmed_rate is None:
+            _log.warning(
+                "IndiMountPulseAdapter.pulse_axis(): rate preset %r on %r did not confirm "
+                "within %ss -- proceeding anyway; this pulse may run at the previous rate (%r)",
+                selected_rate,
+                self._device_name,
+                _RATE_SELECT_SETTLE_S,
+                previous_rate,
+            )
         self._client.send_new_switch_vector(self._device_name, vector_name, {element: True})
         time.sleep(clamped_ms / 1000.0)
         self._client.send_new_switch_vector(self._device_name, vector_name, {element: False})
