@@ -1627,6 +1627,109 @@ class TestFocuserOneMoveAtATime:
         assert panel._out_button.isEnabled()
 
 
+class _StuckMovingFocuser(FakeFocuser):
+    """is_moving() reports False until the first move() (so a click can
+    actually issue one at all, matching FocuserPanel's own is_moving()
+    gate on the buttons), then True forever afterward, never settling on
+    its own -- simulates real incident a4ffe048 (the driver never
+    confirmed a Busy->Ok transition; position never updated either).
+    Unlike _ScriptedMovingFocuser, nothing here ever resolves by itself
+    -- these tests exist specifically to prove only Stop can recover."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.stop_log: list[None] = []
+        self._move_issued = False
+
+    def move(self, steps: int) -> None:
+        super().move(steps)
+        self._move_issued = True
+
+    def is_moving(self) -> bool:
+        return self._move_issued
+
+    def status(self) -> FocuserStatus:
+        base = super().status()
+        return FocuserStatus(
+            available=base.available,
+            position=base.position,
+            max_position=base.max_position,
+            moving=self._move_issued,
+        )
+
+    def stop(self) -> None:
+        self.stop_log.append(None)
+
+
+class TestFocuserStop:
+    """Regression for incident a4ffe048: "Focuser states moving, but
+    position constant and no way to stop" -- In/Out could get gated
+    disabled forever (real-hardware Busy that never confirms Ok, or this
+    panel's own _move_in_flight tracking) with no escape hatch at all.
+    FocuserPort.stop() already existed and sends the real hardware abort
+    (FOCUS_ABORT_MOTION) -- it just wasn't wired to a button."""
+
+    def test_stop_button_disabled_before_connecting(self, qapp: object) -> None:
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)), device_lister=lambda: [], focuser=FakeFocuser()
+        )
+        assert not window._focuser_panel._stop_button.isEnabled()
+
+    def test_stop_button_enabled_even_while_permanently_stuck_moving(
+        self, qapp: object
+    ) -> None:
+        focuser = _StuckMovingFocuser()
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)), device_lister=lambda: [], focuser=focuser
+        )
+        panel = window._focuser_panel
+        panel._connect_button.setChecked(True)
+        panel._out_button.click()
+
+        assert not panel._in_button.isEnabled()
+        assert not panel._out_button.isEnabled()
+        assert panel._stop_button.isEnabled()
+
+    def test_stop_button_sends_the_real_hardware_abort(self, qapp: object) -> None:
+        focuser = _StuckMovingFocuser()
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)), device_lister=lambda: [], focuser=focuser
+        )
+        panel = window._focuser_panel
+        panel._connect_button.setChecked(True)
+        panel._out_button.click()
+
+        panel._stop_button.click()
+
+        assert focuser.stop_log == [None]
+
+    def test_stop_clears_this_panels_own_in_flight_tracking(self, qapp: object) -> None:
+        focuser = _StuckMovingFocuser()
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)), device_lister=lambda: [], focuser=focuser
+        )
+        panel = window._focuser_panel
+        panel._connect_button.setChecked(True)
+        panel._out_button.click()
+        assert panel._move_in_flight is True
+
+        panel._stop_button.click()
+
+        assert panel._move_in_flight is False
+        # In/Out stay disabled regardless -- the driver's own is_moving()
+        # is still (permanently, for this double) reporting True, a real
+        # hardware/firmware question Stop's own click can't paper over.
+        assert not panel._in_button.isEnabled()
+
+    def test_stop_on_a_disconnected_panel_is_a_safe_no_op(self, qapp: object) -> None:
+        focuser = _StuckMovingFocuser()
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)), device_lister=lambda: [], focuser=focuser
+        )
+        window._focuser_panel._on_stop()
+        assert focuser.stop_log == []
+
+
 class TestFocuserPausesMainCamera:
     """The focuser sits on the main optical train only — MainWindow wires
     FocuserPanel.move_in_flight_changed to _left_panel.set_updates_paused

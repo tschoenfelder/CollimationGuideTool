@@ -11,6 +11,15 @@ after which "In"/"Out" buttons jog the focuser by a selectable step size.
 Sign convention (see `IndiFocuserAdapter`'s own docstring, since it's
 otherwise adapter-arbitrary): positive `move()` steps are outward.
 
+Stop (real incident a4ffe048): "no way to stop" -- a move whose Busy->Ok
+transition the driver never confirmed left In/Out permanently disabled
+(gated on both `_move_in_flight` and the driver's own possibly-stuck
+`is_moving()`), with no recovery besides restarting the app. `stop()` is
+a real `FocuserPort` ABC method (`IndiFocuserAdapter.stop()` sends
+`FOCUS_ABORT_MOTION`) that was simply never wired to a button here.
+Always enabled once connected, regardless of the (possibly wrong)
+in-flight/moving state -- that's the whole point of an abort control.
+
 One move at a time (issue #87349fd3): a second relative move issued to
 the real OnStep INDI driver *while the first is still in flight* was
 found, on real hardware, to silently corrupt the result -- e.g. two
@@ -98,10 +107,13 @@ class FocuserPanel(QWidget):
         self._in_button.clicked.connect(self._on_move_in)
         self._out_button = QPushButton("Out ►")
         self._out_button.clicked.connect(self._on_move_out)
+        self._stop_button = QPushButton("Stop")
+        self._stop_button.clicked.connect(self._on_stop)
 
         move_row = QHBoxLayout()
         move_row.addWidget(self._in_button)
         move_row.addWidget(self._out_button)
+        move_row.addWidget(self._stop_button)
         move_row.addStretch(1)
 
         top_row = QHBoxLayout()
@@ -177,6 +189,28 @@ class FocuserPanel(QWidget):
     def _on_move_out(self) -> None:
         self._begin_move(self._selected_step())
 
+    def _on_stop(self) -> None:
+        # Real incident a4ffe048: a move that never confirmed Busy->Ok
+        # (is_moving() stuck reporting True, position never updating)
+        # left In/Out permanently disabled with no way to recover -- this
+        # is that panel's own missing escape hatch, same reasoning as
+        # MountTestMovePanel's Stop button. Sends the real hardware abort
+        # (FOCUS_ABORT_MOTION) via FocuserPort.stop() -- unlike the mount
+        # adapter's abort(), this is a real FocuserPort ABC method, no
+        # duck-typing needed. Also drops this panel's own in-flight
+        # tracking immediately, so a stuck safety-net timeout isn't the
+        # only way back -- but does *not* override is_moving() itself:
+        # if the driver genuinely never clears Busy after the abort,
+        # In/Out staying disabled reflects a real, separate hardware/
+        # firmware question, not something this click can respond to.
+        if not self._connected:
+            return
+        self._focuser.stop()
+        self._set_move_in_flight(False)
+        self._seen_busy_since_move = False
+        self._move_issued_at = None
+        self._update_move_buttons_enabled()
+
     def _poll_status(self) -> None:
         if not self._connected:
             return
@@ -210,6 +244,10 @@ class FocuserPanel(QWidget):
         )
         self._in_button.setEnabled(available)
         self._out_button.setEnabled(available)
+        # Deliberately not gated on is_moving()/_move_in_flight -- the
+        # whole point is to still be clickable exactly when those are
+        # stuck (real incident a4ffe048). Just needs a real connection.
+        self._stop_button.setEnabled(self._connected and self._focuser.is_available)
 
     def diagnostic_context(self) -> dict[str, Any]:
         status = self._focuser.status()
