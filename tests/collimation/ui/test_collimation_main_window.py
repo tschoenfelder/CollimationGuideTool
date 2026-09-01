@@ -698,6 +698,61 @@ class TestAutoExposure:
         assert camera.call_order == ["gain", "exposure"]
         assert panel._camera.get_gain() < 2060
 
+    def test_previous_metric_and_gain_are_threaded_across_corrections(
+        self, qapp: object
+    ) -> None:
+        """auto_exposure.py's adaptive gain step (see its "Gain step is
+        adaptive" docstring section) needs the (metric, gain) pair from
+        this panel's own *previous* correction, since compute_auto_exposure()
+        is deliberately stateless -- the panel carries that state itself
+        and must thread the latest pair through on every call, not just
+        the first."""
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+        panel = window._left_panel
+        assert panel._auto_exposure_previous_metric is None
+        assert panel._auto_exposure_previous_gain is None
+
+        # Exposure already at the live-view ceiling -- a dim-but-not-fully-
+        # black frame triggers a *gain* correction immediately (a fully
+        # black frame instead pins desired_exposure exactly at the
+        # ceiling rather than past it -- see
+        # test_fully_black_frame_pushes_exposure_toward_the_live_view_ceiling
+        # in test_auto_exposure.py -- so this needs a tiny nonzero signal,
+        # same shape as that file's own _frame() helper).
+        panel._exposure_spin.setValue(panel._auto_exposure_config.max_auto_exposure_ms)
+        dim_pixels = np.zeros((10, 10), dtype=np.float32)
+        dim_pixels[-3:] = 1.0
+        dim = Frame(
+            pixels=dim_pixels, header=fits.Header(), exposure_seconds=0.001, bit_depth=16
+        )
+
+        panel._apply_auto_exposure(dim)
+        assert panel._auto_exposure_previous_gain == 100  # the gain that produced `dim`
+        assert panel._auto_exposure_previous_metric is not None
+        # No prior pair yet -- falls back to the fixed step (10).
+        assert panel._camera.get_gain() == 110
+
+        panel._apply_auto_exposure(dim)
+        # previous_gain must now reflect *this* call's own current_gain
+        # (110), not still the very first call's (100).
+        assert panel._auto_exposure_previous_gain == 110
+        # Same flat frame again -> metric unchanged -> zero sensitivity ->
+        # falls back to the fixed step again, same as the first call.
+        assert panel._camera.get_gain() == 120
+
+    def test_previous_metric_and_gain_reset_when_auto_exposure_is_freshly_enabled(
+        self, qapp: object
+    ) -> None:
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+        panel = window._left_panel
+        panel._auto_exposure_previous_metric = 0.42
+        panel._auto_exposure_previous_gain = 250
+
+        panel._auto_exposure_checkbox.setChecked(True)
+
+        assert panel._auto_exposure_previous_metric is None
+        assert panel._auto_exposure_previous_gain is None
+
 
 class _CaptureFailingCamera(ReplayCamera):
     """capture() always raises -- simulates StreamController's background

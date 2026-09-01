@@ -376,6 +376,103 @@ class TestSettlesInsteadOfOscillatingNearSaturation:
             assert config.target_low <= result.metric <= config.target_high
 
 
+class TestAdaptiveGainStep:
+    """Real request: a fixed +/-10 gain step either crawls or overshoots
+    depending on how much a given camera's gain actually moves the
+    metric. compute_auto_exposure now estimates that sensitivity from the
+    caller-supplied previous (metric, gain) pair and solves directly for
+    the step needed to reach target_mid, instead of always guessing
+    +/-gain_step."""
+
+    def test_with_no_previous_pair_falls_back_to_the_fixed_step(self) -> None:
+        # Same as this file's existing fixed-step tests, but explicit
+        # about *why*: previous_metric/previous_gain default to None.
+        result = compute_auto_exposure(
+            _frame(0.10),
+            bit_depth=_BIT_DEPTH,
+            current_exposure_ms=AutoExposureConfig().max_auto_exposure_ms,
+            current_gain=100,
+            capabilities=_CAPS,
+        )
+        assert result.gain == 110
+
+    def test_second_correction_uses_the_estimated_sensitivity_not_the_fixed_step(self) -> None:
+        config = AutoExposureConfig()
+        # Simulates: the previous correction measured metric=0.10 at
+        # gain=100 and stepped gain to 110 (the fixed-step fallback);
+        # this frame, taken at that new gain, measures 0.20 -- i.e. +10
+        # gain bought +0.10 metric, a sensitivity of 0.01/unit.
+        result = compute_auto_exposure(
+            _frame(0.20),
+            bit_depth=_BIT_DEPTH,
+            current_exposure_ms=config.max_auto_exposure_ms,
+            current_gain=110,
+            capabilities=_CAPS,
+            config=config,
+            previous_metric=0.10,
+            previous_gain=100,
+        )
+        # needed = (target_mid=0.60 - metric=0.20) / sensitivity=0.01 = 40
+        assert result.gain == 150
+        assert result.changed is True
+
+    def test_a_large_estimated_step_is_clamped_to_max_gain_step(self) -> None:
+        config = AutoExposureConfig()
+        # A tiny sensitivity (a large gain change barely moved the metric)
+        # would otherwise demand a very large next step.
+        result = compute_auto_exposure(
+            _frame(0.20),
+            bit_depth=_BIT_DEPTH,
+            current_exposure_ms=config.max_auto_exposure_ms,
+            current_gain=110,
+            capabilities=_CAPS,
+            config=config,
+            previous_metric=0.19,
+            previous_gain=100,
+        )
+        # sensitivity = (0.20-0.19)/(110-100) = 0.001/unit; naive needed =
+        # (0.60-0.20)/0.001 = 400 -- clamped to the default max_gain_step (50).
+        assert result.gain == 110 + config.max_gain_step
+
+    def test_falls_back_to_the_fixed_step_when_the_previous_gain_did_not_actually_change(
+        self,
+    ) -> None:
+        # The previous correction's gain equals this one's current_gain
+        # (e.g. it was exposure-only) -- no gain delta to estimate a
+        # slope from, so this must not divide by ~zero.
+        config = AutoExposureConfig()
+        result = compute_auto_exposure(
+            _frame(0.20),
+            bit_depth=_BIT_DEPTH,
+            current_exposure_ms=config.max_auto_exposure_ms,
+            current_gain=110,
+            capabilities=_CAPS,
+            config=config,
+            previous_metric=0.15,
+            previous_gain=110,
+        )
+        assert result.gain == 120  # 110 + the fixed gain_step (10)
+
+    def test_too_bright_direction_also_uses_the_estimated_sensitivity(self) -> None:
+        config = AutoExposureConfig()
+        # The previous correction dropped gain 210 -> 200 (delta -10) and
+        # metric fell 0.95 -> 0.90 (this frame) -- sensitivity 0.005/unit,
+        # same magnitude-clamping and sign-solving as the too-dim case.
+        result = compute_auto_exposure(
+            _frame(0.90),
+            bit_depth=_BIT_DEPTH,
+            current_exposure_ms=_CAPS.min_exposure_ms,
+            current_gain=200,
+            capabilities=_CAPS,
+            config=config,
+            previous_metric=0.95,
+            previous_gain=210,
+        )
+        # needed = (0.60-0.90)/0.005 = -60 -- clamped to -max_gain_step (50).
+        assert result.gain == 200 - config.max_gain_step
+        assert result.changed is True
+
+
 def test_custom_target_band_is_respected() -> None:
     config = AutoExposureConfig(target_low=0.2, target_high=0.3)
     result = compute_auto_exposure(

@@ -180,6 +180,14 @@ class CameraPanel(QWidget):
         self._last_recommendation: CollimationRecommendation | None = None
         self._recent_frames: deque[Frame] = deque(maxlen=_RECENT_FRAMES_KEPT)
         self._auto_exposure_config = auto_exposure_config or AutoExposureConfig()
+        #: The (metric, gain) pair from this panel's own previous
+        #: correction -- threaded through explicitly since
+        #: compute_auto_exposure() is deliberately stateless (see that
+        #: module's "Gain step is adaptive" docstring section). Reset to
+        #: None (fixed-step fallback for the next correction) whenever
+        #: auto-exposure is freshly (re)enabled, in _on_auto_exposure_toggled.
+        self._auto_exposure_previous_metric: float | None = None
+        self._auto_exposure_previous_gain: int | None = None
         #: Set by MainWindow via set_updates_paused() -- see that
         #: method's docstring. Tracked separately from `_timer.isActive()`
         #: so `_on_toggle_stream` knows whether to (re)start the timer
@@ -299,17 +307,28 @@ class CameraPanel(QWidget):
         self._gain_spin.setEnabled(not checked)
         if checked:
             self._gain_spin.setValue(self._auto_exposure_config.default_gain)
+            # A fresh baseline gain just got set -- any earlier
+            # (metric, gain) history is no longer a meaningful sensitivity
+            # estimate for it. The next correction (if any) falls back to
+            # the fixed step, same as a panel's very first correction ever.
+            self._auto_exposure_previous_metric = None
+            self._auto_exposure_previous_gain = None
         self.settings_changed.emit()
 
     def _apply_auto_exposure(self, frame: Frame) -> None:
+        current_gain = self._camera.get_gain()
         result = compute_auto_exposure(
             frame.pixels,
             bit_depth=frame.bit_depth,
             current_exposure_ms=self._camera.get_exposure_ms(),
-            current_gain=self._camera.get_gain(),
+            current_gain=current_gain,
             capabilities=self._camera.get_descriptor().capabilities,
             config=self._auto_exposure_config,
+            previous_metric=self._auto_exposure_previous_metric,
+            previous_gain=self._auto_exposure_previous_gain,
         )
+        self._auto_exposure_previous_metric = result.metric
+        self._auto_exposure_previous_gain = current_gain
         if result.changed:
             # Gain before exposure -- real incident 79bcc6a8: the
             # exposure-set below can reject a value the hardware doesn't

@@ -19,6 +19,23 @@ improve (e.g. a brighter object framed after gain was raised for a dimmer
 one) — each call only reacts to the current frame being outside the target
 band. Revisit if that turns out to matter in practice.
 
+Gain step is adaptive, not a fixed +/-10 (real request: a fixed step either
+crawls painfully slowly toward the target on a camera whose gain barely
+moves the signal, or overshoots and oscillates on one where it moves it a
+lot). `compute_auto_exposure` estimates the local sensitivity
+(dmetric/dgain) from the *previous* correction's (metric, gain) pair versus
+this one's, then solves directly for the gain change that should land the
+metric at the target band's midpoint (secant-method style) rather than
+guessing. Since this function is deliberately stateless (see below), the
+caller supplies that previous pair explicitly via `previous_metric`/
+`previous_gain` -- on the very first correction (no prior pair yet) or
+whenever the last correction didn't actually change gain (a zero gain
+delta would divide by ~zero), it falls back to the fixed
+`AutoExposureConfig.gain_step` as a one-time probe, exactly like the old
+behavior. The estimated step is clamped to `max_gain_step` either way, so
+a noisy single-frame sensitivity estimate can't cause a wild jump, same
+philosophy as exposure's own `max_step_factor`.
+
 Live-view exposure ceiling (see `AutoExposureConfig.max_auto_exposure_ms`):
 found via real-hardware testing that this algorithm could "run away" —
 each doubling step reacts to whatever frame just arrived, and at short
@@ -55,7 +72,14 @@ class AutoExposureConfig:
     #: Clamp on how much exposure may change in one step, so a single
     #: noisy/outlier frame can't cause a wild jump or oscillation.
     max_step_factor: float = 2.0
+    #: Fixed step used only when there's no usable prior (metric, gain)
+    #: pair to estimate a sensitivity from -- see the module docstring's
+    #: "Gain step is adaptive" section.
     gain_step: int = 10
+    #: Clamp on the adaptive step's magnitude, so a noisy single-frame
+    #: sensitivity estimate can't swing gain wildly in one correction --
+    #: same philosophy as max_step_factor for exposure.
+    max_gain_step: int = 50
     #: Practical ceiling for a *live* view, independent of (and generally
     #: much lower than) the camera's own hardware max_exposure_ms — see
     #: the module docstring's "Live-view exposure ceiling".
@@ -121,6 +145,36 @@ def _measure(pixels: np.ndarray, bit_depth: int, percentile: float) -> float:
     return max(naive_metric, saturated_fraction)
 
 
+def _adaptive_gain_step(
+    metric: float,
+    target_mid: float,
+    current_gain: int,
+    previous_metric: float | None,
+    previous_gain: int | None,
+    config: AutoExposureConfig,
+) -> int:
+    """Signed gain delta for one correction -- see the module docstring's
+    "Gain step is adaptive" section. `metric` is guaranteed outside
+    `[target_low, target_high]` by the only caller (`compute_auto_exposure`
+    already returned early otherwise), so it's never exactly `target_mid`
+    and the fixed-step fallback below always has a real direction to step
+    in.
+    """
+    if (
+        previous_metric is not None
+        and previous_gain is not None
+        and current_gain != previous_gain
+    ):
+        sensitivity = (metric - previous_metric) / (current_gain - previous_gain)
+        if abs(sensitivity) > 1e-9:
+            needed = (target_mid - metric) / sensitivity
+            step = int(round(needed))
+            step = max(-config.max_gain_step, min(config.max_gain_step, step))
+            if step != 0:
+                return step
+    return config.gain_step if metric < target_mid else -config.gain_step
+
+
 def compute_auto_exposure(
     pixels: np.ndarray,
     *,
@@ -129,6 +183,14 @@ def compute_auto_exposure(
     current_gain: int,
     capabilities: CameraCapabilities,
     config: AutoExposureConfig = _DEFAULT_CONFIG,
+    #: The (metric, gain) pair from the *previous* call this same caller
+    #: made -- deliberately explicit rather than internal state, matching
+    #: this function's existing "single stateless call" shape (see module
+    #: docstring). None on a caller's first-ever call, or if a caller
+    #: doesn't want the adaptive behavior (falls back to a fixed step
+    #: every time, the original behavior). See "Gain step is adaptive".
+    previous_metric: float | None = None,
+    previous_gain: int | None = None,
 ) -> AutoExposureResult:
     """Return the exposure/gain to use for the *next* frame.
 
@@ -163,10 +225,16 @@ def compute_auto_exposure(
     if too_dim and desired_exposure > effective_max_exposure_ms:
         # Exposure is already at the live-view ceiling and still not
         # enough — only now step gain up.
-        new_gain = min(capabilities.max_gain, current_gain + config.gain_step)
+        step = _adaptive_gain_step(
+            metric, target_mid, current_gain, previous_metric, previous_gain, config
+        )
+        new_gain = min(capabilities.max_gain, current_gain + step)
     elif not too_dim and desired_exposure < capabilities.min_exposure_ms:
         # Symmetric case: too bright even at minimum exposure.
-        new_gain = max(capabilities.min_gain, current_gain - config.gain_step)
+        step = _adaptive_gain_step(
+            metric, target_mid, current_gain, previous_metric, previous_gain, config
+        )
+        new_gain = max(capabilities.min_gain, current_gain + step)
 
     changed = clamped_exposure != current_exposure_ms or new_gain != current_gain
     return AutoExposureResult(clamped_exposure, new_gain, changed=changed, metric=metric)
