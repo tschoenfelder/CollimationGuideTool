@@ -270,6 +270,10 @@ class MountTestMovePanel(QWidget):
         self._calibration: dict[str, CalibrationMatrix] = {}
         self._last_responses: dict[str, AxisResponse] | None = None
         self._last_error: str | None = None
+        #: True between _abort_calibration() submitting a stranded return
+        #: pulse and that pulse actually finishing -- see that method's
+        #: own docstring and _poll()'s use of this flag.
+        self._awaiting_stranded_return = False
         #: See diagnostic_frames()'s own docstring.
         self._last_diagnostic_frames: dict[str, np.ndarray] = {}
         #: See diagnostic_camera_state()'s own docstring.
@@ -527,14 +531,29 @@ class MountTestMovePanel(QWidget):
         further in this calibration attempt depends on its outcome, and
         `_poll()` already tolerates a completion with no matching
         `_pending` (this is the same shape as any other untracked pulse).
+
+        Real report ("calibration failed is stated already while mount
+        is moving"): this used to show the final "Calibration failed"
+        text immediately, then submit the stranded return pulse right
+        after -- so the mount kept visibly moving for several more
+        seconds under a message that already read as final/settled.
+        When a return step is actually submitted, the message now says
+        so explicitly, and `_poll()` (via `_awaiting_stranded_return`)
+        updates it once that return pulse actually finishes -- to a
+        confirmation if it succeeded, or a explicit warning if it didn't
+        (real pulses can still fail -- see MountTestMoveRunner's own
+        retry logic, which already covers transient rejection but not
+        every possible failure).
         """
         return_step = self._calibration_queue[0] if strand_return_step else None
         self._calibration_queue = []
         self._pending = None
         self._last_error = message
-        self._result_label.setText(f"Calibration failed: {message}")
+        suffix = " (returning mount to start position…)" if return_step is not None else ""
+        self._result_label.setText(f"Calibration failed: {message}{suffix}")
         self._resume_auto_exposure()
         if return_step is not None:
+            self._awaiting_stranded_return = True
             self._runner.submit(
                 self._mount_park,
                 self._mount,
@@ -543,6 +562,7 @@ class MountTestMovePanel(QWidget):
                 self._settings.pulse_ms,
                 rate_preset=self._settings.rate_preset,
                 park_after=False,
+                settle_ms=self._settings.settle_ms,
             )
         self._update_buttons_enabled()
 
@@ -751,6 +771,21 @@ class MountTestMovePanel(QWidget):
                     self._finish_nudge(
                         pending, pulsed=outcome.pulsed, pulse_error=outcome.error
                     )
+            elif self._awaiting_stranded_return:
+                # The fire-and-forget return pulse _abort_calibration()
+                # submitted has now actually finished -- see that
+                # method's own docstring for why the "failed" message
+                # shown when it was submitted said "returning..." rather
+                # than reading as final.
+                self._awaiting_stranded_return = False
+                if outcome.pulsed:
+                    suffix = "mount returned to start position"
+                else:
+                    suffix = (
+                        "WARNING: mount may not have returned to start position -- "
+                        f"{outcome.error}"
+                    )
+                self._result_label.setText(f"Calibration failed: {self._last_error} ({suffix})")
         self._update_buttons_enabled()
 
     def _build_response(

@@ -19,7 +19,7 @@ from astrotool_core.focus.port import FocuserStatus
 from astrotool_core.frames.frame import Frame
 from astrotool_core.mount.axis_calibration import AxisResponse, CalibrationMatrix
 from astrotool_core.mount.park_port import MountParkPort, MountParkStatus
-from astrotool_core.mount.port import AxisDirection, MountAxis, MountPort
+from astrotool_core.mount.port import AxisDirection, CommandResult, MountAxis, MountPort
 from astrotool_core.testing.fake_mount import FakeMountAdapter
 from astrotool_core.testing.fake_mount_park import FakeMountPark
 from astrotool_core.testing.fake_touptek import FakeTouptekCamera
@@ -2550,14 +2550,23 @@ class TestMountTestMovePanel:
         panel._get_left_frame = flaky_get_left_frame
 
         self._run_calibration_to_completion(panel)
+        # Real report: "calibration failed is stated already while mount
+        # is moving" -- the message shown the instant the queue/pending
+        # state above clears must say the mount is still returning, not
+        # read as final, since the stranded return pulse is still
+        # physically in flight at this exact point.
+        assert "Calibration failed" in panel._result_label.text()
+        assert "returning mount to start position" in panel._result_label.text()
+
         # The stranded-return pulse is fire-and-forget (no _pending to
         # track), so _run_calibration_to_completion's queue/pending-based
         # wait can return before it actually finishes -- wait for the
-        # runner directly too.
+        # runner directly too, then poll once more to pick up its outcome.
         deadline = time.monotonic() + 5.0
         while panel._runner.is_busy:
             assert time.monotonic() < deadline, "stranded return pulse never completed"
             time.sleep(0.01)
+        panel._poll()
 
         settings = MountAlignmentSettings()
         assert pulse_mount.pulse_log == [
@@ -2566,7 +2575,78 @@ class TestMountTestMovePanel:
             (MountAxis.AXIS2, AxisDirection.POSITIVE, settings.pulse_ms),
             (MountAxis.AXIS2, AxisDirection.NEGATIVE, settings.pulse_ms),
         ]
+        # Now settled -- the message reflects the return pulse's own
+        # actual, now-known outcome instead of still saying "returning".
         assert "Calibration failed" in panel._result_label.text()
+        assert "mount returned to start position" in panel._result_label.text()
+        assert "returning mount to start position" not in panel._result_label.text()
+        window.close()
+
+    def test_stranded_return_pulse_failure_is_reported_as_a_warning(
+        self, qapp: object
+    ) -> None:
+        """Same setup as the test above, but the stranded return pulse
+        itself is rejected -- must not claim the mount is back home when
+        it isn't; a real pulse can fail (see MountTestMoveRunner's own
+        retry logic, which covers transient rejection but not every
+        possible failure)."""
+
+        class _RejectsAxis2NegativeMount(FakeMountAdapter):
+            """Every pulse succeeds normally except AXIS2 NEGATIVE (the
+            one this test needs to be the stranded return step) --
+            targeted by (axis, direction) rather than attempt count, so
+            AXIS1's own test+return and AXIS2's forward pulse (which must
+            all succeed for this scenario to even reach AXIS2's stranded
+            return) are unaffected."""
+
+            def pulse_axis(
+                self,
+                axis: MountAxis,
+                direction: AxisDirection,
+                duration_ms: int,
+                *,
+                rate_preset: str | None = None,
+            ) -> CommandResult:
+                if axis is MountAxis.AXIS2 and direction is AxisDirection.NEGATIVE:
+                    return CommandResult(accepted=False, message="simulated rejection")
+                return super().pulse_axis(axis, direction, duration_ms, rate_preset=rate_preset)
+
+        pulse_mount = _RejectsAxis2NegativeMount()
+        mount_park = FakeMountPark(start_parked=True)
+        window = self._window(mount_park=mount_park, pulse_mount=pulse_mount)
+        self._connect_and_stream_cameras(window)
+        window._mount_panel._connect_button.setChecked(True)
+        window._test_move_panel._connect_button.setChecked(True)
+        panel = window._test_move_panel
+        import collimation_tool.ui.mount_test_move_runner as runner_module
+
+        original_delay = runner_module._PULSE_REJECTION_RETRY_DELAY_S
+        runner_module._PULSE_REJECTION_RETRY_DELAY_S = 0.01  # keep the test fast
+
+        real_get_left_frame = panel._get_left_frame
+        call_count = 0
+
+        def flaky_get_left_frame() -> np.ndarray | None:
+            nonlocal call_count
+            call_count += 1
+            return None if call_count >= 4 else real_get_left_frame()
+
+        panel._get_left_frame = flaky_get_left_frame
+
+        try:
+            self._run_calibration_to_completion(panel)
+            deadline = time.monotonic() + 5.0
+            while panel._runner.is_busy:
+                assert time.monotonic() < deadline, "stranded return pulse never completed"
+                time.sleep(0.01)
+            panel._poll()
+        finally:
+            runner_module._PULSE_REJECTION_RETRY_DELAY_S = original_delay
+
+        assert "Calibration failed" in panel._result_label.text()
+        assert "WARNING: mount may not have returned to start position" in (
+            panel._result_label.text()
+        )
         window.close()
 
     def test_run_calibration_button_and_nudge_pads_disable_and_stop_enables_mid_sequence(
