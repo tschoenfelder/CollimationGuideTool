@@ -13,6 +13,11 @@ class FakeMountPark(MountParkPort):
         self._available = available
         self._parked = start_parked
         self._tracking = False
+        #: How many times park()/unpark() were actually called -- e.g. lets
+        #: MountTestMoveRunner.submit_sequence's tests confirm a multi-step
+        #: sequence unparks exactly once, not once per step.
+        self.park_count = 0
+        self.unpark_count = 0
 
     def connect(self) -> None:
         if self._fail_connect:
@@ -31,8 +36,10 @@ class FakeMountPark(MountParkPort):
         )
 
     def park(self) -> None:
+        self.park_count += 1
         self._parked = True
 
     def unpark(self) -> None:
+        self.unpark_count += 1
         self._parked = False
         self._tracking = False  # see MountParkPort.unpark's docstring

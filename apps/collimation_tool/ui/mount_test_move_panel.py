@@ -1,68 +1,91 @@
-"""MountTestMovePanel — axis-calibration diagnostic: pulse the mount
-briefly in one direction and measure how far a star moved in each
-camera's frame, to learn which physical axis/direction corresponds to
-which direction in the picture.
+"""MountTestMovePanel — mount-alignment tool: calibrate how each mount axis
+moves *each camera's own frame*, then offer per-camera Up/Down/Left/Right
+buttons that pulse the mount in whatever combination actually produces that
+on-screen direction for that specific camera.
 
-Own `MountPort` connection, separate from `MountParkPanel`'s
-`MountParkPort` connection to the same device (same pattern as
+Reworked from the original "Test Move" diagnostic (raw N/S/E/W buttons that
+just reported the resulting displacement as text) into an alignment tool
+requested directly: "aligning primary and secondary scope" needs direction
+buttons that are correct *per camera*, since Main and Guide can be rotated
+differently relative to each other and to the mount's RA/Dec axes — reading
+dx/dy/angle numbers after each raw-axis click and inferring the mapping by
+hand doesn't scale to that. See `astrotool_core.mount.axis_calibration`'s
+`compose_screen_move` for the actual two-axis inversion this is built on.
+
+Own `MountPort` connection, separate from `MountParkPanel`'s `MountParkPort`
+connection to the same device (same pattern as
 `IndiFocuserAdapter`/`IndiMountParkAdapter` already being two independent
 `IndiClient` sockets to one INDI device) — see
 `astrotool_core.mount.indi_mount_pulse_adapter`'s docstring for the real
-INDI properties this drives (`TELESCOPE_SLEW_RATE` fixed at its "20x"
-preset, `TELESCOPE_MOTION_NS`/`_WE` for direction).
+INDI properties this drives (`TELESCOPE_SLEW_RATE`, `TELESCOPE_MOTION_NS`/
+`_WE`).
 
 Also takes the *same* `MountParkPort` object `MountParkPanel` uses
 (`mount_park` constructor param — deliberately the shared instance, not
-this panel's own connection: `MountTestMoveRunner` drives it directly,
-and it's simplest for that to be the one connection already managed by
-`MountParkPanel`'s own Connect button rather than a second,
-independently-connected copy of the same park/unpark state). The
-direction buttons only enable while parked, for the same reason.
+this panel's own connection: `MountTestMoveRunner` drives it directly, and
+it's simplest for that to be the one connection already managed by
+`MountParkPanel`'s own Connect button rather than a second, independently-
+connected copy of the same park/unpark state).
 
-The mount actually has to be *unparked* to move at all — a real-hardware
-check found OnStep's driver refuses `TELESCOPE_MOTION_NS`/`_WE` while
-parked, a deliberate safety interlock (not a defect) — so
-`MountTestMoveRunner` unparks before pulsing and re-parks after, every
-run, respecting that interlock rather than routing around it; see its
-own docstring.
+Unlike the original diagnostic, this panel no longer requires the mount to
+already be parked (or already unparked) before anything is clickable —
+every pulse, whether a calibration step or a direction-pad nudge, goes
+through `MountTestMoveRunner`, which unparks first if needed (a real-
+hardware check found OnStep's driver refuses `TELESCOPE_MOTION_NS`/`_WE`
+while parked — a deliberate safety interlock, not a defect) and then never
+re-parks (`park_after=False` on every call here) — "Run Calibration" and the
+direction pads are meant to run one after another across a single unparked
+working session, and re-parking after each pulse would undo the point of
+staying unparked between them. Parking back up when done stays the separate
+Mount panel's job, same as it already is for every other unparked action in
+this app.
 
-Direction buttons fire immediately on click (N/S/E/W, like Park/Unpark
-are direct actions) rather than "select a direction, then press a
-separate confirm button" — a real user report (incident 9551627f) found
-that select-then-confirm shape confusing on its own (a checked/exclusive
-button "staying pressed" read as stuck, not as a live selection) and,
-combined with the confirm button being silently disabled whenever the
-mount wasn't parked with no explanation why, effectively unusable
-("connect doesn't react to directions"). `_status_label` now always
-explains *why* the direction buttons are disabled when they are (not
-connected / mount unavailable / not parked / a move already in
-progress), rather than just sitting there mute.
+"Run Calibration" runs a fixed four-pulse sequence (see `_CALIBRATION_STEPS`):
+pulse AXIS1 positive, measure the resulting displacement in both cameras,
+pulse AXIS1 negative to return (trusted symmetric — no re-measurement, same
+duration/rate as the forward pulse), then the same for AXIS2. Each camera's
+two measured `AxisResponse`s become a `CalibrationMatrix`
+(`astrotool_core.mount.axis_calibration`) once both axes are measured, at
+which point that camera's four direction-pad buttons enable. Aborts the
+whole sequence (clearing any partial result) the moment any step fails to
+pulse or measure — a half-built calibration is worse than none, since a
+direction button would then be silently wrong for whichever axis never got
+re-measured.
 
-Same incident asked for a Stop control — real hardware motion with no
-way to interrupt it once started is a real safety gap, not a nice-to-have
-— see the "Stop" button, wired to `IndiMountPulseAdapter.abort()`
-(`TELESCOPE_ABORT_MOTION`) via duck-typing (`getattr`, not a `MountPort`
-Protocol method — that Protocol is the architecture doc's literal
-contract, not something to extend unilaterally for one adapter's extra
-capability). A no-op if the injected `mount` doesn't have `abort()` (e.g.
+Clicking a direction-pad button solves `compose_screen_move` for that
+camera's own calibration and the clicked direction, submits the resulting
+1-2 pulses back-to-back via `MountTestMoveRunner.submit_sequence`, and
+reports the resulting displacement the same way a calibration step does —
+reusing `_capture`/`_build_response`/`_format_response` unchanged. A
+degenerate calibration (AXIS1/AXIS2 responses too close to parallel to
+invert) surfaces as an error asking the user to recalibrate rather than
+sending a wild pulse.
+
+Real hardware motion with no way to interrupt it once started is a real
+safety gap (incident 9551627f) — the "Stop" button, wired to
+`IndiMountPulseAdapter.abort()` (`TELESCOPE_ABORT_MOTION`) via duck-typing
+(`getattr`, not a `MountPort` Protocol method — that Protocol is the
+architecture doc's literal contract, not something to extend unilaterally
+for one adapter's extra capability), still applies to every pulse this
+panel issues. A no-op if the injected `mount` doesn't have `abort()` (e.g.
 `NoMountAdapter`/`FakeMountAdapter` unless a test adds one).
 
-Frame capture happens *here*, on the Qt main thread, both before
-submitting the pulse and again once the runner reports it finished —
+Frame capture happens *here*, on the Qt main thread, both before submitting
+a pulse (sequence) and again once the runner reports it finished —
 deliberately never on the runner's background thread (a real crash was
 traced to exactly that: calling `CameraPanel.latest_mono_frame()`
-concurrently from a background thread while the same panel's own poll
-timer delivers frames on the main thread — see `MountTestMoveRunner`'s
-docstring). Detection (`detect_sources`) is fast enough for a single
-frame that doing it twice inline on the UI thread doesn't freeze
-anything, unlike FOV registration's multi-candidate search.
+concurrently from a background thread while the same panel's own poll timer
+delivers frames on the main thread — see `MountTestMoveRunner`'s docstring).
+Detection (`detect_sources`) is fast enough for a single frame that doing it
+twice inline on the UI thread doesn't freeze anything, unlike FOV
+registration's multi-candidate search.
 
-Target: "Star"/"Terrestrial" toggle (real user report, incident
-6fa2aa59: a daytime/indoor test correctly refused with "no star
-detected" -- not a bug, but there was no way to actually exercise this
-feature without a real star in view). "Star" (default, unchanged
-behavior) measures a point-source centroid via `detect_sources()`.
-"Terrestrial" instead cross-correlates the whole before/after frame via
+Target: "Star"/"Terrestrial" toggle (real user report, incident 6fa2aa59: a
+daytime/indoor test correctly refused with "no star detected" -- not a bug,
+but there was no way to actually exercise this feature without a real star
+in view). "Star" (default, unchanged behavior) measures a point-source
+centroid via `detect_sources()`. "Terrestrial" instead cross-correlates the
+whole before/after frame via
 `astrotool_core.target.translation_offset.measure_translation_offset` --
 works against any textured scene, whole-pixel precision only (vs. Star's
 sub-pixel centroid). Both modes build the same `AxisResponse` via
@@ -70,15 +93,28 @@ sub-pixel centroid). Both modes build the same `AxisResponse` via
 `(0, 0)` -> `(dx_px, dy_px)` instead of two absolute centroid positions,
 since a whole-frame correlation already *is* the displacement, not two
 positions to subtract.
+
+Calibration slew duration/rate and each nudge's target size are
+`MountAlignmentSettings` (`astrotool_core.config`) — fixed constants sourced
+from `~/.CollimationGuideTool/config.toml`'s `[mount_alignment]` table
+rather than a runtime UI control (deliberately no way to change them from
+this panel).
 """
 
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, Literal
 
 import numpy as np
-from astrotool_core.mount.axis_calibration import AxisResponse, response_from_positions
+from astrotool_core.config import MountAlignmentSettings
+from astrotool_core.mount.axis_calibration import (
+    AxisResponse,
+    CalibrationMatrix,
+    compose_screen_move,
+    response_from_positions,
+)
 from astrotool_core.mount.park_port import MountParkPort
 from astrotool_core.mount.port import AxisDirection, MountAxis, MountPort
 from astrotool_core.target.detector import detect_sources
@@ -111,19 +147,56 @@ TargetMode = Literal["star", "terrestrial"]
 _Measurement = tuple[float, float] | np.ndarray
 
 _POLL_INTERVAL_MS = 250
-_PULSE_MS = 500
-
-#: Direction button order -- see IndiMountPulseAdapter's own docstring
-#: for the (axis, direction) <-> compass-direction convention this
-#: matches (AXIS1=RA/azimuth east/west, AXIS2=Dec/altitude north/south).
-_DIRECTIONS: tuple[tuple[str, MountAxis, AxisDirection], ...] = (
-    ("N", MountAxis.AXIS2, AxisDirection.POSITIVE),
-    ("S", MountAxis.AXIS2, AxisDirection.NEGATIVE),
-    ("E", MountAxis.AXIS1, AxisDirection.POSITIVE),
-    ("W", MountAxis.AXIS1, AxisDirection.NEGATIVE),
-)
 
 _CAMERA_LABELS = {"left": "Main", "right": "Guide"}
+
+#: Right/Left are the horizontal frame axis, Down/Up the vertical one, in
+#: the same x-right/y-down image-space convention as `AxisResponse.angle_degrees`.
+_SCREEN_DIRECTIONS: dict[str, tuple[float, float]] = {
+    "Up": (0.0, -1.0),
+    "Down": (0.0, 1.0),
+    "Left": (-1.0, 0.0),
+    "Right": (1.0, 0.0),
+}
+
+
+@dataclass(frozen=True)
+class _CalibrationStep:
+    """One pulse within the fixed calibration sequence. `measure=False`
+    marks a "move back" return pulse -- same axis/duration/rate, opposite
+    direction, no frame capture (a symmetric response is trusted, not
+    re-verified -- see module docstring)."""
+
+    axis: MountAxis
+    direction: AxisDirection
+    measure: bool
+
+
+#: AXIS1 positive, measure; AXIS1 negative, return; AXIS2 positive, measure;
+#: AXIS2 negative, return. Order doesn't matter functionally -- AXIS1 first
+#: is arbitrary.
+_CALIBRATION_STEPS: tuple[_CalibrationStep, ...] = (
+    _CalibrationStep(MountAxis.AXIS1, AxisDirection.POSITIVE, measure=True),
+    _CalibrationStep(MountAxis.AXIS1, AxisDirection.NEGATIVE, measure=False),
+    _CalibrationStep(MountAxis.AXIS2, AxisDirection.POSITIVE, measure=True),
+    _CalibrationStep(MountAxis.AXIS2, AxisDirection.NEGATIVE, measure=False),
+)
+
+
+@dataclass
+class _PendingAction:
+    """State carried from a submit call to the matching `_poll()` completion
+    -- generalizes the old single set of `_pending_*` fields to cover both
+    a calibration step and a direction-pad nudge."""
+
+    kind: Literal["calibration", "nudge"]
+    before: dict[str, _Measurement]
+    mode: TargetMode
+    step: _CalibrationStep | None = None
+    #: Total pulse duration across every sub-pulse in a nudge's composed
+    #: move (unused for a calibration step, which has its own step.axis to
+    #: report against instead).
+    duration_ms: int = 0
 
 
 class MountTestMovePanel(QWidget):
@@ -134,7 +207,8 @@ class MountTestMovePanel(QWidget):
         mount_park: MountParkPort,
         get_left_frame: FrameGetter,
         get_right_frame: FrameGetter,
-        title: str = "Test Move",
+        title: str = "Mount Alignment",
+        settings: MountAlignmentSettings | None = None,
         runner: MountTestMoveRunner | None = None,
     ) -> None:
         super().__init__()
@@ -142,12 +216,15 @@ class MountTestMovePanel(QWidget):
         self._mount_park = mount_park
         self._get_left_frame = get_left_frame
         self._get_right_frame = get_right_frame
+        self._settings = settings if settings is not None else MountAlignmentSettings()
         self._runner = runner if runner is not None else MountTestMoveRunner()
         self._connected = False
-        self._pending_before: dict[str, _Measurement] | None = None
-        self._pending_direction: tuple[MountAxis, AxisDirection] | None = None
-        self._pending_label: str | None = None
-        self._pending_mode: TargetMode | None = None
+        self._pending: _PendingAction | None = None
+        self._calibration_queue: list[_CalibrationStep] = []
+        self._calibration_partial: dict[str, dict[MountAxis, AxisResponse]] = {
+            "left": {}, "right": {},
+        }
+        self._calibration: dict[str, CalibrationMatrix] = {}
         self._last_responses: dict[str, AxisResponse] | None = None
         self._last_error: str | None = None
 
@@ -172,22 +249,24 @@ class MountTestMovePanel(QWidget):
         target_row.addWidget(self._terrestrial_button)
         target_row.addStretch(1)
 
-        self._direction_buttons: list[QPushButton] = []
-        direction_row = QHBoxLayout()
-        direction_row.addWidget(QLabel(f"Test Move ({_PULSE_MS}ms, 20x)"))
-        for label, axis, direction in _DIRECTIONS:
-            button = QPushButton(label)
-            button.clicked.connect(
-                lambda _checked=False, a=axis, d=direction, lbl=label: self._on_direction_clicked(
-                    a, d, lbl
-                )
-            )
-            self._direction_buttons.append(button)
-            direction_row.addWidget(button)
+        self._run_calibration_button = QPushButton("Run Calibration")
+        self._run_calibration_button.clicked.connect(self._on_run_calibration_clicked)
         self._stop_button = QPushButton("Stop")
         self._stop_button.clicked.connect(self._on_stop)
-        direction_row.addWidget(self._stop_button)
-        direction_row.addStretch(1)
+        calibration_row = QHBoxLayout()
+        calibration_row.addWidget(
+            QLabel(
+                f"Calibration ({self._settings.pulse_ms}ms, "
+                f"rate preset {self._settings.rate_preset})"
+            )
+        )
+        calibration_row.addWidget(self._run_calibration_button)
+        calibration_row.addWidget(self._stop_button)
+        calibration_row.addStretch(1)
+
+        self._nudge_buttons: dict[str, dict[str, QPushButton]] = {}
+        main_pad_row = self._build_direction_pad("left")
+        guide_pad_row = self._build_direction_pad("right")
 
         self._result_label = QLabel("")
         self._result_label.setWordWrap(True)
@@ -200,7 +279,9 @@ class MountTestMovePanel(QWidget):
         layout = QVBoxLayout()
         layout.addLayout(top_row)
         layout.addLayout(target_row)
-        layout.addLayout(direction_row)
+        layout.addLayout(calibration_row)
+        layout.addLayout(main_pad_row)
+        layout.addLayout(guide_pad_row)
         layout.addWidget(self._result_label)
         self.setLayout(layout)
 
@@ -209,6 +290,24 @@ class MountTestMovePanel(QWidget):
         self._timer.timeout.connect(self._poll)
 
         self._update_buttons_enabled()
+
+    def _build_direction_pad(self, camera_key: str) -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.addWidget(QLabel(f"{_CAMERA_LABELS[camera_key]}:"))
+        buttons: dict[str, QPushButton] = {}
+        for direction_name in ("Up", "Down", "Left", "Right"):
+            button = QPushButton(direction_name)
+            button.setEnabled(False)
+            button.clicked.connect(
+                lambda _checked=False, key=camera_key, name=direction_name: (
+                    self._on_nudge_clicked(key, name)
+                )
+            )
+            buttons[direction_name] = button
+            row.addWidget(button)
+        row.addStretch(1)
+        self._nudge_buttons[camera_key] = buttons
+        return row
 
     def _on_toggle_connect(self, checked: bool) -> None:
         if checked:
@@ -239,7 +338,7 @@ class MountTestMovePanel(QWidget):
     def _capture(self, mode: TargetMode, frame: np.ndarray | None) -> _Measurement | None:
         """One camera's "before"/"after" measurement in the given mode --
         a star centroid, or the whole frame itself (to cross-correlate
-        against its counterpart later, in `_finish_test_move`)."""
+        against its counterpart later)."""
         if mode == "star":
             return _measure_brightest_source(frame)
         return frame  # "terrestrial" -- any frame at all is usable here
@@ -247,32 +346,208 @@ class MountTestMovePanel(QWidget):
     def _missing_label(self, mode: TargetMode) -> str:
         return "no star detected" if mode == "star" else "no frame available"
 
-    def _on_direction_clicked(self, axis: MountAxis, direction: AxisDirection, label: str) -> None:
-        # Captured here, on the Qt main thread -- see module docstring
-        # for why this must never happen on the runner's background one.
-        mode = self._target_mode()
-        before_raw = {
+    def _capture_both(self, mode: TargetMode) -> dict[str, _Measurement] | None:
+        """Capture both cameras' "before"/"after" measurement in one shot,
+        or None if either is missing -- the caller decides how to phrase
+        the resulting error message (calibration-step vs. nudge)."""
+        raw = {
             "left": self._capture(mode, self._get_left_frame()),
             "right": self._capture(mode, self._get_right_frame()),
         }
-        missing = [key for key, measurement in before_raw.items() if measurement is None]
+        missing = [key for key, measurement in raw.items() if measurement is None]
         if missing:
-            # Don't bother moving the real mount if there's already
-            # nothing to measure a displacement against.
-            self._last_responses = None
-            self._last_error = f"{self._missing_label(mode)} in: {', '.join(missing)}"
-            self._result_label.setText(f"Test move failed: {self._last_error}")
+            return None
+        return raw  # type: ignore[return-value]
+
+    def _on_run_calibration_clicked(self) -> None:
+        self._calibration_queue = list(_CALIBRATION_STEPS)
+        self._calibration_partial = {"left": {}, "right": {}}
+        self._start_next_calibration_step()
+
+    def _start_next_calibration_step(self) -> None:
+        if not self._calibration_queue:
+            self._finish_calibration()
+            self._update_buttons_enabled()
             return
-        before: dict[str, _Measurement] = before_raw  # type: ignore[assignment]
-        started = self._runner.submit(self._mount_park, self._mount, axis, direction, _PULSE_MS)
+        step = self._calibration_queue[0]
+        mode = self._target_mode()
+        before: dict[str, _Measurement] = {}
+        if step.measure:
+            captured = self._capture_both(mode)
+            if captured is None:
+                self._abort_calibration(f"{self._missing_label(mode)} before pulsing")
+                return
+            before = captured
+        started = self._runner.submit(
+            self._mount_park,
+            self._mount,
+            step.axis,
+            step.direction,
+            self._settings.pulse_ms,
+            rate_preset=self._settings.rate_preset,
+            park_after=False,
+        )
         if not started:
-            return  # a test move is already running
-        self._pending_before = before
-        self._pending_direction = (axis, direction)
-        self._pending_label = label
-        self._pending_mode = mode
-        self._result_label.setText(f"Testing ({label})…")
+            self._abort_calibration("mount busy — could not start calibration pulse")
+            return
+        self._calibration_queue.pop(0)
+        self._pending = _PendingAction(kind="calibration", before=before, mode=mode, step=step)
+        self._result_label.setText(
+            f"Calibrating {step.axis.name} ({step.direction.name.lower()})…"
+        )
         self._update_buttons_enabled()
+
+    def _abort_calibration(self, message: str) -> None:
+        self._calibration_queue = []
+        self._pending = None
+        self._last_error = message
+        self._result_label.setText(f"Calibration failed: {message}")
+        self._update_buttons_enabled()
+
+    def _finish_calibration_step(
+        self, pending: _PendingAction, *, pulsed: bool, pulse_error: str | None
+    ) -> None:
+        step = pending.step
+        assert step is not None
+        if not pulsed:
+            self._abort_calibration(pulse_error or "pulse failed")
+            return
+        if step.measure:
+            after = self._capture_both(pending.mode)
+            if after is None:
+                self._abort_calibration(
+                    f"{self._missing_label(pending.mode)} after the move"
+                )
+                return
+            responses: dict[str, AxisResponse] = {}
+            failed: list[str] = []
+            for key in ("left", "right"):
+                response = self._build_response(
+                    pending.mode, step.axis, step.direction, self._settings.pulse_ms,
+                    pending.before[key], after[key],
+                )
+                if response is None:
+                    failed.append(key)
+                else:
+                    responses[key] = response
+            if failed:
+                self._abort_calibration(
+                    f"not enough structure to measure a displacement in: {', '.join(failed)}"
+                )
+                return
+            for key, response in responses.items():
+                self._calibration_partial[key][step.axis] = response
+            self._last_responses = responses
+            self._last_error = None
+        self._start_next_calibration_step()
+
+    def _finish_calibration(self) -> None:
+        self._calibration = {}
+        lines: list[str] = []
+        for key in ("left", "right"):
+            axis1 = self._calibration_partial[key].get(MountAxis.AXIS1)
+            axis2 = self._calibration_partial[key].get(MountAxis.AXIS2)
+            if axis1 is None or axis2 is None:
+                continue  # shouldn't happen unless _abort_calibration already fired
+            self._calibration[key] = CalibrationMatrix(
+                responses={
+                    (MountAxis.AXIS1, AxisDirection.POSITIVE): axis1,
+                    (MountAxis.AXIS2, AxisDirection.POSITIVE): axis2,
+                }
+            )
+            lines.append(
+                f"{_CAMERA_LABELS[key]}: RA-axis {_format_response(axis1)} | "
+                f"Dec-axis {_format_response(axis2)}"
+            )
+        self._last_error = None
+        self._result_label.setText("\n".join(lines))
+
+    def _on_nudge_clicked(self, camera_key: str, direction_name: str) -> None:
+        matrix = self._calibration.get(camera_key)
+        if matrix is None:
+            return  # defensive -- button should be disabled without a matrix
+        axis1_response = matrix.response_for(MountAxis.AXIS1, AxisDirection.POSITIVE)
+        axis2_response = matrix.response_for(MountAxis.AXIS2, AxisDirection.POSITIVE)
+        unit_dx, unit_dy = _SCREEN_DIRECTIONS[direction_name]
+        target_dx_px = unit_dx * self._settings.nudge_target_px
+        target_dy_px = unit_dy * self._settings.nudge_target_px
+        try:
+            steps = compose_screen_move(
+                axis1_response, axis2_response, target_dx_px=target_dx_px, target_dy_px=target_dy_px
+            )
+        except ValueError as exc:
+            self._last_error = str(exc)
+            self._result_label.setText(f"Move failed: {exc} — try Run Calibration again.")
+            return
+        if not steps:
+            self._result_label.setText(
+                f"{_CAMERA_LABELS[camera_key]}: already aligned for {direction_name.lower()}."
+            )
+            return
+
+        mode = self._target_mode()
+        before = self._capture_both(mode)
+        if before is None:
+            self._last_error = f"{self._missing_label(mode)} before pulsing"
+            self._result_label.setText(f"Move failed: {self._last_error}")
+            return
+        started = self._runner.submit_sequence(
+            self._mount_park, self._mount, steps,
+            rate_preset=self._settings.rate_preset, park_after=False,
+        )
+        if not started:
+            return  # a move is already running
+        self._pending = _PendingAction(
+            kind="nudge",
+            before=before,
+            mode=mode,
+            duration_ms=sum(duration_ms for _, _, duration_ms in steps),
+        )
+        self._result_label.setText(
+            f"Moving {_CAMERA_LABELS[camera_key]} {direction_name.lower()}…"
+        )
+        self._update_buttons_enabled()
+
+    def _finish_nudge(
+        self, pending: _PendingAction, *, pulsed: bool, pulse_error: str | None
+    ) -> None:
+        if not pulsed:
+            self._last_error = pulse_error or "pulse failed"
+            self._result_label.setText(f"Move failed: {self._last_error}")
+            return
+        after = self._capture_both(pending.mode)
+        if after is None:
+            self._last_error = f"{self._missing_label(pending.mode)} after the move"
+            self._result_label.setText(f"Move failed: {self._last_error}")
+            return
+        responses: dict[str, AxisResponse] = {}
+        failed: list[str] = []
+        for key in ("left", "right"):
+            # axis/direction are a display-only placeholder here (unused by
+            # _format_response) -- a composed move blends both real axes,
+            # it doesn't correspond to a single one. duration_ms is the
+            # real total elapsed time across every sub-pulse.
+            response = self._build_response(
+                pending.mode, MountAxis.AXIS1, AxisDirection.POSITIVE, pending.duration_ms,
+                pending.before[key], after[key],
+            )
+            if response is None:
+                failed.append(key)
+            else:
+                responses[key] = response
+        if failed:
+            self._last_error = (
+                f"not enough structure to measure a displacement in: {', '.join(failed)}"
+            )
+            self._result_label.setText(f"Move failed: {self._last_error}")
+            return
+        self._last_responses = responses
+        self._last_error = None
+        parts = [
+            f"{_CAMERA_LABELS[key]}: {_format_response(response)}"
+            for key, response in responses.items()
+        ]
+        self._result_label.setText(" | ".join(parts))
 
     def _on_stop(self) -> None:
         # Duck-typed -- see module docstring's "Stop" section for why
@@ -286,69 +561,25 @@ class MountTestMovePanel(QWidget):
             return
         outcome = self._runner.take_latest()
         if outcome is not None:
-            self._finish_test_move(pulsed=outcome.pulsed, pulse_error=outcome.error)
+            pending = self._pending
+            self._pending = None
+            if pending is not None:
+                if pending.kind == "calibration":
+                    self._finish_calibration_step(
+                        pending, pulsed=outcome.pulsed, pulse_error=outcome.error
+                    )
+                else:
+                    self._finish_nudge(
+                        pending, pulsed=outcome.pulsed, pulse_error=outcome.error
+                    )
         self._update_buttons_enabled()
-
-    def _finish_test_move(self, *, pulsed: bool, pulse_error: str | None) -> None:
-        before = self._pending_before
-        direction = self._pending_direction
-        mode = self._pending_mode
-        self._pending_before = None
-        self._pending_direction = None
-        self._pending_label = None
-        self._pending_mode = None
-        if before is None or direction is None or mode is None:
-            return  # defensive -- take_latest() without a matching submit()
-        if not pulsed:
-            self._last_responses = None
-            self._last_error = pulse_error or "pulse failed"
-            self._result_label.setText(f"Test move failed: {self._last_error}")
-            return
-
-        axis, mount_direction = direction
-        after_raw = {
-            "left": self._capture(mode, self._get_left_frame()),
-            "right": self._capture(mode, self._get_right_frame()),
-        }
-        missing = [key for key, measurement in after_raw.items() if measurement is None]
-        if missing:
-            self._last_responses = None
-            self._last_error = (
-                f"{self._missing_label(mode)} (after the move) in: {', '.join(missing)}"
-            )
-            self._result_label.setText(f"Test move failed: {self._last_error}")
-            return
-        after: dict[str, _Measurement] = after_raw  # type: ignore[assignment]
-
-        responses: dict[str, AxisResponse] = {}
-        failed: list[str] = []
-        for key in ("left", "right"):
-            response = self._build_response(mode, axis, mount_direction, before[key], after[key])
-            if response is None:
-                failed.append(key)
-            else:
-                responses[key] = response
-        if failed:
-            self._last_responses = None
-            self._last_error = (
-                f"not enough structure to measure a displacement in: {', '.join(failed)}"
-            )
-            self._result_label.setText(f"Test move failed: {self._last_error}")
-            return
-
-        self._last_responses = responses
-        self._last_error = None
-        parts = [
-            f"{_CAMERA_LABELS[key]}: {_format_response(response)}"
-            for key, response in responses.items()
-        ]
-        self._result_label.setText(" | ".join(parts))
 
     def _build_response(
         self,
         mode: TargetMode,
         axis: MountAxis,
         direction: AxisDirection,
+        pulse_ms: int,
         before: _Measurement,
         after: _Measurement,
     ) -> AxisResponse | None:
@@ -362,49 +593,54 @@ class MountTestMovePanel(QWidget):
         `measure_translation_offset`'s own docstring)."""
         if mode == "star":
             assert isinstance(before, tuple) and isinstance(after, tuple)
-            return response_from_positions(axis, direction, _PULSE_MS, before, after)
+            return response_from_positions(axis, direction, pulse_ms, before, after)
         assert isinstance(before, np.ndarray) and isinstance(after, np.ndarray)
         offset = measure_translation_offset(before, after)
         if offset is None:
             return None
         return response_from_positions(
-            axis, direction, _PULSE_MS, (0.0, 0.0), (offset.dx_px, offset.dy_px)
+            axis, direction, pulse_ms, (0.0, 0.0), (offset.dx_px, offset.dy_px)
         )
 
     def _update_buttons_enabled(self) -> None:
         park_status = self._mount_park.status()
         busy = self._runner.is_busy
-        can_test = self._connected and park_status.available and park_status.parked and not busy
-        for button in self._direction_buttons:
-            button.setEnabled(can_test)
+        ready = self._connected and park_status.available and not busy
+        self._run_calibration_button.setEnabled(ready)
         self._stop_button.setEnabled(self._connected and busy)
+        for camera_key, buttons in self._nudge_buttons.items():
+            has_matrix = camera_key in self._calibration
+            for button in buttons.values():
+                button.setEnabled(ready and has_matrix)
 
-        # Explain *why* the direction buttons are disabled, rather than
-        # leaving them silently unresponsive -- see module docstring's
-        # incident note. Never stomps a "Testing…"/result/error message
-        # that's still relevant (busy, or idle-and-eligible).
-        if busy or can_test or not self._connected:
+        # Explain *why* the calibration/nudge buttons are disabled, rather
+        # than leaving them silently unresponsive -- see module docstring's
+        # incident note. Never stomps a "Calibrating…"/"Moving…"/result/
+        # error message that's still relevant.
+        if busy or ready or not self._connected:
             return
-        if not park_status.available:
-            self._result_label.setText("Mount interface not available.")
-        elif not park_status.parked:
-            self._result_label.setText("Park the mount (see Mount panel above) to test a move.")
+        self._result_label.setText("Mount interface not available.")
 
     def diagnostic_context(self) -> dict[str, Any]:
         context: dict[str, Any] = {"target_mode": self._target_mode()}
+        context["calibration"] = {
+            key: {
+                "axis1": _response_dict(
+                    matrix.response_for(MountAxis.AXIS1, AxisDirection.POSITIVE)
+                ),
+                "axis2": _response_dict(
+                    matrix.response_for(MountAxis.AXIS2, AxisDirection.POSITIVE)
+                ),
+            }
+            for key, matrix in self._calibration.items()
+        }
         if self._last_error is not None:
             context["last_result"] = {"error": self._last_error}
         elif self._last_responses is None:
             context["last_result"] = None
         else:
             context["last_result"] = {
-                key: {
-                    "dx_px": response.dx_px,
-                    "dy_px": response.dy_px,
-                    "magnitude_px": response.magnitude_px,
-                    "angle_degrees": response.angle_degrees,
-                }
-                for key, response in self._last_responses.items()
+                key: _response_dict(response) for key, response in self._last_responses.items()
             }
         return context
 
@@ -431,3 +667,12 @@ def _format_response(response: AxisResponse) -> str:
         f"dx={response.dx_px:+.1f}px dy={response.dy_px:+.1f}px "
         f"({response.magnitude_px:.1f}px @ {response.angle_degrees:.0f}°)"
     )
+
+
+def _response_dict(response: AxisResponse) -> dict[str, float]:
+    return {
+        "dx_px": response.dx_px,
+        "dy_px": response.dy_px,
+        "magnitude_px": response.magnitude_px,
+        "angle_degrees": response.angle_degrees,
+    }

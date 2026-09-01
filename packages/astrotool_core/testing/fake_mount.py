@@ -29,6 +29,12 @@ class FakeMountAdapter:
         self._connected = False
         self._tracking = False
         self.pulse_log: list[tuple[MountAxis, AxisDirection, int]] = []
+        #: Parallel to pulse_log (one entry per pulse_axis call, same
+        #: index) rather than folded into it -- pulse_log's 3-tuple shape
+        #: is asserted on throughout the existing test suite, so keeping
+        #: it unchanged and recording rate_preset separately avoids
+        #: touching every one of those assertions for an unrelated field.
+        self.rate_log: list[str | None] = []
         #: Not part of MountPort (see IndiMountPulseAdapter.abort()'s own
         #: docstring on why) -- present here purely so
         #: MountTestMovePanel's duck-typed "Stop" button is testable
@@ -56,10 +62,13 @@ class FakeMountAdapter:
         axis: MountAxis,
         direction: AxisDirection,
         duration_ms: int,
+        *,
+        rate_preset: str | None = None,
     ) -> CommandResult:
         if not self._connected:
             return CommandResult(accepted=False, message="not connected")
         self.pulse_log.append((axis, direction, duration_ms))
+        self.rate_log.append(rate_preset)
         return CommandResult(accepted=True)
 
     def abort(self) -> None:

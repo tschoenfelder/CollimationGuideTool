@@ -134,6 +134,75 @@ def calibrate_axes(
     return CalibrationMatrix(responses=responses)
 
 
+#: Degenerate-matrix guard for `compose_screen_move` -- if AXIS1's and
+#: AXIS2's measured rate vectors are this close to parallel (relative to
+#: their own magnitudes), inverting the 2x2 rate matrix would blow small
+#: measurement noise up into a wild pulse duration. In practice AXIS1/AXIS2
+#: are physically independent (RA vs Dec), so this should only ever fire on
+#: a bad calibration (e.g. one axis's "before"/"after" measurement was
+#: wrong) -- the caller should ask the user to recalibrate, not retry.
+_MIN_DETERMINANT_RATIO = 1e-3
+
+
+def compose_screen_move(
+    axis1_response: AxisResponse,
+    axis2_response: AxisResponse,
+    *,
+    target_dx_px: float,
+    target_dy_px: float,
+) -> list[tuple[MountAxis, AxisDirection, int]]:
+    """Solve which AXIS1/AXIS2 pulse durations, run back-to-back, best
+    produce a desired on-screen displacement for one camera.
+
+    `axis1_response`/`axis2_response` must be this camera's own POSITIVE-
+    direction calibration responses (from `response_from_positions` or
+    `calibrate_axis`) -- each pulse's measured (dx_px, dy_px) is assumed to
+    scale linearly with duration (matches `AxisResponse.px_per_ms`'s own
+    model), so `rate_i = response_i.{dx,dy}_px / response_i.duration_ms`
+    gives each axis's per-ms displacement vector. These two vectors form a
+    2x2 matrix mapping (t1_ms, t2_ms) -> (dx_px, dy_px); this inverts it via
+    Cramer's rule to solve for the (t1_ms, t2_ms) that hits
+    (target_dx_px, target_dy_px), since a camera can be rotated relative to
+    the mount's axes -- a single axis alone usually can't produce a pure
+    screen-relative direction like "up".
+
+    A negative solved duration means that axis needs the opposite direction
+    from the one calibrated; the returned step's sign always reflects that,
+    never a negative duration_ms. A step whose rounded duration is 0 is
+    omitted entirely (already screen-aligned with the other axis).
+
+    Raises ValueError if AXIS1's and AXIS2's rate vectors are too close to
+    parallel to invert reliably -- see `_MIN_DETERMINANT_RATIO`.
+    """
+    if axis1_response.duration_ms <= 0 or axis2_response.duration_ms <= 0:
+        raise ValueError("compose_screen_move: calibration responses need a positive duration_ms")
+
+    rate1_dx = axis1_response.dx_px / axis1_response.duration_ms
+    rate1_dy = axis1_response.dy_px / axis1_response.duration_ms
+    rate2_dx = axis2_response.dx_px / axis2_response.duration_ms
+    rate2_dy = axis2_response.dy_px / axis2_response.duration_ms
+
+    determinant = rate1_dx * rate2_dy - rate2_dx * rate1_dy
+    scale = math.hypot(rate1_dx, rate1_dy) * math.hypot(rate2_dx, rate2_dy)
+    if scale == 0.0 or abs(determinant) < _MIN_DETERMINANT_RATIO * scale:
+        raise ValueError(
+            "compose_screen_move: AXIS1 and AXIS2 responses are too close to parallel to "
+            "invert reliably -- recalibrate (one axis may not have moved anything real)"
+        )
+
+    t1_ms = (target_dx_px * rate2_dy - target_dy_px * rate2_dx) / determinant
+    t2_ms = (rate1_dx * target_dy_px - rate1_dy * target_dx_px) / determinant
+
+    steps: list[tuple[MountAxis, AxisDirection, int]] = []
+    for axis, signed_ms in ((MountAxis.AXIS1, t1_ms), (MountAxis.AXIS2, t2_ms)):
+        duration_ms = round(abs(signed_ms))
+        if duration_ms <= 0:
+            continue
+        direction = AxisDirection.POSITIVE if signed_ms >= 0 else AxisDirection.NEGATIVE
+        steps.append((axis, direction, duration_ms))
+    return steps
+
+
 def response_from_positions(
     axis: MountAxis,
     direction: AxisDirection,

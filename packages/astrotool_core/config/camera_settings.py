@@ -12,9 +12,11 @@ exposure/gain by hand every startup.
 
 Written to `[cameras.<panel_name>]` tables in the shared
 `~/.CollimationGuideTool/config.toml` (see install.md's "Configuration"
-section — this is the first thing to actually read/write that file; the
-broader config loader PLAN.md describes, e.g. for mount/session settings,
-is still unbuilt and can add its own tables here without conflict).
+section — this was the first thing to actually read/write that file;
+`mount_alignment_settings.py`'s `[mount_alignment]` table is a second one
+now sharing it). `save_camera_settings` only ever rewrites its own
+`[cameras.*]` tables (see `_strip_table_blocks`) — a sibling table survives
+untouched across every save here, and vice versa.
 
 Hand-rolled TOML writing rather than a new dependency: stdlib `tomllib`
 (used for reading) is read-only, and this schema is a small, fixed shape
@@ -97,18 +99,51 @@ def _toml_scalar(value: object) -> str:
     return str(value)
 
 
+def _strip_table_blocks(lines: list[str], prefix: str) -> list[str]:
+    """Drop every top-level table block whose header starts with `prefix`
+    (e.g. ``"[cameras."``), keeping every other line untouched -- a
+    line-scanned rewrite rather than a full TOML round-trip, same approach
+    smart_telescope's ``api/location.py`` uses for its own multi-table
+    ``config.toml`` (see that project's ``[locations.*]`` sections) so
+    rewriting this module's own tables can never corrupt a sibling table
+    (e.g. ``[mount_alignment]``, see ``mount_alignment_settings.py``)
+    sharing the same file."""
+    kept: list[str] = []
+    skipping = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("["):
+            skipping = stripped.startswith(prefix)
+        if not skipping:
+            kept.append(line)
+    return kept
+
+
 def save_camera_settings(
     settings: dict[str, CameraPanelSettings],
     path: Path | str = DEFAULT_CONFIG_PATH,
 ) -> None:
     """Write ``{panel_name: CameraPanelSettings}`` to `path` as TOML.
 
-    Overwrites the whole file: nothing else currently reads or writes
-    `config.toml` (see module docstring), so there's nothing else in it
-    to preserve yet. Revisit (read-merge-write) once a second table
-    lands here.
+    Replaces only the ``[cameras.*]`` tables; any other top-level table
+    already in the file (e.g. ``[mount_alignment]``) is preserved verbatim
+    -- see `_strip_table_blocks`. A missing/unreadable file is treated the
+    same as an empty one (nothing to preserve), matching `load_camera_settings`'s
+    own tolerance.
     """
-    lines: list[str] = []
+    target = Path(path)
+    try:
+        existing_lines = target.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        existing_lines = []
+
+    kept = _strip_table_blocks(existing_lines, "[cameras.")
+    while kept and kept[-1] == "":
+        kept.pop()
+
+    lines = list(kept)
+    if lines:
+        lines.append("")
     for panel_name in sorted(settings):
         panel = settings[panel_name]
         lines.append(f"[cameras.{panel_name}]")
@@ -118,6 +153,5 @@ def save_camera_settings(
         lines.append(f"auto_exposure_enabled = {_toml_scalar(panel.auto_exposure_enabled)}")
         lines.append("")
 
-    target = Path(path)
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("\n".join(lines), encoding="utf-8")

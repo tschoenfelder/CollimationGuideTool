@@ -80,7 +80,15 @@ class IndiMountAdapter:
         axis: MountAxis,
         direction: AxisDirection,
         duration_ms: int,
+        *,
+        rate_preset: str | None = None,
     ) -> CommandResult:
+        # rate_preset is accepted for MountPort conformance but has no effect
+        # here -- onstep_adapter's guide() has no rate-select parameter to
+        # forward it to (unlike IndiMountPulseAdapter's real INDI
+        # TELESCOPE_SLEW_RATE vector). This adapter is real-hardware-only
+        # and not used by the mount-alignment feature, so this is a
+        # documented no-op rather than a gap to fix.
         if not self._connected:
             return CommandResult(accepted=False, message="not connected")
         return self._pulse_axis_connected(axis, direction, duration_ms)  # pragma: no cover

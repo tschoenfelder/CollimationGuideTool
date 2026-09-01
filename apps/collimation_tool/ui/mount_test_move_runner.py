@@ -23,21 +23,28 @@ and computes the response itself, also on the main thread (fast enough,
 unlike FOV registration's search, not to need its own thread). This
 runner's only job is the unpark/pulse/re-park timing.
 
-Unparks first, pulses, then re-parks — a real-hardware check (see
-incident notes on `IndiMountPulseAdapter`) found OnStep's driver refuses
+Always unparks first — a real-hardware check (see incident notes on
+`IndiMountPulseAdapter`) found OnStep's driver refuses
 `TELESCOPE_MOTION_NS`/`_WE` while parked ("Please unpark the mount before
 issuing any motion/sync commands"). That refusal is a deliberate safety
 interlock, not a defect — parked is supposed to mean "don't move" — so
 this runner works *with* it rather than around it: it still reports the
 switch command accepted at the INDI level even though nothing moved, so
-a caller can't tell from the ack alone, which is why this runner does the
-unpark/re-park itself instead (reusing `IndiMountParkAdapter.unpark()`'s
-already-durable TRACK_OFF), so from the button's perspective the mount
-still starts and ends parked — "when parked" describes the resting state
-around the test, not a precondition the pulse itself can honor, and the
-interlock stays intact and respected throughout. `park()` always runs in
-a `finally`, even if the pulse itself failed, so a mid-run error can't
-strand the mount unparked.
+a caller can't tell from the ack alone, which is why this runner ensures
+unparked itself instead (reusing `IndiMountParkAdapter.unpark()`'s already-
+durable TRACK_OFF) before ever pulsing.
+
+Whether it *re-parks* afterward is the caller's choice (`park_after`,
+default `True`). The mount-alignment feature (`MountTestMovePanel`) always
+passes `park_after=False`: its "Run Calibration" sequence and its per-camera
+direction-pad nudges are meant to run one after another across a single
+unparked working session — re-parking after every individual pulse would
+undo the whole point of leaving the mount unparked between them. Parking
+back up when the session is done stays the separate Mount panel's job,
+exactly as it already is for every other unparked action in this app.
+`park_after=True` (e.g. a hypothetical single ad hoc probe) still re-parks
+in a `finally`, even if the pulse itself failed, so a mid-run error can't
+strand the mount unparked in that mode.
 """
 
 from __future__ import annotations
@@ -52,6 +59,9 @@ from astrotool_core.mount.port import AxisDirection, MountAxis, MountPort
 _UNPARK_TIMEOUT_S = 5.0
 _REPARK_TIMEOUT_S = 5.0
 _PARK_POLL_INTERVAL_S = 0.1
+
+#: One pulse within a submitted sequence: (axis, direction, duration_ms).
+PulseStep = tuple[MountAxis, AxisDirection, int]
 
 
 @dataclass(frozen=True)
@@ -87,16 +97,45 @@ class MountTestMoveRunner:
         axis: MountAxis,
         direction: AxisDirection,
         pulse_ms: int,
+        *,
+        rate_preset: str | None = None,
+        park_after: bool = True,
     ) -> bool:
-        """Start an unpark/pulse/re-park sequence in the background.
-        Returns False (a no-op) if one is already running."""
+        """Start an unpark/pulse/(re-park unless `park_after=False`)
+        sequence in the background. Returns False (a no-op) if one is
+        already running. A thin one-step wrapper around `submit_sequence` —
+        see that method and the module docstring for `park_after`."""
+        return self.submit_sequence(
+            mount_park,
+            mount,
+            [(axis, direction, pulse_ms)],
+            rate_preset=rate_preset,
+            park_after=park_after,
+        )
+
+    def submit_sequence(
+        self,
+        mount_park: MountParkPort,
+        mount: MountPort,
+        steps: list[PulseStep],
+        *,
+        rate_preset: str | None = None,
+        park_after: bool = True,
+    ) -> bool:
+        """Like `submit`, but for several pulses run back-to-back after a
+        single unpark (e.g. a composed two-axis direction-pad nudge) —
+        `MountTestMovePanel` needs one clean before/after measurement
+        bracketing the *whole* sequence, not one per sub-pulse. Returns
+        False (a no-op) if one is already running, or if `steps` is empty."""
+        if not steps:
+            return False
         with self._lock:
             if self._busy:
                 return False
             self._busy = True
         threading.Thread(
             target=self._run,
-            args=(mount_park, mount, axis, direction, pulse_ms),
+            args=(mount_park, mount, steps, rate_preset, park_after),
             daemon=True,
             name="mount-test-move",
         ).start()
@@ -106,9 +145,9 @@ class MountTestMoveRunner:
         self,
         mount_park: MountParkPort,
         mount: MountPort,
-        axis: MountAxis,
-        direction: AxisDirection,
-        pulse_ms: int,
+        steps: list[PulseStep],
+        rate_preset: str | None,
+        park_after: bool,
     ) -> None:
         pulsed = False
         error: str | None = None
@@ -117,19 +156,35 @@ class MountTestMoveRunner:
             if not _wait_for_parked(mount_park, want_parked=False, timeout_s=_UNPARK_TIMEOUT_S):
                 error = "mount did not confirm unparked in time -- aborting test move"
             else:
-                result = mount.pulse_axis(axis, direction, pulse_ms)
-                if not result.accepted:
-                    error = (
-                        f"pulse rejected for {axis.name} {direction.name}: {result.message}"
+                # All-or-nothing `pulsed` flag, same as the single-pulse
+                # contract this generalizes: if a later step in a multi-step
+                # sequence is rejected, an earlier step may already have
+                # physically moved the mount, but `pulsed=False` is still
+                # reported rather than a partial-success shape -- a
+                # mid-sequence rejection is an edge case that in practice
+                # only happens if the mount disconnects mid-run, and the
+                # caller treating "not fully pulsed" as "don't trust an
+                # after-measurement" is the safer default.
+                for axis, direction, pulse_ms in steps:
+                    result = mount.pulse_axis(
+                        axis, direction, pulse_ms, rate_preset=rate_preset
                     )
+                    if not result.accepted:
+                        error = (
+                            f"pulse rejected for {axis.name} {direction.name}: {result.message}"
+                        )
+                        break
                 else:
                     pulsed = True
         finally:
-            # Always try to leave the mount parked again, even if the
-            # pulse failed above -- see module docstring.
-            mount_park.park()
-            if not _wait_for_parked(mount_park, want_parked=True, timeout_s=_REPARK_TIMEOUT_S):
-                error = error or "mount did not confirm re-parked in time"
+            if park_after:
+                # Always try to leave the mount parked again, even if the
+                # pulse failed above -- see module docstring.
+                mount_park.park()
+                if not _wait_for_parked(
+                    mount_park, want_parked=True, timeout_s=_REPARK_TIMEOUT_S
+                ):
+                    error = error or "mount did not confirm re-parked in time"
 
         with self._lock:
             self._latest_outcome = MountPulseOutcome(pulsed=pulsed, error=error)

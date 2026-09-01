@@ -105,6 +105,7 @@ from astrotool_core.camera import (
 from astrotool_core.config import (
     DEFAULT_CONFIG_PATH,
     load_camera_settings,
+    load_mount_alignment_settings,
     save_camera_settings,
 )
 from astrotool_core.diagnostics import DiagnosticService
@@ -199,6 +200,19 @@ class MainWindow(QMainWindow):
         # FocuserPanel's own docstring) -- pause just the Main camera's
         # analysis/display while it's moving, not the Guide panel.
         self._focuser_panel.move_in_flight_changed.connect(self._left_panel.set_updates_paused)
+
+        # Resolved from the module-level DEFAULT_CONFIG_PATH at call time
+        # (not bound as this parameter's own default value) so tests can
+        # monkeypatch this module's DEFAULT_CONFIG_PATH to redirect every
+        # MainWindow() call at once, rather than needing camera_settings_path
+        # threaded through every test's construction call — see conftest.py.
+        # Resolved here (before _test_move_panel below, which also reads
+        # this same file's [mount_alignment] table) rather than down by the
+        # camera-settings restore, which used to be the first thing to need it.
+        self._camera_settings_path = (
+            Path(camera_settings_path) if camera_settings_path is not None else DEFAULT_CONFIG_PATH
+        )
+
         # Shared with _test_move_panel below -- see MountTestMovePanel's
         # own docstring for why that panel drives this same MountParkPort
         # rather than owning a second, independently-connected copy of
@@ -210,6 +224,7 @@ class MainWindow(QMainWindow):
             mount_park=mount_park_port,
             get_left_frame=self._left_panel.latest_mono_frame,
             get_right_frame=self._right_panel.latest_mono_frame,
+            settings=load_mount_alignment_settings(self._camera_settings_path),
         )
 
         # Restore last session's connected camera + exposure/gain/
@@ -217,14 +232,6 @@ class MainWindow(QMainWindow):
         # settings restore" and astrotool_core.config.camera_settings.
         # Connected *after* the restore, not before: applying saved
         # settings shouldn't re-save the very state it just loaded.
-        # Resolved from the module-level DEFAULT_CONFIG_PATH at call time
-        # (not bound as this parameter's own default value) so tests can
-        # monkeypatch this module's DEFAULT_CONFIG_PATH to redirect every
-        # MainWindow() call at once, rather than needing camera_settings_path
-        # threaded through every test's construction call — see conftest.py.
-        self._camera_settings_path = (
-            Path(camera_settings_path) if camera_settings_path is not None else DEFAULT_CONFIG_PATH
-        )
         saved_settings = load_camera_settings(self._camera_settings_path)
         self._left_panel.apply_saved_settings(saved_settings.get("main"))
         self._right_panel.apply_saved_settings(saved_settings.get("guide"))

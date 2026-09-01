@@ -6,6 +6,7 @@ from astrotool_core.mount.axis_calibration import (
     calibrate_axes,
     calibrate_axis,
     calibrate_axis_multi,
+    compose_screen_move,
 )
 from astrotool_core.mount.port import AxisDirection, MountAxis
 from astrotool_core.testing.fake_mount import FakeMountAdapter
@@ -179,6 +180,72 @@ def test_calibrate_axis_multi_raises_when_pulse_rejected() -> None:
             measures={"left": lambda: (0.0, 0.0)},
             pulse_ms=500,
         )
+
+
+def _response(axis: MountAxis, dx_px: float, dy_px: float, duration_ms: int = 1000) -> AxisResponse:
+    return AxisResponse(
+        axis=axis,
+        direction=AxisDirection.POSITIVE,
+        duration_ms=duration_ms,
+        dx_px=dx_px,
+        dy_px=dy_px,
+        px_per_ms=math.hypot(dx_px, dy_px) / duration_ms if duration_ms > 0 else 0.0,
+    )
+
+
+def test_compose_screen_move_axis_aligned_camera_uses_only_the_matching_axis() -> None:
+    # AXIS1+ moves purely +x (right), AXIS2+ moves purely +y (down) at
+    # 0.1 px/ms each -- a camera with no rotation relative to the mount.
+    axis1 = _response(MountAxis.AXIS1, dx_px=100.0, dy_px=0.0)
+    axis2 = _response(MountAxis.AXIS2, dx_px=0.0, dy_px=100.0)
+
+    right = compose_screen_move(axis1, axis2, target_dx_px=10.0, target_dy_px=0.0)
+    assert right == [(MountAxis.AXIS1, AxisDirection.POSITIVE, 100)]
+
+    up = compose_screen_move(axis1, axis2, target_dx_px=0.0, target_dy_px=-10.0)
+    assert up == [(MountAxis.AXIS2, AxisDirection.NEGATIVE, 100)]
+
+
+def test_compose_screen_move_rotated_camera_needs_both_axes() -> None:
+    # AXIS1+ moves (+x, +y), AXIS2+ moves (+x, -y) -- a camera rotated 45
+    # degrees relative to the mount, so neither axis alone is "right".
+    axis1 = _response(MountAxis.AXIS1, dx_px=1000.0, dy_px=1000.0)
+    axis2 = _response(MountAxis.AXIS2, dx_px=1000.0, dy_px=-1000.0)
+
+    steps = compose_screen_move(axis1, axis2, target_dx_px=200.0, target_dy_px=0.0)
+
+    assert steps == [
+        (MountAxis.AXIS1, AxisDirection.POSITIVE, 100),
+        (MountAxis.AXIS2, AxisDirection.POSITIVE, 100),
+    ]
+
+
+def test_compose_screen_move_omits_a_step_whose_duration_rounds_to_zero() -> None:
+    axis1 = _response(MountAxis.AXIS1, dx_px=100.0, dy_px=0.0)
+    axis2 = _response(MountAxis.AXIS2, dx_px=0.0, dy_px=100.0)
+
+    left = compose_screen_move(axis1, axis2, target_dx_px=-10.0, target_dy_px=0.0)
+
+    assert left == [(MountAxis.AXIS1, AxisDirection.NEGATIVE, 100)]
+    assert all(axis is not MountAxis.AXIS2 for axis, _, _ in left)
+
+
+def test_compose_screen_move_raises_for_near_parallel_axes() -> None:
+    # AXIS1+ and AXIS2+ both move purely +x -- degenerate, can't span the
+    # image plane, inverting would blow up.
+    axis1 = _response(MountAxis.AXIS1, dx_px=100.0, dy_px=0.0)
+    axis2 = _response(MountAxis.AXIS2, dx_px=200.0, dy_px=0.0)
+
+    with pytest.raises(ValueError, match="parallel"):
+        compose_screen_move(axis1, axis2, target_dx_px=10.0, target_dy_px=0.0)
+
+
+def test_compose_screen_move_rejects_a_zero_duration_calibration_response() -> None:
+    axis1 = _response(MountAxis.AXIS1, dx_px=0.0, dy_px=0.0, duration_ms=0)
+    axis2 = _response(MountAxis.AXIS2, dx_px=0.0, dy_px=100.0)
+
+    with pytest.raises(ValueError, match="duration_ms"):
+        compose_screen_move(axis1, axis2, target_dx_px=10.0, target_dy_px=0.0)
 
 
 def test_calibration_matrix_response_for_looks_up_by_axis_and_direction() -> None:

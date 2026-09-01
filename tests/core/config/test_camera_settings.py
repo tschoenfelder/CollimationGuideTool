@@ -114,3 +114,29 @@ class TestSaveCameraSettings:
         }
         save_camera_settings(original, path)
         assert load_camera_settings(path) == original
+
+    def test_preserves_a_sibling_table_already_in_the_file(self, tmp_path: Path) -> None:
+        """A [mount_alignment] table (or any other sibling) must survive a
+        camera-settings save untouched -- this module only ever rewrites
+        its own [cameras.*] tables. Regression guard: an earlier version
+        overwrote the whole file on every save."""
+        path = tmp_path / "config.toml"
+        path.write_text(
+            "[mount_alignment]\npulse_ms = 750\nrate_preset = \"5\"\n", encoding="utf-8"
+        )
+        save_camera_settings(
+            {"main": CameraPanelSettings(None, 20.0, 100, False)},
+            path,
+        )
+        text = path.read_text(encoding="utf-8")
+        assert "[mount_alignment]" in text
+        assert "pulse_ms = 750" in text
+        assert 'rate_preset = "5"' in text
+        assert set(load_camera_settings(path)) == {"main"}
+
+    def test_repeated_saves_do_not_duplicate_a_sibling_table(self, tmp_path: Path) -> None:
+        path = tmp_path / "config.toml"
+        path.write_text("[mount_alignment]\npulse_ms = 750\n", encoding="utf-8")
+        save_camera_settings({"main": CameraPanelSettings(None, 20.0, 100, False)}, path)
+        save_camera_settings({"main": CameraPanelSettings(None, 30.0, 150, True)}, path)
+        assert path.read_text(encoding="utf-8").count("[mount_alignment]") == 1

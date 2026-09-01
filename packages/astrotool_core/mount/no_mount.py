@@ -41,5 +41,7 @@ class NoMountAdapter:
         axis: MountAxis,
         direction: AxisDirection,
         duration_ms: int,
+        *,
+        rate_preset: str | None = None,
     ) -> CommandResult:
         return CommandResult(accepted=False, message="no mount configured")

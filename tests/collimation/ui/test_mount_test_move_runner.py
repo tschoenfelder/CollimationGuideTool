@@ -99,6 +99,79 @@ class TestMountTestMoveRunner:
         # A pulse rejection still must not strand the mount unparked.
         assert mount_park.status().parked is True
 
+    def test_park_after_false_leaves_the_mount_unparked(self) -> None:
+        mount_park = FakeMountPark(start_parked=True)
+        mount = FakeMountAdapter()
+        mount.connect()
+        runner = MountTestMoveRunner()
+
+        runner.submit(
+            mount_park,
+            mount,
+            MountAxis.AXIS1,
+            AxisDirection.POSITIVE,
+            500,
+            park_after=False,
+        )
+
+        assert _wait_for(lambda: not runner.is_busy)
+        outcome = runner.take_latest()
+        assert outcome is not None
+        assert outcome.pulsed is True
+        assert mount_park.status().parked is False
+
+    def test_submit_passes_rate_preset_through_to_the_pulse(self) -> None:
+        mount_park = FakeMountPark(start_parked=True)
+        mount = FakeMountAdapter()
+        mount.connect()
+        runner = MountTestMoveRunner()
+
+        runner.submit(
+            mount_park, mount, MountAxis.AXIS1, AxisDirection.POSITIVE, 500, rate_preset="7"
+        )
+
+        assert _wait_for(lambda: not runner.is_busy)
+        assert mount.rate_log == ["7"]
+
+    def test_submit_sequence_runs_every_step_back_to_back_after_one_unpark(self) -> None:
+        mount_park = FakeMountPark(start_parked=True)
+        mount = FakeMountAdapter()
+        mount.connect()
+        runner = MountTestMoveRunner()
+
+        started = runner.submit_sequence(
+            mount_park,
+            mount,
+            [
+                (MountAxis.AXIS1, AxisDirection.POSITIVE, 100),
+                (MountAxis.AXIS2, AxisDirection.NEGATIVE, 50),
+            ],
+            rate_preset="7",
+            park_after=False,
+        )
+
+        assert started is True
+        assert _wait_for(lambda: not runner.is_busy)
+        outcome = runner.take_latest()
+        assert outcome is not None
+        assert outcome.pulsed is True
+        assert mount.pulse_log == [
+            (MountAxis.AXIS1, AxisDirection.POSITIVE, 100),
+            (MountAxis.AXIS2, AxisDirection.NEGATIVE, 50),
+        ]
+        assert mount.rate_log == ["7", "7"]
+        # Only one unpark for the whole sequence, not one per step.
+        assert mount_park.unpark_count == 1
+        assert mount_park.status().parked is False
+
+    def test_submit_sequence_with_no_steps_is_a_no_op(self) -> None:
+        runner = MountTestMoveRunner()
+        started = runner.submit_sequence(
+            FakeMountPark(start_parked=True), FakeMountAdapter(), []
+        )
+        assert started is False
+        assert runner.is_busy is False
+
     def test_a_mount_that_never_unparks_times_out_instead_of_hanging(self) -> None:
         mount = FakeMountAdapter()
         mount.connect()

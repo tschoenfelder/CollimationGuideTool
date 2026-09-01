@@ -96,6 +96,22 @@ def test_pulse_axis_returns_a_command_result(
 
 
 @pytest.mark.parametrize("mount_factory", MOUNT_FACTORIES)
+def test_pulse_axis_accepts_an_explicit_rate_preset(mount_factory: MountFactory) -> None:
+    """rate_preset is optional on every MountPort implementation -- calling
+    with an explicit value must not raise or change whether the pulse is
+    accepted, regardless of whether the adapter actually does anything with
+    it (only IndiMountPulseAdapter does; see its own module docstring)."""
+    mount = mount_factory()
+    mount.connect()
+    try:
+        result = mount.pulse_axis(MountAxis.AXIS1, AxisDirection.POSITIVE, 250, rate_preset="7")
+        assert isinstance(result.accepted, bool)
+        assert isinstance(result.message, str)
+    finally:
+        mount.disconnect()
+
+
+@pytest.mark.parametrize("mount_factory", MOUNT_FACTORIES)
 def test_pulse_axis_after_disconnect_is_not_accepted(mount_factory: MountFactory) -> None:
     mount = mount_factory()
     mount.connect()

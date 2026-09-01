@@ -57,7 +57,12 @@ class MovingMount:
         return MountStatus(connected=True, tracking=True, slewing=False)
 
     def pulse_axis(
-        self, axis: MountAxis, direction: AxisDirection, duration_ms: int
+        self,
+        axis: MountAxis,
+        direction: AxisDirection,
+        duration_ms: int,
+        *,
+        rate_preset: str | None = None,
     ) -> CommandResult:
         self.pulse_log.append((axis, direction, duration_ms))
         if not self._accept:
@@ -174,7 +179,12 @@ def test_diverging_offset_aborts_after_max_diverge_count() -> None:
 
     class DivergingMount(MovingMount):
         def pulse_axis(
-            self, axis: MountAxis, direction: AxisDirection, duration_ms: int
+            self,
+            axis: MountAxis,
+            direction: AxisDirection,
+            duration_ms: int,
+            *,
+            rate_preset: str | None = None,
         ) -> CommandResult:
             self.pulse_log.append((axis, direction, duration_ms))
             self.x = next(positions)

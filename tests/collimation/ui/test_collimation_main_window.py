@@ -9,10 +9,11 @@ from astrotool_core.camera.capabilities import CameraCapabilities
 from astrotool_core.camera.port import CameraPort
 from astrotool_core.camera.replay_camera import ReplayCamera
 from astrotool_core.camera.touptek_adapter import TouptekDeviceInfo
-from astrotool_core.config import load_camera_settings
+from astrotool_core.config import MountAlignmentSettings, load_camera_settings
 from astrotool_core.diagnostics import DiagnosticService
 from astrotool_core.focus.fake_focuser import FakeFocuser
 from astrotool_core.focus.port import FocuserStatus
+from astrotool_core.mount.axis_calibration import AxisResponse, CalibrationMatrix
 from astrotool_core.mount.park_port import MountParkStatus
 from astrotool_core.mount.port import AxisDirection, MountAxis
 from astrotool_core.testing.fake_mount import FakeMountAdapter
@@ -1822,13 +1823,24 @@ class _SlowMountPark(FakeMountPark):
 
 
 class TestMountTestMovePanel:
-    """Axis-calibration "test move" diagnostic — see MountTestMovePanel's
-    docstring. FakeMountAdapter stands in for a real IndiMountPulseAdapter
-    here; the INDI wire protocol itself is covered by tests/core/mount
-    and tests/contracts instead. Real detection/measurement correctness
-    is covered by test_mount_test_move_runner.py; these tests are about
-    the panel's own wiring (connect lifecycle, the parked-gate, direction
-    selection, result rendering)."""
+    """Mount-alignment tool — see MountTestMovePanel's docstring.
+    FakeMountAdapter stands in for a real IndiMountPulseAdapter here; the
+    INDI wire protocol itself is covered by tests/core/mount and
+    tests/contracts instead. The math (compose_screen_move) is covered by
+    tests/core/mount/test_axis_calibration.py; MountTestMoveRunner's own
+    sequencing is covered by test_mount_test_move_runner.py. These tests
+    are about the panel's own wiring (connect lifecycle, calibration
+    driving the runner in sequence, per-camera nudge gating, result
+    rendering) -- deliberately using static single-frame cameras (like
+    every other class in this file), so every calibrated AxisResponse is
+    (dx=0, dy=0): fine for star mode (a real response either way, see
+    response_from_positions), degenerate for a nudge's compose_screen_move
+    (AXIS1/AXIS2 measure literally identical zero vectors) -- the "click a
+    nudge and see it submit the right pulses" test below injects its own
+    non-degenerate CalibrationMatrix directly rather than fighting a real
+    streaming camera's own timing to script two different frames at two
+    different moments (see ReplayCamera/StreamController: frames arrive on
+    a background thread, not one-per-_poll_frame()-call)."""
 
     def _window(self, *, mount_park: FakeMountPark, pulse_mount: FakeMountAdapter) -> MainWindow:
         return MainWindow(
@@ -1845,36 +1857,48 @@ class TestMountTestMovePanel:
         window._left_panel._poll_frame()
         window._right_panel._poll_frame()
 
-    def test_starts_disconnected_with_direction_buttons_disabled(self, qapp: object) -> None:
-        window = self._window(mount_park=FakeMountPark(), pulse_mount=FakeMountAdapter())
-        assert all(not b.isEnabled() for b in window._test_move_panel._direction_buttons)
+    def _run_calibration_to_completion(self, panel: object, *, timeout_s: float = 5.0) -> None:
+        """Click Run Calibration and drive the panel's poll loop until the
+        whole 4-step sequence finishes (or the timeout fires) -- mirrors
+        the existing "while runner.is_busy: sleep; poll()" pattern used
+        throughout this file for a single pulse, just repeated across the
+        sequence's several pulses."""
+        panel._run_calibration_button.click()  # type: ignore[attr-defined]
+        deadline = time.monotonic() + timeout_s
+        while panel._calibration_queue or panel._pending is not None:  # type: ignore[attr-defined]
+            while panel._runner.is_busy:  # type: ignore[attr-defined]
+                assert time.monotonic() < deadline, "calibration never completed"
+                time.sleep(0.01)
+            panel._poll()  # type: ignore[attr-defined]
 
-    def test_buttons_disabled_when_connected_but_the_mount_is_not_parked(
+    def test_starts_disconnected_with_calibration_and_nudge_buttons_disabled(
         self, qapp: object
     ) -> None:
-        window = self._window(
-            mount_park=FakeMountPark(start_parked=False), pulse_mount=FakeMountAdapter()
-        )
-        window._mount_panel._connect_button.setChecked(True)
-        window._test_move_panel._connect_button.setChecked(True)
+        window = self._window(mount_park=FakeMountPark(), pulse_mount=FakeMountAdapter())
         panel = window._test_move_panel
-        assert all(not b.isEnabled() for b in panel._direction_buttons)
-        # Real user report (incident 9551627f): disabled with no
-        # explanation read as "connect doesn't react to directions" --
-        # must now say why.
-        assert "park" in panel._result_label.text().lower()
-        window.close()
-
-    def test_buttons_enabled_once_connected_and_parked(self, qapp: object) -> None:
-        window = self._window(
-            mount_park=FakeMountPark(start_parked=True), pulse_mount=FakeMountAdapter()
+        assert not panel._run_calibration_button.isEnabled()
+        assert all(
+            not button.isEnabled()
+            for pad in panel._nudge_buttons.values()
+            for button in pad.values()
         )
-        window._mount_panel._connect_button.setChecked(True)
-        window._test_move_panel._connect_button.setChecked(True)
-        assert all(b.isEnabled() for b in window._test_move_panel._direction_buttons)
-        window.close()
 
-    def test_connect_failure_keeps_buttons_disabled_and_shows_the_error(
+    def test_calibration_button_enabled_once_connected_regardless_of_park_state(
+        self, qapp: object
+    ) -> None:
+        # Unlike the old raw N/S/E/W buttons, calibration no longer needs
+        # the mount already parked/unparked -- MountTestMoveRunner handles
+        # unparking transparently for every pulse it issues.
+        for start_parked in (True, False):
+            window = self._window(
+                mount_park=FakeMountPark(start_parked=start_parked), pulse_mount=FakeMountAdapter()
+            )
+            window._mount_panel._connect_button.setChecked(True)
+            window._test_move_panel._connect_button.setChecked(True)
+            assert window._test_move_panel._run_calibration_button.isEnabled()
+            window.close()
+
+    def test_connect_failure_keeps_calibration_button_disabled_and_shows_the_error(
         self, qapp: object
     ) -> None:
         window = self._window(
@@ -1884,40 +1908,59 @@ class TestMountTestMovePanel:
         window._mount_panel._connect_button.setChecked(True)
         window._test_move_panel._connect_button.setChecked(True)
         panel = window._test_move_panel
-        assert all(not b.isEnabled() for b in panel._direction_buttons)
+        assert not panel._run_calibration_button.isEnabled()
         assert "failed" in panel._status_label.text().lower()
         # mount_park's own connect succeeded (only pulse_mount fails) --
         # its poll timer is running and must be stopped, see conftest.py's
         # Qt-flush fixture / the segfault class this class of leak causes.
         window.close()
 
-    def test_clicking_a_direction_button_pulses_that_direction_immediately(
+    def test_run_calibration_pulses_all_four_steps_in_order_and_builds_both_matrices(
         self, qapp: object
     ) -> None:
         pulse_mount = FakeMountAdapter()
-        window = self._window(mount_park=FakeMountPark(start_parked=True), pulse_mount=pulse_mount)
+        mount_park = FakeMountPark(start_parked=True)
+        window = self._window(mount_park=mount_park, pulse_mount=pulse_mount)
         self._connect_and_stream_cameras(window)
         window._mount_panel._connect_button.setChecked(True)
         window._test_move_panel._connect_button.setChecked(True)
         panel = window._test_move_panel
 
-        # index 2 is "E" -> (AXIS1, POSITIVE) — see _DIRECTIONS. No
-        # separate select-then-confirm step (incident 9551627f) -- one
-        # click both selects and fires.
-        panel._direction_buttons[2].click()
+        self._run_calibration_to_completion(panel)
 
-        deadline = time.monotonic() + 5.0
-        while panel._runner.is_busy:
-            assert time.monotonic() < deadline, "test move never completed"
-            time.sleep(0.01)
-        panel._poll()
-
-        assert pulse_mount.pulse_log == [(MountAxis.AXIS1, AxisDirection.POSITIVE, 500)]
-        assert "Main" in panel._result_label.text()
-        assert "Guide" in panel._result_label.text()
+        settings = MountAlignmentSettings()
+        assert pulse_mount.pulse_log == [
+            (MountAxis.AXIS1, AxisDirection.POSITIVE, settings.pulse_ms),
+            (MountAxis.AXIS1, AxisDirection.NEGATIVE, settings.pulse_ms),
+            (MountAxis.AXIS2, AxisDirection.POSITIVE, settings.pulse_ms),
+            (MountAxis.AXIS2, AxisDirection.NEGATIVE, settings.pulse_ms),
+        ]
+        assert pulse_mount.rate_log == [settings.rate_preset] * 4
+        assert set(panel._calibration) == {"left", "right"}
+        assert all(
+            button.isEnabled()
+            for pad in panel._nudge_buttons.values()
+            for button in pad.values()
+        )
+        assert "RA-axis" in panel._result_label.text()
+        assert "Dec-axis" in panel._result_label.text()
         window.close()
 
-    def test_direction_buttons_disable_and_stop_enables_while_a_move_is_in_flight(
+    def test_run_calibration_never_reparks_the_mount(self, qapp: object) -> None:
+        mount_park = FakeMountPark(start_parked=True)
+        window = self._window(mount_park=mount_park, pulse_mount=FakeMountAdapter())
+        self._connect_and_stream_cameras(window)
+        window._mount_panel._connect_button.setChecked(True)
+        window._test_move_panel._connect_button.setChecked(True)
+        panel = window._test_move_panel
+
+        self._run_calibration_to_completion(panel)
+
+        assert mount_park.park_count == 0
+        assert mount_park.status().parked is False
+        window.close()
+
+    def test_run_calibration_button_and_nudge_pads_disable_and_stop_enables_mid_sequence(
         self, qapp: object
     ) -> None:
         # A plain FakeMountPark/FakeMountAdapter settle instantly, so the
@@ -1933,17 +1976,13 @@ class TestMountTestMovePanel:
         panel = window._test_move_panel
         assert not panel._stop_button.isEnabled()
 
-        panel._direction_buttons[0].click()
-        # _on_direction_clicked() updates button state synchronously,
-        # right after submit() -- no poll tick needed to see this.
+        panel._run_calibration_button.click()
+        # Button state updates synchronously, right after submit() -- no
+        # poll tick needed to see this.
         assert panel._stop_button.isEnabled()
-        assert all(not b.isEnabled() for b in panel._direction_buttons)
+        assert not panel._run_calibration_button.isEnabled()
 
-        deadline = time.monotonic() + 5.0
-        while panel._runner.is_busy:
-            assert time.monotonic() < deadline, "test move never completed"
-            time.sleep(0.01)
-        panel._poll()
+        self._run_calibration_to_completion(panel)
         assert not panel._stop_button.isEnabled()
         window.close()
 
@@ -1955,7 +1994,7 @@ class TestMountTestMovePanel:
         assert pulse_mount.abort_log == [None]
         window.close()
 
-    def test_diagnostic_context_includes_the_last_result(self, qapp: object) -> None:
+    def test_diagnostic_context_includes_calibration_and_last_result(self, qapp: object) -> None:
         window = self._window(
             mount_park=FakeMountPark(start_parked=True), pulse_mount=FakeMountAdapter()
         )
@@ -1963,15 +2002,16 @@ class TestMountTestMovePanel:
         window._mount_panel._connect_button.setChecked(True)
         window._test_move_panel._connect_button.setChecked(True)
         panel = window._test_move_panel
-        panel._direction_buttons[0].click()
 
-        deadline = time.monotonic() + 5.0
-        while panel._runner.is_busy:
-            assert time.monotonic() < deadline, "test move never completed"
-            time.sleep(0.01)
-        panel._poll()
+        self._run_calibration_to_completion(panel)
 
         context = window._diagnostic_context()
+        calibration = context["mount_test_move"]["calibration"]
+        assert set(calibration) == {"left", "right"}
+        assert set(calibration["left"]) == {"axis1", "axis2"}
+        assert set(calibration["left"]["axis1"]) == {
+            "dx_px", "dy_px", "magnitude_px", "angle_degrees",
+        }
         assert context["mount_test_move"]["last_result"] is not None
         assert set(context["mount_test_move"]["last_result"]) == {"left", "right"}
         window.close()
@@ -1998,31 +2038,34 @@ class TestMountTestMovePanel:
         assert panel._target_mode() == "terrestrial"
         assert not panel._star_button.isChecked()
 
-    def test_star_mode_refuses_a_textureless_camera_with_no_point_source(
+    def test_star_mode_calibration_aborts_immediately_on_a_textureless_camera(
         self, qapp: object
     ) -> None:
         """Real incident 6fa2aa59: a daytime/indoor capture with no star
         correctly refuses rather than moving the real mount for nothing —
         this is the failure Terrestrial mode exists to work around."""
+        pulse_mount = FakeMountAdapter()
         window = MainWindow(
             _textured_camera(seed=10),
             guide_camera=_textured_camera(seed=11),
             device_lister=lambda: [],
             mount=FakeMountPark(start_parked=True),
-            pulse_mount=FakeMountAdapter(),
+            pulse_mount=pulse_mount,
         )
         self._connect_and_stream_cameras(window)
         window._mount_panel._connect_button.setChecked(True)
         window._test_move_panel._connect_button.setChecked(True)
         panel = window._test_move_panel
 
-        panel._direction_buttons[0].click()
+        panel._run_calibration_button.click()
 
         assert "no star detected" in panel._result_label.text()
         assert not panel._runner.is_busy  # never submitted -- no pulse issued
+        assert pulse_mount.pulse_log == []
+        assert not panel._calibration
         window.close()
 
-    def test_terrestrial_mode_measures_the_same_textureless_camera_via_cross_correlation(
+    def test_terrestrial_mode_calibration_succeeds_on_a_textureless_camera_via_cross_correlation(
         self, qapp: object
     ) -> None:
         pulse_mount = FakeMountAdapter()
@@ -2039,18 +2082,10 @@ class TestMountTestMovePanel:
         panel = window._test_move_panel
         panel._terrestrial_button.click()
 
-        panel._direction_buttons[0].click()
+        self._run_calibration_to_completion(panel)
 
-        deadline = time.monotonic() + 5.0
-        while panel._runner.is_busy:
-            assert time.monotonic() < deadline, "test move never completed"
-            time.sleep(0.01)
-        panel._poll()
-
-        assert pulse_mount.pulse_log == [(MountAxis.AXIS2, AxisDirection.POSITIVE, 500)]
-        assert "Main" in panel._result_label.text()
-        assert "Guide" in panel._result_label.text()
-        assert "Test move failed" not in panel._result_label.text()
+        assert set(panel._calibration) == {"left", "right"}
+        assert "Calibration failed" not in panel._result_label.text()
         window.close()
 
     def test_diagnostic_context_reports_the_current_target_mode(self, qapp: object) -> None:
@@ -2058,3 +2093,84 @@ class TestMountTestMovePanel:
         window._test_move_panel._terrestrial_button.click()
         context = window._diagnostic_context()
         assert context["mount_test_move"]["target_mode"] == "terrestrial"
+
+    def test_nudge_button_composes_and_submits_the_predicted_pulses(self, qapp: object) -> None:
+        # A hand-crafted, axis-aligned calibration (rather than one built
+        # by a real Run Calibration pass) -- see class docstring for why:
+        # a static single-frame camera's own calibration is degenerate.
+        pulse_mount = FakeMountAdapter()
+        mount_park = FakeMountPark(start_parked=True)
+        window = self._window(mount_park=mount_park, pulse_mount=pulse_mount)
+        self._connect_and_stream_cameras(window)
+        window._mount_panel._connect_button.setChecked(True)
+        window._test_move_panel._connect_button.setChecked(True)
+        panel = window._test_move_panel
+
+        def _response(axis: MountAxis, dx_px: float, dy_px: float) -> AxisResponse:
+            return AxisResponse(
+                axis=axis, direction=AxisDirection.POSITIVE, duration_ms=1000,
+                dx_px=dx_px, dy_px=dy_px, px_per_ms=0.0,
+            )
+
+        panel._calibration["left"] = CalibrationMatrix(
+            responses={
+                (MountAxis.AXIS1, AxisDirection.POSITIVE): _response(MountAxis.AXIS1, 100.0, 0.0),
+                (MountAxis.AXIS2, AxisDirection.POSITIVE): _response(MountAxis.AXIS2, 0.0, 100.0),
+            }
+        )
+        panel._update_buttons_enabled()
+        assert panel._nudge_buttons["left"]["Right"].isEnabled()
+        assert not panel._nudge_buttons["right"]["Right"].isEnabled()  # no matrix for "right"
+
+        panel._nudge_buttons["left"]["Right"].click()
+
+        deadline = time.monotonic() + 5.0
+        while panel._runner.is_busy:
+            assert time.monotonic() < deadline, "nudge never completed"
+            time.sleep(0.01)
+        panel._poll()
+
+        # axis1 rate is 100px/1000ms = 0.1 px/ms; nudge_target_px defaults
+        # to 10.0 -> 10.0 / 0.1 = 100ms, axis1 only (already screen-aligned).
+        settings = MountAlignmentSettings()
+        assert pulse_mount.pulse_log == [(MountAxis.AXIS1, AxisDirection.POSITIVE, 100)]
+        assert pulse_mount.rate_log == [settings.rate_preset]
+        assert "Main" in panel._result_label.text()
+        assert "Guide" in panel._result_label.text()
+        assert "failed" not in panel._result_label.text().lower()
+        window.close()
+
+    def test_nudge_button_reports_an_error_for_a_degenerate_calibration(
+        self, qapp: object
+    ) -> None:
+        pulse_mount = FakeMountAdapter()
+        window = self._window(
+            mount_park=FakeMountPark(start_parked=True), pulse_mount=pulse_mount
+        )
+        self._connect_and_stream_cameras(window)
+        window._mount_panel._connect_button.setChecked(True)
+        window._test_move_panel._connect_button.setChecked(True)
+        panel = window._test_move_panel
+
+        # AXIS1+ and AXIS2+ both moving purely +x -- degenerate, can't
+        # span the image plane (see test_axis_calibration.py's own
+        # dedicated coverage of compose_screen_move's ValueError itself).
+        def _response(axis: MountAxis, dx_px: float) -> AxisResponse:
+            return AxisResponse(
+                axis=axis, direction=AxisDirection.POSITIVE, duration_ms=1000,
+                dx_px=dx_px, dy_px=0.0, px_per_ms=0.0,
+            )
+
+        panel._calibration["left"] = CalibrationMatrix(
+            responses={
+                (MountAxis.AXIS1, AxisDirection.POSITIVE): _response(MountAxis.AXIS1, 100.0),
+                (MountAxis.AXIS2, AxisDirection.POSITIVE): _response(MountAxis.AXIS2, 200.0),
+            }
+        )
+        panel._update_buttons_enabled()
+
+        panel._nudge_buttons["left"]["Up"].click()
+
+        assert "Move failed" in panel._result_label.text()
+        assert pulse_mount.pulse_log == []
+        window.close()

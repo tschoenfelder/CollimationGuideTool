@@ -34,6 +34,13 @@ after the move, not mid-slew. Restores whatever slew-rate preset was
 selected before the pulse once done, since this is meant to be a
 non-disruptive diagnostic probe, not a standing rate change.
 
+`pulse_axis()`'s optional `rate_preset` overrides `self._slew_rate_element`
+for that one call only (still restored afterward like any other rate) —
+added for the mount-alignment feature (`MountTestMovePanel`), which needs
+every calibration/nudge pulse to run at one deliberately-configured rate
+(default "7"/48x, see `astrotool_core.config.mount_alignment_settings`)
+independent of whatever this instance's own default happens to be.
+
 Direction mapping (documented since it's this adapter's own convention,
 `MountPort` itself is direction-agnostic): AXIS1 (RA/azimuth) POSITIVE =
 east, NEGATIVE = west; AXIS2 (Dec/altitude) POSITIVE = north, NEGATIVE =
@@ -169,21 +176,24 @@ class IndiMountPulseAdapter:
         axis: MountAxis,
         direction: AxisDirection,
         duration_ms: int,
+        *,
+        rate_preset: str | None = None,
     ) -> CommandResult:
         if not self.is_available:
             return CommandResult(accepted=False, message="not connected")
         vector_name, element = _MOTION_VECTOR[(axis, direction)]
         clamped_ms = max(_MIN_PULSE_MS, min(_MAX_PULSE_MS, duration_ms))
+        selected_rate = rate_preset if rate_preset is not None else self._slew_rate_element
 
         previous_rate = self._current_slew_rate_element()
         self._client.send_new_switch_vector(
-            self._device_name, "TELESCOPE_SLEW_RATE", {self._slew_rate_element: True}
+            self._device_name, "TELESCOPE_SLEW_RATE", {selected_rate: True}
         )
         time.sleep(_RATE_SELECT_SETTLE_S)
         self._client.send_new_switch_vector(self._device_name, vector_name, {element: True})
         time.sleep(clamped_ms / 1000.0)
         self._client.send_new_switch_vector(self._device_name, vector_name, {element: False})
-        if previous_rate is not None and previous_rate != self._slew_rate_element:
+        if previous_rate is not None and previous_rate != selected_rate:
             self._client.send_new_switch_vector(
                 self._device_name, "TELESCOPE_SLEW_RATE", {previous_rate: True}
             )

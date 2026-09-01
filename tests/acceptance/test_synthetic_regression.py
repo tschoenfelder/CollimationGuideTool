@@ -124,7 +124,12 @@ class SyntheticOnStepMount:
         return MountStatus(connected=self.connected, tracking=self.connected, slewing=False)
 
     def pulse_axis(
-        self, axis: MountAxis, direction: AxisDirection, duration_ms: int
+        self,
+        axis: MountAxis,
+        direction: AxisDirection,
+        duration_ms: int,
+        *,
+        rate_preset: str | None = None,
     ) -> CommandResult:
         if not self.connected:
             return CommandResult(accepted=False, message="synthetic mount disconnected")
