@@ -220,12 +220,31 @@ class MountTestMovePanel(QWidget):
         title: str = "Mount Alignment",
         settings: MountAlignmentSettings | None = None,
         runner: MountTestMoveRunner | None = None,
+        set_left_auto_exposure_paused: Callable[[bool], None] | None = None,
+        set_right_auto_exposure_paused: Callable[[bool], None] | None = None,
     ) -> None:
         super().__init__()
         self._mount = mount
         self._mount_park = mount_park
         self._get_left_frame = get_left_frame
         self._get_right_frame = get_right_frame
+        #: Real incident ca728d27: auto-exposure roughly doubled the
+        #: Guide camera's gain between a calibration step's "before" and
+        #: "after" capture, pushing "after" into partial saturation --
+        #: correlation genuinely found no shift (both frames' actual
+        #: content hadn't moved relative to each other under a pure
+        #: gain change, but the *non-linear* clipping broke that), which
+        #: then made `compose_screen_move`'s degenerate-matrix guard fire
+        #: correctly on bad-but-legitimate-looking input. See
+        #: `CameraPanel.set_auto_exposure_paused`'s own docstring for the
+        #: fix this wires in: exposure/gain held stable for the whole
+        #: bracket from a step's "before" capture through its "after"
+        #: capture, without pausing frame capture itself (unlike
+        #: `set_updates_paused`, which this deliberately does not use
+        #: here). Optional / defaults to a no-op so tests and any caller
+        #: that doesn't wire a real CameraPanel don't need to supply one.
+        self._set_left_auto_exposure_paused = set_left_auto_exposure_paused or (lambda _: None)
+        self._set_right_auto_exposure_paused = set_right_auto_exposure_paused or (lambda _: None)
         self._settings = settings if settings is not None else MountAlignmentSettings()
         self._runner = runner if runner is not None else MountTestMoveRunner()
         self._connected = False
@@ -401,9 +420,22 @@ class MountTestMovePanel(QWidget):
         bundle without needing to reproduce it live."""
         return dict(self._last_diagnostic_frames)
 
+    def _pause_auto_exposure(self) -> None:
+        self._set_left_auto_exposure_paused(True)
+        self._set_right_auto_exposure_paused(True)
+
+    def _resume_auto_exposure(self) -> None:
+        self._set_left_auto_exposure_paused(False)
+        self._set_right_auto_exposure_paused(False)
+
     def _on_run_calibration_clicked(self) -> None:
         self._calibration_queue = list(_CALIBRATION_STEPS)
         self._calibration_partial = {"left": {}, "right": {}}
+        # Paused for the whole 4-step sequence, not just per-step -- see
+        # the constructor's own docstring on _set_left/right_auto_exposure_paused.
+        # Resumed in _abort_calibration (every failure path) and
+        # _finish_calibration (success).
+        self._pause_auto_exposure()
         self._start_next_calibration_step()
 
     def _start_next_calibration_step(self) -> None:
@@ -464,6 +496,7 @@ class MountTestMovePanel(QWidget):
         self._pending = None
         self._last_error = message
         self._result_label.setText(f"Calibration failed: {message}")
+        self._resume_auto_exposure()
         if return_step is not None:
             self._runner.submit(
                 self._mount_park,
@@ -537,6 +570,7 @@ class MountTestMovePanel(QWidget):
             )
         self._last_error = None
         self._result_label.setText("\n".join(lines))
+        self._resume_auto_exposure()
 
     def _on_nudge_clicked(self, camera_key: str, direction_name: str) -> None:
         matrix = self._calibration.get(camera_key)
@@ -562,8 +596,14 @@ class MountTestMovePanel(QWidget):
             return
 
         mode = self._target_mode()
+        # Paused across the whole before-pulse-after bracket, resumed
+        # immediately after the "after" capture in _finish_nudge (or on
+        # any early-exit path below) -- see the constructor's own
+        # docstring and real incident ca728d27.
+        self._pause_auto_exposure()
         before = self._capture_both(mode, diagnostic_label="nudge_before")
         if before is None:
+            self._resume_auto_exposure()
             self._last_error = f"{self._missing_label(mode)} before pulsing"
             self._result_label.setText(f"Move failed: {self._last_error}")
             return
@@ -572,6 +612,7 @@ class MountTestMovePanel(QWidget):
             rate_preset=self._settings.rate_preset, park_after=False,
         )
         if not started:
+            self._resume_auto_exposure()
             return  # a move is already running
         self._pending = _PendingAction(
             kind="nudge",
@@ -588,10 +629,12 @@ class MountTestMovePanel(QWidget):
         self, pending: _PendingAction, *, pulsed: bool, pulse_error: str | None
     ) -> None:
         if not pulsed:
+            self._resume_auto_exposure()
             self._last_error = pulse_error or "pulse failed"
             self._result_label.setText(f"Move failed: {self._last_error}")
             return
         after = self._capture_both(pending.mode, diagnostic_label="nudge_after")
+        self._resume_auto_exposure()
         if after is None:
             self._last_error = f"{self._missing_label(pending.mode)} after the move"
             self._result_label.setText(f"Move failed: {self._last_error}")
@@ -726,6 +769,11 @@ class MountTestMovePanel(QWidget):
         if self._connected:
             self._mount.disconnect()
             self._connected = False
+        # Defensive -- if the window closes mid-calibration/nudge, don't
+        # leave the (independently-lived) CameraPanels' auto-exposure
+        # paused forever for whatever streaming happens after this panel
+        # is gone. A no-op if nothing was paused.
+        self._resume_auto_exposure()
 
 
 def _measure_brightest_source(frame: np.ndarray | None) -> tuple[float, float] | None:

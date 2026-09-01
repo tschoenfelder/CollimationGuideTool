@@ -185,6 +185,16 @@ class CameraPanel(QWidget):
         #: so `_on_toggle_stream` knows whether to (re)start the timer
         #: when a stream starts/stops while paused.
         self._updates_paused = False
+        #: Set by MainWindow via set_auto_exposure_paused() -- see that
+        #: method's docstring. Deliberately separate from
+        #: `_updates_paused`: that flag stops frame capture entirely,
+        #: which is the wrong tool for a caller (MountTestMovePanel) that
+        #: needs fresh frames *and* a stable exposure/gain at the same
+        #: time -- real incident ca728d27, where auto-exposure roughly
+        #: doubled a camera's gain between a calibration step's "before"
+        #: and "after" capture, pushing the "after" frame into partial
+        #: saturation and corrupting the measured displacement.
+        self._auto_exposure_paused = False
         #: Set by MainWindow via set_fov_overlay() — see its docstring's
         #: "Guide-frame FOV overlay". None on the left/main panel always;
         #: on the right/guide panel, None means no overlay data available.
@@ -417,7 +427,7 @@ class CameraPanel(QWidget):
             self._last_sequence = mailbox_frame.sequence
             self._recent_frames.append(mailbox_frame.frame)
 
-            if self._auto_exposure_checkbox.isChecked():
+            if self._auto_exposure_checkbox.isChecked() and not self._auto_exposure_paused:
                 self._apply_auto_exposure(mailbox_frame.frame)
 
             self._analyzer.submit(
@@ -519,6 +529,7 @@ class CameraPanel(QWidget):
             "streaming": self._stream is not None,
             "auto_exposure_enabled": self._auto_exposure_checkbox.isChecked(),
             "updates_paused": self._updates_paused,
+            "auto_exposure_paused": self._auto_exposure_paused,
         }
         if self._last_stream_error is not None:
             context["stream_error"] = self._last_stream_error
@@ -593,6 +604,19 @@ class CameraPanel(QWidget):
                 self._recommendation_label.setText("Paused — focuser moving…")
         elif self._stream is not None:
             self._timer.start()
+
+    def set_auto_exposure_paused(self, paused: bool) -> None:
+        """Suppress this panel's own auto-exposure adjustment without
+        touching frame capture -- unlike `set_updates_paused`, the poll
+        loop keeps running and `_recent_frames`/analysis keep updating
+        normally. For a caller (MountTestMovePanel's calibration/nudge
+        steps) that needs a *fresh* "after" frame but a *stable*
+        exposure/gain across the "before"/"after" pair it's measuring a
+        displacement between -- see `_auto_exposure_paused`'s own
+        docstring for the real incident this fixes. A no-op if the
+        camera's own auto-exposure checkbox isn't even checked, and a
+        no-op if already in the requested state."""
+        self._auto_exposure_paused = paused
 
     def latest_mono_frame(self) -> np.ndarray | None:
         """The most recently captured frame's mono representation

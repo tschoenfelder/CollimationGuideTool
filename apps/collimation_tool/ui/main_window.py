@@ -63,6 +63,13 @@ docstring for why this is a deliberately separate, narrower port than
 deactivates tracking too, rather than trusting the mount's own
 post-unpark default.
 
+Mount alignment: `MountTestMovePanel` (see its own docstring) is wired to
+both `CameraPanel`s' `set_auto_exposure_paused` (not `set_updates_paused` --
+it still needs fresh frames captured during a calibration/nudge, just with
+exposure/gain held stable across a step's before/after pair) — real incident
+ca728d27, where live auto-exposure roughly doubled a camera's gain between
+those two captures and corrupted the measured displacement.
+
 Startup settings restore: each panel's connected camera (by camera_id)
 plus exposure/gain/auto-exposure is saved to
 `~/.CollimationGuideTool/config.toml` (`camera_settings_path`, injectable
@@ -227,6 +234,8 @@ class MainWindow(QMainWindow):
             get_left_frame=self._left_panel.latest_mono_frame,
             get_right_frame=self._right_panel.latest_mono_frame,
             settings=load_mount_alignment_settings(self._camera_settings_path),
+            set_left_auto_exposure_paused=self._left_panel.set_auto_exposure_paused,
+            set_right_auto_exposure_paused=self._right_panel.set_auto_exposure_paused,
         )
 
         # Restore last session's connected camera + exposure/gain/

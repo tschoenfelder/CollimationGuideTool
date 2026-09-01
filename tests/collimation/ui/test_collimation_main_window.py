@@ -1839,6 +1839,48 @@ class TestCameraPanelSetUpdatesPaused:
         assert window._diagnostic_context()["left"]["updates_paused"] is True
 
 
+class TestCameraPanelSetAutoExposurePaused:
+    """CameraPanel.set_auto_exposure_paused() -- deliberately distinct from
+    set_updates_paused (see both docstrings, and real incident ca728d27):
+    frame capture/analysis must keep running, only the auto-exposure
+    adjustment itself is suppressed."""
+
+    def test_paused_frame_capture_still_runs_but_auto_exposure_does_not(
+        self, qapp: object
+    ) -> None:
+        # Mirrors TestAutoExposure's own dim-donut case (same fixture,
+        # same reasoning: the demo donut's peak is well below the target
+        # band, so exposure would rise if auto-exposure ran at all).
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+        panel = window._left_panel
+        panel._exposure_spin.setValue(10.0)
+        initial_exposure = panel._exposure_spin.value()
+        panel._auto_exposure_checkbox.setChecked(True)
+        panel._start_button.setChecked(True)
+        try:
+            panel.set_auto_exposure_paused(True)
+            panel._poll_frame()  # frame capture keeps running while paused
+            time.sleep(0.05)
+            panel._poll_frame()
+            assert len(panel._recent_frames) > 0
+            assert panel._exposure_spin.value() == initial_exposure  # auto-exposure did not fire
+        finally:
+            panel._start_button.setChecked(False)
+
+    def test_resuming_lets_auto_exposure_run_again(self, qapp: object) -> None:
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+        panel = window._left_panel
+        panel._auto_exposure_checkbox.setChecked(True)
+        panel.set_auto_exposure_paused(True)
+        panel.set_auto_exposure_paused(False)
+        assert panel._auto_exposure_paused is False
+
+    def test_diagnostic_context_reports_auto_exposure_paused_state(self, qapp: object) -> None:
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+        window._left_panel.set_auto_exposure_paused(True)
+        assert window._diagnostic_context()["left"]["auto_exposure_paused"] is True
+
+
 class _ScriptedTransitioningMountPark(FakeMountPark):
     """FakeMountPark's park()/unpark() settle instantly, which can't
     exercise a genuine Busy->Ok transition. This reports the *opposite*
@@ -2191,6 +2233,35 @@ class TestMountTestMovePanel:
         assert "Dec-axis" in panel._result_label.text()
         window.close()
 
+    def test_calibration_pauses_both_cameras_auto_exposure_and_resumes_after(
+        self, qapp: object
+    ) -> None:
+        """Real incident ca728d27: live auto-exposure roughly doubled a
+        camera's gain between a step's before/after capture, corrupting
+        the measured displacement. MainWindow wires MountTestMovePanel's
+        pause/resume to CameraPanel.set_auto_exposure_paused (not
+        set_updates_paused -- frame capture must keep running)."""
+        pulse_mount = FakeMountAdapter()
+        mount_park = FakeMountPark(start_parked=True)
+        window = self._window(mount_park=mount_park, pulse_mount=pulse_mount)
+        self._connect_and_stream_cameras(window)
+        window._mount_panel._connect_button.setChecked(True)
+        window._test_move_panel._connect_button.setChecked(True)
+        panel = window._test_move_panel
+
+        assert window._left_panel._auto_exposure_paused is False
+        assert window._right_panel._auto_exposure_paused is False
+
+        panel._run_calibration_button.click()
+        assert window._left_panel._auto_exposure_paused is True
+        assert window._right_panel._auto_exposure_paused is True
+
+        self._run_calibration_to_completion(panel)
+
+        assert window._left_panel._auto_exposure_paused is False
+        assert window._right_panel._auto_exposure_paused is False
+        window.close()
+
     def test_run_calibration_never_reparks_the_mount(self, qapp: object) -> None:
         mount_park = FakeMountPark(start_parked=True)
         window = self._window(mount_park=mount_park, pulse_mount=FakeMountAdapter())
@@ -2471,12 +2542,20 @@ class TestMountTestMovePanel:
         assert not panel._nudge_buttons["right"]["Right"].isEnabled()  # no matrix for "right"
 
         panel._nudge_buttons["left"]["Right"].click()
+        # Real incident ca728d27 -- paused across the before/after bracket
+        # of a nudge too, same as calibration (see the dedicated
+        # calibration-pause test above).
+        assert window._left_panel._auto_exposure_paused is True
+        assert window._right_panel._auto_exposure_paused is True
 
         deadline = time.monotonic() + 5.0
         while panel._runner.is_busy:
             assert time.monotonic() < deadline, "nudge never completed"
             time.sleep(0.01)
         panel._poll()
+
+        assert window._left_panel._auto_exposure_paused is False
+        assert window._right_panel._auto_exposure_paused is False
 
         # axis1 rate is 100px/1000ms = 0.1 px/ms; nudge_target_px defaults
         # to 10.0 -> 10.0 / 0.1 = 100ms, axis1 only (already screen-aligned).
