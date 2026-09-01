@@ -31,6 +31,21 @@ traced at the wire level. Every `move()`/`move_absolute()`/`stop()` call
 is also logged here at INFO, so this app's *own* diagnostic bundle
 (`application.log`) has a record too, not just indiserver's separate log
 file.
+
+`move_absolute()` checks whether the driver actually accepted the move
+before reporting success, rather than assuming it always does. Sourced,
+not guessed: libindi's own `INDI::FocuserInterface`
+(`indifocuserinterface.cpp`) applies `MoveAbsFocuser()`/
+`MoveRelFocuser()`'s returned `IPState` directly to
+`ABS_FOCUS_POSITION`'s own vector state -- `IPS_ALERT` means rejected,
+`IPS_BUSY`/`IPS_OK` mean accepted (started, or already done). Same class
+of gap `IndiMountPulseAdapter.pulse_axis()` had (real report 1bb412ae's
+investigation) -- without this check, a caller had no way to tell a
+genuine move from one the driver rejected. `move()` (used for jog
+In/Out) has the same underlying gap but no return value at all
+(`FocuserPort.move() -> None`) to report it through -- a bigger,
+not-yet-decided change to the shared `FocuserPort` Protocol itself,
+left alone here.
 """
 
 from __future__ import annotations
@@ -57,6 +72,13 @@ _FOCUSER_PROBE_TIMEOUT_S = 3.0
 #: seconds, so a stale/stuck ABS_FOCUS_POSITION Busy state can't be cached
 #: forever with no way to notice.
 _PROPERTY_REFRESH_INTERVAL_S = 2.0
+#: How long move_absolute() waits for ABS_FOCUS_POSITION to confirm
+#: accepting or rejecting a move -- see that method's own comment.
+#: Should be near-instant either way (the driver applies the returned
+#: IPState synchronously in response to the request), so this is a
+#: generous ceiling against a wedged connection, not a value tuned
+#: against observed real timing.
+_MOVE_CONFIRM_TIMEOUT_S = 2.0
 
 
 class IndiFocuserAdapter(FocuserPort):
@@ -227,11 +249,36 @@ class IndiFocuserAdapter(FocuserPort):
             steps,
             start_position,
         )
+        # Real finding, sourced against libindi's own INDI::FocuserInterface
+        # (indifocuserinterface.cpp), not guessed: MoveAbsFocuser()/
+        # MoveRelFocuser() returning IPS_ALERT gets applied directly to
+        # ABS_FOCUS_POSITION's own vector state -- unlike
+        # IndiMountPulseAdapter's motion switches (which reset the element
+        # back off on rejection), the requested value here is left in
+        # place; only the state distinguishes a genuine accept (Busy/Ok)
+        # from a rejection (Alert). This call used to never check the
+        # response at all -- it sent, then always returned accepted=True
+        # regardless of what the driver actually did.
+        previous_vector = self._client.get_vector(self._device_name, "ABS_FOCUS_POSITION")
         self._client.send_new_number_vector(
             self._device_name, "ABS_FOCUS_POSITION", {"FOCUS_ABSOLUTE_POSITION": steps}
         )
+        confirmed = self._client.wait_for_vector(
+            self._device_name,
+            "ABS_FOCUS_POSITION",
+            timeout_s=_MOVE_CONFIRM_TIMEOUT_S,
+            predicate=lambda v: v is not previous_vector and v.state in ("Busy", "Ok", "Alert"),
+        )
+        accepted = confirmed is not None and confirmed.state != "Alert"
+        if not accepted:
+            _log.warning(
+                "IndiFocuserAdapter.move_absolute(): target=%d on %r rejected (state=%s)",
+                steps,
+                self._device_name,
+                confirmed.state if confirmed is not None else "unconfirmed",
+            )
         return FocuserMoveResult(
-            accepted=True, target_position=steps, start_position=start_position
+            accepted=accepted, target_position=steps, start_position=start_position
         )
 
     def stop(self) -> None:

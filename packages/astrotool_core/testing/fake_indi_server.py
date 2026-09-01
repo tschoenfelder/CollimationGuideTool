@@ -25,6 +25,13 @@ currently parked -- verified directly against both the real rig and
 libindi's own `INDI::Telescope::MoveNS`/`MoveWE` source (the base class
 checks `isParked()` and returns `false` rather than accepting the
 switch) -- not a silent no-op the way this fake used to model it.
+
+`ABS_FOCUS_POSITION` rejects with `state="Alert"` (the requested value
+left unset, `_position` unchanged) whenever `reject_focuser_moves=True`
+-- verified against libindi's own `INDI::FocuserInterface`
+(`indifocuserinterface.cpp`): `MoveAbsFocuser()`/`MoveRelFocuser()`
+returning `IPS_ALERT` gets applied directly to the vector's own state,
+distinct from the mount's element-reset rejection pattern.
 """
 
 from __future__ import annotations
@@ -52,6 +59,7 @@ class FakeIndiServer:
         start_parked: bool = True,
         park_delay_s: float = 0.05,
         auto_track_on_after_unpark_delay_s: float | None = None,
+        reject_focuser_moves: bool = False,
     ) -> None:
         self._device_name = device_name
         self._focuser_available = focuser_available
@@ -59,6 +67,15 @@ class FakeIndiServer:
         self._max_position = max_position
         self._move_delay_s = move_delay_s
         self._mount_available = mount_available
+        #: Simulates a driver-level focuser move rejection -- real libindi
+        #: FocuserInterface semantics (verified against
+        #: indifocuserinterface.cpp's source, see IndiFocuserAdapter's own
+        #: docstring): MoveAbsFocuser()/MoveRelFocuser() can return
+        #: IPS_ALERT, which the framework applies directly to
+        #: ABS_FOCUS_POSITION/REL_FOCUS_POSITION's own vector state --
+        #: unlike the mount's motion-switch rejection, the requested value
+        #: is left in place, only the vector's state signals rejection.
+        self._reject_focuser_moves = reject_focuser_moves
         self._parked = start_parked
         self._tracking = False
         self._park_delay_s = park_delay_s
@@ -326,6 +343,11 @@ class FakeIndiServer:
             self._move_to(target)
 
     def _move_to(self, target: float) -> None:
+        if self._reject_focuser_moves:
+            self._send_number_vector(
+                "ABS_FOCUS_POSITION", "Alert", {"FOCUS_ABSOLUTE_POSITION": self._position}
+            )
+            return
         clamped = max(0, min(self._max_position, int(round(target))))
         self._send_number_vector("ABS_FOCUS_POSITION", "Busy", {"FOCUS_ABSOLUTE_POSITION": clamped})
 

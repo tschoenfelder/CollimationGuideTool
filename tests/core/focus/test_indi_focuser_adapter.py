@@ -236,6 +236,38 @@ class TestPropertyRefresh:
         assert sent == []  # well within the real (multi-second) default throttle window
 
 
+class TestMoveAbsoluteRejection:
+    """Same class of gap as IndiMountPulseAdapter.pulse_axis()'s own
+    rejection fix (real report 1bb412ae's investigation) -- verified
+    against libindi's own `INDI::FocuserInterface`
+    (`indifocuserinterface.cpp`), not guessed: `MoveAbsFocuser()`/
+    `MoveRelFocuser()` returning `IPS_ALERT` gets applied directly to
+    `ABS_FOCUS_POSITION`'s own vector state -- unlike the mount's motion
+    switches, the requested value is left in place, only the state
+    signals rejection. `move_absolute()` never checked this: it always
+    sent, then unconditionally returned `accepted=True` regardless of
+    what the driver actually did."""
+
+    def test_move_absolute_reports_rejection_instead_of_always_accepting(self) -> None:
+        fake = FakeIndiServer(
+            start_position=5000, max_position=50000, reject_focuser_moves=True
+        )
+        fake.start()
+        try:
+            focuser = IndiFocuserAdapter(fake.host, fake.port, connect_timeout_s=2.0)
+            focuser.connect()
+            result = focuser.move_absolute(12345)
+            assert result.accepted is False
+            assert result.target_position == 12345
+            assert result.start_position == 5000
+            # The driver never actually moved -- the fake's own position
+            # (what a subsequent get_position() would report) stays put.
+            assert focuser.get_position() == 5000
+            focuser.disconnect()
+        finally:
+            fake.stop()
+
+
 class TestFocuserUnavailable:
     def test_connect_succeeds_but_focuser_is_not_available(self) -> None:
         fake = FakeIndiServer(focuser_available=False)
