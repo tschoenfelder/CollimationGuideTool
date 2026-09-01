@@ -185,6 +185,25 @@ class IndiMountPulseAdapter:
         clamped_ms = max(_MIN_PULSE_MS, min(_MAX_PULSE_MS, duration_ms))
         selected_rate = rate_preset if rate_preset is not None else self._slew_rate_element
 
+        # Real report: "have all axis being moved really? Move guide left
+        # failed without movement" -- this method previously logged
+        # nothing at all, so a diagnostic bundle could never actually
+        # prove whether AXIS2's own pulse was sent, at what rate, for how
+        # long, only that *something* in the calibration sequence reached
+        # this far (via IndiMountParkAdapter's own unpark() log lines).
+        # Mirrors IndiFocuserAdapter's own "Logging" section (added for
+        # exactly this class of "the log shows nothing about the moves in
+        # question" report).
+        _log.info(
+            "IndiMountPulseAdapter.pulse_axis(): %s (%s) on %r via %s/%s, %dms @ rate %r",
+            axis.name,
+            direction.name,
+            self._device_name,
+            vector_name,
+            element,
+            clamped_ms,
+            selected_rate,
+        )
         previous_rate = self._current_slew_rate_element()
         self._client.send_new_switch_vector(
             self._device_name, "TELESCOPE_SLEW_RATE", {selected_rate: True}

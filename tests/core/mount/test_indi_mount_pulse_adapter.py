@@ -128,6 +128,26 @@ class TestConnected:
         )
         _wait_until(lambda: server._slew_rate == "9")  # noqa: SLF001
 
+    def test_pulse_axis_logs_the_axis_direction_duration_and_rate(
+        self,
+        mount: IndiMountPulseAdapter,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        # Real report: "have all axis being moved really?" -- pulse_axis()
+        # previously logged nothing at all, so a diagnostic bundle could
+        # never actually prove which axis/direction/duration/rate a
+        # calibration step really sent to the mount.
+        mount.connect()
+        _spy_on_sleep(monkeypatch)
+        with caplog.at_level("INFO", logger="astrotool_core.mount.indi_mount_pulse_adapter"):
+            mount.pulse_axis(MountAxis.AXIS2, AxisDirection.POSITIVE, 2000, rate_preset="7")
+        [record] = [r for r in caplog.records if "pulse_axis" in r.message]
+        assert "AXIS2" in record.message
+        assert "POSITIVE" in record.message
+        assert "2000ms" in record.message
+        assert "'7'" in record.message
+
     def test_pulse_axis_selects_20x_preset_mid_pulse(
         self, mount: IndiMountPulseAdapter, server: FakeIndiServer, monkeypatch: pytest.MonkeyPatch
     ) -> None:
