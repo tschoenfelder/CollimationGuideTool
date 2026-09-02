@@ -817,6 +817,34 @@ class MountTestMovePanel(QWidget):
                 f"{_CAMERA_LABELS[camera_key]}: already aligned for {direction_name.lower()}."
             )
             return
+        # Real report, diagnostic de295656: "Guide showing buttons, but
+        # movement far too much" -- compose_screen_move() has no cap of
+        # its own, linearly extrapolating each axis's calibrated rate
+        # (measured over one pulse_ms-long pulse) out to whatever
+        # duration this nudge's target needs. A slow-calibrated axis can
+        # solve for a wildly long pulse -- previously discovered only
+        # once IndiMountPulseAdapter's own hardware ceiling silently
+        # clamped it, with no warning that what got sent no longer
+        # matched what was solved for, and even the clamped pulse can
+        # produce far more real motion than that short a calibration
+        # reliably predicts that far out. The target is already known
+        # here, before any pulse is sent, so refuse right now instead --
+        # mount never touched, same as the degenerate-matrix ValueError
+        # case just above.
+        too_long = [
+            (axis, duration_ms) for axis, _direction, duration_ms in steps
+            if duration_ms > self._settings.max_nudge_pulse_ms
+        ]
+        if too_long:
+            axis, duration_ms = too_long[0]
+            self._last_error = (
+                f"{axis.name} needs {duration_ms}ms for this move, longer than the "
+                f"{self._settings.max_nudge_pulse_ms}ms safety cap -- extrapolating this far "
+                f"past the {self._settings.pulse_ms}ms calibration pulse isn't reliable. Try "
+                "Run Calibration again with a longer pulse_ms, or click again for a smaller step."
+            )
+            self._result_label.setText(f"Move failed: too long -- {self._last_error}")
+            return
 
         mode = self._target_mode()
         # Paused across the whole before-pulse-after bracket, resumed

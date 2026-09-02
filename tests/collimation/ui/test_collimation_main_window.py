@@ -3478,6 +3478,61 @@ class TestMountTestMovePanel:
         assert settle_values == [MountAlignmentSettings().settle_ms]
         window.close()
 
+    def test_nudge_button_refuses_a_move_whose_computed_pulse_is_unsafely_long(
+        self, qapp: object
+    ) -> None:
+        """Real report, diagnostic de295656: "Guide showing buttons, but
+        movement far too much". Guide's own AXIS2 that run measured a
+        real but tiny rate (13px per 500ms calibration pulse) --
+        compose_screen_move() had no cap at all, linearly extrapolating
+        that rate out to whatever duration a half-window nudge target
+        needs (20+ real seconds), silently clamped to the driver's own
+        9999ms hardware ceiling deep inside pulse_axis() with no warning
+        -- and even that clamped pulse produced far more real motion than
+        the short calibration pulse's rate predicted. The target
+        (nudge_target_fraction of the frame) is already known before any
+        duration math runs, so this must be caught -- and the move
+        refused, mount never touched -- right here, not only discovered
+        after the driver-level clamp already silently changed what got
+        sent."""
+        pulse_mount = FakeMountAdapter()
+        window = self._window(
+            mount_park=FakeMountPark(start_parked=True), pulse_mount=pulse_mount
+        )
+        self._connect_and_stream_cameras(window)
+        window._mount_panel._connect_button.setChecked(True)
+        window._test_move_panel._connect_button.setChecked(True)
+        panel = window._test_move_panel
+
+        # AXIS1 a normal, fast rate; AXIS2 a real but tiny one (matches
+        # the incident's own Guide AXIS2 shape) -- orthogonal, so not
+        # degenerate, but "Down" (pure +y) needs only AXIS2, whose tiny
+        # rate solves to a wildly long duration for this frame's own
+        # half-height target.
+        def _response(axis: MountAxis, dx_px: float, dy_px: float) -> AxisResponse:
+            return AxisResponse(
+                axis=axis, direction=AxisDirection.POSITIVE, duration_ms=1000,
+                dx_px=dx_px, dy_px=dy_px, px_per_ms=0.0,
+            )
+
+        panel._calibration["left"] = CalibrationMatrix(
+            responses={
+                (MountAxis.AXIS1, AxisDirection.POSITIVE): _response(MountAxis.AXIS1, 60.0, 0.0),
+                (MountAxis.AXIS2, AxisDirection.POSITIVE): _response(MountAxis.AXIS2, 0.0, 0.5),
+            }
+        )
+        panel._update_buttons_enabled()
+
+        panel._nudge_buttons["left"]["Down"].click()
+
+        assert "Move failed" in panel._result_label.text()
+        assert "too long" in panel._result_label.text()
+        assert str(MountAlignmentSettings().max_nudge_pulse_ms) in panel._result_label.text()
+        # Mount never touched -- refused before ever submitting a pulse.
+        assert pulse_mount.pulse_log == []
+        assert not panel._runner.is_busy
+        window.close()
+
     def test_nudge_button_reports_an_error_for_a_degenerate_calibration(
         self, qapp: object
     ) -> None:

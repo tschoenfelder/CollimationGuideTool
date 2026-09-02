@@ -63,6 +63,28 @@ _DEFAULT_SETTLE_MS = 1000
 #: pulse, wait this much *again*, then take the frame actually used for
 #: measurement from *that* point on, not the first barely-fresh one.
 _DEFAULT_FRAME_SETTLE_MS = 500
+#: Real report (diagnostic de295656): "Guide showing buttons, but
+#: movement far too much" -- compose_screen_move() had no cap at all on
+#: the pulse duration it solves for, linearly extrapolating from the
+#: pulse_ms-long calibration rate out to whatever duration a nudge's
+#: target displacement needs. For an axis with a slow calibrated rate
+#: (Guide's own AXIS2 that run: 13px per 500ms), a half-window target
+#: solved to 20+ real seconds -- silently clamped down to
+#: IndiMountPulseAdapter's own hardware ceiling (9999ms) with no warning,
+#: and even *that* clamped pulse produced far more real motion than the
+#: short calibration pulse's rate predicted (extrapolating a rate that
+#: far out isn't reliable on real hardware -- acceleration ramp-up
+#: dominates a short pulse's own average rate). The target itself
+#: (nudge_target_fraction of the frame) is already known before any
+#: duration math runs, so an unreasonably long solved pulse is
+#: detectable -- and refusable -- before ever starting the move, not
+#: only after the driver-level clamp already silently changed what got
+#: sent. See MountTestMovePanel._on_nudge_clicked's own docstring for
+#: where this is checked. Independently tunable like every other setting
+#: here; hitting it repeatedly for one axis is itself a signal that
+#: axis's calibrated rate is unreliably slow -- consider Run Calibration
+#: again with a longer pulse_ms instead of raising this cap.
+_DEFAULT_MAX_NUDGE_PULSE_MS = 3000
 
 
 @dataclass(frozen=True)
@@ -80,13 +102,16 @@ class MountAlignmentSettings:
     camera-side buffer on top of that: how long MountTestMovePanel waits
     again, after the video stream first confirms it has caught up past
     the pulse, before actually taking the frame used for measurement --
-    see that panel's own `_capture_both` docstring."""
+    see that panel's own `_capture_both` docstring. `max_nudge_pulse_ms`
+    caps how long a single composed nudge pulse is allowed to solve for --
+    see that constant's own docstring."""
 
     pulse_ms: int = _DEFAULT_PULSE_MS
     rate_preset: str = _DEFAULT_RATE_PRESET
     nudge_target_fraction: float = _DEFAULT_NUDGE_TARGET_FRACTION
     settle_ms: int = _DEFAULT_SETTLE_MS
     frame_settle_ms: int = _DEFAULT_FRAME_SETTLE_MS
+    max_nudge_pulse_ms: int = _DEFAULT_MAX_NUDGE_PULSE_MS
 
 
 def load_mount_alignment_settings(
@@ -132,10 +157,16 @@ def load_mount_alignment_settings(
     except (TypeError, ValueError):
         frame_settle_ms = defaults.frame_settle_ms
 
+    try:
+        max_nudge_pulse_ms = int(table.get("max_nudge_pulse_ms", defaults.max_nudge_pulse_ms))
+    except (TypeError, ValueError):
+        max_nudge_pulse_ms = defaults.max_nudge_pulse_ms
+
     return MountAlignmentSettings(
         pulse_ms=pulse_ms,
         rate_preset=rate_preset,
         nudge_target_fraction=nudge_target_fraction,
         settle_ms=settle_ms,
         frame_settle_ms=frame_settle_ms,
+        max_nudge_pulse_ms=max_nudge_pulse_ms,
     )
