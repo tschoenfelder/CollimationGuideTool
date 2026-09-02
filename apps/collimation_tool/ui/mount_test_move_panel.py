@@ -458,13 +458,33 @@ class MountTestMovePanel(QWidget):
         or mid-motion) read -- see CameraPanel.wait_for_frame_after()'s
         own docstring. Only the "after" capture of a calibration
         step/nudge should pass this; the "before" capture has nothing to
-        wait out (the mount hasn't moved yet)."""
+        wait out (the mount hasn't moved yet).
+
+        Real report ("still 2-3 frames are shown showing movement" after
+        a pulse): a single frame delivered past `after_monotonic` isn't
+        strong enough evidence the mount has actually finished
+        mechanically settling -- residual vibration/backlash damping out
+        can outlast both `settle_ms` and that very first fresh-delivered
+        frame. User's own recipe: "check on mount being stopped first,
+        grant the [frame_settle_ms] and take frame then only" -- so this
+        first confirms the stream has caught up past the pulse on *both*
+        cameras (the "mount stopped" check, from the video pipeline's own
+        point of view), then grants `frame_settle_ms` again, and only
+        *then* takes the frame actually used for measurement -- from
+        *that* later point, not the first barely-fresh one."""
         if after_monotonic is None:
             left_frame = self._get_left_frame()
             right_frame = self._get_right_frame()
         else:
-            left_frame = self._wait_for_left_frame(after_monotonic, _FRESH_FRAME_TIMEOUT_S)
-            right_frame = self._wait_for_right_frame(after_monotonic, _FRESH_FRAME_TIMEOUT_S)
+            caught_up_left = self._wait_for_left_frame(after_monotonic, _FRESH_FRAME_TIMEOUT_S)
+            caught_up_right = self._wait_for_right_frame(after_monotonic, _FRESH_FRAME_TIMEOUT_S)
+            if caught_up_left is None or caught_up_right is None:
+                left_frame, right_frame = None, None
+            else:
+                time.sleep(self._settings.frame_settle_ms / 1000.0)
+                settled_at = time.monotonic()
+                left_frame = self._wait_for_left_frame(settled_at, _FRESH_FRAME_TIMEOUT_S)
+                right_frame = self._wait_for_right_frame(settled_at, _FRESH_FRAME_TIMEOUT_S)
         if diagnostic_label is not None:
             if left_frame is not None:
                 self._last_diagnostic_frames[f"{diagnostic_label}_left"] = left_frame

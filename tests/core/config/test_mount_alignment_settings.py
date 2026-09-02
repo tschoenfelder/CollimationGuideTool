@@ -28,11 +28,12 @@ def test_reads_a_full_table(tmp_path: Path) -> None:
     path = tmp_path / "config.toml"
     path.write_text(
         "[mount_alignment]\npulse_ms = 750\nrate_preset = \"5\"\n"
-        "nudge_target_fraction = 0.25\nsettle_ms = 800\n",
+        "nudge_target_fraction = 0.25\nsettle_ms = 800\nframe_settle_ms = 300\n",
         encoding="utf-8",
     )
     assert load_mount_alignment_settings(path) == MountAlignmentSettings(
-        pulse_ms=750, rate_preset="5", nudge_target_fraction=0.25, settle_ms=800
+        pulse_ms=750, rate_preset="5", nudge_target_fraction=0.25,
+        settle_ms=800, frame_settle_ms=300,
     )
 
 
@@ -44,6 +45,7 @@ def test_missing_individual_values_fall_back_to_defaults(tmp_path: Path) -> None
     assert settings.rate_preset == MountAlignmentSettings().rate_preset
     assert settings.nudge_target_fraction == MountAlignmentSettings().nudge_target_fraction
     assert settings.settle_ms == MountAlignmentSettings().settle_ms
+    assert settings.frame_settle_ms == MountAlignmentSettings().frame_settle_ms
 
 
 def test_malformed_settle_ms_falls_back_to_default_without_dropping_the_others(
@@ -57,6 +59,19 @@ def test_malformed_settle_ms_falls_back_to_default_without_dropping_the_others(
     settings = load_mount_alignment_settings(path)
     assert settings.pulse_ms == 200
     assert settings.settle_ms == MountAlignmentSettings().settle_ms
+
+
+def test_malformed_frame_settle_ms_falls_back_to_default_without_dropping_the_others(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[mount_alignment]\npulse_ms = 200\nframe_settle_ms = "not a number"\n',
+        encoding="utf-8",
+    )
+    settings = load_mount_alignment_settings(path)
+    assert settings.pulse_ms == 200
+    assert settings.frame_settle_ms == MountAlignmentSettings().frame_settle_ms
 
 
 def test_malformed_individual_value_falls_back_to_default_without_dropping_the_others(

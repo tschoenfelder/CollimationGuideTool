@@ -51,6 +51,18 @@ _DEFAULT_NUDGE_TARGET_FRACTION = 0.5
 #: frame after x + 1 sec ... for the telescope to stop" -- raised from
 #: the original 300ms guess to a full second.
 _DEFAULT_SETTLE_MS = 1000
+#: Real report: "still 2-3 frames are shown showing movement" after a
+#: pulse -- a single frame delivered past the pulse-completion reference
+#: isn't strong enough evidence the mount has actually finished
+#: mechanically settling (residual vibration/backlash damping out can
+#: outlast settle_ms above and the very first fresh-delivered frame
+#: both). User's own recipe: "check on mount being stopped first, grant
+#: the 500ms and take frame then only" -- see
+#: MountTestMovePanel._capture_both's own docstring for where this is
+#: applied: once the stream first confirms it's caught up past the
+#: pulse, wait this much *again*, then take the frame actually used for
+#: measurement from *that* point on, not the first barely-fresh one.
+_DEFAULT_FRAME_SETTLE_MS = 500
 
 
 @dataclass(frozen=True)
@@ -64,12 +76,17 @@ class MountAlignmentSettings:
     should produce it for that camera's own calibration. `settle_ms` is
     how long MountTestMoveRunner waits after a pulse (or composed
     sequence of pulses) physically stops before reporting done -- see
-    that module's own docstring."""
+    that module's own docstring. `frame_settle_ms` is a *second*,
+    camera-side buffer on top of that: how long MountTestMovePanel waits
+    again, after the video stream first confirms it has caught up past
+    the pulse, before actually taking the frame used for measurement --
+    see that panel's own `_capture_both` docstring."""
 
     pulse_ms: int = _DEFAULT_PULSE_MS
     rate_preset: str = _DEFAULT_RATE_PRESET
     nudge_target_fraction: float = _DEFAULT_NUDGE_TARGET_FRACTION
     settle_ms: int = _DEFAULT_SETTLE_MS
+    frame_settle_ms: int = _DEFAULT_FRAME_SETTLE_MS
 
 
 def load_mount_alignment_settings(
@@ -110,9 +127,15 @@ def load_mount_alignment_settings(
     except (TypeError, ValueError):
         settle_ms = defaults.settle_ms
 
+    try:
+        frame_settle_ms = int(table.get("frame_settle_ms", defaults.frame_settle_ms))
+    except (TypeError, ValueError):
+        frame_settle_ms = defaults.frame_settle_ms
+
     return MountAlignmentSettings(
         pulse_ms=pulse_ms,
         rate_preset=rate_preset,
         nudge_target_fraction=nudge_target_fraction,
         settle_ms=settle_ms,
+        frame_settle_ms=frame_settle_ms,
     )

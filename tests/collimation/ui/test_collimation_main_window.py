@@ -1,5 +1,6 @@
 import json
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import cast
 
@@ -63,6 +64,62 @@ def _textured_camera(seed: int) -> ReplayCamera:
     rng = np.random.default_rng(seed)
     array = rng.normal(loc=500.0, scale=80.0, size=(120, 120))
     return ReplayCamera.from_arrays([array], cycle=True)
+
+
+def _stepped_frame_pair(
+    base: np.ndarray, shifts: list[tuple[tuple[int, int], tuple[int, int]]]
+) -> tuple[Callable[[], np.ndarray], Callable[[float, float], np.ndarray]]:
+    """A (get_frame, wait_for_frame) pair for injecting synthetic
+    per-calibration-step frame content, for a panel's `_get_left_frame`/
+    `_wait_for_left_frame` (or `_right_`) pair -- `shifts` is one
+    ((before_dy, before_dx), (after_dy, after_dx)) entry per *measured*
+    step, in step order (axis1 test, axis2 test; return steps don't
+    capture anything).
+
+    `get_frame` (used for "before") advances to the next step on every
+    call. `wait_for_frame` (used for "after") does *not* advance --
+    MountTestMovePanel._capture_both's own two-stage settle (real
+    report: "still 2-3 frames are shown showing movement") calls it more
+    than once per step, and every one of those calls must return that
+    same step's own "after" content, not drift onto the next step's."""
+    before_call_count = 0
+
+    def get_frame() -> np.ndarray:
+        nonlocal before_call_count
+        index = before_call_count
+        before_call_count += 1
+        dy, dx = shifts[index][0]
+        return np.roll(np.roll(base, dy, axis=0), dx, axis=1)
+
+    def wait_frame(_reference: float, _timeout: float) -> np.ndarray:
+        dy, dx = shifts[before_call_count - 1][1]
+        return np.roll(np.roll(base, dy, axis=0), dx, axis=1)
+
+    return get_frame, wait_frame
+
+
+def _stepped_star_pair(
+    positions: list[tuple[tuple[float, float], tuple[float, float]]],
+) -> tuple[Callable[[], np.ndarray], Callable[[float, float], np.ndarray]]:
+    """Star-mode counterpart to `_stepped_frame_pair` -- same
+    get_frame()-advances / wait_frame()-doesn't-advance shape, one
+    ((before_x, before_y), (after_x, after_y)) centroid pair per
+    measured step, but rendering a single_star_image at that position
+    instead of rolling a shared noise array."""
+    before_call_count = 0
+
+    def get_frame() -> np.ndarray:
+        nonlocal before_call_count
+        index = before_call_count
+        before_call_count += 1
+        x, y = positions[index][0]
+        return single_star_image((120, 120), x=x, y=y, peak=2000.0, sigma=2.5, background=100.0)
+
+    def wait_frame(_reference: float, _timeout: float) -> np.ndarray:
+        x, y = positions[before_call_count - 1][1]
+        return single_star_image((120, 120), x=x, y=y, peak=2000.0, sigma=2.5, background=100.0)
+
+    return get_frame, wait_frame
 
 
 def _axis_response(axis: MountAxis, dx_px: float, dy_px: float) -> AxisResponse:
@@ -2376,6 +2433,74 @@ class TestMountTestMovePanel:
                 time.sleep(0.01)
             panel._poll()  # type: ignore[attr-defined]
 
+    def test_after_capture_waits_again_after_the_stream_first_catches_up(
+        self, qapp: object
+    ) -> None:
+        """Real report: "still 2-3 frames are shown showing movement"
+        after a pulse -- a single frame delivered past the pulse-
+        completion reference wasn't strong enough evidence the mount had
+        actually finished settling. User's own recipe: confirm the
+        stream caught up, grant frame_settle_ms again, *then* take the
+        frame actually used -- from that later point, not the first
+        barely-fresh one. Standalone panel -- see the Quit-cleanup
+        fix's own lesson on why, for a scenario that doesn't need
+        CameraPanel/MainWindow at all."""
+        pulse_mount = FakeMountAdapter()
+        calls: list[float] = []
+
+        def wait_and_record(reference: float, _timeout: float) -> np.ndarray:
+            calls.append(reference)
+            return np.zeros((10, 10), dtype=np.float32)
+
+        settings = MountAlignmentSettings(frame_settle_ms=50)  # keep the test fast
+        panel = MountTestMovePanel(
+            pulse_mount,
+            mount_park=FakeMountPark(start_parked=True),
+            get_left_frame=lambda: np.zeros((10, 10), dtype=np.float32),
+            get_right_frame=lambda: np.zeros((10, 10), dtype=np.float32),
+            settings=settings,
+            wait_for_left_frame=wait_and_record,
+            wait_for_right_frame=lambda _reference, _timeout: np.zeros((10, 10), dtype=np.float32),
+        )
+
+        reference = time.monotonic()
+        result = panel._capture_both("terrestrial", after_monotonic=reference)
+
+        assert result is not None
+        assert len(calls) == 2
+        # The second call's own reference is at least frame_settle_ms
+        # later than the first -- confirms the buffer actually elapsed
+        # between the two waits, not just that the callback ran twice
+        # back-to-back with the same timestamp.
+        assert calls[1] - calls[0] >= settings.frame_settle_ms / 1000.0
+        panel.stop()
+
+    def test_after_capture_never_grants_the_second_wait_if_the_first_never_catches_up(
+        self, qapp: object
+    ) -> None:
+        pulse_mount = FakeMountAdapter()
+        call_count = 0
+
+        def never_catches_up(_reference: float, _timeout: float) -> np.ndarray | None:
+            nonlocal call_count
+            call_count += 1
+            return None
+
+        panel = MountTestMovePanel(
+            pulse_mount,
+            mount_park=FakeMountPark(start_parked=True),
+            get_left_frame=lambda: np.zeros((10, 10), dtype=np.float32),
+            get_right_frame=lambda: np.zeros((10, 10), dtype=np.float32),
+            wait_for_left_frame=never_catches_up,
+            wait_for_right_frame=lambda _reference, _timeout: np.zeros((10, 10), dtype=np.float32),
+        )
+
+        result = panel._capture_both("terrestrial", after_monotonic=time.monotonic())
+
+        assert result is None
+        assert call_count == 1  # never attempted the second ("settled") wait
+        panel.stop()
+
     def test_starts_disconnected_with_calibration_and_nudge_buttons_disabled(
         self, qapp: object
     ) -> None:
@@ -2443,26 +2568,14 @@ class TestMountTestMovePanel:
         # a few tests below. Capture order per camera: axis1 before,
         # axis1 after, axis2 before, axis2 after (the return steps take no
         # measurement).
-        left_positions = iter([(50.0, 50.0), (60.0, 50.0), (50.0, 50.0), (50.0, 60.0)])
-        right_positions = iter([(50.0, 50.0), (60.0, 50.0), (50.0, 50.0), (50.0, 60.0)])
-
-        def stepped_left_frame() -> np.ndarray:
-            x, y = next(left_positions)
-            return single_star_image((120, 120), x=x, y=y, peak=2000.0, sigma=2.5, background=100.0)
-
-        def stepped_right_frame() -> np.ndarray:
-            x, y = next(right_positions)
-            return single_star_image((120, 120), x=x, y=y, peak=2000.0, sigma=2.5, background=100.0)
-
-        panel._get_left_frame = stepped_left_frame
-        panel._get_right_frame = stepped_right_frame
-        # "After" captures now go through the freshness-wait callbacks
-        # (see CameraPanel.wait_for_frame_after's own docstring), not
-        # the plain getters above, when a real one is wired (as
-        # MainWindow's own does) -- keep both routes returning the same
-        # synthetic sequence.
-        panel._wait_for_left_frame = lambda _reference, _timeout: stepped_left_frame()
-        panel._wait_for_right_frame = lambda _reference, _timeout: stepped_right_frame()
+        # Each entry is ((before_x, before_y), (after_x, after_y)) for
+        # one measured step (axis1 test, axis2 test).
+        panel._get_left_frame, panel._wait_for_left_frame = _stepped_star_pair(
+            [((50.0, 50.0), (60.0, 50.0)), ((50.0, 50.0), (50.0, 60.0))]
+        )
+        panel._get_right_frame, panel._wait_for_right_frame = _stepped_star_pair(
+            [((50.0, 50.0), (60.0, 50.0)), ((50.0, 50.0), (50.0, 60.0))]
+        )
 
         self._run_calibration_to_completion(panel)
 
@@ -2588,23 +2701,27 @@ class TestMountTestMovePanel:
         window._test_move_panel._connect_button.setChecked(True)
         panel = window._test_move_panel
 
-        # Capture order is: AXIS1 before, AXIS1 after, [AXIS1 return has no
-        # capture], AXIS2 before, AXIS2 after -- the 4th left-camera call.
-        # Fail exactly that one so AXIS1 completes normally and AXIS2's
-        # forward pulse has already been sent before anything fails.
+        # Capture order is: AXIS1 before(1), AXIS1 after(2,3 -- the
+        # two-stage settle calls wait_for_left_frame twice, see
+        # MountTestMovePanel._capture_both's own docstring), [AXIS1
+        # return has no capture], AXIS2 before(4), AXIS2 after(5,6) --
+        # the 5th left-camera call overall (AXIS2's own "after", first of
+        # its two). Fail exactly that one so AXIS1 completes normally and
+        # AXIS2's forward pulse has already been sent before anything
+        # fails.
         real_get_left_frame = panel._get_left_frame
         call_count = 0
 
         def flaky_get_left_frame() -> np.ndarray | None:
             nonlocal call_count
             call_count += 1
-            return None if call_count >= 4 else real_get_left_frame()
+            return None if call_count >= 5 else real_get_left_frame()
 
         panel._get_left_frame = flaky_get_left_frame
         # "After" captures go through this instead of _get_left_frame
         # above when a real one is wired (as MainWindow's own is) -- see
         # CameraPanel.wait_for_frame_after's own docstring. Sharing the
-        # same call_count keeps "the 4th call overall" meaning what the
+        # same call_count keeps "the Nth call overall" meaning what the
         # comment above says, regardless of which of the two routes a
         # given before/after capture actually takes.
         panel._wait_for_left_frame = lambda _reference, _timeout: flaky_get_left_frame()
@@ -2683,19 +2800,23 @@ class TestMountTestMovePanel:
         original_delay = runner_module._PULSE_REJECTION_RETRY_DELAY_S
         runner_module._PULSE_REJECTION_RETRY_DELAY_S = 0.01  # keep the test fast
 
+        # See the sibling test above for why this is the 5th left-camera
+        # call, not the 4th (the two-stage settle calls
+        # wait_for_left_frame twice per "after" -- see
+        # MountTestMovePanel._capture_both's own docstring).
         real_get_left_frame = panel._get_left_frame
         call_count = 0
 
         def flaky_get_left_frame() -> np.ndarray | None:
             nonlocal call_count
             call_count += 1
-            return None if call_count >= 4 else real_get_left_frame()
+            return None if call_count >= 5 else real_get_left_frame()
 
         panel._get_left_frame = flaky_get_left_frame
         # "After" captures go through this instead of _get_left_frame
         # above when a real one is wired (as MainWindow's own is) -- see
         # CameraPanel.wait_for_frame_after's own docstring. Sharing the
-        # same call_count keeps "the 4th call overall" meaning what the
+        # same call_count keeps "the Nth call overall" meaning what the
         # comment above says, regardless of which of the two routes a
         # given before/after capture actually takes.
         panel._wait_for_left_frame = lambda _reference, _timeout: flaky_get_left_frame()
@@ -2764,26 +2885,14 @@ class TestMountTestMovePanel:
         # test_run_calibration_pulses_all_four_steps_in_order_and_builds_both_matrices's
         # own comment for why the shared static _star_camera fixture
         # can't provide that on its own.
-        left_positions = iter([(50.0, 50.0), (60.0, 50.0), (50.0, 50.0), (50.0, 60.0)])
-        right_positions = iter([(50.0, 50.0), (60.0, 50.0), (50.0, 50.0), (50.0, 60.0)])
-
-        def stepped_left_frame() -> np.ndarray:
-            x, y = next(left_positions)
-            return single_star_image((120, 120), x=x, y=y, peak=2000.0, sigma=2.5, background=100.0)
-
-        def stepped_right_frame() -> np.ndarray:
-            x, y = next(right_positions)
-            return single_star_image((120, 120), x=x, y=y, peak=2000.0, sigma=2.5, background=100.0)
-
-        panel._get_left_frame = stepped_left_frame
-        panel._get_right_frame = stepped_right_frame
-        # "After" captures now go through the freshness-wait callbacks
-        # (see CameraPanel.wait_for_frame_after's own docstring), not
-        # the plain getters above, when a real one is wired (as
-        # MainWindow's own does) -- keep both routes returning the same
-        # synthetic sequence.
-        panel._wait_for_left_frame = lambda _reference, _timeout: stepped_left_frame()
-        panel._wait_for_right_frame = lambda _reference, _timeout: stepped_right_frame()
+        # Each entry is ((before_x, before_y), (after_x, after_y)) for
+        # one measured step (axis1 test, axis2 test).
+        panel._get_left_frame, panel._wait_for_left_frame = _stepped_star_pair(
+            [((50.0, 50.0), (60.0, 50.0)), ((50.0, 50.0), (50.0, 60.0))]
+        )
+        panel._get_right_frame, panel._wait_for_right_frame = _stepped_star_pair(
+            [((50.0, 50.0), (60.0, 50.0)), ((50.0, 50.0), (50.0, 60.0))]
+        )
 
         self._run_calibration_to_completion(panel)
 
@@ -2952,29 +3061,15 @@ class TestMountTestMovePanel:
         # documented assumption for a small pulse.
         rng = np.random.default_rng(12)
         base = rng.normal(loc=500.0, scale=80.0, size=(120, 120))
-        # (dy, dx) per capture, one independent sequence per camera --
-        # each camera gets its own 4 calls (axis1 before/after, axis2
-        # before/after), not one shared between both.
-        left_shifts = iter([(0, 0), (0, 6), (0, 0), (6, 0)])
-        right_shifts = iter([(0, 0), (0, 6), (0, 0), (6, 0)])
-
-        def stepped_left_frame() -> np.ndarray:
-            dy, dx = next(left_shifts)
-            return np.roll(np.roll(base, dy, axis=0), dx, axis=1)
-
-        def stepped_right_frame() -> np.ndarray:
-            dy, dx = next(right_shifts)
-            return np.roll(np.roll(base, dy, axis=0), dx, axis=1)
-
-        panel._get_left_frame = stepped_left_frame
-        panel._get_right_frame = stepped_right_frame
-        # "After" captures now go through the freshness-wait callbacks
-        # (see CameraPanel.wait_for_frame_after's own docstring), not
-        # the plain getters above, when a real one is wired (as
-        # MainWindow's own does) -- keep both routes returning the same
-        # synthetic sequence.
-        panel._wait_for_left_frame = lambda _reference, _timeout: stepped_left_frame()
-        panel._wait_for_right_frame = lambda _reference, _timeout: stepped_right_frame()
+        # One independent sequence per camera -- each camera gets its own
+        # 2 measured steps (axis1 test, axis2 test), each a
+        # (before_shift, after_shift) pair.
+        panel._get_left_frame, panel._wait_for_left_frame = _stepped_frame_pair(
+            base, [((0, 0), (0, 6)), ((0, 0), (6, 0))]
+        )
+        panel._get_right_frame, panel._wait_for_right_frame = _stepped_frame_pair(
+            base, [((0, 0), (0, 6)), ((0, 0), (6, 0))]
+        )
 
         self._run_calibration_to_completion(panel)
 
@@ -3013,26 +3108,12 @@ class TestMountTestMovePanel:
         # AXIS1's before/after are identical -- no real motion, matching
         # the incident exactly -- while AXIS2's genuinely differ. One
         # independent sequence per camera, same reasoning as above.
-        left_shifts = iter([(0, 0), (0, 0), (0, 0), (6, 0)])
-        right_shifts = iter([(0, 0), (0, 0), (0, 0), (6, 0)])
-
-        def stepped_left_frame() -> np.ndarray:
-            dy, dx = next(left_shifts)
-            return np.roll(np.roll(base, dy, axis=0), dx, axis=1)
-
-        def stepped_right_frame() -> np.ndarray:
-            dy, dx = next(right_shifts)
-            return np.roll(np.roll(base, dy, axis=0), dx, axis=1)
-
-        panel._get_left_frame = stepped_left_frame
-        panel._get_right_frame = stepped_right_frame
-        # "After" captures now go through the freshness-wait callbacks
-        # (see CameraPanel.wait_for_frame_after's own docstring), not
-        # the plain getters above, when a real one is wired (as
-        # MainWindow's own does) -- keep both routes returning the same
-        # synthetic sequence.
-        panel._wait_for_left_frame = lambda _reference, _timeout: stepped_left_frame()
-        panel._wait_for_right_frame = lambda _reference, _timeout: stepped_right_frame()
+        panel._get_left_frame, panel._wait_for_left_frame = _stepped_frame_pair(
+            base, [((0, 0), (0, 0)), ((0, 0), (6, 0))]
+        )
+        panel._get_right_frame, panel._wait_for_right_frame = _stepped_frame_pair(
+            base, [((0, 0), (0, 0)), ((0, 0), (6, 0))]
+        )
 
         self._run_calibration_to_completion(panel)
 
@@ -3082,26 +3163,12 @@ class TestMountTestMovePanel:
         # AXIS1 identical (no motion) on both cameras; AXIS2 identical on
         # Main but genuinely differs on Guide -- exactly diagnostic
         # 0270868c's own pattern.
-        left_shifts = iter([(0, 0), (0, 0), (0, 0), (0, 0)])
-        right_shifts = iter([(0, 0), (0, 0), (0, 0), (6, 0)])
-
-        def stepped_left_frame() -> np.ndarray:
-            dy, dx = next(left_shifts)
-            return np.roll(np.roll(base, dy, axis=0), dx, axis=1)
-
-        def stepped_right_frame() -> np.ndarray:
-            dy, dx = next(right_shifts)
-            return np.roll(np.roll(base, dy, axis=0), dx, axis=1)
-
-        panel._get_left_frame = stepped_left_frame
-        panel._get_right_frame = stepped_right_frame
-        # "After" captures now go through the freshness-wait callbacks
-        # (see CameraPanel.wait_for_frame_after's own docstring), not
-        # the plain getters above, when a real one is wired (as
-        # MainWindow's own does) -- keep both routes returning the same
-        # synthetic sequence.
-        panel._wait_for_left_frame = lambda _reference, _timeout: stepped_left_frame()
-        panel._wait_for_right_frame = lambda _reference, _timeout: stepped_right_frame()
+        panel._get_left_frame, panel._wait_for_left_frame = _stepped_frame_pair(
+            base, [((0, 0), (0, 0)), ((0, 0), (0, 0))]
+        )
+        panel._get_right_frame, panel._wait_for_right_frame = _stepped_frame_pair(
+            base, [((0, 0), (0, 0)), ((0, 0), (6, 0))]
+        )
 
         self._run_calibration_to_completion(panel)
 
@@ -3151,19 +3218,14 @@ class TestMountTestMovePanel:
         flat = np.full((120, 120), 500.0)
         rng = np.random.default_rng(15)
         base = rng.normal(loc=500.0, scale=80.0, size=(120, 120))
-        right_shifts = iter([(0, 0), (0, 6), (0, 0), (6, 0)])  # (dy, dx) per capture
-
-        def stepped_right_frame() -> np.ndarray:
-            dy, dx = next(right_shifts)
-            return np.roll(np.roll(base, dy, axis=0), dx, axis=1)
-
         panel._get_left_frame = lambda: flat
-        panel._get_right_frame = stepped_right_frame
-        # "After" captures go through these instead of the getters above
+        # "After" captures go through this instead of the getter above
         # when a real one is wired (as MainWindow's own is) -- see
         # CameraPanel.wait_for_frame_after's own docstring.
         panel._wait_for_left_frame = lambda _reference, _timeout: flat
-        panel._wait_for_right_frame = lambda _reference, _timeout: stepped_right_frame()
+        panel._get_right_frame, panel._wait_for_right_frame = _stepped_frame_pair(
+            base, [((0, 0), (0, 6)), ((0, 0), (6, 0))]
+        )
 
         self._run_calibration_to_completion(panel)
 
