@@ -2619,6 +2619,78 @@ class TestMountTestMovePanel:
         assert call_count == 1  # never attempted the second ("settled") wait
         panel.stop()
 
+    def test_capture_both_uses_a_longer_timeout_for_a_long_real_exposure(
+        self, qapp: object
+    ) -> None:
+        """Real report, diagnostic 9ca6daa3: "Fails again, even guide has
+        a picture" -- git_commit c4847ab, i.e. the very next real run
+        after wait_for_frame_after() became exposure-start-aware. Both
+        cameras were really exposing at 2000ms, comparable to the fixed
+        `_FRESH_FRAME_TIMEOUT_S=2.0`. That check's own worst case (a
+        frame already mid-exposure when the reference is set must be
+        skipped entirely) can need up to *two* full exposures before a
+        valid frame arrives -- confirmed directly from the bundle: only
+        `axis1_before_left`/`_right` were ever saved, no `_after_` pair
+        at all, i.e. the "after" wait timed out outright even though
+        the camera was streaming fine (visually confirmed by the user).
+        A fixed 2.0s timeout has no margin left once a real exposure
+        approaches or exceeds it -- `_capture_both` must scale its
+        timeout with the camera's own actual exposure, not use a bare
+        constant regardless of it."""
+        timeouts: list[float] = []
+
+        def record_timeout(_reference: float, timeout: float) -> np.ndarray:
+            timeouts.append(timeout)
+            return np.zeros((10, 10), dtype=np.float32)
+
+        panel = MountTestMovePanel(
+            FakeMountAdapter(),
+            mount_park=FakeMountPark(start_parked=True),
+            get_left_frame=lambda: np.zeros((10, 10), dtype=np.float32),
+            get_right_frame=lambda: np.zeros((10, 10), dtype=np.float32),
+            wait_for_left_frame=record_timeout,
+            wait_for_right_frame=record_timeout,
+            get_left_exposure_gain=lambda: (2000.0, 100),
+            get_right_exposure_gain=lambda: (2000.0, 100),
+        )
+
+        result = panel._capture_both("terrestrial", after_monotonic=time.monotonic())
+
+        assert result is not None
+        # Every wait call (both stages, both cameras) used a timeout that
+        # can actually cover two full 2000ms exposures plus margin, not
+        # the bare 2.0s default that caused this incident.
+        assert timeouts and all(t >= 5.0 for t in timeouts)
+        panel.stop()
+
+    def test_capture_both_keeps_the_default_timeout_without_exposure_info(
+        self, qapp: object
+    ) -> None:
+        """No get_left/right_exposure_gain wired (the default, e.g. any
+        caller/test that doesn't need diagnostic_camera_state()) -- must
+        fall back to the original fixed timeout unchanged, not silently
+        make every wait needlessly slow when exposure is unknown."""
+        timeouts: list[float] = []
+
+        def record_timeout(_reference: float, timeout: float) -> np.ndarray:
+            timeouts.append(timeout)
+            return np.zeros((10, 10), dtype=np.float32)
+
+        panel = MountTestMovePanel(
+            FakeMountAdapter(),
+            mount_park=FakeMountPark(start_parked=True),
+            get_left_frame=lambda: np.zeros((10, 10), dtype=np.float32),
+            get_right_frame=lambda: np.zeros((10, 10), dtype=np.float32),
+            wait_for_left_frame=record_timeout,
+            wait_for_right_frame=record_timeout,
+        )
+
+        result = panel._capture_both("terrestrial", after_monotonic=time.monotonic())
+
+        assert result is not None
+        assert timeouts and all(t == 2.0 for t in timeouts)
+        panel.stop()
+
     def test_starts_disconnected_with_calibration_and_nudge_buttons_disabled(
         self, qapp: object
     ) -> None:

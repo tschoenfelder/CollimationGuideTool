@@ -432,6 +432,38 @@ class MountTestMovePanel(QWidget):
     def _missing_label(self, mode: TargetMode) -> str:
         return "no star detected" if mode == "star" else "no frame available"
 
+    def _fresh_frame_timeout_s(self) -> float:
+        """How long `_capture_both`'s freshness waits are allowed to take,
+        scaled up for a real, currently-long camera exposure.
+
+        Real report, diagnostic 9ca6daa3 ("Fails again, even guide has a
+        picture"): the very next real run after `wait_for_frame_after()`
+        became exposure-*start*-aware (commit c4847ab) -- both cameras
+        were really exposing at 2000ms, comparable to the fixed
+        `_FRESH_FRAME_TIMEOUT_S=2.0`. That check's own worst case (a
+        frame already mid-exposure when the reference is set must be
+        skipped entirely, not just the ones delivered too early) can need
+        up to *two* full exposures before a valid one arrives -- a fixed
+        2.0s budget has essentially no margin left once a real exposure
+        approaches or exceeds it, and this bundle confirmed it: only the
+        "before" frames were ever saved, the "after" wait timed out
+        outright even though the camera was streaming fine.
+
+        Falls back to the original fixed constant when exposure isn't
+        known (`_get_left/right_exposure_gain` unwired, e.g. a caller
+        that doesn't need `diagnostic_camera_state()`) -- deliberately
+        doesn't slow every wait down by default when there's nothing to
+        scale from."""
+        exposures_ms = [
+            state[0]
+            for state in (self._get_left_exposure_gain(), self._get_right_exposure_gain())
+            if state is not None
+        ]
+        if not exposures_ms:
+            return _FRESH_FRAME_TIMEOUT_S
+        slowest_s = max(exposures_ms) / 1000.0
+        return max(_FRESH_FRAME_TIMEOUT_S, 2.0 * slowest_s + 1.0)
+
     def _capture_both(
         self,
         mode: TargetMode,
@@ -476,15 +508,16 @@ class MountTestMovePanel(QWidget):
             left_frame = self._get_left_frame()
             right_frame = self._get_right_frame()
         else:
-            caught_up_left = self._wait_for_left_frame(after_monotonic, _FRESH_FRAME_TIMEOUT_S)
-            caught_up_right = self._wait_for_right_frame(after_monotonic, _FRESH_FRAME_TIMEOUT_S)
+            timeout_s = self._fresh_frame_timeout_s()
+            caught_up_left = self._wait_for_left_frame(after_monotonic, timeout_s)
+            caught_up_right = self._wait_for_right_frame(after_monotonic, timeout_s)
             if caught_up_left is None or caught_up_right is None:
                 left_frame, right_frame = None, None
             else:
                 time.sleep(self._settings.frame_settle_ms / 1000.0)
                 settled_at = time.monotonic()
-                left_frame = self._wait_for_left_frame(settled_at, _FRESH_FRAME_TIMEOUT_S)
-                right_frame = self._wait_for_right_frame(settled_at, _FRESH_FRAME_TIMEOUT_S)
+                left_frame = self._wait_for_left_frame(settled_at, timeout_s)
+                right_frame = self._wait_for_right_frame(settled_at, timeout_s)
         if diagnostic_label is not None:
             if left_frame is not None:
                 self._last_diagnostic_frames[f"{diagnostic_label}_left"] = left_frame
