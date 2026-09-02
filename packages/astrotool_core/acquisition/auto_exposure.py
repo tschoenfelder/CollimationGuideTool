@@ -21,13 +21,23 @@ back down to handle a brighter scene without ever revisiting that now-
 unnecessary gain, leaving exposure/gain at a working point (e.g. 2ms at
 gain 3990) that produces mostly amplified read noise instead of real
 signal even though the *metric* itself reads fine. When a frame is
-already in-band and `current_gain > default_gain`, one `gain_step` is
-unwound off gain while exposure is scaled up to compensate (same linear
-signal-vs-exposure/gain assumption the escalation path already makes),
-as long as the compensated exposure still fits under the live-view
-ceiling -- so gain only ever settles as low as exposure has genuine room
-to cover for. This was originally scoped out ("revisit if it matters in
-practice" -- it now does) rather than removed outright.
+already in-band and `current_gain > default_gain`, gain is unwound while
+exposure is scaled up to compensate (same linear signal-vs-exposure/gain
+assumption the escalation path already makes), as long as the
+compensated exposure still fits under the live-view ceiling -- so gain
+only ever settles as low as exposure has genuine room to cover for. This
+was originally scoped out ("revisit if it matters in practice" -- it now
+does) rather than removed outright.
+
+The unwind step itself halves gain (bounded by `max_step_factor`, the
+same clamp exposure's own escalation already uses -- exposure doubling
+to compensate is exactly as fast as escalation is ever allowed to grow
+it) rather than a fixed `gain_step`: real follow-up report -- a fixed
+step of 10 took over a thousand corrections to walk a gain elevated by
+1000+ back down, visibly "barely moving". Halving instead converges in
+single-digit corrections (13,140 -> ~100 in about 8) while staying just
+as bounded per-step as escalation always is -- no single correction can
+jump exposure straight to the live-view ceiling and freeze the view.
 
 Gain step is adaptive, not a fixed +/-10 (real request: a fixed step either
 crawls painfully slowly toward the target on a camera whose gain barely
@@ -64,6 +74,7 @@ hardware limit.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 
 import numpy as np
@@ -191,24 +202,33 @@ def _unwind_gain(
     effective_max_exposure_ms: float,
     config: AutoExposureConfig,
 ) -> tuple[float, int] | None:
-    """One `gain_step` off `current_gain`, with `current_exposure_ms`
-    scaled up to compensate -- see the module docstring's "Gain unwinds"
-    section. Returns None (no-op) if gain is already at `default_gain`,
-    or if the compensated exposure wouldn't fit under the live-view
-    ceiling (gain stays right where it is rather than partially unwinding
-    into an under-exposed frame the caller never asked for).
+    """Halves `current_gain` (clamped to `default_gain` and to whatever
+    the live-view ceiling can actually compensate for), with
+    `current_exposure_ms` scaled up to match -- see the module
+    docstring's "Gain unwinds" and "unwind step itself halves" sections.
+    Returns None (no-op) if gain is already at `default_gain`, or if the
+    ceiling can't compensate for *any* reduction at all (gain stays right
+    where it is rather than partially unwinding into an under-exposed
+    frame the caller never asked for).
     """
     if current_gain <= config.default_gain:
         return None
-    step = min(config.gain_step, current_gain - config.default_gain)
-    candidate_gain = current_gain - step
     # Same linear signal-vs-exposure/gain assumption the escalation path
     # already makes (see compute_auto_exposure's own exposure `scale`
     # step) -- less gain needs proportionally more exposure to land the
     # same measured signal.
-    candidate_exposure = current_exposure_ms * (current_gain / candidate_gain)
-    if candidate_exposure > effective_max_exposure_ms:
+    halved = round(current_gain / config.max_step_factor)
+    # The live-view ceiling may allow *less* of a drop than a plain
+    # halving would need -- exposure can only compensate so far.
+    # Compensating for a smaller gain always needs *more* exposure, never
+    # less, so this can only ever raise the floor, never lower it.
+    ceiling_floor = math.ceil(current_gain * current_exposure_ms / effective_max_exposure_ms)
+    candidate_gain = max(config.default_gain, halved, ceiling_floor)
+    if candidate_gain >= current_gain:
         return None
+    candidate_exposure = min(
+        effective_max_exposure_ms, current_exposure_ms * (current_gain / candidate_gain)
+    )
     return (candidate_exposure, candidate_gain)
 
 

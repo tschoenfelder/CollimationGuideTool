@@ -480,23 +480,28 @@ class TestGainUnwind:
     normal value handling a brighter scene -- the metric reads fine, but
     the actual working point (very short exposure, very high gain) is
     mostly amplified read noise. compute_auto_exposure now walks gain
-    back toward default_gain one gain_step at a time whenever a frame is
-    already in-band and exposure has room to compensate."""
+    back toward default_gain whenever a frame is already in-band and
+    exposure has room to compensate.
 
-    def test_in_band_with_elevated_gain_unwinds_one_step_and_scales_exposure_up(self) -> None:
+    The unwind step itself halves gain (bounded by max_step_factor, same
+    clamp exposure's escalation already uses), not a fixed gain_step --
+    real follow-up report: a fixed step of 10 took over a thousand
+    corrections to walk a gain elevated by 1000+ back down."""
+
+    def test_in_band_with_elevated_gain_halves_and_scales_exposure_up(self) -> None:
         result = compute_auto_exposure(
             _frame(0.6),  # squarely in the default [0.50, 0.70] band
             bit_depth=_BIT_DEPTH,
             current_exposure_ms=100.0,
-            current_gain=200,
+            current_gain=800,
             capabilities=_CAPS,
         )
         assert result.changed is True
-        assert result.gain == 190  # default gain_step=10
+        assert result.gain == 400  # halved, default max_step_factor=2.0
         # Same linear signal-vs-exposure/gain model the escalation path
         # already uses: exposure scales up by the same ratio gain scaled
         # down, to preserve the same measured signal.
-        assert result.exposure_ms == 100.0 * (200 / 190)
+        assert result.exposure_ms == 100.0 * (800 / 400)
 
     def test_in_band_at_default_gain_does_not_unwind(self) -> None:
         result = compute_auto_exposure(
@@ -560,6 +565,34 @@ class TestGainUnwind:
             if not result.changed:
                 break
         assert gain == config.default_gain
+
+    def test_a_very_elevated_gain_converges_in_a_handful_of_corrections_not_thousands(
+        self,
+    ) -> None:
+        # Real follow-up report: "still reduced gain in steps of 10,
+        # moving down by >1000 only slowly" -- the fixed-step version of
+        # this would need over three hundred corrections to walk a gain
+        # this elevated back down to the default (100); halving needs a
+        # handful.
+        exposure_ms = 2.0
+        gain = _CAPS.max_gain  # 3200 -- as elevated as this camera allows
+        config = AutoExposureConfig()
+        corrections = 0
+        for _ in range(20):
+            result = compute_auto_exposure(
+                _frame(0.6),
+                bit_depth=_BIT_DEPTH,
+                current_exposure_ms=exposure_ms,
+                current_gain=gain,
+                capabilities=_CAPS,
+                config=config,
+            )
+            if not result.changed:
+                break
+            exposure_ms, gain = result.exposure_ms, result.gain
+            corrections += 1
+        assert gain == config.default_gain
+        assert corrections < 20
 
     def test_an_out_of_band_frame_still_gets_its_normal_correction_regardless_of_gain(
         self,
