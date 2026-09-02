@@ -113,6 +113,7 @@ this panel).
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, Literal
@@ -143,6 +144,17 @@ from PySide6.QtWidgets import (
 from collimation_tool.ui.mount_test_move_runner import MountTestMoveRunner
 
 FrameGetter = Callable[[], np.ndarray | None]
+#: (reference_monotonic, timeout_s) -> a frame captured entirely after
+#: reference_monotonic, or None on timeout -- see CameraPanel's own
+#: wait_for_frame_after() docstring (real report: "frames in movement
+#: are picked on the calibration, causing guide to fail").
+FreshFrameWaiter = Callable[[float, float], "np.ndarray | None"]
+#: How long an "after" capture waits for a frame that's provably fresh
+#: (its own exposure entirely postdates the pulse+settle completion)
+#: before giving up -- treated the same as any other missing "after"
+#: frame (see _finish_calibration_step/_finish_nudge's own "no frame
+#: available" abort path), not silently downgraded to a stale one.
+_FRESH_FRAME_TIMEOUT_S = 2.0
 
 #: "star" measures a point-source centroid via detect_sources() (precise,
 #: but needs an actual star -- see incident 6fa2aa59: correctly refuses
@@ -227,12 +239,30 @@ class MountTestMovePanel(QWidget):
         set_right_auto_exposure_paused: Callable[[bool], None] | None = None,
         get_left_exposure_gain: Callable[[], tuple[float, int]] | None = None,
         get_right_exposure_gain: Callable[[], tuple[float, int]] | None = None,
+        wait_for_left_frame: FreshFrameWaiter | None = None,
+        wait_for_right_frame: FreshFrameWaiter | None = None,
     ) -> None:
         super().__init__()
         self._mount = mount
         self._mount_park = mount_park
         self._get_left_frame = get_left_frame
         self._get_right_frame = get_right_frame
+        #: Real report ("frames in movement are picked on the
+        #: calibration, causing guide to fail") -- see
+        #: CameraPanel.wait_for_frame_after()'s own docstring. Optional /
+        #: falls back to the plain (instant, no freshness guarantee)
+        #: getter above so tests and any caller that doesn't wire a real
+        #: CameraPanel don't need to supply one.
+        # Reads self._get_left_frame/right_frame (not the get_left_frame/
+        # get_right_frame constructor params directly) so a caller (or
+        # test) that reassigns those instance attributes after
+        # construction is honored by the fallback too.
+        self._wait_for_left_frame: FreshFrameWaiter = wait_for_left_frame or (
+            lambda _reference, _timeout: self._get_left_frame()
+        )
+        self._wait_for_right_frame: FreshFrameWaiter = wait_for_right_frame or (
+            lambda _reference, _timeout: self._get_right_frame()
+        )
         #: See diagnostic_camera_state()'s own docstring -- optional /
         #: defaults to "unknown" (None) so tests and any caller that
         #: doesn't wire a real CameraPanel don't need to supply one.
@@ -403,7 +433,11 @@ class MountTestMovePanel(QWidget):
         return "no star detected" if mode == "star" else "no frame available"
 
     def _capture_both(
-        self, mode: TargetMode, *, diagnostic_label: str | None = None
+        self,
+        mode: TargetMode,
+        *,
+        diagnostic_label: str | None = None,
+        after_monotonic: float | None = None,
     ) -> dict[str, _Measurement] | None:
         """Capture both cameras' "before"/"after" measurement in one shot,
         or None if either is missing -- the caller decides how to phrase
@@ -417,9 +451,20 @@ class MountTestMovePanel(QWidget):
         see that method's own docstring for why (real incident
         de271da5: a pulled bundle's frames were "whatever's currently
         streaming", not necessarily what a failed measurement actually
-        used)."""
-        left_frame = self._get_left_frame()
-        right_frame = self._get_right_frame()
+        used).
+
+        `after_monotonic`, when given, blocks for a frame provably
+        captured after that time instead of an instant (possibly stale
+        or mid-motion) read -- see CameraPanel.wait_for_frame_after()'s
+        own docstring. Only the "after" capture of a calibration
+        step/nudge should pass this; the "before" capture has nothing to
+        wait out (the mount hasn't moved yet)."""
+        if after_monotonic is None:
+            left_frame = self._get_left_frame()
+            right_frame = self._get_right_frame()
+        else:
+            left_frame = self._wait_for_left_frame(after_monotonic, _FRESH_FRAME_TIMEOUT_S)
+            right_frame = self._wait_for_right_frame(after_monotonic, _FRESH_FRAME_TIMEOUT_S)
         if diagnostic_label is not None:
             if left_frame is not None:
                 self._last_diagnostic_frames[f"{diagnostic_label}_left"] = left_frame
@@ -573,7 +618,12 @@ class MountTestMovePanel(QWidget):
         self._update_buttons_enabled()
 
     def _finish_calibration_step(
-        self, pending: _PendingAction, *, pulsed: bool, pulse_error: str | None
+        self,
+        pending: _PendingAction,
+        *,
+        pulsed: bool,
+        pulse_error: str | None,
+        completed_at: float,
     ) -> None:
         """Real report (diagnostic d14c3a9b): "esp. guide cam right...
         right movement greyed out". Guide's own frames were fine (real,
@@ -610,7 +660,9 @@ class MountTestMovePanel(QWidget):
             return
         if step.measure:
             after = self._capture_both(
-                pending.mode, diagnostic_label=f"{step.axis.name.lower()}_after"
+                pending.mode,
+                diagnostic_label=f"{step.axis.name.lower()}_after",
+                after_monotonic=completed_at,
             )
             if after is None:
                 self._abort_calibration(
@@ -714,8 +766,24 @@ class MountTestMovePanel(QWidget):
         axis1_response = matrix.response_for(MountAxis.AXIS1, AxisDirection.POSITIVE)
         axis2_response = matrix.response_for(MountAxis.AXIS2, AxisDirection.POSITIVE)
         unit_dx, unit_dy = _SCREEN_DIRECTIONS[direction_name]
-        target_dx_px = unit_dx * self._settings.nudge_target_px
-        target_dy_px = unit_dy * self._settings.nudge_target_px
+        # Real request: a nudge should move a large, decisive distance
+        # for rough alignment -- half *this camera's own* frame width
+        # (Left/Right) or height (Up/Down) -- not a small fixed pixel
+        # count (a future "slow down near target" fine-adjustment mode
+        # is explicitly deferred, not this). Main and Guide have very
+        # different resolutions, so this needs the clicked camera's
+        # actual frame dimensions, not a shared constant -- peek at one
+        # frame before computing the target (cheap: the same cached read
+        # the "before" capture below makes moments later anyway).
+        frame_getter = self._get_left_frame if camera_key == "left" else self._get_right_frame
+        peek_frame = frame_getter()
+        if peek_frame is None:
+            self._last_error = f"{self._missing_label(self._target_mode())} before pulsing"
+            self._result_label.setText(f"Move failed: {self._last_error}")
+            return
+        frame_height, frame_width = peek_frame.shape[:2]
+        target_dx_px = unit_dx * frame_width * self._settings.nudge_target_fraction
+        target_dy_px = unit_dy * frame_height * self._settings.nudge_target_fraction
         try:
             steps = compose_screen_move(
                 axis1_response, axis2_response, target_dx_px=target_dx_px, target_dy_px=target_dy_px
@@ -762,14 +830,21 @@ class MountTestMovePanel(QWidget):
         self._update_buttons_enabled()
 
     def _finish_nudge(
-        self, pending: _PendingAction, *, pulsed: bool, pulse_error: str | None
+        self,
+        pending: _PendingAction,
+        *,
+        pulsed: bool,
+        pulse_error: str | None,
+        completed_at: float,
     ) -> None:
         if not pulsed:
             self._resume_auto_exposure()
             self._last_error = pulse_error or "pulse failed"
             self._result_label.setText(f"Move failed: {self._last_error}")
             return
-        after = self._capture_both(pending.mode, diagnostic_label="nudge_after")
+        after = self._capture_both(
+            pending.mode, diagnostic_label="nudge_after", after_monotonic=completed_at
+        )
         self._resume_auto_exposure()
         if after is None:
             self._last_error = f"{self._missing_label(pending.mode)} after the move"
@@ -816,16 +891,25 @@ class MountTestMovePanel(QWidget):
             return
         outcome = self._runner.take_latest()
         if outcome is not None:
+            # The reference point for "frames in movement are picked" --
+            # see _capture_both's own `after_monotonic` docstring. Taken
+            # right as the runner reports done (pulse+settle physically
+            # complete), not later, so any Qt-event-loop delay before the
+            # "after" capture actually runs only ever makes the freshness
+            # check stricter, never looser.
+            completed_at = time.monotonic()
             pending = self._pending
             self._pending = None
             if pending is not None:
                 if pending.kind == "calibration":
                     self._finish_calibration_step(
-                        pending, pulsed=outcome.pulsed, pulse_error=outcome.error
+                        pending, pulsed=outcome.pulsed, pulse_error=outcome.error,
+                        completed_at=completed_at,
                     )
                 else:
                     self._finish_nudge(
-                        pending, pulsed=outcome.pulsed, pulse_error=outcome.error
+                        pending, pulsed=outcome.pulsed, pulse_error=outcome.error,
+                        completed_at=completed_at,
                     )
             elif self._awaiting_stranded_return:
                 # The fire-and-forget return pulse _abort_calibration()

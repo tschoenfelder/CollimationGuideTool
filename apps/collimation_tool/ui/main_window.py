@@ -238,6 +238,8 @@ class MainWindow(QMainWindow):
             set_right_auto_exposure_paused=self._right_panel.set_auto_exposure_paused,
             get_left_exposure_gain=self._left_panel.current_exposure_gain,
             get_right_exposure_gain=self._right_panel.current_exposure_gain,
+            wait_for_left_frame=self._left_panel.wait_for_frame_after,
+            wait_for_right_frame=self._right_panel.wait_for_frame_after,
         )
 
         # Restore last session's connected camera + exposure/gain/

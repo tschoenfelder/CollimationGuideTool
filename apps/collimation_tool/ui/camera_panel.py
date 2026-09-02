@@ -64,6 +64,7 @@ could mask.
 from __future__ import annotations
 
 import logging
+import time
 from collections import deque
 from collections.abc import Callable
 from typing import Any
@@ -663,13 +664,73 @@ class CameraPanel(QWidget):
         """
         if not self._recent_frames:
             return None
-        frame = self._recent_frames[-1]
+        return self._frame_to_mono(self._recent_frames[-1])
+
+    def _frame_to_mono(self, frame: Frame) -> np.ndarray:
         if self._camera.is_color_sensor():
             rgb = demosaic(frame.pixels, self._camera.get_bayer_pattern())
             mono: np.ndarray = rgb_to_luma(rgb)
             return mono
         pixels: np.ndarray = frame.pixels
         return pixels
+
+    def wait_for_frame_after(
+        self, reference_monotonic: float, timeout_s: float
+    ) -> np.ndarray | None:
+        """Blocks the calling thread for a frame *delivered* after
+        `reference_monotonic`, instead of an instant (possibly stale)
+        read -- real report ("frames in movement are picked on the
+        calibration, causing guide to fail"): `latest_mono_frame()` reads
+        whatever this panel's own ~100ms poll tick last cached, which can
+        be several poll intervals stale relative to "right now". Bounded
+        by `timeout_s`; returns None on timeout, or if not currently
+        streaming.
+
+        Deliberately checks delivery time (`captured_at_monotonic`), not
+        `reference_monotonic` vs. `frame.exposure_seconds`-adjusted
+        exposure *start* time -- a real camera's own long exposure (Guide
+        has been observed auto-exposing up to its own 2000ms ceiling in
+        real diagnostics this session) can still mean a "fresh" frame's
+        exposure genuinely started before the mount finished settling,
+        which this doesn't catch; `exposure_seconds` on a replayed/faked
+        `Frame` in tests reflects the *requested* exposure, not how long
+        the (near-instant, canned) capture actually took, so subtracting
+        it would make every test camera's very next delivered frame look
+        stale for a full requested-exposure-duration's worth of *real*
+        wall-clock time -- broadly incompatible with this project's
+        existing fast test-camera fixtures. Delivery-time is still a
+        real improvement over no freshness check at all.
+
+        Deliberately blocks the Qt main thread (like `_poll_frame`'s own
+        non-blocking `wait_latest(timeout_s=0.0)` peek, just with a real
+        timeout instead of 0) rather than the background capture thread
+        -- MountTestMoveRunner's own pulse+settle wait already blocks a
+        background thread for far longer than this ever should in the
+        common case (a fresh frame is normally available within one
+        capture cycle), and the caller (MountTestMovePanel) is already in
+        an equivalent "Calibrating…"/"Moving…" modal-feeling state for
+        that whole bracket regardless.
+        """
+        if self._stream is None:
+            return None
+        deadline = time.monotonic() + timeout_s
+        sequence = self._last_sequence
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None
+            mailbox_frame = self._stream.mailbox.wait_latest(
+                after_sequence=sequence, timeout_s=remaining
+            )
+            if mailbox_frame is None:
+                return None
+            sequence = mailbox_frame.sequence
+            self._last_sequence = sequence
+            self._recent_frames.append(mailbox_frame.frame)
+            if mailbox_frame.captured_at_monotonic >= reference_monotonic:
+                return self._frame_to_mono(mailbox_frame.frame)
+            # Delivered before the reference (already-mailboxed when the
+            # pulse/settle finished) -- keep waiting for the next one.
 
     def stop(self) -> None:
         """Stop streaming/polling and release the camera hardware. Safe to

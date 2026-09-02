@@ -114,6 +114,42 @@ class TestDegenerateCalibrationMessage:
         assert "RA-axis measured no motion on either camera" in message
 
 
+class TestWaitForFrameAfter:
+    """Direct unit coverage for CameraPanel.wait_for_frame_after() -- the
+    panel-level calibration/nudge tests exercise it end-to-end through a
+    real (fake) MainWindow; these pin its own behavior directly. Real
+    report: "frames in movement are picked on the calibration, causing
+    guide to fail" -- latest_mono_frame() reads whatever this panel's own
+    poll tick last cached, possibly stale; this instead blocks for one
+    genuinely delivered after a given reference time."""
+
+    def test_returns_none_when_not_streaming(self, qapp: object) -> None:
+        panel = CameraPanel(_donut_camera((0.0, 0.0)), title="Test")
+        assert panel.wait_for_frame_after(time.monotonic(), 0.05) is None
+
+    def test_returns_a_frame_delivered_after_the_reference_time(self, qapp: object) -> None:
+        panel = CameraPanel(_donut_camera((0.0, 0.0)), title="Test")
+        panel._start_button.setChecked(True)
+        try:
+            reference = time.monotonic()
+            frame = panel.wait_for_frame_after(reference, 2.0)
+            assert frame is not None
+        finally:
+            panel._start_button.setChecked(False)
+
+    def test_times_out_when_the_reference_is_in_the_future(self, qapp: object) -> None:
+        panel = CameraPanel(_donut_camera((0.0, 0.0)), title="Test")
+        panel._start_button.setChecked(True)
+        try:
+            # No frame can ever be "delivered after" a reference that's
+            # still ahead of every real capture -- must time out cleanly,
+            # not hang or raise.
+            far_future = time.monotonic() + 10.0
+            assert panel.wait_for_frame_after(far_future, 0.1) is None
+        finally:
+            panel._start_button.setChecked(False)
+
+
 def test_window_starts_idle(qapp: object) -> None:
     window = MainWindow(_donut_camera((0.0, 0.0)))
     assert window._left_panel._recommendation_label.text() == "Start the stream to begin."
@@ -2420,6 +2456,13 @@ class TestMountTestMovePanel:
 
         panel._get_left_frame = stepped_left_frame
         panel._get_right_frame = stepped_right_frame
+        # "After" captures now go through the freshness-wait callbacks
+        # (see CameraPanel.wait_for_frame_after's own docstring), not
+        # the plain getters above, when a real one is wired (as
+        # MainWindow's own does) -- keep both routes returning the same
+        # synthetic sequence.
+        panel._wait_for_left_frame = lambda _reference, _timeout: stepped_left_frame()
+        panel._wait_for_right_frame = lambda _reference, _timeout: stepped_right_frame()
 
         self._run_calibration_to_completion(panel)
 
@@ -2558,6 +2601,13 @@ class TestMountTestMovePanel:
             return None if call_count >= 4 else real_get_left_frame()
 
         panel._get_left_frame = flaky_get_left_frame
+        # "After" captures go through this instead of _get_left_frame
+        # above when a real one is wired (as MainWindow's own is) -- see
+        # CameraPanel.wait_for_frame_after's own docstring. Sharing the
+        # same call_count keeps "the 4th call overall" meaning what the
+        # comment above says, regardless of which of the two routes a
+        # given before/after capture actually takes.
+        panel._wait_for_left_frame = lambda _reference, _timeout: flaky_get_left_frame()
 
         self._run_calibration_to_completion(panel)
         # Real report: "calibration failed is stated already while mount
@@ -2642,6 +2692,13 @@ class TestMountTestMovePanel:
             return None if call_count >= 4 else real_get_left_frame()
 
         panel._get_left_frame = flaky_get_left_frame
+        # "After" captures go through this instead of _get_left_frame
+        # above when a real one is wired (as MainWindow's own is) -- see
+        # CameraPanel.wait_for_frame_after's own docstring. Sharing the
+        # same call_count keeps "the 4th call overall" meaning what the
+        # comment above says, regardless of which of the two routes a
+        # given before/after capture actually takes.
+        panel._wait_for_left_frame = lambda _reference, _timeout: flaky_get_left_frame()
 
         try:
             self._run_calibration_to_completion(panel)
@@ -2720,6 +2777,13 @@ class TestMountTestMovePanel:
 
         panel._get_left_frame = stepped_left_frame
         panel._get_right_frame = stepped_right_frame
+        # "After" captures now go through the freshness-wait callbacks
+        # (see CameraPanel.wait_for_frame_after's own docstring), not
+        # the plain getters above, when a real one is wired (as
+        # MainWindow's own does) -- keep both routes returning the same
+        # synthetic sequence.
+        panel._wait_for_left_frame = lambda _reference, _timeout: stepped_left_frame()
+        panel._wait_for_right_frame = lambda _reference, _timeout: stepped_right_frame()
 
         self._run_calibration_to_completion(panel)
 
@@ -2904,6 +2968,13 @@ class TestMountTestMovePanel:
 
         panel._get_left_frame = stepped_left_frame
         panel._get_right_frame = stepped_right_frame
+        # "After" captures now go through the freshness-wait callbacks
+        # (see CameraPanel.wait_for_frame_after's own docstring), not
+        # the plain getters above, when a real one is wired (as
+        # MainWindow's own does) -- keep both routes returning the same
+        # synthetic sequence.
+        panel._wait_for_left_frame = lambda _reference, _timeout: stepped_left_frame()
+        panel._wait_for_right_frame = lambda _reference, _timeout: stepped_right_frame()
 
         self._run_calibration_to_completion(panel)
 
@@ -2955,6 +3026,13 @@ class TestMountTestMovePanel:
 
         panel._get_left_frame = stepped_left_frame
         panel._get_right_frame = stepped_right_frame
+        # "After" captures now go through the freshness-wait callbacks
+        # (see CameraPanel.wait_for_frame_after's own docstring), not
+        # the plain getters above, when a real one is wired (as
+        # MainWindow's own does) -- keep both routes returning the same
+        # synthetic sequence.
+        panel._wait_for_left_frame = lambda _reference, _timeout: stepped_left_frame()
+        panel._wait_for_right_frame = lambda _reference, _timeout: stepped_right_frame()
 
         self._run_calibration_to_completion(panel)
 
@@ -3017,6 +3095,13 @@ class TestMountTestMovePanel:
 
         panel._get_left_frame = stepped_left_frame
         panel._get_right_frame = stepped_right_frame
+        # "After" captures now go through the freshness-wait callbacks
+        # (see CameraPanel.wait_for_frame_after's own docstring), not
+        # the plain getters above, when a real one is wired (as
+        # MainWindow's own does) -- keep both routes returning the same
+        # synthetic sequence.
+        panel._wait_for_left_frame = lambda _reference, _timeout: stepped_left_frame()
+        panel._wait_for_right_frame = lambda _reference, _timeout: stepped_right_frame()
 
         self._run_calibration_to_completion(panel)
 
@@ -3074,6 +3159,11 @@ class TestMountTestMovePanel:
 
         panel._get_left_frame = lambda: flat
         panel._get_right_frame = stepped_right_frame
+        # "After" captures go through these instead of the getters above
+        # when a real one is wired (as MainWindow's own is) -- see
+        # CameraPanel.wait_for_frame_after's own docstring.
+        panel._wait_for_left_frame = lambda _reference, _timeout: flat
+        panel._wait_for_right_frame = lambda _reference, _timeout: stepped_right_frame()
 
         self._run_calibration_to_completion(panel)
 
@@ -3186,15 +3276,86 @@ class TestMountTestMovePanel:
         assert window._left_panel._auto_exposure_paused is False
         assert window._right_panel._auto_exposure_paused is False
 
-        # axis1 rate is 100px/1000ms = 0.1 px/ms; nudge_target_px defaults
-        # to 10.0 -> 10.0 / 0.1 = 100ms, axis1 only (already screen-aligned).
+        # axis1 rate is 100px/1000ms = 0.1 px/ms; the star fixture's own
+        # 120x120 frame and the default nudge_target_fraction=0.5 give a
+        # target of 120*0.5 = 60px -> 60 / 0.1 = 600ms, axis1 only
+        # (already screen-aligned).
         settings = MountAlignmentSettings()
-        assert pulse_mount.pulse_log == [(MountAxis.AXIS1, AxisDirection.POSITIVE, 100)]
+        assert pulse_mount.pulse_log == [(MountAxis.AXIS1, AxisDirection.POSITIVE, 600)]
         assert pulse_mount.rate_log == [settings.rate_preset]
         assert "Main" in panel._result_label.text()
         assert "Guide" in panel._result_label.text()
         assert "failed" not in panel._result_label.text().lower()
         window.close()
+
+    def test_nudge_target_scales_with_this_cameras_own_frame_size(self, qapp: object) -> None:
+        """Real request: nudges should move "half a window" for rough
+        alignment, not a small fixed pixel count -- and Main/Guide have
+        very different resolutions, so the target has to come from the
+        *clicked camera's own* actual frame, not a shared constant.
+        Standalone panel (not a full MainWindow) since this only needs
+        MountTestMovePanel's own logic -- see the Quit-cleanup fix's own
+        lesson on why that's preferred when nothing else is exercised."""
+        pulse_mount = FakeMountAdapter()
+        # Left/Main: 400x200 (width x height); Right/Guide: 100x50 --
+        # deliberately different from each other, matching Main/Guide's
+        # real very-different sensor resolutions in this app.
+        panel = MountTestMovePanel(
+            pulse_mount,
+            mount_park=FakeMountPark(start_parked=True),
+            get_left_frame=lambda: np.zeros((200, 400), dtype=np.float32),
+            get_right_frame=lambda: np.zeros((50, 100), dtype=np.float32),
+        )
+        panel._connect_button.setChecked(True)
+        # Terrestrial mode -- these synthetic frames have no star for
+        # Star mode's own detector to find; terrestrial's "before"
+        # capture accepts any frame (only its own "after" correlation
+        # can reject one), and this test only cares about the pulse
+        # durations submitted, not the resulting measurement.
+        panel._terrestrial_button.click()
+
+        def _response(axis: MountAxis, dx_px: float, dy_px: float) -> AxisResponse:
+            # duration_ms=1 -> rate is exactly dx_px/dy_px per ms, so the
+            # solved pulse duration below comes out equal to the target
+            # pixel count itself, easy to check directly.
+            return AxisResponse(
+                axis=axis, direction=AxisDirection.POSITIVE, duration_ms=1,
+                dx_px=dx_px, dy_px=dy_px, px_per_ms=0.0,
+            )
+
+        for key in ("left", "right"):
+            panel._calibration[key] = CalibrationMatrix(
+                responses={
+                    (MountAxis.AXIS1, AxisDirection.POSITIVE): _response(MountAxis.AXIS1, 1.0, 0.0),
+                    (MountAxis.AXIS2, AxisDirection.POSITIVE): _response(MountAxis.AXIS2, 0.0, 1.0),
+                }
+            )
+        panel._update_buttons_enabled()
+
+        def _click_and_wait(camera_key: str, direction: str) -> None:
+            panel._nudge_buttons[camera_key][direction].click()
+            deadline = time.monotonic() + 5.0
+            while panel._runner.is_busy:
+                assert time.monotonic() < deadline, "nudge never completed"
+                time.sleep(0.01)
+            panel._poll()
+
+        settings = MountAlignmentSettings()
+        # axis1 rate is 1px/1ms; Right moves along width, Up/Down along
+        # height -- each camera's own frame, not a shared constant.
+        _click_and_wait("left", "Right")
+        assert pulse_mount.pulse_log[-1] == (
+            MountAxis.AXIS1, AxisDirection.POSITIVE, round(400 * settings.nudge_target_fraction)
+        )
+        _click_and_wait("right", "Right")
+        assert pulse_mount.pulse_log[-1] == (
+            MountAxis.AXIS1, AxisDirection.POSITIVE, round(100 * settings.nudge_target_fraction)
+        )
+        _click_and_wait("left", "Down")
+        assert pulse_mount.pulse_log[-1] == (
+            MountAxis.AXIS2, AxisDirection.POSITIVE, round(200 * settings.nudge_target_fraction)
+        )
+        panel.stop()
 
     def test_nudge_button_passes_the_configured_settle_ms_to_the_runner(
         self, qapp: object

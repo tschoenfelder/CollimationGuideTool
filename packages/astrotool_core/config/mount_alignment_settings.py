@@ -32,7 +32,15 @@ DEFAULT_CONFIG_PATH = Path.home() / ".CollimationGuideTool" / "config.toml"
 #: adapter's default for any other caller.
 _DEFAULT_RATE_PRESET = "7"
 _DEFAULT_PULSE_MS = 1000
-_DEFAULT_NUDGE_TARGET_PX = 10.0
+#: Real request: nudges should move a large, decisive distance for rough
+#: alignment ("the buttons should move half a window in the direction
+#: specified"), not a small fixed pixel count -- a future "slow down
+#: near target" fine-adjustment mode is explicitly deferred, not this.
+#: Fraction of *this camera's own* frame width (Left/Right) or height
+#: (Up/Down) -- see MountTestMovePanel._on_nudge_clicked's own docstring
+#: for why it has to be a fraction of the actual frame, not a fixed
+#: pixel count, given Main and Guide have very different resolutions.
+_DEFAULT_NUDGE_TARGET_FRACTION = 0.5
 #: Real report: "calibration doesn't wait for mount to be stabilized" --
 #: MountTestMoveRunner used to capture the "after" frame the instant
 #: pulse_axis() confirmed the motion switch back off, with no allowance
@@ -49,16 +57,18 @@ _DEFAULT_SETTLE_MS = 1000
 class MountAlignmentSettings:
     """`pulse_ms`/`rate_preset` are used for every calibration test pulse
     (the return pulse reuses the same values, trusting a symmetric
-    response). `nudge_target_px` is the on-screen displacement a single
-    direction-pad click aims for; `compose_screen_move` solves the
-    (axis1_ms, axis2_ms) pulse pair that should produce it for that
-    camera's own calibration. `settle_ms` is how long MountTestMoveRunner
-    waits after a pulse (or composed sequence of pulses) physically stops
-    before reporting done -- see that module's own docstring."""
+    response). `nudge_target_fraction` is the on-screen displacement a
+    single direction-pad click aims for, as a fraction of the clicked
+    camera's own frame width (Left/Right) or height (Up/Down);
+    `compose_screen_move` solves the (axis1_ms, axis2_ms) pulse pair that
+    should produce it for that camera's own calibration. `settle_ms` is
+    how long MountTestMoveRunner waits after a pulse (or composed
+    sequence of pulses) physically stops before reporting done -- see
+    that module's own docstring."""
 
     pulse_ms: int = _DEFAULT_PULSE_MS
     rate_preset: str = _DEFAULT_RATE_PRESET
-    nudge_target_px: float = _DEFAULT_NUDGE_TARGET_PX
+    nudge_target_fraction: float = _DEFAULT_NUDGE_TARGET_FRACTION
     settle_ms: int = _DEFAULT_SETTLE_MS
 
 
@@ -89,9 +99,11 @@ def load_mount_alignment_settings(
     rate_preset = str(rate_preset_value) if rate_preset_value is not None else defaults.rate_preset
 
     try:
-        nudge_target_px = float(table.get("nudge_target_px", defaults.nudge_target_px))
+        nudge_target_fraction = float(
+            table.get("nudge_target_fraction", defaults.nudge_target_fraction)
+        )
     except (TypeError, ValueError):
-        nudge_target_px = defaults.nudge_target_px
+        nudge_target_fraction = defaults.nudge_target_fraction
 
     try:
         settle_ms = int(table.get("settle_ms", defaults.settle_ms))
@@ -101,6 +113,6 @@ def load_mount_alignment_settings(
     return MountAlignmentSettings(
         pulse_ms=pulse_ms,
         rate_preset=rate_preset,
-        nudge_target_px=nudge_target_px,
+        nudge_target_fraction=nudge_target_fraction,
         settle_ms=settle_ms,
     )
