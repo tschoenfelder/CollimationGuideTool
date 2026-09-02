@@ -9,7 +9,7 @@ import pytest
 from astropy.io import fits
 from astrotool_core.acquisition.acquisition_state import AcquisitionState
 from astrotool_core.acquisition.auto_exposure import AutoExposureConfig
-from astrotool_core.camera.capabilities import CameraCapabilities
+from astrotool_core.camera.capabilities import CameraCapabilities, CameraDescriptor, ConversionGain
 from astrotool_core.camera.port import CameraPort
 from astrotool_core.camera.replay_camera import ReplayCamera
 from astrotool_core.camera.touptek_adapter import TouptekDeviceInfo
@@ -171,6 +171,77 @@ class TestDegenerateCalibrationMessage:
         assert "RA-axis measured no motion on either camera" in message
 
 
+class _SlowCamera(CameraPort):
+    """A CameraPort whose `capture()` actually sleeps for (a small,
+    test-fast) requested exposure duration, unlike ReplayCamera/FakeCamera
+    (both return near-instantly regardless of the requested exposure,
+    which is exactly why they can't exercise exposure-*start*-aware
+    freshness checking -- see `wait_for_frame_after`'s own docstring).
+    Real wall-clock delay here is what lets a test construct a genuine
+    "frame delivered after reference, but its own exposure started before
+    it" case deterministically."""
+
+    def __init__(self) -> None:
+        self._exposure_ms = 100.0
+        self._gain = 100
+        self._black_level = 0
+        self._conversion_gain = ConversionGain.LCG
+        self.capture_count = 0
+
+    def connect(self) -> None:
+        pass
+
+    def disconnect(self) -> None:
+        pass
+
+    def capture(self, exposure_seconds: float) -> Frame:
+        time.sleep(exposure_seconds)
+        self.capture_count += 1
+        array = donut_image(
+            _SHAPE, outer_center=_CENTER, outer_radius=50.0,
+            inner_center=_CENTER, inner_radius=20.0, peak=3000.0, background=100.0,
+        )
+        return Frame(pixels=array, header={}, exposure_seconds=exposure_seconds, bit_depth=16)
+
+    def get_exposure_ms(self) -> float:
+        return self._exposure_ms
+
+    def set_exposure_ms(self, ms: float) -> None:
+        self._exposure_ms = max(0.1, ms)
+
+    def get_gain(self) -> int:
+        return self._gain
+
+    def set_gain(self, gain: int) -> None:
+        self._gain = gain
+
+    def get_black_level(self) -> int:
+        return self._black_level
+
+    def set_black_level(self, level: int) -> None:
+        self._black_level = level
+
+    def get_conversion_gain(self) -> ConversionGain:
+        return self._conversion_gain
+
+    def set_conversion_gain(self, mode: ConversionGain) -> None:
+        self._conversion_gain = mode
+
+    def get_temperature(self) -> float | None:
+        return None
+
+    def get_descriptor(self) -> CameraDescriptor:
+        return CameraDescriptor(
+            serial_number="SLOW-0001", logical_name="SlowCamera",
+            capabilities=CameraCapabilities(
+                min_gain=100, max_gain=3200, min_exposure_ms=0.1, max_exposure_ms=60_000.0,
+                supports_cooling=False, supports_hcg=False, supports_lcg=False,
+                supports_hdr=False, supports_black_level=False, bit_depth=16,
+                pixel_size_um=2.4, sensor_width_px=_SHAPE[1], sensor_height_px=_SHAPE[0],
+            ),
+        )
+
+
 class TestWaitForFrameAfter:
     """Direct unit coverage for CameraPanel.wait_for_frame_after() -- the
     panel-level calibration/nudge tests exercise it end-to-end through a
@@ -186,11 +257,47 @@ class TestWaitForFrameAfter:
 
     def test_returns_a_frame_delivered_after_the_reference_time(self, qapp: object) -> None:
         panel = CameraPanel(_donut_camera((0.0, 0.0)), title="Test")
+        panel._exposure_spin.setValue(1.0)  # ReplayCamera defaults to 2000ms -- keep this fast
         panel._start_button.setChecked(True)
         try:
             reference = time.monotonic()
             frame = panel.wait_for_frame_after(reference, 2.0)
             assert frame is not None
+        finally:
+            panel._start_button.setChecked(False)
+
+    def test_rejects_a_frame_whose_own_exposure_started_before_the_reference(
+        self, qapp: object
+    ) -> None:
+        """Real report, diagnostic c7dc2c3d: "still using frames during
+        movement" -- a frame delivered after a pulse/settle finished can
+        still have *started* its own exposure beforehand if the exposure
+        is long enough (Guide auto-exposing up to 2000ms in real
+        diagnostics, comparable to a settle window). Uses `_SlowCamera`
+        (a real, if short, per-frame delay) to construct this
+        deterministically: set the reference to fall *during* the first
+        exposure already in flight, and confirm the frame returned is a
+        *later* one (2nd+), not that first already-in-progress one, even
+        though the first frame is still "delivered after reference" by
+        plain delivery-time bookkeeping."""
+        camera = _SlowCamera()
+        camera.set_exposure_ms(250.0)
+        panel = CameraPanel(camera, title="Test")
+        panel._exposure_spin.setValue(250.0)
+        panel._start_button.setChecked(True)
+        try:
+            # Let the first exposure actually start, then set the
+            # reference partway through it -- the first frame (delivered
+            # ~250ms after *this* moment) would pass a delivery-time-only
+            # check but must be rejected here: its own exposure started
+            # before this reference.
+            time.sleep(0.05)
+            reference = time.monotonic()
+            frame = panel.wait_for_frame_after(reference, 2.0)
+            assert frame is not None
+            # The accepted frame is at least the 2nd capture -- the
+            # first (already in flight at `reference`) was skipped.
+            assert camera.capture_count >= 2
         finally:
             panel._start_button.setChecked(False)
 
@@ -2407,6 +2514,17 @@ class TestMountTestMovePanel:
         )
 
     def _connect_and_stream_cameras(self, window: MainWindow) -> None:
+        # ReplayCamera defaults to a 2000ms exposure -- harmless for tests
+        # that only ever peek the latest cached frame, but
+        # wait_for_frame_after() is now exposure-start-aware (real report,
+        # diagnostic c7dc2c3d: "still using frames during movement"), so
+        # any test that exercises it through this real (not monkeypatched)
+        # path would otherwise need several real seconds per wait, racing
+        # MountTestMovePanel's own _FRESH_FRAME_TIMEOUT_S. Set before
+        # starting the stream -- StreamController reads the exposure once,
+        # at start.
+        window._left_panel._exposure_spin.setValue(20.0)
+        window._right_panel._exposure_spin.setValue(20.0)
         window._left_panel._start_button.setChecked(True)
         window._right_panel._start_button.setChecked(True)
         window._left_panel._poll_frame()

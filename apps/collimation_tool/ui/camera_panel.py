@@ -686,20 +686,25 @@ class CameraPanel(QWidget):
         by `timeout_s`; returns None on timeout, or if not currently
         streaming.
 
-        Deliberately checks delivery time (`captured_at_monotonic`), not
-        `reference_monotonic` vs. `frame.exposure_seconds`-adjusted
-        exposure *start* time -- a real camera's own long exposure (Guide
-        has been observed auto-exposing up to its own 2000ms ceiling in
-        real diagnostics this session) can still mean a "fresh" frame's
-        exposure genuinely started before the mount finished settling,
-        which this doesn't catch; `exposure_seconds` on a replayed/faked
-        `Frame` in tests reflects the *requested* exposure, not how long
-        the (near-instant, canned) capture actually took, so subtracting
-        it would make every test camera's very next delivered frame look
-        stale for a full requested-exposure-duration's worth of *real*
-        wall-clock time -- broadly incompatible with this project's
-        existing fast test-camera fixtures. Delivery-time is still a
-        real improvement over no freshness check at all.
+        Checks the frame's own *exposure start* (`captured_at_monotonic -
+        frame.exposure_seconds`) against `reference_monotonic`, not just
+        delivery time -- real report, diagnostic c7dc2c3d ("still using
+        frames during movement"): a frame delivered comfortably after a
+        calibration step's pulse+settle finished can still have *started*
+        its own exposure well before that, if the exposure is long enough
+        relative to the pulse+settle window (Guide has been observed
+        auto-exposing up to 2000ms in real diagnostics this session,
+        comparable to or longer than a typical settle window) -- such a
+        frame is "fresh" by delivery time alone but its pixel data still
+        integrates real light captured *during* the motion. Only checking
+        delivery time (the original fix here) missed exactly this case; a
+        30x run-to-run discrepancy in a real calibration reading for the
+        same nominal pulse (diagnostics de295656 vs. c7dc2c3d) is what
+        surfaced it concretely rather than by inspection alone. Skips
+        (keeps waiting for the next mailbox frame) any frame whose
+        computed exposure start still predates the reference, exactly
+        like the pre-existing "delivered before reference" skip just
+        below.
 
         Deliberately blocks the Qt main thread (like `_poll_frame`'s own
         non-blocking `wait_latest(timeout_s=0.0)` peek, just with a real
@@ -727,10 +732,15 @@ class CameraPanel(QWidget):
             sequence = mailbox_frame.sequence
             self._last_sequence = sequence
             self._recent_frames.append(mailbox_frame.frame)
-            if mailbox_frame.captured_at_monotonic >= reference_monotonic:
+            exposure_start = (
+                mailbox_frame.captured_at_monotonic - mailbox_frame.frame.exposure_seconds
+            )
+            if exposure_start >= reference_monotonic:
                 return self._frame_to_mono(mailbox_frame.frame)
             # Delivered before the reference (already-mailboxed when the
-            # pulse/settle finished) -- keep waiting for the next one.
+            # pulse/settle finished), or its own exposure started before
+            # the reference even though it was delivered after -- keep
+            # waiting for the next one either way.
 
     def stop(self) -> None:
         """Stop streaming/polling and release the camera hardware. Safe to
