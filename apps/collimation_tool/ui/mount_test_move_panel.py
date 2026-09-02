@@ -274,6 +274,11 @@ class MountTestMovePanel(QWidget):
         #: pulse and that pulse actually finishing -- see that method's
         #: own docstring and _poll()'s use of this flag.
         self._awaiting_stranded_return = False
+        #: Cameras excluded from the *current* Run Calibration attempt --
+        #: see _finish_calibration_step()'s own docstring for why a
+        #: camera's own "not enough structure" no longer aborts the whole
+        #: sequence.
+        self._calibration_failed_cameras: set[str] = set()
         #: See diagnostic_frames()'s own docstring.
         self._last_diagnostic_frames: dict[str, np.ndarray] = {}
         #: See diagnostic_camera_state()'s own docstring.
@@ -471,6 +476,7 @@ class MountTestMovePanel(QWidget):
     def _on_run_calibration_clicked(self) -> None:
         self._calibration_queue = list(_CALIBRATION_STEPS)
         self._calibration_partial = {"left": {}, "right": {}}
+        self._calibration_failed_cameras = set()
         # Paused for the whole 4-step sequence, not just per-step -- see
         # the constructor's own docstring on _set_left/right_auto_exposure_paused.
         # Resumed in _abort_calibration (every failure path) and
@@ -569,6 +575,34 @@ class MountTestMovePanel(QWidget):
     def _finish_calibration_step(
         self, pending: _PendingAction, *, pulsed: bool, pulse_error: str | None
     ) -> None:
+        """Real report (diagnostic d14c3a9b): "esp. guide cam right...
+        right movement greyed out". Guide's own frames were fine (real,
+        high-confidence structure) that whole run -- Main's weren't (gain
+        escalated to near its own max, producing a frame that's mostly
+        amplified sensor noise). The old all-or-nothing behavior here
+        aborted the *entire* calibration the moment either camera's
+        measurement failed, discarding Guide's own already-good reading
+        along with Main's bad one -- Guide's nudge buttons stayed
+        disabled for a problem that was really only ever Main's.
+
+        A camera whose own measurement fails now gets excluded
+        (`_calibration_failed_cameras`) rather than aborting the whole
+        sequence: the shared mount pulses keep running regardless (one
+        physical mount serves both cameras, so there's no reason to stop
+        moving it just because one camera's own signal is bad), and
+        whichever camera(s) keep succeeding still get a complete,
+        usable calibration. Only once *both* cameras have failed is
+        there nothing left to gain, and the sequence actually aborts
+        (still via `strand_return_step`, same as any other abort after a
+        successful forward pulse).
+
+        Deliberately unchanged: a missing raw frame entirely (not a
+        measured-but-too-noisy one) still aborts everything immediately,
+        both here and in `_start_next_calibration_step`'s own "before"
+        capture -- a camera with literally no frame at all is a more
+        fundamental streaming/connection problem, not a signal-quality
+        one, and not what this incident was about.
+        """
         step = pending.step
         assert step is not None
         if not pulsed:
@@ -585,26 +619,34 @@ class MountTestMovePanel(QWidget):
                 )
                 return
             responses: dict[str, AxisResponse] = {}
-            failed: list[str] = []
+            newly_failed: list[str] = []
             for key in ("left", "right"):
+                if key in self._calibration_failed_cameras:
+                    continue  # already excluded -- no point re-measuring it
                 response = self._build_response(
                     pending.mode, step.axis, step.direction, self._settings.pulse_ms,
                     pending.before[key], after[key],
                 )
                 if response is None:
-                    failed.append(key)
+                    newly_failed.append(key)
+                    self._calibration_failed_cameras.add(key)
                 else:
                     responses[key] = response
-            if failed:
+                    self._calibration_partial[key][step.axis] = response
+            if len(self._calibration_failed_cameras) >= 2:
                 self._abort_calibration(
-                    f"not enough structure to measure a displacement in: {', '.join(failed)}",
+                    "not enough structure to measure a displacement in either camera",
                     strand_return_step=True,
                 )
                 return
-            for key, response in responses.items():
-                self._calibration_partial[key][step.axis] = response
-            self._last_responses = responses
-            self._last_error = None
+            if newly_failed:
+                self._last_error = (
+                    f"not enough structure to measure a displacement in: "
+                    f"{', '.join(newly_failed)} -- excluded from this calibration"
+                )
+            elif responses:
+                self._last_error = None
+            self._last_responses = responses or self._last_responses
         self._start_next_calibration_step()
 
     def _finish_calibration(self) -> None:
@@ -626,6 +668,17 @@ class MountTestMovePanel(QWidget):
         self._calibration = {}
         lines: list[str] = []
         for key in ("left", "right"):
+            if key in self._calibration_failed_cameras:
+                # See _finish_calibration_step()'s own docstring (real
+                # report d14c3a9b) -- this camera's own measurement
+                # failed partway through, but that no longer took the
+                # other camera's calibration down with it.
+                lines.append(
+                    f"{_CAMERA_LABELS[key]}: not enough structure to measure a displacement "
+                    "-- excluded from this calibration (driver accepted every pulse; check "
+                    "this camera's own exposure/gain and target)."
+                )
+                continue
             axis1 = self._calibration_partial[key].get(MountAxis.AXIS1)
             axis2 = self._calibration_partial[key].get(MountAxis.AXIS2)
             if axis1 is None or axis2 is None:
@@ -647,7 +700,10 @@ class MountTestMovePanel(QWidget):
                 f"{_CAMERA_LABELS[key]}: RA-axis {_format_response(axis1)} | "
                 f"Dec-axis {_format_response(axis2)}"
             )
-        self._last_error = None
+        # None (no error banner) as long as *some* camera ended up with a
+        # usable matrix -- a fully independent per-camera outcome now,
+        # not an all-or-nothing one.
+        self._last_error = None if self._calibration else "no usable calibration for either camera"
         self._result_label.setText("\n".join(lines))
         self._resume_auto_exposure()
 

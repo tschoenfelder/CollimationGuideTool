@@ -28,7 +28,10 @@ from collimation_tool.ui.camera_panel import CameraPanel
 from collimation_tool.ui.focuser_panel import FocuserPanel
 from collimation_tool.ui.main_window import MainWindow
 from collimation_tool.ui.mount_park_panel import MountParkPanel
-from collimation_tool.ui.mount_test_move_panel import _degenerate_calibration_message
+from collimation_tool.ui.mount_test_move_panel import (
+    MountTestMovePanel,
+    _degenerate_calibration_message,
+)
 
 _SHAPE = (240, 240)
 _CENTER = (120.0, 120.0)
@@ -2699,6 +2702,25 @@ class TestMountTestMovePanel:
         window._test_move_panel._connect_button.setChecked(True)
         panel = window._test_move_panel
 
+        # A non-degenerate calibration needs AXIS1's and AXIS2's own
+        # measured responses to actually differ -- see
+        # test_run_calibration_pulses_all_four_steps_in_order_and_builds_both_matrices's
+        # own comment for why the shared static _star_camera fixture
+        # can't provide that on its own.
+        left_positions = iter([(50.0, 50.0), (60.0, 50.0), (50.0, 50.0), (50.0, 60.0)])
+        right_positions = iter([(50.0, 50.0), (60.0, 50.0), (50.0, 50.0), (50.0, 60.0)])
+
+        def stepped_left_frame() -> np.ndarray:
+            x, y = next(left_positions)
+            return single_star_image((120, 120), x=x, y=y, peak=2000.0, sigma=2.5, background=100.0)
+
+        def stepped_right_frame() -> np.ndarray:
+            x, y = next(right_positions)
+            return single_star_image((120, 120), x=x, y=y, peak=2000.0, sigma=2.5, background=100.0)
+
+        panel._get_left_frame = stepped_left_frame
+        panel._get_right_frame = stepped_right_frame
+
         self._run_calibration_to_completion(panel)
 
         context = window._diagnostic_context()
@@ -3014,6 +3036,105 @@ class TestMountTestMovePanel:
         assert "RA-axis measured no motion on either camera" in lines["Guide"]
         assert "Dec-axis measured" not in lines["Guide"]
         window.close()
+
+    def test_a_camera_that_fails_its_own_structure_check_does_not_block_the_other(
+        self, qapp: object
+    ) -> None:
+        """Real report, diagnostic d14c3a9b: "esp. guide cam right...
+        right movement greyed out". Guide's own frames were fine that
+        run; Main's gain had escalated to near its own max, producing a
+        frame that's mostly amplified sensor noise -- but the old
+        all-or-nothing abort took Guide's already-good calibration down
+        with Main's bad one. Main here is flat/textureless every capture
+        (measure_translation_offset's own explicit zero-variance guard,
+        not merely a low score) -- it must not block Guide, whose frames
+        genuinely differ per axis, from completing its own calibration."""
+        pulse_mount = FakeMountAdapter()
+        window = MainWindow(
+            _textured_camera(seed=10),
+            guide_camera=_textured_camera(seed=11),
+            device_lister=lambda: [],
+            mount=FakeMountPark(start_parked=True),
+            pulse_mount=pulse_mount,
+        )
+        self._connect_and_stream_cameras(window)
+        window._mount_panel._connect_button.setChecked(True)
+        window._test_move_panel._connect_button.setChecked(True)
+        panel = window._test_move_panel
+        panel._terrestrial_button.click()
+
+        flat = np.full((120, 120), 500.0)
+        rng = np.random.default_rng(15)
+        base = rng.normal(loc=500.0, scale=80.0, size=(120, 120))
+        right_shifts = iter([(0, 0), (0, 6), (0, 0), (6, 0)])  # (dy, dx) per capture
+
+        def stepped_right_frame() -> np.ndarray:
+            dy, dx = next(right_shifts)
+            return np.roll(np.roll(base, dy, axis=0), dx, axis=1)
+
+        panel._get_left_frame = lambda: flat
+        panel._get_right_frame = stepped_right_frame
+
+        self._run_calibration_to_completion(panel)
+
+        settings = MountAlignmentSettings()
+        # All 4 steps still ran -- Main failing didn't cut the shared
+        # mount sequence short.
+        assert pulse_mount.pulse_log == [
+            (MountAxis.AXIS1, AxisDirection.POSITIVE, settings.pulse_ms),
+            (MountAxis.AXIS1, AxisDirection.NEGATIVE, settings.pulse_ms),
+            (MountAxis.AXIS2, AxisDirection.POSITIVE, settings.pulse_ms),
+            (MountAxis.AXIS2, AxisDirection.NEGATIVE, settings.pulse_ms),
+        ]
+        assert "left" not in panel._calibration
+        assert "right" in panel._calibration
+        assert not panel._nudge_buttons["left"]["Right"].isEnabled()
+        assert panel._nudge_buttons["right"]["Right"].isEnabled()
+        lines = {line.split(":", 1)[0]: line for line in panel._result_label.text().split("\n")}
+        assert "excluded from this calibration" in lines["Main"]
+        assert "RA-axis" in lines["Guide"] and "Dec-axis" in lines["Guide"]
+        window.close()
+
+    def test_both_cameras_failing_structure_still_aborts_and_returns_the_mount(
+        self, qapp: object
+    ) -> None:
+        # Panel constructed directly rather than via a full MainWindow --
+        # this scenario (both cameras aborting simultaneously, then a
+        # separate wait for the stranded return pulse's own background
+        # thread to finish) doesn't need CameraPanel/FocuserPanel/
+        # MountParkPanel at all, and constructing them anyway measurably
+        # raised this project's known Windows/Qt-teardown segfault's odds
+        # in earlier testing here (see the Quit-cleanup fix's own lesson:
+        # "test a single panel's own logic by constructing that panel
+        # directly, not via a full MainWindow").
+        pulse_mount = FakeMountAdapter()
+        panel = MountTestMovePanel(
+            pulse_mount,
+            mount_park=FakeMountPark(start_parked=True),
+            get_left_frame=lambda: np.full((120, 120), 500.0, dtype=np.float32),
+            get_right_frame=lambda: np.full((120, 120), 500.0, dtype=np.float32),
+        )
+        panel._connect_button.setChecked(True)
+        panel._terrestrial_button.click()
+
+        self._run_calibration_to_completion(panel)
+        deadline = time.monotonic() + 5.0
+        while panel._runner.is_busy:
+            assert time.monotonic() < deadline, "stranded return pulse never completed"
+            time.sleep(0.01)
+        panel._poll()
+
+        settings = MountAlignmentSettings()
+        # Aborted after AXIS1's own test+return -- never reached AXIS2,
+        # nothing left to gain once both cameras have failed.
+        assert pulse_mount.pulse_log == [
+            (MountAxis.AXIS1, AxisDirection.POSITIVE, settings.pulse_ms),
+            (MountAxis.AXIS1, AxisDirection.NEGATIVE, settings.pulse_ms),
+        ]
+        assert not panel._calibration
+        assert "Calibration failed" in panel._result_label.text()
+        assert "either camera" in panel._result_label.text()
+        panel.stop()
 
     def test_diagnostic_context_reports_the_current_target_mode(self, qapp: object) -> None:
         window = self._window(mount_park=FakeMountPark(), pulse_mount=FakeMountAdapter())
