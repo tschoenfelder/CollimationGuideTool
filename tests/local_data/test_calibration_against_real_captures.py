@@ -154,6 +154,32 @@ def test_guide_axis1_positive_is_degenerate_against_axis2_this_run() -> None:
     assert is_degenerate(main_axis1, main_axis2) is False
 
 
+@pytest.mark.parametrize("shift_px", [10, 20])
+def test_a_known_synthetic_shift_of_a_real_frame_is_recovered_exactly(shift_px: int) -> None:
+    """Ground-truth check with a *known* answer, unlike the real
+    axis-pulse pairs above (there, the true displacement is exactly
+    what's being measured, not already known -- these can only be
+    cross-checked against each other, e.g. via the plate-scale/degenerate
+    tests). `tests/core/target/test_translation_offset.py` already pins
+    "a known shift is recovered exactly" against synthetic per-pixel
+    Gaussian noise; this is the same check against one real captured
+    frame's own actual statistics (real sensor noise, real non-uniform
+    scene texture) instead, using this dataset now that it exists.
+    `np.roll` gives an exact circular shift, matching
+    `measure_translation_offset()`'s own documented small-pulse
+    assumption (same technique this project's synthetic calibration-step
+    test fixtures already use elsewhere)."""
+    base = _load("guide_center")
+    shifted = np.roll(base, shift=(0, shift_px), axis=(0, 1))  # (dy, dx) -- pure +x shift
+
+    result = measure_translation_offset(base, shifted)
+
+    assert result is not None
+    assert result.dx_px == float(shift_px)
+    assert result.dy_px == 0.0
+    assert result.score > 0.9  # exact self-shift, no reason for anything less
+
+
 def test_mains_finer_plate_scale_shows_a_larger_real_shift_than_guides() -> None:
     """Cross-camera sanity check: AXIS2's real motion shows up on *both*
     cameras this run (unlike AXIS1's), and Main's own pixel shift for
