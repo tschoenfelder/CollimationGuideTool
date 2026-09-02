@@ -19,3 +19,9 @@ mutation/*.sqlite
 # Config lives outside the repo (see ~/.CollimationGuideTool/config.toml),
 # but ignore a local dev override if one is created here.
 /*.local.toml
+
+# Real-hardware capture datasets (full-res FITS, tens of MB each) pulled
+# down for locally tuning/testing calibration-related algorithms against
+# real frames -- never committed (see tests/local_data/'s own docstring
+# for the skip-if-absent tests that consume these).
+/local_test_data/

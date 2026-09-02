@@ -167,6 +167,73 @@ class TestMountTestMoveRunner:
         assert mount_park.unpark_count == 1
         assert mount_park.status().parked is False
 
+    def test_a_second_submit_on_an_already_unparked_mount_does_not_re_unpark(self) -> None:
+        """Real live-hardware report: "You seem to enable tracking. That
+        should not happen. No wonder, that the frames look blury" --
+        traced to `_run()` calling `unpark()` unconditionally on *every*
+        submit(), even when the mount was already confirmed unparked from
+        an earlier submit() in the same run (Run Calibration's 4+ separate
+        steps, each its own submit() call -- unlike submit_sequence's
+        single multi-step call, already covered by the test above).
+        `IndiMountParkAdapter.unpark()` resends the UNPARK switch command
+        every time it runs, which re-triggers OnStep's own ~1.5s delayed
+        auto-tracking-on quirk (see that module's own docstring) all over
+        again on every single pulse -- landing the driver's own tracking
+        override right around when some step's "after" frame gets
+        captured. Only the first submit() of a run (mount actually
+        parked) needs the full unpark() cycle; a later submit() on an
+        already-unparked mount uses the lighter stop_tracking() instead
+        (a single TRACK_OFF, no UNPARK resend) -- still corrects any
+        tracking that crept back in, without re-arming the driver's own
+        UNPARK-linked quirk again."""
+        mount_park = FakeMountPark(start_parked=True)
+        mount = FakeMountAdapter()
+        mount.connect()
+        runner = MountTestMoveRunner()
+
+        runner.submit(
+            mount_park, mount, MountAxis.AXIS1, AxisDirection.POSITIVE, 100, park_after=False
+        )
+        assert _wait_for(lambda: not runner.is_busy)
+        assert mount_park.unpark_count == 1
+        assert mount_park.stop_tracking_count == 0
+
+        runner.submit(
+            mount_park, mount, MountAxis.AXIS2, AxisDirection.POSITIVE, 100, park_after=False
+        )
+        assert _wait_for(lambda: not runner.is_busy)
+        outcome = runner.take_latest()
+        assert outcome is not None
+        assert outcome.pulsed is True
+        # Still just the one unpark() from the first submit() -- the
+        # second used stop_tracking() instead.
+        assert mount_park.unpark_count == 1
+        assert mount_park.stop_tracking_count == 1
+
+    def test_a_submit_after_the_mount_was_reparked_still_unparks_again(self) -> None:
+        """The parked-check must be live, not "only ever the first submit()
+        of this runner's lifetime" -- if something reparks the mount
+        between two submit() calls (e.g. `park_after=True`, or a separate
+        Mount panel park), the next submit() must still go through the
+        real unpark() cycle rather than assuming it's already unparked."""
+        mount_park = FakeMountPark(start_parked=True)
+        mount = FakeMountAdapter()
+        mount.connect()
+        runner = MountTestMoveRunner()
+
+        runner.submit(
+            mount_park, mount, MountAxis.AXIS1, AxisDirection.POSITIVE, 100, park_after=True
+        )
+        assert _wait_for(lambda: not runner.is_busy)
+        assert mount_park.status().parked is True  # re-parked by park_after=True
+
+        runner.submit(
+            mount_park, mount, MountAxis.AXIS2, AxisDirection.POSITIVE, 100, park_after=False
+        )
+        assert _wait_for(lambda: not runner.is_busy)
+        assert mount_park.unpark_count == 2
+        assert mount_park.stop_tracking_count == 0
+
     def test_submit_sequence_with_no_steps_is_a_no_op(self) -> None:
         runner = MountTestMoveRunner()
         started = runner.submit_sequence(

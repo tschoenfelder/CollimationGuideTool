@@ -23,8 +23,8 @@ and computes the response itself, also on the main thread (fast enough,
 unlike FOV registration's search, not to need its own thread). This
 runner's only job is the unpark/pulse/re-park timing.
 
-Always unparks first — a real-hardware check (see incident notes on
-`IndiMountPulseAdapter`) found OnStep's driver refuses
+Always ensures unparked first — a real-hardware check (see incident notes
+on `IndiMountPulseAdapter`) found OnStep's driver refuses
 `TELESCOPE_MOTION_NS`/`_WE` while parked ("Please unpark the mount before
 issuing any motion/sync commands"). That refusal is a deliberate safety
 interlock, not a defect — parked is supposed to mean "don't move" — so
@@ -33,6 +33,16 @@ switch command accepted at the INDI level even though nothing moved, so
 a caller can't tell from the ack alone, which is why this runner ensures
 unparked itself instead (reusing `IndiMountParkAdapter.unpark()`'s already-
 durable TRACK_OFF) before ever pulsing.
+
+Only calls the *full* `unpark()` when `status().parked` actually says so
+right now; an already-unparked mount instead gets the lighter
+`stop_tracking()`. A real live-hardware report ("You seem to enable
+tracking... no wonder the frames look blury") traced back to unpark()
+being called unconditionally on every submit() — including a run's later
+steps, where the mount was already unparked by an earlier one —
+resending the UNPARK switch command every time, which re-triggers
+OnStep's own ~1.5s delayed auto-tracking-on quirk on every single pulse.
+See `_run()`'s own comment for the full mechanism.
 
 Whether it *re-parks* afterward is the caller's choice (`park_after`,
 default `True`). The mount-alignment feature (`MountTestMovePanel`) always
@@ -201,7 +211,28 @@ class MountTestMoveRunner:
     ) -> None:
         pulsed = False
         error: str | None = None
-        mount_park.unpark()
+        # Real live-hardware report: "You seem to enable tracking. That
+        # should not happen. No wonder, that the frames look blury" --
+        # unpark() used to be called unconditionally on *every* submit(),
+        # even across a run's later steps where the mount was already
+        # confirmed unparked by an earlier one (Run Calibration's several
+        # separate submit() calls, one per step -- unlike submit_sequence's
+        # single call for several *sub*-pulses, which already only unparks
+        # once). IndiMountParkAdapter.unpark() resends the UNPARK switch
+        # command every time it runs, which re-triggers OnStep's own
+        # ~1.5s delayed auto-tracking-on quirk (see that module's own
+        # docstring) all over again on every single pulse -- landing the
+        # driver's own tracking override right around when some step's
+        # "after" frame gets captured. Only a mount that's actually
+        # parked right now needs the full unpark() cycle; an
+        # already-unparked one instead gets the lighter stop_tracking()
+        # (a single TRACK_OFF, no UNPARK resend) -- still corrects any
+        # tracking that crept back in, without re-arming the driver's own
+        # UNPARK-linked quirk again.
+        if mount_park.status().parked:
+            mount_park.unpark()
+        else:
+            mount_park.stop_tracking()
         try:
             if not _wait_for_parked(mount_park, want_parked=False, timeout_s=_UNPARK_TIMEOUT_S):
                 error = "mount did not confirm unparked in time -- aborting test move"
