@@ -45,6 +45,9 @@ class _NeverUnparks(MountParkPort):
     def stop_tracking(self) -> None:
         pass
 
+    def start_tracking(self) -> None:
+        pass
+
 
 class TestMountTestMoveRunner:
     def test_submit_unparks_pulses_and_reparks(self) -> None:

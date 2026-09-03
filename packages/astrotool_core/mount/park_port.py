@@ -64,3 +64,14 @@ class MountParkPort(ABC):
         app. Safe to call whether or not the mount is currently tracking,
         and a no-op if not available."""
         ...
+
+    @abstractmethod
+    def start_tracking(self) -> None:
+        """Activate tracking -- issue #30: star-mode calibration requires
+        tracking ON before a BEFORE frame is captured
+        (`astrotool_core.mount.tracking_mode.ensure_tracking_mode`), which
+        needs a way to *establish* that mode, not just observe/clear it
+        (this port previously only ever had `stop_tracking`). Safe to
+        call whether or not the mount is already tracking, and a no-op if
+        not available -- same contract as `stop_tracking`."""
+        ...

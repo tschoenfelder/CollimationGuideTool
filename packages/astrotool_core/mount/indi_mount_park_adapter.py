@@ -241,6 +241,25 @@ class IndiMountParkAdapter(MountParkPort):
         )
         self._send_track_off()
 
+    def start_tracking(self) -> None:
+        # Issue #30: star calibration needs to *establish* tracking=ON,
+        # not just clear it -- see MountParkPort.start_tracking's own
+        # docstring. Cancels any still-pending TRACK_OFF retries first
+        # (see unpark()) so a stale one doesn't immediately undo this.
+        if not self.is_available:
+            return
+        _log.info(
+            "IndiMountParkAdapter.start_tracking(): activating tracking on %r", self._device_name
+        )
+        self._cancel_pending_track_off_retries()
+        self._send_track_on()
+
+    def _send_track_on(self) -> None:
+        with contextlib.suppress(ConnectionError, OSError):
+            self._client.send_new_switch_vector(
+                self._device_name, "TELESCOPE_TRACK_STATE", {"TRACK_ON": True}
+            )
+
     def _send_track_off(self) -> None:
         # Runs on the timer thread for retries -- the client/socket may
         # already be closed (disconnect, or a slow-to-cancel timer racing

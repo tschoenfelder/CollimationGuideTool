@@ -19,6 +19,7 @@ class FakeMountPark(MountParkPort):
         self.park_count = 0
         self.unpark_count = 0
         self.stop_tracking_count = 0
+        self.start_tracking_count = 0
 
     def connect(self) -> None:
         if self._fail_connect:
@@ -48,3 +49,7 @@ class FakeMountPark(MountParkPort):
     def stop_tracking(self) -> None:
         self.stop_tracking_count += 1
         self._tracking = False
+
+    def start_tracking(self) -> None:
+        self.start_tracking_count += 1
+        self._tracking = True

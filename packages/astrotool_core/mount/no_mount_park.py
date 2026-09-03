@@ -27,3 +27,6 @@ class NoMountPark(MountParkPort):
 
     def stop_tracking(self) -> None:
         pass
+
+    def start_tracking(self) -> None:
+        pass

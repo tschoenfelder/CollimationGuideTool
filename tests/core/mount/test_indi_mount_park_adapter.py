@@ -142,6 +142,23 @@ class TestConnected:
         adapter = IndiMountParkAdapter("127.0.0.1", 1)
         adapter.stop_tracking()  # must not raise
 
+    def test_start_tracking_activates_tracking(self, server: FakeIndiServer) -> None:
+        # Issue #30: star-mode calibration needs to *establish* tracking,
+        # not just clear it.
+        mount = IndiMountParkAdapter(server.host, server.port, connect_timeout_s=2.0)
+        mount.connect()
+        mount.unpark()
+        _wait_until(lambda: not mount.status().parked)
+        server._tracking = False  # noqa: SLF001 -- simulate tracking left off
+        mount.start_tracking()
+        _wait_until(lambda: mount.status().tracking)
+        assert mount.status().tracking is True
+        mount.disconnect()
+
+    def test_start_tracking_on_a_disconnected_mount_is_a_safe_no_op(self) -> None:
+        adapter = IndiMountParkAdapter("127.0.0.1", 1)
+        adapter.start_tracking()  # must not raise
+
 
 class TestUnparkOvercomesDriverTrackOnOverride:
     """Regression test for incident 25446102 ("Shows unparked, tracking,
