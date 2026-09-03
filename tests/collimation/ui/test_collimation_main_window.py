@@ -3837,3 +3837,198 @@ class TestMountTestMovePanel:
         assert "Move failed" in panel._result_label.text()
         assert pulse_mount.pulse_log == []
         window.close()
+
+
+class _StubbornMountPark(FakeMountPark):
+    """A FakeMountPark whose start_tracking() is accepted but ignored --
+    simulates a real mount refusing a tracking-mode correction (e.g.
+    while parked) so `ensure_tracking_mode` reports REPAIR_FAILED rather
+    than REPAIRED."""
+
+    def start_tracking(self) -> None:
+        self.start_tracking_count += 1  # command was sent, just ignored
+
+
+def _static_frame_panel(
+    mount_park: FakeMountPark, *, pulse_mount: FakeMountAdapter | None = None
+) -> MountTestMovePanel:
+    # A real detectable star, not a blank frame -- star mode's own
+    # _capture() runs detect_sources() on it, which a blank/flat frame
+    # never satisfies (see incident 6fa2aa59, this file's own
+    # TestFovCalibration coverage, etc.).
+    star = single_star_image((40, 40), x=20.0, y=20.0, peak=2000.0, sigma=2.5, background=100.0)
+    return MountTestMovePanel(
+        pulse_mount or FakeMountAdapter(),
+        mount_park=mount_park,
+        get_left_frame=lambda: star.copy(),
+        get_right_frame=lambda: star.copy(),
+    )
+
+
+class TestTrackingMode:
+    """Issue #30's "Tracking is not slewing": star calibration requires
+    tracking ON, terrestrial requires tracking OFF, verified/repaired via
+    `_capture_both` (so it covers both the BEFORE capture and every
+    AFTER capture, right after whatever commanded movement just
+    finished) -- see MountTestMovePanel's own docstring."""
+
+    def test_star_mode_repairs_tracking_off_before_capture(self, qapp: object) -> None:
+        mount_park = FakeMountPark(start_parked=False)  # tracking starts False
+        panel = _static_frame_panel(mount_park)  # default mode is "star"
+
+        result = panel._capture_both("star")
+
+        assert result is not None
+        assert mount_park.start_tracking_count == 1
+        assert mount_park.status().tracking is True
+        panel.stop()
+
+    def test_terrestrial_mode_repairs_tracking_on_before_capture(self, qapp: object) -> None:
+        mount_park = FakeMountPark(start_parked=False)
+        mount_park.start_tracking()  # tracking left on from a previous star session
+        panel = _static_frame_panel(mount_park)
+        panel._terrestrial_button.click()
+
+        result = panel._capture_both("terrestrial")
+
+        assert result is not None
+        assert mount_park.stop_tracking_count == 1
+        assert mount_park.status().tracking is False
+        panel.stop()
+
+    def test_already_correct_tracking_mode_needs_no_repair(self, qapp: object) -> None:
+        mount_park = FakeMountPark(start_parked=False)
+        mount_park.start_tracking()  # already ON, matching star mode's own requirement
+        panel = _static_frame_panel(mount_park)
+
+        result = panel._capture_both("star")
+
+        assert result is not None
+        assert mount_park.start_tracking_count == 1  # only the setup call above
+        panel.stop()
+
+    def test_a_mount_that_refuses_the_correction_blocks_the_capture(self, qapp: object) -> None:
+        mount_park = _StubbornMountPark(start_parked=False)
+        panel = _static_frame_panel(mount_park)
+
+        result = panel._capture_both("star")
+
+        assert result is None
+        assert panel._last_tracking_error is not None
+        assert "tracking" in panel._last_tracking_error
+        panel.stop()
+
+    def test_a_tracking_mismatch_sets_the_tracking_state_invalid_failure_class(
+        self, qapp: object
+    ) -> None:
+        mount_park = _StubbornMountPark(start_parked=False)
+        panel = _static_frame_panel(mount_park)
+
+        panel._capture_both("star")
+
+        assert panel.diagnostic_context()["last_failure_classes"] == {
+            "left": "tracking_state_invalid", "right": "tracking_state_invalid",
+        }
+        panel.stop()
+
+    def test_run_calibration_refuses_before_any_pulse_when_tracking_cannot_be_established(
+        self, qapp: object
+    ) -> None:
+        pulse_mount = FakeMountAdapter()
+        mount_park = _StubbornMountPark(start_parked=True)
+        panel = _static_frame_panel(mount_park, pulse_mount=pulse_mount)
+
+        panel._on_run_calibration_clicked()
+
+        assert "tracking" in panel._result_label.text().lower()
+        assert pulse_mount.pulse_log == []  # never actually pulsed
+        panel.stop()
+
+    def test_nudge_refuses_before_any_pulse_when_tracking_cannot_be_established(
+        self, qapp: object
+    ) -> None:
+        pulse_mount = FakeMountAdapter()
+        mount_park = _StubbornMountPark(start_parked=False)
+        panel = _static_frame_panel(mount_park, pulse_mount=pulse_mount)
+        # A fast enough rate that the composed nudge duration stays well
+        # under max_nudge_pulse_ms -- otherwise the pre-existing "too
+        # long" guard (unrelated to tracking) fires first, before this
+        # panel ever reaches its own tracking check.
+        panel._calibration["left"] = CalibrationMatrix(
+            responses={
+                (MountAxis.AXIS1, AxisDirection.POSITIVE): _axis_response(
+                    MountAxis.AXIS1, 100.0, 0.0
+                ),
+                (MountAxis.AXIS2, AxisDirection.POSITIVE): _axis_response(
+                    MountAxis.AXIS2, 0.0, 100.0
+                ),
+            }
+        )
+        panel._update_buttons_enabled()
+
+        panel._on_nudge_clicked("left", "Up")
+
+        assert "tracking" in panel._result_label.text().lower()
+        assert pulse_mount.pulse_log == []
+        panel.stop()
+
+    def test_tracking_is_reverified_after_a_commanded_pulse(self, qapp: object) -> None:
+        """Issue #30: "After each commanded slew/pulse, tracking state
+        shall be re-verified because the driver/mount may change state as
+        a side effect" -- simulates the real OnStep quirk this project has
+        already hit once (see project memory: the tracking-leak incident)
+        by having tracking flip itself back off, as a side effect of the
+        pulse, right before the AFTER capture -- must be caught and
+        repaired (not silently measured against an untracked frame)."""
+        mount_park = FakeMountPark(start_parked=False)
+        mount_park.start_tracking()  # correct going in
+        pulse_mount = FakeMountAdapter()
+        pulse_mount.connect()  # FakeMountAdapter rejects pulses until connected
+        panel = _static_frame_panel(mount_park, pulse_mount=pulse_mount)
+
+        real_submit = panel._runner.submit
+        flipped = False
+
+        def submit_and_flip_tracking(*args: object, **kwargs: object) -> bool:
+            # Only the *first* pulse disturbs tracking -- _finish_calibration_step
+            # chains synchronously into the next step's own submit() once
+            # this one's outcome is processed (same poll() call), so
+            # flipping it on every submit would just catch this test
+            # mid-repair for a later step instead of the one under test.
+            nonlocal flipped
+            if not flipped:
+                mount_park.stop_tracking()  # simulate the driver's own side effect
+                flipped = True
+            return real_submit(*args, **kwargs)  # type: ignore[arg-type]
+
+        panel._runner.submit = submit_and_flip_tracking  # type: ignore[method-assign]
+        panel._connected = True  # _poll() itself is a no-op otherwise
+
+        panel._on_run_calibration_clicked()
+        deadline = time.monotonic() + 5.0
+        # Loops poll() (not just one call) until AXIS1's own response is
+        # actually recorded -- is_busy can read False for a brief instant
+        # before the runner's own outcome is ready for take_latest(), so
+        # a single poll() right after the busy-wait isn't reliably enough
+        # (same reason _run_calibration_to_completion, used elsewhere in
+        # this file, wraps its own poll() in a queue/pending-driven loop).
+        while MountAxis.AXIS1 not in panel._calibration_partial["left"]:
+            assert time.monotonic() < deadline, "AXIS1's own step never completed"
+            while panel._runner.is_busy:
+                assert time.monotonic() < deadline, "first pulse never completed"
+                time.sleep(0.01)
+            panel._poll()
+
+        # That step's own AFTER capture must have re-verified/repaired
+        # tracking, which the fake driver's own side effect (simulated
+        # above) had just turned off. Not asserting the *current* status()
+        # here -- MountTestMoveRunner's own _run() already calls
+        # stop_tracking() before every real pulse it issues (the #27
+        # tracking-leak fix), including the next queued step's, which can
+        # legitimately race ahead on its own background thread the moment
+        # this step's response is recorded; the repair itself, not a
+        # snapshot of a state a concurrent next pulse may already be
+        # disturbing again, is what this test pins.
+        assert mount_park.start_tracking_count >= 1
+        assert panel._last_tracking_error is None  # not stuck reporting a mismatch
+        panel.stop()

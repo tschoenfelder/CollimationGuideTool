@@ -124,6 +124,28 @@ per camera in `self._last_failure_classes` (`MeasurementFailureClass`,
 exposed via `diagnostic_context()`'s `last_failure_classes`) and echoed
 into the free-text result label via `_capture_failure_detail()` -- so a
 field failure no longer collapses into one generic "calibration failed".
+
+Issue #30: "Tracking is not slewing" -- this panel's own Target toggle
+also determines a *required mount tracking mode*
+(`astrotool_core.mount.tracking_mode.TrackingMode` -- star needs ON,
+terrestrial needs OFF), verified/repaired via `_verify_tracking_mode()`
+from inside `_capture_both` itself, so it runs before every BEFORE
+capture and is re-checked before every AFTER capture too (i.e. right
+after whatever commanded movement just finished) with one code path.
+`_finish_calibration_step` additionally re-verifies right after *every*
+confirmed pulse, including a non-measuring "return" step -- real
+confirmation this matters: `MountTestMoveRunner._run()`'s own existing
+(#27) `stop_tracking()`-before-every-pulse behavior means tracking gets
+disturbed on every single commanded pulse in a calibration sequence, not
+just a hypothetical one. A tracking-state precondition failure is its own
+`MeasurementFailureClass.TRACKING_STATE_INVALID`, distinct from a
+capture/match/calibration-derivation one. Deeper post-motion image-
+*stability* verification (`astrotool_core.acquisition.
+motion_aware_acquisition`, also issue #30) exists and is fully tested at
+the core level but is not yet wired into this panel's own before/after
+capture flow -- a wider, riskier change to this file's existing call-
+count-sensitive test coverage than this pass's own tracking-mode wiring
+(see project memory for the full reasoning).
 """
 
 from __future__ import annotations
@@ -152,6 +174,7 @@ from astrotool_core.mount.axis_calibration import (
 )
 from astrotool_core.mount.park_port import MountParkPort
 from astrotool_core.mount.port import AxisDirection, MountAxis, MountPort
+from astrotool_core.mount.tracking_mode import TrackingMode, ensure_tracking_mode
 from astrotool_core.target.detector import detect_sources
 from astrotool_core.target.translation_offset import measure_translation_offset
 from PySide6.QtCore import QTimer
@@ -211,6 +234,11 @@ class MeasurementFailureClass(Enum):
     #: A valid displacement was measured, but the resulting AXIS1/AXIS2
     #: pair is too close to parallel to invert reliably (`is_degenerate`).
     CALIBRATION_INVALID = "calibration_invalid"
+    #: Issue #30: the mount's own tracking state didn't match (and
+    #: couldn't be repaired into) what the current target mode requires
+    #: (star = ON, terrestrial = OFF) -- a mount-state precondition
+    #: failure, not a frame-capture or measurement one.
+    TRACKING_STATE_INVALID = "tracking_state_invalid"
 
 
 def _frame_acquisition_result(frame: np.ndarray | None) -> FrameAcquisitionResult:
@@ -391,6 +419,12 @@ class MountTestMovePanel(QWidget):
         #: `_capture_failure_detail()`. Short-lived (overwritten every
         #: `_capture_both` call), unlike `_last_failure_classes` below.
         self._last_capture_failures: dict[str, FrameAcquisitionStatus] = {}
+        #: Set by `_verify_tracking_mode()` (via `_capture_both`) whenever
+        #: the mount's own tracking state didn't match (and couldn't be
+        #: repaired into) what the current target mode requires -- see
+        #: `_capture_failure_message()`. Short-lived, same lifecycle as
+        #: `_last_capture_failures`.
+        self._last_tracking_error: str | None = None
         #: Per-camera failure classification for the *current* calibration
         #: attempt or nudge -- see `MeasurementFailureClass` and
         #: `diagnostic_context()`'s own `last_failure_classes`. Reset at
@@ -511,6 +545,38 @@ class MountTestMovePanel(QWidget):
     def _target_mode(self) -> TargetMode:
         return "terrestrial" if self._terrestrial_button.isChecked() else "star"
 
+    def _required_tracking_mode(self) -> TrackingMode:
+        """Issue #30's "Tracking is not slewing": star calibration
+        requires tracking ON (so it can measure real astronomical
+        motion), terrestrial requires tracking OFF (tracking would
+        otherwise add deliberate continuous image motion on top of
+        whatever the calibration pulse itself produces) -- derived
+        directly from this panel's own Target toggle, never a separate
+        setting to keep in sync with it."""
+        return TrackingMode.OFF if self._target_mode() == "terrestrial" else TrackingMode.ON
+
+    def _verify_tracking_mode(self) -> str | None:
+        """Verifies (and, if needed, repairs) the mount's tracking state
+        against `_required_tracking_mode()` -- returns `None` if OK, or a
+        human-readable failure message otherwise. Called from
+        `_capture_both` itself (see that method's own docstring), so it
+        runs before every BEFORE capture and is re-checked before every
+        AFTER capture too, right after whatever commanded movement just
+        finished -- issue #30: "After each commanded slew/pulse, tracking
+        state shall be re-verified because the driver/mount may change
+        state as a side effect."""
+        required = self._required_tracking_mode()
+        result = ensure_tracking_mode(self._mount_park, required)
+        if result.ok:
+            return None
+        self._last_failure_classes["left"] = MeasurementFailureClass.TRACKING_STATE_INVALID
+        self._last_failure_classes["right"] = MeasurementFailureClass.TRACKING_STATE_INVALID
+        observed = result.observed_mode.value if result.observed_mode is not None else "unavailable"
+        return (
+            f"mount tracking must be {required.value} for {self._target_mode()} calibration "
+            f"(currently {observed}, {result.status.value})"
+        )
+
     def _capture(self, mode: TargetMode, frame: np.ndarray | None) -> _Measurement | None:
         """One camera's "before"/"after" measurement in the given mode --
         a star centroid, or the whole frame itself (to cross-correlate
@@ -600,8 +666,19 @@ class MountTestMovePanel(QWidget):
         acquire_settled_frames` (the "A" layer, camera-count-independent
         by construction) -- this method supplies it with this panel's own
         two named sources and stashes per-camera failure detail in
-        `self._last_capture_failures` for `_capture_failure_detail()`."""
+        `self._last_capture_failures` for `_capture_failure_detail()`.
+
+        Issue #30: checks/repairs the mount's own tracking state (see
+        `_verify_tracking_mode`) before attempting either capture --
+        called from here rather than scattered across every "before"/
+        "after" call site covers both "verified before BEFORE capture"
+        and "re-verified after commanded movement" with one check, since
+        this method IS the thing every before/after capture goes
+        through."""
         self._last_capture_failures = {}
+        self._last_tracking_error = self._verify_tracking_mode()
+        if self._last_tracking_error is not None:
+            return None
         if after_monotonic is None:
             left_frame = self._get_left_frame()
             right_frame = self._get_right_frame()
@@ -663,6 +740,18 @@ class MountTestMovePanel(QWidget):
         ]
         return " (" + "; ".join(parts) + ")"
 
+    def _capture_failure_message(self, generic: str) -> str:
+        """The message to show for a `_capture_both` call that just
+        returned `None` -- `generic` is the existing missing-frame
+        wording (e.g. `"no star detected before pulsing"`). Issue #30: a
+        tracking-state precondition failure gets its own specific message
+        (set by `_verify_tracking_mode`) instead of being reported as a
+        generic missing-frame one, which would be actively misleading --
+        no frame was ever attempted in that case."""
+        if self._last_tracking_error is not None:
+            return self._last_tracking_error
+        return f"{generic}{self._capture_failure_detail()}"
+
     def diagnostic_frames(self) -> dict[str, np.ndarray]:
         """The raw before/after frame pair(s) from the most recent
         calibration step(s) and/or nudge -- labelled e.g.
@@ -721,7 +810,7 @@ class MountTestMovePanel(QWidget):
             captured = self._capture_both(mode, diagnostic_label=label)
             if captured is None:
                 self._abort_calibration(
-                    f"{self._missing_label(mode)} before pulsing{self._capture_failure_detail()}"
+                    self._capture_failure_message(f"{self._missing_label(mode)} before pulsing")
                 )
                 return
             before = captured
@@ -839,6 +928,21 @@ class MountTestMovePanel(QWidget):
         if not pulsed:
             self._abort_calibration(pulse_error or "pulse failed")
             return
+        # Issue #30: tracking state must be re-verified after *every*
+        # commanded pulse, not only ones immediately followed by a
+        # capture -- a "move back" return step's own pulse can just as
+        # easily disturb it (the same real OnStep quirk that motivated
+        # this in the first place is a side effect of any TELESCOPE_PARK/
+        # UNPARK-adjacent command, not specifically a measured one), and
+        # nothing else would otherwise catch a wrong mode before the
+        # *next* step's own pulse goes out. `_capture_both` (below, for a
+        # measure step) re-checks this again on its own -- redundant but
+        # harmless for that case; this call is what covers a return-only
+        # step, which never reaches `_capture_both` at all.
+        tracking_error = self._verify_tracking_mode()
+        if tracking_error is not None:
+            self._abort_calibration(tracking_error, strand_return_step=step.measure)
+            return
         if step.measure:
             after = self._capture_both(
                 pending.mode,
@@ -847,8 +951,9 @@ class MountTestMovePanel(QWidget):
             )
             if after is None:
                 self._abort_calibration(
-                    f"{self._missing_label(pending.mode)} after the move"
-                    f"{self._capture_failure_detail()}",
+                    self._capture_failure_message(
+                        f"{self._missing_label(pending.mode)} after the move"
+                    ),
                     strand_return_step=True,
                 )
                 return
@@ -1020,8 +1125,8 @@ class MountTestMovePanel(QWidget):
         before = self._capture_both(mode, diagnostic_label="nudge_before")
         if before is None:
             self._resume_auto_exposure()
-            self._last_error = (
-                f"{self._missing_label(mode)} before pulsing{self._capture_failure_detail()}"
+            self._last_error = self._capture_failure_message(
+                f"{self._missing_label(mode)} before pulsing"
             )
             self._result_label.setText(f"Move failed: {self._last_error}")
             return
@@ -1062,9 +1167,8 @@ class MountTestMovePanel(QWidget):
         )
         self._resume_auto_exposure()
         if after is None:
-            self._last_error = (
+            self._last_error = self._capture_failure_message(
                 f"{self._missing_label(pending.mode)} after the move"
-                f"{self._capture_failure_detail()}"
             )
             self._result_label.setText(f"Move failed: {self._last_error}")
             return
