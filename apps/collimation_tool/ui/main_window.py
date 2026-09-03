@@ -82,12 +82,15 @@ camera, not an error.
 That config-only rectangle is always centered and unrotated — it has no
 way to reflect how the two cameras are actually mounted relative to each
 other. "Calibrate FOV" replaces it with a real, possibly-rotated match:
-`fov_registration.register_main_frame_in_guide_frame` content-matches
-the two panels' latest captured frames (using the config's plate-scale
-ratio only as a starting-point scale estimate) and, on a confident
-match, sets the guide panel's polygon overlay via `set_fov_polygon` —
-see `FovCalibrator` for why this runs on a background thread rather than
-inline on the button click. An explicit, user-triggered action by
+`astrotool_core.registration.terrestrial_registrar.TerrestrialRegistrar`
+(issue #29's cross-camera registration architecture — see that module's
+own docstring) content-matches the two panels' latest captured frames,
+using each optical train's own `OpticalPrior` (config-derived plate
+scale + this panel's own sensor dimensions) only as a starting-point
+scale estimate, and, on a confident match, sets the guide panel's polygon
+overlay via `set_fov_polygon` — see `FovCalibrator` for why this runs on
+a background thread rather than inline on the button click. An explicit,
+user-triggered action by
 default, not something re-run automatically: the two scopes' relative
 mounting doesn't drift frame to frame, only when the rig is physically
 adjusted. The "Keep calibrating" checkbox opts into repeating it anyway
@@ -126,6 +129,8 @@ from astrotool_core.mount.no_mount_park import NoMountPark
 from astrotool_core.mount.park_port import MountParkPort
 from astrotool_core.mount.port import MountPort
 from astrotool_core.optics import load_pixel_scale_arcsec
+from astrotool_core.registration.optical_prior import OpticalPrior
+from astrotool_core.registration.result import CrossCameraRegistrationResult
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
@@ -144,7 +149,6 @@ from collimation_tool.ui.camera_panel import CameraPanel, default_camera_factory
 from collimation_tool.ui.focuser_panel import FocuserPanel
 from collimation_tool.ui.fov_calibrator import FovCalibrator
 from collimation_tool.ui.fov_overlay import compute_fov_overlay_rect
-from collimation_tool.ui.fov_registration import FovRegistrationResult, registration_corners
 from collimation_tool.ui.mount_park_panel import MountParkPanel
 from collimation_tool.ui.mount_test_move_panel import MountTestMovePanel
 
@@ -274,7 +278,7 @@ class MainWindow(QMainWindow):
         #: match, never cleared by a later "no match" run, so this always
         #: explains the *currently shown* overlay for diagnostics. None
         #: until the first successful calibration.
-        self._last_calibration_result: FovRegistrationResult | None = None
+        self._last_calibration_result: CrossCameraRegistrationResult | None = None
 
         self._diagnostics = diagnostics or DiagnosticService(app_name="CollimationTool")
         self._diagnostics.set_context_provider(self._diagnostic_context)
@@ -374,8 +378,21 @@ class MainWindow(QMainWindow):
                 "No optical-train plate-scale config available — can't estimate a starting scale."
             )
             return
-        approx_scale = self._main_pixel_scale_arcsec / self._guide_pixel_scale_arcsec
-        started = self._fov_calibrator.submit(main_mono, guide_mono, approx_scale=approx_scale)
+        main_caps = self._left_panel.camera_descriptor().capabilities
+        guide_caps = self._right_panel.camera_descriptor().capabilities
+        prior_a = OpticalPrior(
+            name="main", sensor_width_px=main_caps.sensor_width_px,
+            sensor_height_px=main_caps.sensor_height_px,
+            pixel_scale_arcsec=self._main_pixel_scale_arcsec,
+        )
+        prior_b = OpticalPrior(
+            name="guide", sensor_width_px=guide_caps.sensor_width_px,
+            sensor_height_px=guide_caps.sensor_height_px,
+            pixel_scale_arcsec=self._guide_pixel_scale_arcsec,
+        )
+        started = self._fov_calibrator.submit(
+            main_mono, guide_mono, prior_a=prior_a, prior_b=prior_b
+        )
         if not started:
             return  # a calibration is already running
         self._calibrate_fov_button.setEnabled(False)
@@ -401,17 +418,18 @@ class MainWindow(QMainWindow):
             return
         self._calibrate_fov_poll_timer.stop()
         self._calibrate_fov_button.setEnabled(True)
-        if outcome.result is None:
+        result = outcome.result
+        if not result.ok:
             self._calibrate_fov_status_label.setText(
-                "No confident match found — keeping the previous overlay."
+                f"No confident match found ({result.status.value}) — keeping the previous overlay."
             )
         else:
-            result = outcome.result
             self._calibrate_fov_status_label.setText(
                 f"Calibrated: rotation {result.rotation_deg:.1f}°, "
-                f"scale {result.scale:.4f}, score {result.score:.2f}"
+                f"scale {result.scale:.4f}, score {result.confidence:.2f}"
             )
-            self._right_panel.set_fov_polygon(registration_corners(result))
+            assert result.polygon_a_in_b is not None  # guaranteed by .ok
+            self._right_panel.set_fov_polygon(list(result.polygon_a_in_b))
             self._last_calibration_result = result
 
         if self._auto_recalibrate_checkbox.isChecked():

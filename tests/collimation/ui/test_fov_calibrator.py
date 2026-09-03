@@ -2,6 +2,7 @@ import time
 from collections.abc import Callable
 
 import numpy as np
+from astrotool_core.registration.optical_prior import OpticalPrior
 from collimation_tool.ui.fov_calibrator import FovCalibrator, _auto_search_downsample
 
 
@@ -15,6 +16,14 @@ def _starfield(height: int, width: int, *, n_stars: int, seed: int) -> np.ndarra
         sigma = rng.uniform(1.5, 3.0)
         image += peak * np.exp(-(((xs - cx) ** 2 + (ys - cy) ** 2) / (2 * sigma**2)))
     return image
+
+
+def _priors() -> tuple[OpticalPrior, OpticalPrior]:
+    prior_a = OpticalPrior(name="a", sensor_width_px=10, sensor_height_px=10,
+                            pixel_scale_arcsec=1.0)
+    prior_b = OpticalPrior(name="b", sensor_width_px=10, sensor_height_px=10,
+                            pixel_scale_arcsec=1.0)
+    return prior_a, prior_b
 
 
 def _wait_for(predicate: Callable[[], bool], *, timeout_s: float = 10.0) -> bool:
@@ -31,13 +40,14 @@ class TestFovCalibrator:
         guide = _starfield(60, 60, n_stars=15, seed=1)
         main = guide[15:45, 10:50].copy()
         calibrator = FovCalibrator()
+        prior_a, prior_b = _priors()
 
-        calibrator.submit(main, guide, approx_scale=1.0)
+        calibrator.submit(main, guide, prior_a=prior_a, prior_b=prior_b)
         assert _wait_for(lambda: not calibrator.is_busy)
 
         outcome = calibrator.take_latest()
         assert outcome is not None
-        assert outcome.result is not None
+        assert outcome.result.ok
 
     def test_take_latest_returns_none_when_nothing_has_completed_yet(self) -> None:
         assert FovCalibrator().take_latest() is None
@@ -46,7 +56,8 @@ class TestFovCalibrator:
         guide = _starfield(60, 60, n_stars=15, seed=2)
         main = guide[15:45, 10:50].copy()
         calibrator = FovCalibrator()
-        calibrator.submit(main, guide, approx_scale=1.0)
+        prior_a, prior_b = _priors()
+        calibrator.submit(main, guide, prior_a=prior_a, prior_b=prior_b)
         assert _wait_for(lambda: not calibrator.is_busy)
 
         assert calibrator.take_latest() is not None
@@ -56,9 +67,10 @@ class TestFovCalibrator:
         guide = _starfield(60, 60, n_stars=15, seed=3)
         main = guide[15:45, 10:50].copy()
         calibrator = FovCalibrator()
+        prior_a, prior_b = _priors()
         calibrator._busy = True  # simulate an in-flight calibration
 
-        started = calibrator.submit(main, guide, approx_scale=1.0)
+        started = calibrator.submit(main, guide, prior_a=prior_a, prior_b=prior_b)
         assert started is False
         assert calibrator.take_latest() is None  # nothing was actually started
 
@@ -67,25 +79,27 @@ class TestFovCalibrator:
         rng = np.random.default_rng(99)
         unrelated = rng.normal(500.0, 50.0, size=(20, 25))
         calibrator = FovCalibrator()
+        prior_a, prior_b = _priors()
 
-        calibrator.submit(unrelated, guide, approx_scale=1.0)
+        calibrator.submit(unrelated, guide, prior_a=prior_a, prior_b=prior_b)
         assert _wait_for(lambda: not calibrator.is_busy)
 
         outcome = calibrator.take_latest()
         assert outcome is not None
-        assert outcome.result is None  # ran to completion, just no match
+        assert not outcome.result.ok  # ran to completion, just no match
 
     def test_bad_input_is_reported_as_no_match_not_a_crash(self) -> None:
         guide = _starfield(30, 30, n_stars=5, seed=5)
         too_big = np.full((80, 80), 500.0)  # can't fit inside guide at any scale
         calibrator = FovCalibrator()
+        prior_a, prior_b = _priors()
 
-        calibrator.submit(too_big, guide, approx_scale=1.0)
+        calibrator.submit(too_big, guide, prior_a=prior_a, prior_b=prior_b)
         assert _wait_for(lambda: not calibrator.is_busy)
 
         outcome = calibrator.take_latest()
         assert outcome is not None
-        assert outcome.result is None
+        assert not outcome.result.ok
 
 
 class TestLatestProgress:
@@ -99,8 +113,9 @@ class TestLatestProgress:
         guide = _starfield(100, 100, n_stars=30, seed=6)
         main = guide[25:75, 20:80].copy()
         calibrator = FovCalibrator()
+        prior_a, prior_b = _priors()
 
-        calibrator.submit(main, guide, approx_scale=1.0)
+        calibrator.submit(main, guide, prior_a=prior_a, prior_b=prior_b)
         # Sample progress a few times while it's still running — each
         # sample should be a valid, non-decreasing (completed, total).
         samples: list[tuple[int, int]] = []
@@ -123,8 +138,9 @@ class TestLatestProgress:
         guide = _starfield(60, 60, n_stars=15, seed=7)
         main = guide[15:45, 10:50].copy()
         calibrator = FovCalibrator()
+        prior_a, prior_b = _priors()
 
-        calibrator.submit(main, guide, approx_scale=1.0)
+        calibrator.submit(main, guide, prior_a=prior_a, prior_b=prior_b)
         assert _wait_for(lambda: not calibrator.is_busy)
 
         assert calibrator.latest_progress() is None
@@ -155,10 +171,11 @@ class TestAutoSearchDownsample:
         guide = _starfield(60, 60, n_stars=15, seed=42)
         main = guide[15:45, 10:50].copy()
         calibrator = FovCalibrator()
+        prior_a, prior_b = _priors()
 
-        calibrator.submit(main, guide, approx_scale=1.0)
+        calibrator.submit(main, guide, prior_a=prior_a, prior_b=prior_b)
         assert _wait_for(lambda: not calibrator.is_busy)
 
         outcome = calibrator.take_latest()
         assert outcome is not None
-        assert outcome.result is not None
+        assert outcome.result.ok

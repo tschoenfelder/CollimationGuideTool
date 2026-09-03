@@ -27,6 +27,7 @@ from astrotool_core.frames.frame import Frame
 from astrotool_core.mount.axis_calibration import AxisResponse, CalibrationMatrix
 from astrotool_core.mount.park_port import MountParkPort, MountParkStatus
 from astrotool_core.mount.port import AxisDirection, CommandResult, MountAxis, MountPort
+from astrotool_core.registration.optical_prior import OpticalPrior
 from astrotool_core.testing.fake_mount import FakeMountAdapter
 from astrotool_core.testing.fake_mount_park import FakeMountPark
 from astrotool_core.testing.fake_touptek import FakeTouptekCamera
@@ -758,7 +759,7 @@ class TestDiagnosticsCapture:
         calibration = incident["context"]["fov_calibration"]
         assert calibration["rotation_deg"] == window._last_calibration_result.rotation_deg
         assert calibration["scale"] == window._last_calibration_result.scale
-        assert calibration["score"] == window._last_calibration_result.score
+        assert calibration["confidence"] == window._last_calibration_result.confidence
 
     def test_recent_frame_buffer_is_bounded_per_panel(self, qapp: object, tmp_path: Path) -> None:
         expected_capacity = 3
@@ -1464,9 +1465,14 @@ class TestFovCalibration:
 
         window._on_calibrate_fov()
         assert not window._calibrate_fov_button.isEnabled()
-        assert window._fov_calibrator.submit(  # a second submit while running is a no-op
-            main_array, guide, approx_scale=1.0
-        ) is False
+        prior_a = OpticalPrior(name="main", sensor_width_px=50, sensor_height_px=40,
+                                pixel_scale_arcsec=1.0)
+        prior_b = OpticalPrior(name="guide", sensor_width_px=80, sensor_height_px=80,
+                                pixel_scale_arcsec=1.0)
+        assert (  # a second submit while running is a no-op
+            window._fov_calibrator.submit(main_array, guide, prior_a=prior_a, prior_b=prior_b)
+            is False
+        )
 
         deadline = time.monotonic() + 15.0
         while window._calibrate_fov_poll_timer.isActive():
