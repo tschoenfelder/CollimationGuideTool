@@ -64,14 +64,18 @@ could mask.
 from __future__ import annotations
 
 import logging
-import time
 from collections import deque
 from collections.abc import Callable
 from typing import Any
 
 import numpy as np
 from astrotool_core.acquisition.auto_exposure import AutoExposureConfig, compute_auto_exposure
-from astrotool_core.acquisition.stream_controller import StreamController
+from astrotool_core.acquisition.stable_frame_acquisition import (
+    DeliveredFrame,
+    FrameAcquisitionResult,
+    acquire_stable_frame,
+)
+from astrotool_core.acquisition.stream_controller import MailboxFrame, StreamController
 from astrotool_core.camera import (
     DEMO_CAMERA_LABEL,
     CameraDescriptor,
@@ -676,15 +680,14 @@ class CameraPanel(QWidget):
 
     def wait_for_frame_after(
         self, reference_monotonic: float, timeout_s: float
-    ) -> np.ndarray | None:
+    ) -> FrameAcquisitionResult:
         """Blocks the calling thread for a frame *delivered* after
         `reference_monotonic`, instead of an instant (possibly stale)
         read -- real report ("frames in movement are picked on the
         calibration, causing guide to fail"): `latest_mono_frame()` reads
         whatever this panel's own ~100ms poll tick last cached, which can
         be several poll intervals stale relative to "right now". Bounded
-        by `timeout_s`; returns None on timeout, or if not currently
-        streaming.
+        by `timeout_s`.
 
         Checks the frame's own *exposure start* (`captured_at_monotonic -
         frame.exposure_seconds`) against `reference_monotonic`, not just
@@ -700,11 +703,17 @@ class CameraPanel(QWidget):
         delivery time (the original fix here) missed exactly this case; a
         30x run-to-run discrepancy in a real calibration reading for the
         same nominal pulse (diagnostics de295656 vs. c7dc2c3d) is what
-        surfaced it concretely rather than by inspection alone. Skips
-        (keeps waiting for the next mailbox frame) any frame whose
-        computed exposure start still predates the reference, exactly
-        like the pre-existing "delivered before reference" skip just
-        below.
+        surfaced it concretely rather than by inspection alone.
+
+        Issue #27: the actual wait/skip decision now lives in
+        `astrotool_core.acquisition.stable_frame_acquisition.acquire_stable_frame`
+        (the pure "A" layer) -- this method is a thin wrapper supplying
+        that function with this panel's own mailbox as `next_frame` and
+        returns its `FrameAcquisitionResult` directly (`.ok`/`.status`
+        distinguish *why* no frame was usable -- timed out outright vs.
+        every delivered frame's own exposure overlapped the reference vs.
+        not currently streaming -- instead of the bare `None` this used to
+        collapse every one of those causes into).
 
         Deliberately blocks the Qt main thread (like `_poll_frame`'s own
         non-blocking `wait_latest(timeout_s=0.0)` peek, just with a real
@@ -716,31 +725,34 @@ class CameraPanel(QWidget):
         an equivalent "Calibrating…"/"Moving…" modal-feeling state for
         that whole bracket regardless.
         """
-        if self._stream is None:
+        return acquire_stable_frame(
+            self._next_mailbox_frame,
+            is_available=lambda: self._stream is not None,
+            reference_monotonic=reference_monotonic,
+            timeout_s=timeout_s,
+        )
+
+    def _next_mailbox_frame(self, timeout_s: float) -> DeliveredFrame | None:
+        """`wait_for_frame_after`'s own `next_frame` primitive for
+        `acquire_stable_frame` -- side effects this panel needs for
+        *every* frame it observes (advancing `_last_sequence`, appending
+        to `_recent_frames` so `latest_mono_frame()` and friends stay
+        current) happen here regardless of whether `acquire_stable_frame`
+        ultimately accepts this particular frame or keeps waiting for the
+        next one."""
+        assert self._stream is not None
+        mailbox_frame: MailboxFrame | None = self._stream.mailbox.wait_latest(
+            after_sequence=self._last_sequence, timeout_s=timeout_s
+        )
+        if mailbox_frame is None:
             return None
-        deadline = time.monotonic() + timeout_s
-        sequence = self._last_sequence
-        while True:
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                return None
-            mailbox_frame = self._stream.mailbox.wait_latest(
-                after_sequence=sequence, timeout_s=remaining
-            )
-            if mailbox_frame is None:
-                return None
-            sequence = mailbox_frame.sequence
-            self._last_sequence = sequence
-            self._recent_frames.append(mailbox_frame.frame)
-            exposure_start = (
-                mailbox_frame.captured_at_monotonic - mailbox_frame.frame.exposure_seconds
-            )
-            if exposure_start >= reference_monotonic:
-                return self._frame_to_mono(mailbox_frame.frame)
-            # Delivered before the reference (already-mailboxed when the
-            # pulse/settle finished), or its own exposure started before
-            # the reference even though it was delivered after -- keep
-            # waiting for the next one either way.
+        self._last_sequence = mailbox_frame.sequence
+        self._recent_frames.append(mailbox_frame.frame)
+        return DeliveredFrame(
+            pixels=self._frame_to_mono(mailbox_frame.frame),
+            captured_at_monotonic=mailbox_frame.captured_at_monotonic,
+            exposure_seconds=mailbox_frame.frame.exposure_seconds,
+        )
 
     def stop(self) -> None:
         """Stop streaming/polling and release the camera hardware. Safe to

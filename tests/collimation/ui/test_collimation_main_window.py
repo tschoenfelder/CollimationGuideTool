@@ -9,6 +9,12 @@ import pytest
 from astropy.io import fits
 from astrotool_core.acquisition.acquisition_state import AcquisitionState
 from astrotool_core.acquisition.auto_exposure import AutoExposureConfig
+from astrotool_core.acquisition.stable_frame_acquisition import (
+    DeliveredFrame,
+    FrameAcquisitionResult,
+    FrameAcquisitionStatus,
+    StableFrameWaiter,
+)
 from astrotool_core.camera.capabilities import CameraCapabilities, CameraDescriptor, ConversionGain
 from astrotool_core.camera.port import CameraPort
 from astrotool_core.camera.replay_camera import ReplayCamera
@@ -68,7 +74,7 @@ def _textured_camera(seed: int) -> ReplayCamera:
 
 def _stepped_frame_pair(
     base: np.ndarray, shifts: list[tuple[tuple[int, int], tuple[int, int]]]
-) -> tuple[Callable[[], np.ndarray], Callable[[float, float], np.ndarray]]:
+) -> tuple[Callable[[], np.ndarray], StableFrameWaiter]:
     """A (get_frame, wait_for_frame) pair for injecting synthetic
     per-calibration-step frame content, for a panel's `_get_left_frame`/
     `_wait_for_left_frame` (or `_right_`) pair -- `shifts` is one
@@ -91,16 +97,16 @@ def _stepped_frame_pair(
         dy, dx = shifts[index][0]
         return np.roll(np.roll(base, dy, axis=0), dx, axis=1)
 
-    def wait_frame(_reference: float, _timeout: float) -> np.ndarray:
+    def wait_frame(_reference: float, _timeout: float) -> FrameAcquisitionResult:
         dy, dx = shifts[before_call_count - 1][1]
-        return np.roll(np.roll(base, dy, axis=0), dx, axis=1)
+        return _ok_result(np.roll(np.roll(base, dy, axis=0), dx, axis=1))
 
     return get_frame, wait_frame
 
 
 def _stepped_star_pair(
     positions: list[tuple[tuple[float, float], tuple[float, float]]],
-) -> tuple[Callable[[], np.ndarray], Callable[[float, float], np.ndarray]]:
+) -> tuple[Callable[[], np.ndarray], StableFrameWaiter]:
     """Star-mode counterpart to `_stepped_frame_pair` -- same
     get_frame()-advances / wait_frame()-doesn't-advance shape, one
     ((before_x, before_y), (after_x, after_y)) centroid pair per
@@ -115,11 +121,36 @@ def _stepped_star_pair(
         x, y = positions[index][0]
         return single_star_image((120, 120), x=x, y=y, peak=2000.0, sigma=2.5, background=100.0)
 
-    def wait_frame(_reference: float, _timeout: float) -> np.ndarray:
+    def wait_frame(_reference: float, _timeout: float) -> FrameAcquisitionResult:
         x, y = positions[before_call_count - 1][1]
-        return single_star_image((120, 120), x=x, y=y, peak=2000.0, sigma=2.5, background=100.0)
+        image = single_star_image(
+            (120, 120), x=x, y=y, peak=2000.0, sigma=2.5, background=100.0
+        )
+        return _ok_result(image)
 
     return get_frame, wait_frame
+
+
+def _ok_result(pixels: np.ndarray) -> FrameAcquisitionResult:
+    """A `StableFrameWaiter` return value for a test double that always
+    "succeeds" -- issue #27's `wait_for_left_frame`/`wait_for_right_frame`
+    now return `FrameAcquisitionResult`, not a bare frame."""
+    return FrameAcquisitionResult(
+        FrameAcquisitionStatus.OK,
+        DeliveredFrame(pixels=pixels, captured_at_monotonic=0.0, exposure_seconds=0.0),
+    )
+
+
+def _result_or_unavailable(pixels: np.ndarray | None) -> FrameAcquisitionResult:
+    """Like `_ok_result`, but for a test double whose underlying getter
+    can also report "no frame" -- maps that to CAMERA_UNAVAILABLE, the
+    closest real `FrameAcquisitionStatus` for a plain instant-read
+    fallback (see `MountTestMovePanel`'s own `_frame_acquisition_result`,
+    which this mirrors for tests that monkeypatch `_wait_for_left_frame`
+    directly rather than going through the constructor)."""
+    if pixels is None:
+        return FrameAcquisitionResult(FrameAcquisitionStatus.CAMERA_UNAVAILABLE)
+    return _ok_result(pixels)
 
 
 def _axis_response(axis: MountAxis, dx_px: float, dy_px: float) -> AxisResponse:
@@ -253,7 +284,9 @@ class TestWaitForFrameAfter:
 
     def test_returns_none_when_not_streaming(self, qapp: object) -> None:
         panel = CameraPanel(_donut_camera((0.0, 0.0)), title="Test")
-        assert panel.wait_for_frame_after(time.monotonic(), 0.05) is None
+        result = panel.wait_for_frame_after(time.monotonic(), 0.05)
+        assert not result.ok
+        assert result.status is FrameAcquisitionStatus.CAMERA_UNAVAILABLE
 
     def test_returns_a_frame_delivered_after_the_reference_time(self, qapp: object) -> None:
         panel = CameraPanel(_donut_camera((0.0, 0.0)), title="Test")
@@ -261,8 +294,9 @@ class TestWaitForFrameAfter:
         panel._start_button.setChecked(True)
         try:
             reference = time.monotonic()
-            frame = panel.wait_for_frame_after(reference, 2.0)
-            assert frame is not None
+            result = panel.wait_for_frame_after(reference, 2.0)
+            assert result.ok
+            assert result.frame is not None
         finally:
             panel._start_button.setChecked(False)
 
@@ -293,8 +327,9 @@ class TestWaitForFrameAfter:
             # before this reference.
             time.sleep(0.05)
             reference = time.monotonic()
-            frame = panel.wait_for_frame_after(reference, 2.0)
-            assert frame is not None
+            result = panel.wait_for_frame_after(reference, 2.0)
+            assert result.ok
+            assert result.frame is not None
             # The accepted frame is at least the 2nd capture -- the
             # first (already in flight at `reference`) was skipped.
             assert camera.capture_count >= 2
@@ -309,7 +344,18 @@ class TestWaitForFrameAfter:
             # still ahead of every real capture -- must time out cleanly,
             # not hang or raise.
             far_future = time.monotonic() + 10.0
-            assert panel.wait_for_frame_after(far_future, 0.1) is None
+            result = panel.wait_for_frame_after(far_future, 0.1)
+            assert not result.ok
+            # Whichever frame(s) the stream manages to deliver within the
+            # short budget can never satisfy a reference 10s in the future
+            # -- either none arrive at all (TIMEOUT), or some do but every
+            # one's own exposure necessarily started before it
+            # (EXPOSURE_OVERLAPPED_MOTION) -- both are a real "not usable"
+            # outcome, timing-dependent which one this particular run hits.
+            assert result.status in (
+                FrameAcquisitionStatus.TIMEOUT,
+                FrameAcquisitionStatus.EXPOSURE_OVERLAPPED_MOTION,
+            )
         finally:
             panel._start_button.setChecked(False)
 
@@ -2566,9 +2612,9 @@ class TestMountTestMovePanel:
         pulse_mount = FakeMountAdapter()
         calls: list[float] = []
 
-        def wait_and_record(reference: float, _timeout: float) -> np.ndarray:
+        def wait_and_record(reference: float, _timeout: float) -> FrameAcquisitionResult:
             calls.append(reference)
-            return np.zeros((10, 10), dtype=np.float32)
+            return _ok_result(np.zeros((10, 10), dtype=np.float32))
 
         settings = MountAlignmentSettings(frame_settle_ms=50)  # keep the test fast
         panel = MountTestMovePanel(
@@ -2578,7 +2624,9 @@ class TestMountTestMovePanel:
             get_right_frame=lambda: np.zeros((10, 10), dtype=np.float32),
             settings=settings,
             wait_for_left_frame=wait_and_record,
-            wait_for_right_frame=lambda _reference, _timeout: np.zeros((10, 10), dtype=np.float32),
+            wait_for_right_frame=lambda _reference, _timeout: _ok_result(
+                np.zeros((10, 10), dtype=np.float32)
+            ),
         )
 
         reference = time.monotonic()
@@ -2599,10 +2647,10 @@ class TestMountTestMovePanel:
         pulse_mount = FakeMountAdapter()
         call_count = 0
 
-        def never_catches_up(_reference: float, _timeout: float) -> np.ndarray | None:
+        def never_catches_up(_reference: float, _timeout: float) -> FrameAcquisitionResult:
             nonlocal call_count
             call_count += 1
-            return None
+            return FrameAcquisitionResult(FrameAcquisitionStatus.TIMEOUT)
 
         panel = MountTestMovePanel(
             pulse_mount,
@@ -2610,7 +2658,9 @@ class TestMountTestMovePanel:
             get_left_frame=lambda: np.zeros((10, 10), dtype=np.float32),
             get_right_frame=lambda: np.zeros((10, 10), dtype=np.float32),
             wait_for_left_frame=never_catches_up,
-            wait_for_right_frame=lambda _reference, _timeout: np.zeros((10, 10), dtype=np.float32),
+            wait_for_right_frame=lambda _reference, _timeout: _ok_result(
+                np.zeros((10, 10), dtype=np.float32)
+            ),
         )
 
         result = panel._capture_both("terrestrial", after_monotonic=time.monotonic())
@@ -2639,9 +2689,9 @@ class TestMountTestMovePanel:
         constant regardless of it."""
         timeouts: list[float] = []
 
-        def record_timeout(_reference: float, timeout: float) -> np.ndarray:
+        def record_timeout(_reference: float, timeout: float) -> FrameAcquisitionResult:
             timeouts.append(timeout)
-            return np.zeros((10, 10), dtype=np.float32)
+            return _ok_result(np.zeros((10, 10), dtype=np.float32))
 
         panel = MountTestMovePanel(
             FakeMountAdapter(),
@@ -2672,9 +2722,9 @@ class TestMountTestMovePanel:
         make every wait needlessly slow when exposure is unknown."""
         timeouts: list[float] = []
 
-        def record_timeout(_reference: float, timeout: float) -> np.ndarray:
+        def record_timeout(_reference: float, timeout: float) -> FrameAcquisitionResult:
             timeouts.append(timeout)
-            return np.zeros((10, 10), dtype=np.float32)
+            return _ok_result(np.zeros((10, 10), dtype=np.float32))
 
         panel = MountTestMovePanel(
             FakeMountAdapter(),
@@ -2914,7 +2964,9 @@ class TestMountTestMovePanel:
         # same call_count keeps "the Nth call overall" meaning what the
         # comment above says, regardless of which of the two routes a
         # given before/after capture actually takes.
-        panel._wait_for_left_frame = lambda _reference, _timeout: flaky_get_left_frame()
+        panel._wait_for_left_frame = lambda _reference, _timeout: _result_or_unavailable(
+            flaky_get_left_frame()
+        )
 
         self._run_calibration_to_completion(panel)
         # Real report: "calibration failed is stated already while mount
@@ -2924,6 +2976,13 @@ class TestMountTestMovePanel:
         # physically in flight at this exact point.
         assert "Calibration failed" in panel._result_label.text()
         assert "returning mount to start position" in panel._result_label.text()
+        # Issue #27: no trustworthy stable frame was obtained at all for
+        # Main's "after" capture (the fallback wait reports
+        # CAMERA_UNAVAILABLE for a None read) -- CAPTURE_INVALID, and the
+        # failure message names which camera and why instead of a bare
+        # "no frame available".
+        assert "Main: camera not available" in panel._result_label.text()
+        assert panel.diagnostic_context()["last_failure_classes"] == {"left": "capture_invalid"}
 
         # The stranded-return pulse is fire-and-forget (no _pending to
         # track), so _run_calibration_to_completion's queue/pending-based
@@ -3009,7 +3068,9 @@ class TestMountTestMovePanel:
         # same call_count keeps "the Nth call overall" meaning what the
         # comment above says, regardless of which of the two routes a
         # given before/after capture actually takes.
-        panel._wait_for_left_frame = lambda _reference, _timeout: flaky_get_left_frame()
+        panel._wait_for_left_frame = lambda _reference, _timeout: _result_or_unavailable(
+            flaky_get_left_frame()
+        )
 
         try:
             self._run_calibration_to_completion(panel)
@@ -3321,6 +3382,14 @@ class TestMountTestMovePanel:
         # different failure path (a rejected/low-confidence measurement),
         # not this one (a confidently-measured zero).
         assert "not enough structure" not in panel._result_label.text()
+        # Issue #27's "Failure semantics": a degenerate calibration is
+        # specifically CALIBRATION_INVALID (a valid displacement was
+        # measured; the resulting axis pair just can't be inverted) --
+        # distinguishable from a capture or match failure programmatically,
+        # not only via this English message.
+        assert panel.diagnostic_context()["last_failure_classes"] == {
+            "left": "calibration_invalid", "right": "calibration_invalid",
+        }
         window.close()
 
     def test_degenerate_axis_message_distinguishes_a_real_cross_camera_confirmation(
@@ -3412,7 +3481,7 @@ class TestMountTestMovePanel:
         # "After" captures go through this instead of the getter above
         # when a real one is wired (as MainWindow's own is) -- see
         # CameraPanel.wait_for_frame_after's own docstring.
-        panel._wait_for_left_frame = lambda _reference, _timeout: flat
+        panel._wait_for_left_frame = lambda _reference, _timeout: _ok_result(flat)
         panel._get_right_frame, panel._wait_for_right_frame = _stepped_frame_pair(
             base, [((0, 0), (0, 6)), ((0, 0), (6, 0))]
         )
@@ -3435,6 +3504,11 @@ class TestMountTestMovePanel:
         lines = {line.split(":", 1)[0]: line for line in panel._result_label.text().split("\n")}
         assert "excluded from this calibration" in lines["Main"]
         assert "RA-axis" in lines["Guide"] and "Dec-axis" in lines["Guide"]
+        # Issue #27: valid frames were obtained for Main (it's flat, not
+        # missing) but the translation estimator found no trustworthy
+        # match -- MATCH_FAILED, not CAPTURE_INVALID. Guide succeeded
+        # outright, so it carries no failure class at all.
+        assert panel.diagnostic_context()["last_failure_classes"] == {"left": "match_failed"}
         window.close()
 
     def test_both_cameras_failing_structure_still_aborts_and_returns_the_mount(

@@ -109,6 +109,21 @@ Calibration slew duration/rate and each nudge's target size are
 from `~/.CollimationGuideTool/config.toml`'s `[mount_alignment]` table
 rather than a runtime UI control (deliberately no way to change them from
 this panel).
+
+Issue #27: this panel is the orchestrator across three deliberately
+independent layers -- (A) whether a captured frame is even valid to
+measure from (`astrotool_core.acquisition.stable_frame_acquisition`,
+composed here via `acquire_settled_frames` over this panel's own two named
+cameras in `_capture_both`), (B) the actual pixel-level displacement
+measurement (`measure_translation_offset`, called only from
+`_build_response`, knows nothing about mount motion or timing), and (C)
+axis-response/calibration derivation (`astrotool_core.mount.axis_calibration`
+-- `response_from_positions`, `is_degenerate`, `compose_screen_move`, none
+of which touch a camera or a clock). A failure's real layer is tracked
+per camera in `self._last_failure_classes` (`MeasurementFailureClass`,
+exposed via `diagnostic_context()`'s `last_failure_classes`) and echoed
+into the free-text result label via `_capture_failure_detail()` -- so a
+field failure no longer collapses into one generic "calibration failed".
 """
 
 from __future__ import annotations
@@ -116,9 +131,17 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, Literal
 
 import numpy as np
+from astrotool_core.acquisition.stable_frame_acquisition import (
+    DeliveredFrame,
+    FrameAcquisitionResult,
+    FrameAcquisitionStatus,
+    StableFrameWaiter,
+    acquire_settled_frames,
+)
 from astrotool_core.config import MountAlignmentSettings
 from astrotool_core.mount.axis_calibration import (
     AxisResponse,
@@ -144,17 +167,71 @@ from PySide6.QtWidgets import (
 from collimation_tool.ui.mount_test_move_runner import MountTestMoveRunner
 
 FrameGetter = Callable[[], np.ndarray | None]
-#: (reference_monotonic, timeout_s) -> a frame captured entirely after
-#: reference_monotonic, or None on timeout -- see CameraPanel's own
-#: wait_for_frame_after() docstring (real report: "frames in movement
-#: are picked on the calibration, causing guide to fail").
-FreshFrameWaiter = Callable[[float, float], "np.ndarray | None"]
 #: How long an "after" capture waits for a frame that's provably fresh
 #: (its own exposure entirely postdates the pulse+settle completion)
 #: before giving up -- treated the same as any other missing "after"
 #: frame (see _finish_calibration_step/_finish_nudge's own "no frame
 #: available" abort path), not silently downgraded to a stale one.
 _FRESH_FRAME_TIMEOUT_S = 2.0
+
+#: Issue #27: this panel composes `astrotool_core.acquisition.
+#: stable_frame_acquisition.acquire_settled_frames` over its own two named
+#: sources ("left"/"right") -- `wait_for_left_frame`/`wait_for_right_frame`
+#: (constructor params, normally `CameraPanel.wait_for_frame_after` bound
+#: per camera) share that module's own `StableFrameWaiter` contract:
+#: `(reference_monotonic, timeout_s) -> FrameAcquisitionResult`, whose
+#: `.status` distinguishes *why* a wait failed instead of collapsing every
+#: cause into a bare `None`.
+_STATUS_MESSAGES: dict[FrameAcquisitionStatus, str] = {
+    FrameAcquisitionStatus.TIMEOUT: "timed out waiting for a frame",
+    FrameAcquisitionStatus.EXPOSURE_OVERLAPPED_MOTION: (
+        "every frame's own exposure overlapped the move -- try a shorter camera "
+        "exposure or a longer calibration pulse"
+    ),
+    FrameAcquisitionStatus.CAMERA_UNAVAILABLE: "camera not available",
+    FrameAcquisitionStatus.SETTLE_NOT_REACHED: "caught up, but no frame after the settle wait",
+    FrameAcquisitionStatus.CANCELLED: "cancelled",
+}
+
+
+class MeasurementFailureClass(Enum):
+    """Issue #27's "Failure semantics" section: a failed calibration/nudge
+    must make it unambiguous which of the three independent layers is at
+    fault -- see `MountTestMovePanel.diagnostic_context()`'s own
+    `last_failure_classes`, keyed the same way as `_calibration_failed_cameras`
+    (per camera, since one camera's frames can be fine while the other's
+    aren't)."""
+
+    #: No trustworthy stable frame was obtained at all (see
+    #: FrameAcquisitionStatus for the acquisition-layer detail).
+    CAPTURE_INVALID = "capture_invalid"
+    #: Valid frames were obtained, but the translation estimator
+    #: (`measure_translation_offset`) found no trustworthy match.
+    MATCH_FAILED = "match_failed"
+    #: A valid displacement was measured, but the resulting AXIS1/AXIS2
+    #: pair is too close to parallel to invert reliably (`is_degenerate`).
+    CALIBRATION_INVALID = "calibration_invalid"
+
+
+def _frame_acquisition_result(frame: np.ndarray | None) -> FrameAcquisitionResult:
+    """Wraps a plain instant frame read as a `FrameAcquisitionResult` --
+    `_wait_for_left_frame`/`_wait_for_right_frame`'s own fallback when no
+    real `CameraPanel.wait_for_frame_after` is wired (e.g. a test, or any
+    caller that doesn't need freshness guarantees), so `_capture_both`'s
+    `after_monotonic` branch has exactly one contract to deal with either
+    way. `captured_at_monotonic`/`exposure_seconds` are irrelevant here
+    (nothing re-checks an already-accepted result's own timing), so both
+    are left at 0.0."""
+    if frame is None:
+        return FrameAcquisitionResult(FrameAcquisitionStatus.CAMERA_UNAVAILABLE)
+    return FrameAcquisitionResult(
+        FrameAcquisitionStatus.OK,
+        DeliveredFrame(pixels=frame, captured_at_monotonic=0.0, exposure_seconds=0.0),
+    )
+
+
+def _pixels_if_ok(result: FrameAcquisitionResult) -> np.ndarray | None:
+    return result.frame.pixels if result.ok and result.frame is not None else None
 
 #: "star" measures a point-source centroid via detect_sources() (precise,
 #: but needs an actual star -- see incident 6fa2aa59: correctly refuses
@@ -239,8 +316,8 @@ class MountTestMovePanel(QWidget):
         set_right_auto_exposure_paused: Callable[[bool], None] | None = None,
         get_left_exposure_gain: Callable[[], tuple[float, int]] | None = None,
         get_right_exposure_gain: Callable[[], tuple[float, int]] | None = None,
-        wait_for_left_frame: FreshFrameWaiter | None = None,
-        wait_for_right_frame: FreshFrameWaiter | None = None,
+        wait_for_left_frame: StableFrameWaiter | None = None,
+        wait_for_right_frame: StableFrameWaiter | None = None,
     ) -> None:
         super().__init__()
         self._mount = mount
@@ -257,11 +334,11 @@ class MountTestMovePanel(QWidget):
         # get_right_frame constructor params directly) so a caller (or
         # test) that reassigns those instance attributes after
         # construction is honored by the fallback too.
-        self._wait_for_left_frame: FreshFrameWaiter = wait_for_left_frame or (
-            lambda _reference, _timeout: self._get_left_frame()
+        self._wait_for_left_frame: StableFrameWaiter = wait_for_left_frame or (
+            lambda _reference, _timeout: _frame_acquisition_result(self._get_left_frame())
         )
-        self._wait_for_right_frame: FreshFrameWaiter = wait_for_right_frame or (
-            lambda _reference, _timeout: self._get_right_frame()
+        self._wait_for_right_frame: StableFrameWaiter = wait_for_right_frame or (
+            lambda _reference, _timeout: _frame_acquisition_result(self._get_right_frame())
         )
         #: See diagnostic_camera_state()'s own docstring -- optional /
         #: defaults to "unknown" (None) so tests and any caller that
@@ -309,6 +386,19 @@ class MountTestMovePanel(QWidget):
         #: camera's own "not enough structure" no longer aborts the whole
         #: sequence.
         self._calibration_failed_cameras: set[str] = set()
+        #: Per-camera detail from the most recent `_capture_both` call
+        #: whose "after" (or "before") wait didn't come back OK -- see
+        #: `_capture_failure_detail()`. Short-lived (overwritten every
+        #: `_capture_both` call), unlike `_last_failure_classes` below.
+        self._last_capture_failures: dict[str, FrameAcquisitionStatus] = {}
+        #: Per-camera failure classification for the *current* calibration
+        #: attempt or nudge -- see `MeasurementFailureClass` and
+        #: `diagnostic_context()`'s own `last_failure_classes`. Reset at
+        #: the start of each attempt (`_on_run_calibration_clicked`/
+        #: `_on_nudge_clicked`), accumulates across a calibration
+        #: sequence's several steps the same way `_calibration_failed_cameras`
+        #: does.
+        self._last_failure_classes: dict[str, MeasurementFailureClass] = {}
         #: See diagnostic_frames()'s own docstring.
         self._last_diagnostic_frames: dict[str, np.ndarray] = {}
         #: See diagnostic_camera_state()'s own docstring.
@@ -503,21 +593,38 @@ class MountTestMovePanel(QWidget):
         cameras (the "mount stopped" check, from the video pipeline's own
         point of view), then grants `frame_settle_ms` again, and only
         *then* takes the frame actually used for measurement -- from
-        *that* later point, not the first barely-fresh one."""
+        *that* later point, not the first barely-fresh one.
+
+        Issue #27: the two-stage catch-up/settle composition above now
+        lives in `astrotool_core.acquisition.stable_frame_acquisition.
+        acquire_settled_frames` (the "A" layer, camera-count-independent
+        by construction) -- this method supplies it with this panel's own
+        two named sources and stashes per-camera failure detail in
+        `self._last_capture_failures` for `_capture_failure_detail()`."""
+        self._last_capture_failures = {}
         if after_monotonic is None:
             left_frame = self._get_left_frame()
             right_frame = self._get_right_frame()
+            if left_frame is None:
+                self._last_capture_failures["left"] = FrameAcquisitionStatus.CAMERA_UNAVAILABLE
+            if right_frame is None:
+                self._last_capture_failures["right"] = FrameAcquisitionStatus.CAMERA_UNAVAILABLE
         else:
             timeout_s = self._fresh_frame_timeout_s()
-            caught_up_left = self._wait_for_left_frame(after_monotonic, timeout_s)
-            caught_up_right = self._wait_for_right_frame(after_monotonic, timeout_s)
-            if caught_up_left is None or caught_up_right is None:
-                left_frame, right_frame = None, None
-            else:
-                time.sleep(self._settings.frame_settle_ms / 1000.0)
-                settled_at = time.monotonic()
-                left_frame = self._wait_for_left_frame(settled_at, timeout_s)
-                right_frame = self._wait_for_right_frame(settled_at, timeout_s)
+            results = acquire_settled_frames(
+                {"left": self._wait_for_left_frame, "right": self._wait_for_right_frame},
+                reference_monotonic=after_monotonic,
+                timeout_s=timeout_s,
+                settle_ms=self._settings.frame_settle_ms,
+            )
+            self._last_capture_failures = {
+                key: result.status for key, result in results.items() if not result.ok
+            }
+            left_frame = _pixels_if_ok(results["left"])
+            right_frame = _pixels_if_ok(results["right"])
+        if self._last_capture_failures:
+            for key in self._last_capture_failures:
+                self._last_failure_classes[key] = MeasurementFailureClass.CAPTURE_INVALID
         if diagnostic_label is not None:
             if left_frame is not None:
                 self._last_diagnostic_frames[f"{diagnostic_label}_left"] = left_frame
@@ -537,6 +644,24 @@ class MountTestMovePanel(QWidget):
         if missing:
             return None
         return raw  # type: ignore[return-value]
+
+    def _capture_failure_detail(self) -> str:
+        """A short, status-specific note appended to a generic capture-
+        failure message -- e.g. `" (Main: every frame's own exposure
+        overlapped the move...)"` -- built from `self._last_capture_failures`
+        (whichever camera(s) `_capture_both`'s most recent call actually
+        failed on, and why -- see `FrameAcquisitionStatus`). Issue #27:
+        this is the concrete "make failures from frame acquisition ...
+        distinguishable" ask -- previously every one of these causes
+        collapsed into the same generic "no frame available" text. Empty
+        string if nothing informative is known."""
+        if not self._last_capture_failures:
+            return ""
+        parts = [
+            f"{_CAMERA_LABELS[key]}: {_STATUS_MESSAGES[status]}"
+            for key, status in self._last_capture_failures.items()
+        ]
+        return " (" + "; ".join(parts) + ")"
 
     def diagnostic_frames(self) -> dict[str, np.ndarray]:
         """The raw before/after frame pair(s) from the most recent
@@ -575,6 +700,7 @@ class MountTestMovePanel(QWidget):
         self._calibration_queue = list(_CALIBRATION_STEPS)
         self._calibration_partial = {"left": {}, "right": {}}
         self._calibration_failed_cameras = set()
+        self._last_failure_classes = {}
         # Paused for the whole 4-step sequence, not just per-step -- see
         # the constructor's own docstring on _set_left/right_auto_exposure_paused.
         # Resumed in _abort_calibration (every failure path) and
@@ -594,7 +720,9 @@ class MountTestMovePanel(QWidget):
             label = f"{step.axis.name.lower()}_before"
             captured = self._capture_both(mode, diagnostic_label=label)
             if captured is None:
-                self._abort_calibration(f"{self._missing_label(mode)} before pulsing")
+                self._abort_calibration(
+                    f"{self._missing_label(mode)} before pulsing{self._capture_failure_detail()}"
+                )
                 return
             before = captured
         started = self._runner.submit(
@@ -719,7 +847,8 @@ class MountTestMovePanel(QWidget):
             )
             if after is None:
                 self._abort_calibration(
-                    f"{self._missing_label(pending.mode)} after the move",
+                    f"{self._missing_label(pending.mode)} after the move"
+                    f"{self._capture_failure_detail()}",
                     strand_return_step=True,
                 )
                 return
@@ -735,6 +864,7 @@ class MountTestMovePanel(QWidget):
                 if response is None:
                     newly_failed.append(key)
                     self._calibration_failed_cameras.add(key)
+                    self._last_failure_classes[key] = MeasurementFailureClass.MATCH_FAILED
                 else:
                     responses[key] = response
                     self._calibration_partial[key][step.axis] = response
@@ -789,6 +919,7 @@ class MountTestMovePanel(QWidget):
             if axis1 is None or axis2 is None:
                 continue  # shouldn't happen unless _abort_calibration already fired
             if is_degenerate(axis1, axis2):
+                self._last_failure_classes[key] = MeasurementFailureClass.CALIBRATION_INVALID
                 lines.append(
                     _degenerate_calibration_message(
                         key, axis1, axis2, self._calibration_partial[_OTHER_CAMERA[key]]
@@ -880,6 +1011,7 @@ class MountTestMovePanel(QWidget):
             return
 
         mode = self._target_mode()
+        self._last_failure_classes = {}
         # Paused across the whole before-pulse-after bracket, resumed
         # immediately after the "after" capture in _finish_nudge (or on
         # any early-exit path below) -- see the constructor's own
@@ -888,7 +1020,9 @@ class MountTestMovePanel(QWidget):
         before = self._capture_both(mode, diagnostic_label="nudge_before")
         if before is None:
             self._resume_auto_exposure()
-            self._last_error = f"{self._missing_label(mode)} before pulsing"
+            self._last_error = (
+                f"{self._missing_label(mode)} before pulsing{self._capture_failure_detail()}"
+            )
             self._result_label.setText(f"Move failed: {self._last_error}")
             return
         started = self._runner.submit_sequence(
@@ -928,7 +1062,10 @@ class MountTestMovePanel(QWidget):
         )
         self._resume_auto_exposure()
         if after is None:
-            self._last_error = f"{self._missing_label(pending.mode)} after the move"
+            self._last_error = (
+                f"{self._missing_label(pending.mode)} after the move"
+                f"{self._capture_failure_detail()}"
+            )
             self._result_label.setText(f"Move failed: {self._last_error}")
             return
         responses: dict[str, AxisResponse] = {}
@@ -944,6 +1081,7 @@ class MountTestMovePanel(QWidget):
             )
             if response is None:
                 failed.append(key)
+                self._last_failure_classes[key] = MeasurementFailureClass.MATCH_FAILED
             else:
                 responses[key] = response
         if failed:
@@ -1082,6 +1220,15 @@ class MountTestMovePanel(QWidget):
             context["last_result"] = {
                 key: _response_dict(response) for key, response in self._last_responses.items()
             }
+        # Issue #27: which of the three independent layers (capture,
+        # match, calibration-derivation) a failure actually belongs to,
+        # per camera -- distinct from last_error's free-text message, so
+        # a pulled bundle can group/filter failures programmatically
+        # instead of parsing English. Empty when nothing failed this
+        # attempt.
+        context["last_failure_classes"] = {
+            key: failure_class.value for key, failure_class in self._last_failure_classes.items()
+        }
         return context
 
     def stop(self) -> None:
