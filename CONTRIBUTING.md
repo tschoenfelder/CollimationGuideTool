@@ -204,9 +204,9 @@ specifically for FOV-overlay reports: `frames/*.fits` is raw,
 unstretched sensor data with no demosaicing or overlay drawn — it can't
 show whether a "Calibrate FOV" polygon looks visually wrong, only
 `images/*_display.png` can. `incident.json`'s context also includes
-`fov_calibration` (the `FovRegistrationResult` behind whatever polygon
-is currently shown, if any) once CollimationTool has completed at least
-one calibration.
+`fov_calibration` (the `CrossCameraRegistrationResult` behind whatever
+polygon is currently shown, if any) once CollimationTool has completed at
+least one calibration.
 
 Retention is local and bounded — bundles older than 7 days, or beyond the
 most recent 20, are pruned on every capture (`DEFAULT_MAX_AGE_DAYS`/

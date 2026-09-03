@@ -107,9 +107,10 @@ measured alignment.
 
 **Calibrate FOV**: click this button (with both streams running) to
 replace that placeholder with a real, content-matched rectangle —
-`fov_registration` locates the main camera's actual frame content within
-the guide frame, allowing for rotation and a small scale correction
-around the config's plate-scale ratio. Runs on a background thread so
+`TerrestrialRegistrar` (`astrotool_core.registration.terrestrial_registrar`)
+locates the main camera's actual frame content within the guide frame,
+allowing for rotation and a small scale correction around the config's
+plate-scale ratio. Runs on a background thread so
 the window stays responsive — a full search at real camera resolution
 takes on the order of two real minutes (measured on the ATR585M/
 GPCMOS02000KPA rig) — and reports a status message with the found

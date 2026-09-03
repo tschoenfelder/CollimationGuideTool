@@ -8,8 +8,10 @@ these frames as local test cases") — a heavily out-of-focus main camera
 during daytime/twilight testing rather than actual night-sky operation. No
 resolved stars in either frame.
 
-**Status:** populated. `fov_registration.register_main_frame_in_guide_frame`
-reported a "confident" match (score ~0.65) at a location with no genuine
+**Status:** populated. `TerrestrialRegistrar.register`
+(`astrotool_core.registration.terrestrial_registrar`, formerly
+`fov_registration.register_main_frame_in_guide_frame` before issue #29
+moved it) reported a "confident" match (score ~0.65) at a location with no genuine
 corresponding content — the guide frame's sky region has real standard
 deviation (a smooth brightness gradient), enough to pass a plain contrast
 check, but almost none of it is genuine high-frequency detail. This dataset
@@ -31,5 +33,6 @@ demosaiced), matching what the real camera actually delivers — a test
 using this fixture must demosaic it first, the same as production does
 (see `astrotool_core.frames.demosaic`/`rgb_to_luma`).
 
-`expected.json` — `result: null`: the fixed algorithm must return `None`
-for this pair (see `tests/collimation/ui/test_fov_registration_real_data.py`).
+`expected.json` — `result: null`: the fixed algorithm must return a
+non-`ok` result for this pair (see
+`tests/core/registration/test_terrestrial_registrar_real_data.py`).
