@@ -1,0 +1,70 @@
+"""measure_translation_offset() tested against a real hardware capture
+that exposed a confidently-wrong result -- local-only, never committed
+(see local_test_data/terrestrial_saturated_guide_2026-09-08/README.md
+for the full incident). Skipped entirely on any machine without the
+dataset present.
+
+Real report (diagnostic ef49ecb1-a052-44ea-b45e-01145a9f0c33): a real
+terrestrial-mode guide-camera Test Move calibration measured BOTH
+AXIS1's and AXIS2's real, independent pulses as an identical
+`dx_px=0.0` at confidently-high scores (0.98, 0.71) -- geometrically
+impossible for two roughly-orthogonal real mount axes, and only caught
+downstream by `is_degenerate()`'s coincidental refusal to invert the
+resulting matrix, not by this module noticing anything wrong itself.
+Root cause: these frames are ~12-26% saturated (a large blown-out sky
+region); see `_DEFAULT_MAX_SATURATED_FRACTION`'s own docstring in
+`translation_offset.py` for the fix and the real numbers behind it. This
+file pins the fixed behavior directly against the real frames that
+exposed the bug.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import numpy as np
+import pytest
+from astropy.io import fits
+from astrotool_core.target.translation_offset import measure_translation_offset
+
+_DATASET_DIR = (
+    Path(__file__).resolve().parents[2]
+    / "local_test_data"
+    / "terrestrial_saturated_guide_2026-09-08"
+    / "frames"
+)
+
+pytestmark = pytest.mark.skipif(
+    not _DATASET_DIR.is_dir(),
+    reason=f"real-hardware dataset not present locally at {_DATASET_DIR}",
+)
+
+
+def _load(name: str) -> np.ndarray:
+    data = fits.getdata(_DATASET_DIR / f"{name}.fits")
+    return np.asarray(data, dtype=np.float32)
+
+
+@pytest.mark.parametrize("axis_name", ["axis1", "axis2"])
+def test_saturated_guide_frames_now_report_no_usable_match(axis_name: str) -> None:
+    """Before this fix: both axes wrongly reported dx_px=0.0 at scores
+    0.98/0.71 (both above _DEFAULT_MIN_SCORE). After: the new saturation
+    guard refuses both pairs outright, exactly like detect_sources()
+    finding no star -- the correct behavior for a frame this saturated,
+    rather than a confidently-wrong displacement caught only by luck
+    downstream in is_degenerate()."""
+    before = _load(f"guide_{axis_name}_before")
+    after = _load(f"guide_{axis_name}_after")
+
+    assert measure_translation_offset(before, after) is None
+
+
+@pytest.mark.parametrize("axis_name", ["axis1", "axis2"])
+def test_mains_own_unsaturated_frames_from_the_same_run_still_match(axis_name: str) -> None:
+    """Cross-check: Main's own frames from the SAME real run are not
+    saturated to nearly this degree and its calibration legitimately
+    succeeded -- the new guard must not regress that."""
+    before = _load(f"main_{axis_name}_before")
+    after = _load(f"main_{axis_name}_after")
+
+    assert measure_translation_offset(before, after) is not None

@@ -140,3 +140,57 @@ def test_non_2d_arrays_raise() -> None:
     after = np.zeros(64)
     with pytest.raises(ValueError, match="2D"):
         measure_translation_offset(before, after)
+
+
+def _pair_with_saturated_scene_region(
+    *, saturated_rows: int, seed: int, shape: tuple[int, int] = (128, 128)
+) -> tuple[np.ndarray, np.ndarray]:
+    """A known-shift pair where part of the *scene itself* (not a static
+    screen-fixed overlay) is saturated -- the saturated region pans along
+    with everything else via the same `np.roll`, matching how a real
+    blown-out sky region moves with the rest of a real panned frame.
+    Deliberately not a region fixed at the same absolute location in both
+    `before`/`after`: that would inject an artificial, always-perfectly-
+    self-matching zero-shift anchor that has nothing to do with real
+    saturation (confirmed empirically while building this test -- it
+    broke even a single-digit-pixel patch, an artifact of the test
+    construction, not of real saturation)."""
+    scene = _textured_image(shape, seed=seed)
+    scene[:saturated_rows, :] = 4095.0
+    before = scene
+    after = np.roll(scene, shift=(3, -5), axis=(0, 1))
+    return before, after
+
+
+def test_a_heavily_saturated_frame_pair_reports_no_usable_match() -> None:
+    """Real incident ef49ecb1-a052-44ea-b45e-01145a9f0c33: a real
+    ~12-26%-saturated guide-camera pair scored confidently (0.98, 0.71,
+    both above _DEFAULT_MIN_SCORE) while reporting a wrong dx_px=0.0 for
+    two independent, roughly-orthogonal real mount-axis pulses -- see
+    _DEFAULT_MAX_SATURATED_FRACTION's own docstring. This synthetic pair
+    (~31% saturated, well above the 5% threshold) pins the new guard's
+    own mechanical behavior directly -- reproducing the real incident's
+    own subtle correlation-ambiguity mechanism synthetically turned out
+    not to be feasible (an exact np.roll shift, even with independent
+    per-frame noise layered on top, always still recovers the correct
+    shift perfectly regardless of how much of the *scene* is saturated,
+    unlike a real camera's non-circular, imperfect real-world capture --
+    see tests/local_data/test_translation_offset_against_real_captures.py
+    for the actual real-frame regression proving the real incident itself
+    is fixed)."""
+    before, after = _pair_with_saturated_scene_region(saturated_rows=40, seed=8)  # ~31%
+
+    assert measure_translation_offset(before, after) is None
+
+
+def test_a_lightly_saturated_frame_pair_still_reports_a_match() -> None:
+    """Below _DEFAULT_MAX_SATURATED_FRACTION -- must not regress an
+    ordinary frame with a small bright region (e.g. a lamp, a small sky
+    patch) that legitimately clips a few pixels."""
+    before, after = _pair_with_saturated_scene_region(saturated_rows=3, seed=9)  # ~2.3%
+
+    offset = measure_translation_offset(before, after)
+
+    assert offset is not None
+    assert offset.dx_px == -5.0
+    assert offset.dy_px == 3.0

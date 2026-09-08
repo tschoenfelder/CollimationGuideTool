@@ -70,6 +70,48 @@ import numpy as np
 #: coverage on both sides of this gap.
 _DEFAULT_MIN_SCORE = 0.15
 
+#: Same 0.1%-of-max tolerance auto_exposure.py's own saturated-pixel
+#: floor already uses (`pixels >= actual_max * 0.999`) -- not a hard
+#: bit-depth-specific clip value (this project handles multiple sensors/
+#: bit depths), just "how close to this frame's own observed ceiling".
+_NEAR_MAX_RELATIVE_TOLERANCE = 0.999
+
+#: Above this fraction of a frame's pixels sitting at its own near-max
+#: value, treat it as too saturated to trust this module's unwhitened
+#: whole-frame correlation. Real incident
+#: ef49ecb1-a052-44ea-b45e-01145a9f0c33: a real guide-camera terrestrial
+#: Test Move pair, ~12-26% near-max-saturated (a large blown-out sky
+#: region), collapsed BOTH of two independent, roughly-orthogonal real
+#: mount-axis pulses to an identical dx_px=0.0 at confidently-high scores
+#: (0.98, 0.71, both above _DEFAULT_MIN_SCORE) -- a large, near-uniform
+#: saturated region dominates the whole-frame FFT correlation with a
+#: broad, shallow, near-parabolic zero-lag-centered ridge (score barely
+#: dropping from 0.983 at dx=0 to 0.951 at dx=+/-10) that swamps the
+#: real, sharper shift signal in the remaining unsaturated content;
+#: is_degenerate() only caught the resulting calibration by coincidence
+#: (two supposedly-orthogonal axes both reading (0, 0)), not because this
+#: module noticed anything wrong. Every other real frame measured against
+#: every real dataset in this repo -- Main's own frames from the SAME run
+#: (0.0-0.48%), the star-mode calibration_dataset_2026-09-02 set (12
+#: files, all 0.0%), and the fov_registration out_of_focus_daytime set
+#: (0.0% both) -- reads at most 0.48%. 0.05 (5%) sits with a wide margin
+#: on both sides, the same real-incident-vs-real-legitimate-value
+#: methodology _DEFAULT_MIN_SCORE above and terrestrial_registrar.py's
+#: own _DEFAULT_MIN_RELATIVE_CONTRAST/_DEFAULT_MIN_SHARPNESS_RATIO guards
+#: use (a *different* algorithm, not reused directly -- see this module's
+#: own "deliberately a different, simpler technique" docstring section).
+_DEFAULT_MAX_SATURATED_FRACTION = 0.05
+
+
+def _near_max_fraction(frame: np.ndarray) -> float:
+    """Fraction of `frame`'s pixels within 0.1% of its own observed
+    maximum -- bit-depth-agnostic (only ever compares a frame to itself),
+    matching auto_exposure.py's own `pixels >= actual_max * 0.999` idiom."""
+    actual_max = float(frame.max())
+    if actual_max <= 0.0:
+        return 0.0
+    return float(np.mean(frame >= actual_max * _NEAR_MAX_RELATIVE_TOLERANCE))
+
 
 @dataclass(frozen=True)
 class TranslationOffset:
@@ -90,6 +132,7 @@ def measure_translation_offset(
     after: np.ndarray,
     *,
     min_score: float = _DEFAULT_MIN_SCORE,
+    max_saturated_fraction: float = _DEFAULT_MAX_SATURATED_FRACTION,
 ) -> TranslationOffset | None:
     """Estimate the whole-frame translation between two same-shape mono
     images via FFT-evaluated normalized cross-correlation -- see this
@@ -115,16 +158,27 @@ def measure_translation_offset(
 
     Returns None if either frame has zero variance (perfectly flat --
     e.g. a saturated or signal-less capture, exactly incident 6fa2aa59's
-    "clipped"/"no_signal" case; there is nothing to normalize by) or the
+    "clipped"/"no_signal" case; there is nothing to normalize by), if
+    either frame is more than `max_saturated_fraction` saturated (real
+    incident ef49ecb1 -- see `_DEFAULT_MAX_SATURATED_FRACTION`'s own
+    docstring: a large *partially* saturated region, unlike a fully flat
+    frame, has nonzero variance and would otherwise sail through this
+    check while still confidently misreporting the shift), or the
     correlation peak doesn't clear `min_score` (not enough shared
     structure to trust, or `before`/`after` genuinely unrelated). The
-    caller should treat either case the same as detect_sources() finding
+    caller should treat any of these the same as detect_sources() finding
     no star: don't report a displacement with nothing real behind it.
     """
     if before.shape != after.shape:
         raise ValueError("before and after must be the same shape")
     if before.ndim != 2:
         raise ValueError("before/after must be 2D mono arrays")
+
+    if (
+        _near_max_fraction(before) > max_saturated_fraction
+        or _near_max_fraction(after) > max_saturated_fraction
+    ):
+        return None
 
     height, width = before.shape
     # Mean-subtracted so a brightness/exposure difference between the two
