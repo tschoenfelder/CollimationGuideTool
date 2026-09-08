@@ -327,6 +327,12 @@ class _PendingAction:
     #: move (unused for a calibration step, which has its own step.axis to
     #: report against instead).
     duration_ms: int = 0
+    #: Real diagnostic 6cb859d2: True if `_on_nudge_clicked` scaled this
+    #: move's steps down to stay within `max_nudge_pulse_ms` -- see that
+    #: method's own docstring. `_finish_nudge` uses this to tell the user
+    #: the move landed short of the originally requested target on
+    #: purpose, not a failure, and that another click continues it.
+    clamped: bool = False
 
 
 class MountTestMovePanel(QWidget):
@@ -1150,23 +1156,41 @@ class MountTestMovePanel(QWidget):
         # matched what was solved for, and even the clamped pulse can
         # produce far more real motion than that short a calibration
         # reliably predicts that far out. The target is already known
-        # here, before any pulse is sent, so refuse right now instead --
-        # mount never touched, same as the degenerate-matrix ValueError
-        # case just above.
-        too_long = [
-            (axis, duration_ms) for axis, _direction, duration_ms in steps
-            if duration_ms > self._settings.max_nudge_pulse_ms
-        ]
-        if too_long:
-            axis, duration_ms = too_long[0]
-            self._last_error = (
-                f"{axis.name} needs {duration_ms}ms for this move, longer than the "
-                f"{self._settings.max_nudge_pulse_ms}ms safety cap -- extrapolating this far "
-                f"past the {self._settings.pulse_ms}ms calibration pulse isn't reliable. Try "
-                "Run Calibration again with a longer pulse_ms, or click again for a smaller step."
-            )
-            self._result_label.setText(f"Move failed: too long -- {self._last_error}")
-            return
+        # here, before any pulse is sent, so this is caught right here
+        # instead, before ever touching the mount.
+        #
+        # Real report, diagnostic 6cb859d2: refusing the move outright
+        # used to be the whole story here, with the shown message itself
+        # suggesting "...or click again for a smaller step" -- but
+        # nothing about clicking the same button again actually produced
+        # a smaller step (nudge_target_fraction is a fixed setting, so a
+        # second click solves for the identical target and hits the
+        # identical refusal every time; the message promised a workflow
+        # that didn't exist). Scaling every solved step down by the same
+        # factor instead -- so the *longest* one lands exactly on the cap
+        # -- preserves the composed move's intended on-screen direction
+        # (both axes' durations shrink together, not just the one that
+        # tripped the cap) while actually moving as far as safely
+        # possible this click. A real, smaller step now, not a refusal --
+        # clicking again genuinely continues toward the original target,
+        # matching what the message already told the user to expect.
+        longest_ms = max(duration_ms for _axis, _direction, duration_ms in steps)
+        clamped = longest_ms > self._settings.max_nudge_pulse_ms
+        if clamped:
+            scale = self._settings.max_nudge_pulse_ms / longest_ms
+            steps = [
+                (axis, direction, round(duration_ms * scale))
+                for axis, direction, duration_ms in steps
+            ]
+            # A step that was already short relative to the longest one
+            # can round down to 0 once scaled -- omit it, same convention
+            # compose_screen_move itself uses for an already-aligned axis.
+            steps = [step for step in steps if step[2] > 0]
+            if not steps:
+                self._result_label.setText(
+                    f"{_CAMERA_LABELS[camera_key]}: already aligned for {direction_name.lower()}."
+                )
+                return
 
         mode = self._target_mode()
         self._last_failure_classes = {}
@@ -1203,9 +1227,15 @@ class MountTestMovePanel(QWidget):
             before=before,
             mode=mode,
             duration_ms=sum(duration_ms for _, _, duration_ms in steps),
+            clamped=clamped,
+        )
+        suffix = (
+            f" (safety-capped at {self._settings.max_nudge_pulse_ms}ms -- click again to continue)"
+            if clamped
+            else ""
         )
         self._result_label.setText(
-            f"Moving {_CAMERA_LABELS[camera_key]} {direction_name.lower()}…"
+            f"Moving {_CAMERA_LABELS[camera_key]} {direction_name.lower()}…{suffix}"
         )
         self._update_buttons_enabled()
 
@@ -1262,7 +1292,13 @@ class MountTestMovePanel(QWidget):
             f"{_CAMERA_LABELS[key]}: {_format_response(response)}"
             for key, response in responses.items()
         ]
-        self._result_label.setText(" | ".join(parts))
+        suffix = (
+            f" (safety-capped at {self._settings.max_nudge_pulse_ms}ms -- click again to "
+            "continue toward the target)"
+            if pending.clamped
+            else ""
+        )
+        self._result_label.setText(" | ".join(parts) + suffix)
 
     def _on_stop(self) -> None:
         # Duck-typed -- see module docstring's "Stop" section for why

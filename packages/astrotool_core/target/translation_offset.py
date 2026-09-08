@@ -154,6 +154,41 @@ _FALLBACK_DOWNSAMPLE_FACTOR = 8
 #: separately-recalibrated threshold.
 _FALLBACK_MIN_FRAME_SIDE_PX = 256
 
+#: A second, coarser factor used only to VALIDATE the primary
+#: `_FALLBACK_DOWNSAMPLE_FACTOR` result -- never to compute an answer
+#: itself. Real incident 6cb859d2-7a94-4e44-8aff-585f0bf2466b, the very
+#: next real pair to hit the x8 fallback after it shipped: a genuinely
+#: featureless/hazy real Main-camera pair (full-resolution score 0.036,
+#: barely above the pure-unrelated-noise floor for this sensor size --
+#: roughly 20x lower than 93ba361f's own real 0.098/0.093) produced a
+#: CONFIDENT but spurious (dx=0, dy=0) match at x8 (score 0.62-0.63)
+#: purely because there wasn't enough real correlated structure to find,
+#: once nearly everything but a broad, low-frequency-similar gradient got
+#: averaged away. The tell: pushed further to x16/x32/x64, this pair's
+#: score kept climbing steeply toward 1.0 (0.62 -> 0.87 -> 0.96 -> 0.99)
+#: -- exactly what *any* sufficiently downsampled pair eventually does
+#: once there are too few independent samples left to discriminate a
+#: real match from an accidental one (a genuine peak and pure coincidence
+#: converge as degrees of freedom run out). A trustworthy match instead
+#: plateaus quickly: 93ba361f's own real, already-verified-correct
+#: recovery only grew ~8-9% from x8 to x16 (0.75->0.82, 0.53->0.57)
+#: before flattening out through x128, while this incident's spurious
+#: match grew ~38-40% over that same single octave. See
+#: `_FALLBACK_MAX_SCORE_GROWTH_RATIO`.
+_FALLBACK_VALIDATION_FACTOR = 2 * _FALLBACK_DOWNSAMPLE_FACTOR
+
+#: Above this much relative growth in score between
+#: `_FALLBACK_DOWNSAMPLE_FACTOR` and `_FALLBACK_VALIDATION_FACTOR`, treat
+#: the x8 match as still-climbing noise-floor artifact rather than a
+#: plateaued, trustworthy peak -- see that constant's own docstring for
+#: the real evidence: ~1.08-1.09 for two real genuine recoveries (plus
+#: ~0.90-1.00 for synthetic reconstructions of both a real match and
+#: genuinely unrelated content, both already excluded by `min_score`
+#: itself) vs. ~1.38-1.39 for two real spurious "matches" from the same
+#: incident. 1.25 sits with a comfortable, roughly symmetric margin
+#: between the two.
+_FALLBACK_MAX_SCORE_GROWTH_RATIO = 1.25
+
 
 def _correlate(before: np.ndarray, after: np.ndarray) -> tuple[float, float, float] | None:
     """The shared normalized-cross-correlation core -- mean-subtract,
@@ -215,7 +250,14 @@ def _fallback_downsampled_match(
     coarser than this module's usual whole-pixel precision, but still far
     more useful than the `None` this incident used to return outright for
     Test Move's own purpose (learning which physical axis/direction is
-    which, not sub-pixel astrometry)."""
+    which, not sub-pixel astrometry).
+
+    Real incident 6cb859d2-7a94-4e44-8aff-585f0bf2466b: `min_score`
+    clearing the x8 attempt alone isn't sufficient -- also validated
+    against a second, coarser attempt (`_FALLBACK_VALIDATION_FACTOR`)
+    before trusting it; see that constant's own docstring for why (a
+    still-climbing-toward-1.0 score between the two is a spurious,
+    too-few-degrees-of-freedom artifact, not a genuine plateaued match)."""
     height, width = before.shape
     if height < _FALLBACK_MIN_FRAME_SIDE_PX or width < _FALLBACK_MIN_FRAME_SIDE_PX:
         return None
@@ -239,6 +281,17 @@ def _fallback_downsampled_match(
     dx, dy, score = result
     if score < min_score:
         return None
+
+    validation_factor = _FALLBACK_VALIDATION_FACTOR
+    validation_result = _correlate(
+        _box_downsample(before, validation_factor), _box_downsample(after, validation_factor)
+    )
+    if validation_result is None:
+        return None
+    _, _, validation_score = validation_result
+    if validation_score > score * _FALLBACK_MAX_SCORE_GROWTH_RATIO:
+        return None
+
     return TranslationOffset(dx_px=dx * factor, dy_px=dy * factor, score=score)
 
 

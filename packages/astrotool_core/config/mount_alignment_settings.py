@@ -77,13 +77,24 @@ _DEFAULT_FRAME_SETTLE_MS = 500
 #: dominates a short pulse's own average rate). The target itself
 #: (nudge_target_fraction of the frame) is already known before any
 #: duration math runs, so an unreasonably long solved pulse is
-#: detectable -- and refusable -- before ever starting the move, not
-#: only after the driver-level clamp already silently changed what got
-#: sent. See MountTestMovePanel._on_nudge_clicked's own docstring for
-#: where this is checked. Independently tunable like every other setting
-#: here; hitting it repeatedly for one axis is itself a signal that
-#: axis's calibrated rate is unreliably slow -- consider Run Calibration
-#: again with a longer pulse_ms instead of raising this cap.
+#: detectable before ever starting the move, not only after the
+#: driver-level clamp already silently changed what got sent.
+#:
+#: Real report, diagnostic 6cb859d2 (Guide's own AXIS2 hit this same
+#: 13px-per-500ms case again): exceeding this cap used to refuse the
+#: whole move outright, with the shown message itself suggesting
+#: "...click again for a smaller step" -- but nothing about clicking the
+#: same button again produced a smaller step (nudge_target_fraction is
+#: fixed, so a second click solved for the identical target and hit the
+#: identical refusal every time). `MountTestMovePanel._on_nudge_clicked`
+#: now scales every solved step down by the same factor instead (so the
+#: *longest* one lands exactly on this cap), preserving the composed
+#: move's intended on-screen direction while actually moving as far as
+#: safely possible this click -- clicking again genuinely continues
+#: toward the original target. Independently tunable like every other
+#: setting here; needing several clicks to reach one target is itself a
+#: signal that axis's calibrated rate is unreliably slow -- consider Run
+#: Calibration again with a longer pulse_ms instead of raising this cap.
 _DEFAULT_MAX_NUDGE_PULSE_MS = 3000
 
 
@@ -103,8 +114,10 @@ class MountAlignmentSettings:
     again, after the video stream first confirms it has caught up past
     the pulse, before actually taking the frame used for measurement --
     see that panel's own `_capture_both` docstring. `max_nudge_pulse_ms`
-    caps how long a single composed nudge pulse is allowed to solve for --
-    see that constant's own docstring."""
+    caps how long a single composed nudge pulse is allowed to run --
+    a solved move exceeding it is scaled down (direction preserved) to
+    land exactly on this cap rather than refused outright -- see that
+    constant's own docstring."""
 
     pulse_ms: int = _DEFAULT_PULSE_MS
     rate_preset: str = _DEFAULT_RATE_PRESET

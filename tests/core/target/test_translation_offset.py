@@ -257,6 +257,48 @@ def test_a_noisy_large_frame_pair_recovers_the_shift_via_the_downsampled_fallbac
     assert offset.score >= 0.15  # _DEFAULT_MIN_SCORE
 
 
+def _shared_low_frequency_field(
+    shape: tuple[int, int], *, seed: int, block: int, scale: float
+) -> np.ndarray:
+    """A single coarse random field expanded back up to `shape` in flat
+    blocks -- unlike `_smooth_scene`, this is meant to be added
+    *identically* (unshifted) into both `before` and `after` below,
+    standing in for a real broad, low-frequency-similar gradient (e.g.
+    vignetting, or the genuinely featureless/hazy real scene real
+    incident 6cb859d2-7a94-4e44-8aff-585f0bf2466b's own frames showed)
+    that has nothing to do with any real shift."""
+    rng = np.random.default_rng(seed)
+    small_shape = (shape[0] // block + 1, shape[1] // block + 1)
+    small = rng.normal(loc=0.0, scale=scale, size=small_shape)
+    return np.kron(small, np.ones((block, block)))[: shape[0], : shape[1]]
+
+
+def test_a_still_climbing_downsampled_match_is_rejected_despite_clearing_min_score() -> None:
+    """Real incident 6cb859d2-7a94-4e44-8aff-585f0bf2466b, the very next
+    real pair to hit the x8 fallback after it shipped: a genuinely
+    featureless/hazy real Main-camera pair scored only 0.036 at full
+    resolution (barely above the pure-unrelated-noise floor for this
+    sensor size), yet the x8 fallback alone produced a *confident* but
+    spurious (dx=0, dy=0) match (score 0.62) -- a large, broad,
+    low-frequency-similar component (unrelated to any real shift) that
+    only reveals itself as spurious by continuing to climb steeply
+    toward 1.0 at coarser resolutions still, rather than plateauing the
+    way a genuine match does. This fixture reproduces that shape: an
+    unshifted shared low-frequency field (no real shift at all) added to
+    unrelated per-frame higher-frequency content -- full-resolution score
+    clears the noise floor but stays below _DEFAULT_MIN_SCORE, the x8
+    fallback alone would confidently (score > 0.15) but wrongly report
+    (0, 0), and _FALLBACK_VALIDATION_FACTOR's own plateau check must
+    catch it (see that constant's own docstring for the real growth-rate
+    evidence -- ~1.08-1.09 for a genuine match vs. ~1.38-1.40 here)."""
+    shape = (480, 640)
+    shared = _shared_low_frequency_field(shape, seed=1, block=128, scale=80.0)
+    before = shared + _smooth_scene(shape, seed=10, block=4)
+    after = shared + _smooth_scene(shape, seed=20, block=4)
+
+    assert measure_translation_offset(before, after) is None
+
+
 def test_the_fallback_is_disabled_below_the_minimum_frame_size() -> None:
     """This file's own small (128x128) fixtures must never exercise the
     downsampled fallback -- its false-positive floor for genuinely

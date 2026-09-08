@@ -46,6 +46,13 @@ _NOISY_MAIN_DATASET_DIR = (
     / "frames"
 )
 
+_FEATURELESS_MAIN_DATASET_DIR = (
+    Path(__file__).resolve().parents[2]
+    / "local_test_data"
+    / "terrestrial_featureless_main_2026-09-08"
+    / "frames"
+)
+
 
 def _load(name: str) -> np.ndarray:
     data = fits.getdata(_DATASET_DIR / f"{name}.fits")
@@ -54,6 +61,11 @@ def _load(name: str) -> np.ndarray:
 
 def _load_noisy_main(name: str) -> np.ndarray:
     data = fits.getdata(_NOISY_MAIN_DATASET_DIR / f"{name}.fits")
+    return np.asarray(data, dtype=np.float32)
+
+
+def _load_featureless_main(name: str) -> np.ndarray:
+    data = fits.getdata(_FEATURELESS_MAIN_DATASET_DIR / f"{name}.fits")
     return np.asarray(data, dtype=np.float32)
 
 
@@ -100,3 +112,31 @@ def test_noisy_main_frames_now_recover_a_real_match_via_the_fallback(axis_name: 
     after = _load_noisy_main(f"{axis_name}_after_left")
 
     assert measure_translation_offset(before, after) is not None
+
+
+@pytest.mark.skipif(
+    not _FEATURELESS_MAIN_DATASET_DIR.is_dir(),
+    reason=f"real-hardware dataset not present locally at {_FEATURELESS_MAIN_DATASET_DIR}",
+)
+@pytest.mark.parametrize("axis_name", ["axis1", "axis2"])
+def test_featureless_main_frames_report_no_usable_match_not_a_spurious_zero(
+    axis_name: str,
+) -> None:
+    """Real incident 6cb859d2-7a94-4e44-8aff-585f0bf2466b (see
+    local_test_data/terrestrial_featureless_main_2026-09-08/README.md for
+    the full writeup): the very next real pair to hit the x8 fallback
+    after it shipped -- a genuinely featureless real Main-camera pair
+    (pure sensor grain, no discernible structure at all) whose full-
+    resolution score (0.036/0.037) was already correctly below
+    _DEFAULT_MIN_SCORE, but whose x8 fallback alone produced a confident,
+    spurious (dx=0, dy=0) match (score 0.62-0.63) -- caught only by
+    is_degenerate() downstream, reported as a misleading
+    "confidently-measured zero, may be a mount/cable issue" rather than
+    the real "nothing to measure here" cause. After this fix (the
+    fallback's own plateau-validation against a second, coarser attempt):
+    both axis pairs correctly report no usable match, using the actual
+    frames that exposed the bug."""
+    before = _load_featureless_main(f"{axis_name}_before_left")
+    after = _load_featureless_main(f"{axis_name}_after_left")
+
+    assert measure_translation_offset(before, after) is None

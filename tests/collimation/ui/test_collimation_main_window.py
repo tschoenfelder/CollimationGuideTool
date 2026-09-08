@@ -3823,7 +3823,7 @@ class TestMountTestMovePanel:
         assert settle_values == [MountAlignmentSettings().settle_ms]
         window.close()
 
-    def test_nudge_button_refuses_a_move_whose_computed_pulse_is_unsafely_long(
+    def test_nudge_button_scales_down_a_move_whose_computed_pulse_is_unsafely_long(
         self, qapp: object
     ) -> None:
         """Real report, diagnostic de295656: "Guide showing buttons, but
@@ -3836,10 +3836,18 @@ class TestMountTestMovePanel:
         -- and even that clamped pulse produced far more real motion than
         the short calibration pulse's rate predicted. The target
         (nudge_target_fraction of the frame) is already known before any
-        duration math runs, so this must be caught -- and the move
-        refused, mount never touched -- right here, not only discovered
-        after the driver-level clamp already silently changed what got
-        sent."""
+        duration math runs, so this must be caught right here, before
+        ever touching the mount with an unreliable pulse.
+
+        Real report, diagnostic 6cb859d2 (Guide's own AXIS2 hit this same
+        13px-per-500ms shape again): refusing the move outright used to
+        be the whole story, with the shown message itself suggesting
+        "...click again for a smaller step" -- but nothing about clicking
+        the same button again produced a smaller step
+        (nudge_target_fraction is fixed, so a second click solved for the
+        identical target and hit the identical refusal every time). The
+        move must now be scaled down to land exactly on the cap and
+        actually run, not refused."""
         pulse_mount = FakeMountAdapter()
         window = self._window(
             mount_park=FakeMountPark(start_parked=True), pulse_mount=pulse_mount
@@ -3870,12 +3878,25 @@ class TestMountTestMovePanel:
 
         panel._nudge_buttons["left"]["Down"].click()
 
-        assert "Move failed" in panel._result_label.text()
-        assert "too long" in panel._result_label.text()
-        assert str(MountAlignmentSettings().max_nudge_pulse_ms) in panel._result_label.text()
-        # Mount never touched -- refused before ever submitting a pulse.
-        assert pulse_mount.pulse_log == []
-        assert not panel._runner.is_busy
+        cap_ms = MountAlignmentSettings().max_nudge_pulse_ms
+        # Submitted immediately at the clamped duration -- AXIS1's own
+        # contribution was already 0 (a pure +y target), so only AXIS2
+        # pulses, scaled down to exactly the cap rather than the ~120s
+        # the uncapped extrapolation would have solved for.
+        assert pulse_mount.pulse_log == [(MountAxis.AXIS2, AxisDirection.POSITIVE, cap_ms)]
+        assert "safety-capped" in panel._result_label.text()
+        assert str(cap_ms) in panel._result_label.text()
+        assert "Move failed" not in panel._result_label.text()
+
+        while panel._runner.is_busy:
+            time.sleep(0.01)
+        panel._poll()
+
+        # The move actually completed -- not a refusal -- and the final
+        # message still notes it was a partial, safety-capped step.
+        assert "Move failed" not in panel._result_label.text()
+        assert "safety-capped" in panel._result_label.text()
+        assert "click again to continue" in panel._result_label.text()
         window.close()
 
     def test_nudge_button_reports_an_error_for_a_degenerate_calibration(
