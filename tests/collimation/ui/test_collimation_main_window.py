@@ -83,23 +83,37 @@ def _stepped_frame_pair(
     step, in step order (axis1 test, axis2 test; return steps don't
     capture anything).
 
-    `get_frame` (used for "before") advances to the next step on every
-    call. `wait_for_frame` (used for "after") does *not* advance --
-    MountTestMovePanel._capture_both's own two-stage settle (real
-    report: "still 2-3 frames are shown showing movement") calls it more
-    than once per step, and every one of those calls must return that
-    same step's own "after" content, not drift onto the next step's."""
-    before_call_count = 0
+    `get_frame` supplies only the very first measured step's own
+    "before" -- the one capture `MountTestMovePanel._capture_both` still
+    makes without any freshness wait (nothing has pulsed yet in a fresh
+    Run Calibration click). Every other capture -- every step's "after",
+    and every step's "before" from the second measured step onward --
+    goes through `wait_for_frame` instead (real diagnostic
+    93ba361f-18c6-46f6-9a53-fd05be821b01: a later step's own "before"
+    needs the same freshness wait its "after" already gets, since the
+    *previous* step's own return pulse just moved the mount -- see
+    `_last_pulse_completed_at`'s own docstring in mount_test_move_panel.py).
+    `acquire_settled_frames`'s own two-stage settle (real report: "still
+    2-3 frames are shown showing movement") calls `wait_for_frame` twice
+    per logical capture, both of which must return the *same* content --
+    `wait_for_frame` only advances to the next scripted entry every
+    *second* call, not every call."""
+    # In call order: [axis1-after, axis2-before, axis2-after, axis3-before, ...]
+    # -- get_frame supplies axis1's own "before" outside this sequence.
+    sequence: list[tuple[int, int]] = [shifts[0][1]]
+    for before, after in shifts[1:]:
+        sequence.append(before)
+        sequence.append(after)
+    wait_calls = 0
 
     def get_frame() -> np.ndarray:
-        nonlocal before_call_count
-        index = before_call_count
-        before_call_count += 1
-        dy, dx = shifts[index][0]
+        dy, dx = shifts[0][0]
         return np.roll(np.roll(base, dy, axis=0), dx, axis=1)
 
     def wait_frame(_reference: float, _timeout: float) -> FrameAcquisitionResult:
-        dy, dx = shifts[before_call_count - 1][1]
+        nonlocal wait_calls
+        dy, dx = sequence[wait_calls // 2]
+        wait_calls += 1
         return _ok_result(np.roll(np.roll(base, dy, axis=0), dx, axis=1))
 
     return get_frame, wait_frame
@@ -109,25 +123,28 @@ def _stepped_star_pair(
     positions: list[tuple[tuple[float, float], tuple[float, float]]],
 ) -> tuple[Callable[[], np.ndarray], StableFrameWaiter]:
     """Star-mode counterpart to `_stepped_frame_pair` -- same
-    get_frame()-advances / wait_frame()-doesn't-advance shape, one
-    ((before_x, before_y), (after_x, after_y)) centroid pair per
-    measured step, but rendering a single_star_image at that position
-    instead of rolling a shared noise array."""
-    before_call_count = 0
+    get_frame()-supplies-only-the-first-before /
+    wait_frame()-advances-every-second-call shape (see that function's
+    own docstring for why), one ((before_x, before_y), (after_x, after_y))
+    centroid pair per measured step, but rendering a single_star_image at
+    that position instead of rolling a shared noise array."""
+    sequence: list[tuple[float, float]] = [positions[0][1]]
+    for before, after in positions[1:]:
+        sequence.append(before)
+        sequence.append(after)
+    wait_calls = 0
 
     def get_frame() -> np.ndarray:
-        nonlocal before_call_count
-        index = before_call_count
-        before_call_count += 1
-        x, y = positions[index][0]
+        x, y = positions[0][0]
         return single_star_image((120, 120), x=x, y=y, peak=2000.0, sigma=2.5, background=100.0)
 
     def wait_frame(_reference: float, _timeout: float) -> FrameAcquisitionResult:
-        x, y = positions[before_call_count - 1][1]
-        image = single_star_image(
-            (120, 120), x=x, y=y, peak=2000.0, sigma=2.5, background=100.0
+        nonlocal wait_calls
+        x, y = sequence[wait_calls // 2]
+        wait_calls += 1
+        return _ok_result(
+            single_star_image((120, 120), x=x, y=y, peak=2000.0, sigma=2.5, background=100.0)
         )
-        return _ok_result(image)
 
     return get_frame, wait_frame
 
@@ -2843,6 +2860,61 @@ class TestMountTestMovePanel:
         assert "Dec-axis" in panel._result_label.text()
         window.close()
 
+    def test_a_later_steps_before_capture_waits_for_a_frame_after_the_previous_pulse(
+        self, qapp: object
+    ) -> None:
+        """Real diagnostic 93ba361f-18c6-46f6-9a53-fd05be821b01: AXIS2's
+        own "before" frame was a stale capture from well before this run
+        even started (a completely different real-world scene), because
+        it used to be grabbed via the instant/no-wait path even though
+        AXIS1's own *return* pulse had physically moved the mount moments
+        earlier. Only the very first measured step's own "before" (AXIS1
+        -- nothing has pulsed yet in a fresh Run Calibration click)
+        should still use the instant path; every later one (AXIS2's) must
+        go through the same freshness-wait machinery every "after"
+        capture already does."""
+        pulse_mount = FakeMountAdapter()
+        mount_park = FakeMountPark(start_parked=True)
+        window = self._window(mount_park=mount_park, pulse_mount=pulse_mount)
+        self._connect_and_stream_cameras(window)
+        window._mount_panel._connect_button.setChecked(True)
+        window._test_move_panel._connect_button.setChecked(True)
+        panel = window._test_move_panel
+        panel._terrestrial_button.click()
+
+        # Real (non-flat) content -- an all-zero frame has zero variance
+        # and would abort the whole sequence right at AXIS1's own
+        # "before" capture (measure_translation_offset's own zero-
+        # variance guard), never reaching AXIS2 at all. Only call counts
+        # matter here, not the measured shift, so the same fixed array
+        # every call is fine.
+        content = np.random.default_rng(1).normal(loc=500.0, scale=80.0, size=(64, 64))
+        get_frame_calls = 0
+        wait_frame_calls = 0
+
+        def get_frame() -> np.ndarray:
+            nonlocal get_frame_calls
+            get_frame_calls += 1
+            return content
+
+        def wait_frame(_reference: float, _timeout: float) -> FrameAcquisitionResult:
+            nonlocal wait_frame_calls
+            wait_frame_calls += 1
+            return _ok_result(content)
+
+        panel._get_right_frame = get_frame
+        panel._wait_for_right_frame = wait_frame
+
+        self._run_calibration_to_completion(panel)
+
+        # Exactly one instant (no-wait) capture -- AXIS1's own "before".
+        # Every other capture (AXIS1's "after", AXIS2's "before", AXIS2's
+        # "after" -- 3 captures x 2 calls each for the two-stage settle)
+        # goes through the freshness-wait path instead.
+        assert get_frame_calls == 1
+        assert wait_frame_calls == 6
+        window.close()
+
     def test_calibration_steps_pass_the_configured_settle_ms_to_the_runner(
         self, qapp: object
     ) -> None:
@@ -2950,8 +3022,11 @@ class TestMountTestMovePanel:
         # Capture order is: AXIS1 before(1), AXIS1 after(2,3 -- the
         # two-stage settle calls wait_for_left_frame twice, see
         # MountTestMovePanel._capture_both's own docstring), [AXIS1
-        # return has no capture], AXIS2 before(4), AXIS2 after(5,6) --
-        # the 5th left-camera call overall (AXIS2's own "after", first of
+        # return has no capture], AXIS2 before(4,5 -- real diagnostic
+        # 93ba361f: a later step's own "before" now gets the same
+        # two-stage settle its "after" already did, see
+        # _last_pulse_completed_at's own docstring), AXIS2 after(6,7) --
+        # the 6th left-camera call overall (AXIS2's own "after", first of
         # its two). Fail exactly that one so AXIS1 completes normally and
         # AXIS2's forward pulse has already been sent before anything
         # fails.
@@ -2961,7 +3036,7 @@ class TestMountTestMovePanel:
         def flaky_get_left_frame() -> np.ndarray | None:
             nonlocal call_count
             call_count += 1
-            return None if call_count >= 5 else real_get_left_frame()
+            return None if call_count >= 6 else real_get_left_frame()
 
         panel._get_left_frame = flaky_get_left_frame
         # "After" captures go through this instead of _get_left_frame
@@ -3055,17 +3130,17 @@ class TestMountTestMovePanel:
         original_delay = runner_module._PULSE_REJECTION_RETRY_DELAY_S
         runner_module._PULSE_REJECTION_RETRY_DELAY_S = 0.01  # keep the test fast
 
-        # See the sibling test above for why this is the 5th left-camera
-        # call, not the 4th (the two-stage settle calls
-        # wait_for_left_frame twice per "after" -- see
-        # MountTestMovePanel._capture_both's own docstring).
+        # See the sibling test above for why this is the 6th left-camera
+        # call (the two-stage settle calls wait_for_left_frame twice per
+        # "after", and -- real diagnostic 93ba361f -- twice per "before"
+        # from the second measured step onward too).
         real_get_left_frame = panel._get_left_frame
         call_count = 0
 
         def flaky_get_left_frame() -> np.ndarray | None:
             nonlocal call_count
             call_count += 1
-            return None if call_count >= 5 else real_get_left_frame()
+            return None if call_count >= 6 else real_get_left_frame()
 
         panel._get_left_frame = flaky_get_left_frame
         # "After" captures go through this instead of _get_left_frame

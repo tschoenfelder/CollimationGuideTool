@@ -39,9 +39,21 @@ pytestmark = pytest.mark.skipif(
     reason=f"real-hardware dataset not present locally at {_DATASET_DIR}",
 )
 
+_NOISY_MAIN_DATASET_DIR = (
+    Path(__file__).resolve().parents[2]
+    / "local_test_data"
+    / "terrestrial_noisy_main_2026-09-08"
+    / "frames"
+)
+
 
 def _load(name: str) -> np.ndarray:
     data = fits.getdata(_DATASET_DIR / f"{name}.fits")
+    return np.asarray(data, dtype=np.float32)
+
+
+def _load_noisy_main(name: str) -> np.ndarray:
+    data = fits.getdata(_NOISY_MAIN_DATASET_DIR / f"{name}.fits")
     return np.asarray(data, dtype=np.float32)
 
 
@@ -66,5 +78,25 @@ def test_mains_own_unsaturated_frames_from_the_same_run_still_match(axis_name: s
     succeeded -- the new guard must not regress that."""
     before = _load(f"main_{axis_name}_before")
     after = _load(f"main_{axis_name}_after")
+
+    assert measure_translation_offset(before, after) is not None
+
+
+@pytest.mark.skipif(
+    not _NOISY_MAIN_DATASET_DIR.is_dir(),
+    reason=f"real-hardware dataset not present locally at {_NOISY_MAIN_DATASET_DIR}",
+)
+@pytest.mark.parametrize("axis_name", ["axis1", "axis2"])
+def test_noisy_main_frames_now_recover_a_real_match_via_the_fallback(axis_name: str) -> None:
+    """Real incident 93ba361f-18c6-46f6-9a53-fd05be821b01 (see
+    local_test_data/terrestrial_noisy_main_2026-09-08/README.md for the
+    full writeup): before this fix, both of Main's real axis pairs scored
+    below _DEFAULT_MIN_SCORE at full resolution (0.098/0.093) despite
+    real, human-visible structure -- independent per-pixel sensor noise
+    swamped the whole-frame energy normalization. After: the downsampled
+    fallback recovers a real match for both, using the actual frames
+    that exposed the bug, not just a synthetic reconstruction."""
+    before = _load_noisy_main(f"{axis_name}_before_left")
+    after = _load_noisy_main(f"{axis_name}_after_left")
 
     assert measure_translation_offset(before, after) is not None

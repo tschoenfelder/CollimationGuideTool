@@ -194,3 +194,90 @@ def test_a_lightly_saturated_frame_pair_still_reports_a_match() -> None:
     assert offset is not None
     assert offset.dx_px == -5.0
     assert offset.dy_px == 3.0
+
+
+def _smooth_scene(shape: tuple[int, int], seed: int, block: int = 16) -> np.ndarray:
+    """Genuine broadband-but-correlated low-frequency structure -- unlike
+    `_textured_image`'s plain per-pixel noise (every pixel statistically
+    independent of its neighbors, nothing for a low-pass filter to
+    preferentially preserve), this is a coarse random field expanded back
+    up to `shape` in flat blocks, standing in for a real scene's actual
+    spatially-coherent features (e.g. the diagonal cable/branch-like
+    streaks real incident 93ba361f's own frames show)."""
+    rng = np.random.default_rng(seed)
+    small_shape = (shape[0] // block + 1, shape[1] // block + 1)
+    small = rng.normal(loc=500.0, scale=150.0, size=small_shape)
+    return np.kron(small, np.ones((block, block)))[: shape[0], : shape[1]]
+
+
+def _noisy_shifted_scene_pair(
+    shape: tuple[int, int], *, shift: tuple[int, int], seed: int, noise_scale: float
+) -> tuple[np.ndarray, np.ndarray]:
+    """A known-shift pair built from `_smooth_scene` with heavy,
+    independent-per-frame sensor-noise-like Gaussian noise layered on top
+    of *each* frame separately (not shared between them, unlike the
+    shift itself) -- real incident 93ba361f-18c6-46f6-9a53-fd05be821b01's
+    own real Main-camera frames were this noisy relative to their own
+    real (broadband, lower-frequency) structure. `shift` should be a
+    multiple of `_FALLBACK_DOWNSAMPLE_FACTOR` (8) so the downsampled
+    fallback can recover it exactly rather than only approximately."""
+    scene = _smooth_scene(shape, seed=seed)
+    before = scene + np.random.default_rng(seed * 10 + 1).normal(0.0, noise_scale, size=shape)
+    after = np.roll(scene, shift=shift, axis=(0, 1)) + np.random.default_rng(
+        seed * 10 + 2
+    ).normal(0.0, noise_scale, size=shape)
+    return before, after
+
+
+def test_a_noisy_large_frame_pair_recovers_the_shift_via_the_downsampled_fallback() -> None:
+    """Real incident 93ba361f-18c6-46f6-9a53-fd05be821b01: a real
+    terrestrial Main-camera frame pair with heavy per-pixel sensor noise
+    (visually confirmed real structure present -- diagonal cable/branch-
+    like streaks clearly visible to a human eye) scored only 0.098/0.093
+    at full resolution for its two real axis pulses -- both well below
+    _DEFAULT_MIN_SCORE, because independent per-pixel noise dominates
+    this module's own whole-frame energy normalization. See
+    _FALLBACK_DOWNSAMPLE_FACTOR's own docstring for why a plain
+    per-pixel-noise `_textured_image` fixture (used by every *other* test
+    in this file) can't reproduce this: it has no genuine low-frequency
+    structure for a low-pass filter to preferentially preserve over the
+    *added* noise, since both are the same statistical process. This
+    fixture is deliberately large (480x640, above
+    _FALLBACK_MIN_FRAME_SIDE_PX) -- the fallback is disabled below that
+    threshold on purpose (see that constant's own docstring)."""
+    before, after = _noisy_shifted_scene_pair(
+        (480, 640), shift=(16, -24), seed=42, noise_scale=700.0
+    )
+
+    offset = measure_translation_offset(before, after)
+
+    assert offset is not None
+    assert offset.dx_px == -24.0
+    assert offset.dy_px == 16.0
+    assert offset.score >= 0.15  # _DEFAULT_MIN_SCORE
+
+
+def test_the_fallback_is_disabled_below_the_minimum_frame_size() -> None:
+    """This file's own small (128x128) fixtures must never exercise the
+    downsampled fallback -- its false-positive floor for genuinely
+    unrelated content was only verified safe down to real-camera-scale
+    frames (see _FALLBACK_MIN_FRAME_SIDE_PX's own docstring), not a
+    fixture this small. A pair too noisy to match at full resolution must
+    still report no usable match, not silently fall back to a
+    (potentially spurious) downsampled attempt."""
+    before, after = _noisy_shifted_scene_pair(
+        (128, 128), shift=(8, -8), seed=42, noise_scale=700.0
+    )
+
+    assert measure_translation_offset(before, after) is None
+
+
+def test_two_unrelated_large_scenes_still_report_no_usable_match_after_the_fallback() -> None:
+    """The downsampled fallback must not manufacture a false-positive
+    match for genuinely unrelated content just because it's large enough
+    to attempt -- two independent _smooth_scene draws, no shared shift at
+    all, at the same size the recovery test above uses."""
+    before = _smooth_scene((480, 640), seed=100)
+    after = _smooth_scene((480, 640), seed=200)
+
+    assert measure_translation_offset(before, after) is None

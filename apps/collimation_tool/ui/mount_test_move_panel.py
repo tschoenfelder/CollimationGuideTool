@@ -437,6 +437,28 @@ class MountTestMovePanel(QWidget):
         self._last_diagnostic_frames: dict[str, np.ndarray] = {}
         #: See diagnostic_camera_state()'s own docstring.
         self._last_diagnostic_camera_state: dict[str, tuple[float, int]] = {}
+        #: Real diagnostic 93ba361f-18c6-46f6-9a53-fd05be821b01: Guide's
+        #: own AXIS2 "before" frame was a stale capture from well before
+        #: this run even started (a completely different scene -- an
+        #: indoor curtain, not the outdoor view every other frame from
+        #: the same run showed), because `_start_next_calibration_step`
+        #: captured every step's "before" with no freshness wait at all
+        #: (`_capture_both`'s `after_monotonic=None` path) -- correct
+        #: reasoning for the *first* step of a fresh sequence (nothing
+        #: has moved yet), but not for AXIS2's: AXIS1's own *return* pulse
+        #: (real physical motion) had just completed moments earlier, and
+        #: nothing waited for the camera stream to catch up before
+        #: grabbing "the current frame". Set whenever any commanded pulse
+        #: (measured or a return step, calibration or a nudge) actually
+        #: completes -- see `_finish_calibration_step`/`_finish_nudge` --
+        #: and consulted by every subsequent "before" capture
+        #: (`_start_next_calibration_step`/`_on_nudge_clicked`) so it gets
+        #: the exact same freshness wait every "after" capture already
+        #: has. `None` means nothing has pulsed yet in this panel's
+        #: lifetime (or since the start of the current Run Calibration
+        #: click, see `_on_run_calibration_clicked`'s own reset) -- the
+        #: original instant/no-wait behavior is still correct then.
+        self._last_pulse_completed_at: float | None = None
 
         self._title_label = QLabel(f"<b>{title}</b>")
         self._connect_button = QPushButton("Connect")
@@ -644,9 +666,18 @@ class MountTestMovePanel(QWidget):
         `after_monotonic`, when given, blocks for a frame provably
         captured after that time instead of an instant (possibly stale
         or mid-motion) read -- see CameraPanel.wait_for_frame_after()'s
-        own docstring. Only the "after" capture of a calibration
-        step/nudge should pass this; the "before" capture has nothing to
-        wait out (the mount hasn't moved yet).
+        own docstring. Every "after" capture of a calibration step/nudge
+        passes this (the pulse that just ran). A "before" capture passes
+        it too whenever `self._last_pulse_completed_at` is set -- i.e.
+        whenever *anything* has already pulsed this mount before now
+        (real diagnostic 93ba361f-18c6-46f6-9a53-fd05be821b01: AXIS2's
+        own "before" capture used to grab an instant, unwaited read even
+        though AXIS1's own *return* pulse had physically moved the mount
+        moments earlier, and returned a genuinely stale frame from well
+        before this run even started -- a completely different real-world
+        scene, not merely an old exposure of the same one). Only the very
+        first "before" capture of a fresh sequence (nothing has moved yet
+        in this attempt) still passes `None` here.
 
         Real report ("still 2-3 frames are shown showing movement" after
         a pulse): a single frame delivered past `after_monotonic` isn't
@@ -790,6 +821,13 @@ class MountTestMovePanel(QWidget):
         self._calibration_partial = {"left": {}, "right": {}}
         self._calibration_failed_cameras = set()
         self._last_failure_classes = {}
+        # Real diagnostic 93ba361f: reset so this run's own very first
+        # "before" capture uses the original instant/no-wait path (see
+        # _last_pulse_completed_at's own docstring) -- nothing has moved
+        # yet in *this* attempt, even if an earlier nudge or calibration
+        # run left a stale (but harmless to reuse as a reference) old
+        # timestamp behind.
+        self._last_pulse_completed_at = None
         # Paused for the whole 4-step sequence, not just per-step -- see
         # the constructor's own docstring on _set_left/right_auto_exposure_paused.
         # Resumed in _abort_calibration (every failure path) and
@@ -807,7 +845,16 @@ class MountTestMovePanel(QWidget):
         before: dict[str, _Measurement] = {}
         if step.measure:
             label = f"{step.axis.name.lower()}_before"
-            captured = self._capture_both(mode, diagnostic_label=label)
+            # Real diagnostic 93ba361f: `_last_pulse_completed_at` is
+            # None only for this sequence's very first measured step
+            # (see _on_run_calibration_clicked's own reset) -- every
+            # later one (AXIS2's own "before") gets the same freshness
+            # wait its own "after" already has, since the *previous*
+            # step's return pulse just moved the mount. See
+            # _last_pulse_completed_at's own docstring.
+            captured = self._capture_both(
+                mode, diagnostic_label=label, after_monotonic=self._last_pulse_completed_at
+            )
             if captured is None:
                 self._abort_calibration(
                     self._capture_failure_message(f"{self._missing_label(mode)} before pulsing")
@@ -928,6 +975,12 @@ class MountTestMovePanel(QWidget):
         if not pulsed:
             self._abort_calibration(pulse_error or "pulse failed")
             return
+        # Real diagnostic 93ba361f: recorded for every completed pulse
+        # (measured or a return step) -- see _last_pulse_completed_at's
+        # own docstring -- so the *next* step's own "before" capture
+        # knows to wait for the stream to catch up past this motion
+        # instead of grabbing whatever's already cached.
+        self._last_pulse_completed_at = completed_at
         # Issue #30: tracking state must be re-verified after *every*
         # commanded pulse, not only ones immediately followed by a
         # capture -- a "move back" return step's own pulse can just as
@@ -1122,7 +1175,14 @@ class MountTestMovePanel(QWidget):
         # any early-exit path below) -- see the constructor's own
         # docstring and real incident ca728d27.
         self._pause_auto_exposure()
-        before = self._capture_both(mode, diagnostic_label="nudge_before")
+        # Real diagnostic 93ba361f: an earlier pulse (a previous nudge or
+        # calibration run in this panel's lifetime) may have just moved
+        # the mount -- see _last_pulse_completed_at's own docstring. None
+        # on a panel where nothing has pulsed yet keeps the original
+        # instant/no-wait behavior.
+        before = self._capture_both(
+            mode, diagnostic_label="nudge_before", after_monotonic=self._last_pulse_completed_at
+        )
         if before is None:
             self._resume_auto_exposure()
             self._last_error = self._capture_failure_message(
@@ -1162,6 +1222,8 @@ class MountTestMovePanel(QWidget):
             self._last_error = pulse_error or "pulse failed"
             self._result_label.setText(f"Move failed: {self._last_error}")
             return
+        # See _last_pulse_completed_at's own docstring.
+        self._last_pulse_completed_at = completed_at
         after = self._capture_both(
             pending.mode, diagnostic_label="nudge_after", after_monotonic=completed_at
         )

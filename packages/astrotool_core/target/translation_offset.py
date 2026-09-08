@@ -113,6 +113,135 @@ def _near_max_fraction(frame: np.ndarray) -> float:
     return float(np.mean(frame >= actual_max * _NEAR_MAX_RELATIVE_TOLERANCE))
 
 
+#: Box-downsample factor tried as a fallback when the full-resolution
+#: correlation doesn't clear `min_score` -- real incident
+#: 93ba361f-18c6-46f6-9a53-fd05be821b01: a real terrestrial Main-camera
+#: frame pair with heavy per-pixel sensor noise (visually confirmed real
+#: structure present -- diagonal cable/branch-like streaks, clearly
+#: visible to a human eye in the diagnostic's own display image) scored
+#: only 0.098/0.093 at full resolution for its two real axis pulses, both
+#: well below `_DEFAULT_MIN_SCORE` -- because independent per-pixel
+#: sensor noise dominates this module's own whole-frame energy
+#: normalization (this module is deliberately unwhitened -- see the
+#: module docstring -- normalized by *total* frame energy, noise
+#: included). Reconstructing that real pair's own correlation surface at
+#: several box-downsample factors recovered a strong, mutually consistent
+#: peak from x4 upward (score climbing 0.098 -> 0.57 -> 0.75 -> 0.82 at
+#: x1/x4/x8/x32, converging on the same dx/dy at every one of them) --
+#: averaging NxN blocks together cancels independent per-pixel noise
+#: (variance shrinks ~1/N per block) while preserving the real, broadband
+#: but lower-frequency structure a genuine scene has, something full
+#: resolution alone completely missed here.
+#:
+#: 8 was chosen, not a larger factor, because the false-positive floor
+#: for *unrelated* content rises as the downsampled image shrinks (fewer
+#: independent correlation samples -- verified empirically: two
+#: independent-noise 1920x1080 frames, this app's own smallest real
+#: sensor, score up to only 0.026 at x8 vs. up to 0.08 already at x32).
+#: At x8, both this incident's real axis pairs (0.75, 0.53) sit with a
+#: wide margin above `_DEFAULT_MIN_SCORE` while that unrelated-content
+#: ceiling (0.026) sits with an equally wide margin below it -- the same
+#: two-sided-margin methodology `_DEFAULT_MIN_SCORE`/
+#: `_DEFAULT_MAX_SATURATED_FRACTION` above already use.
+_FALLBACK_DOWNSAMPLE_FACTOR = 8
+
+#: Below this many pixels per side, skip the downsample fallback
+#: entirely rather than risk a false-positive match -- the unrelated-
+#: content noise floor above was only verified down to real-camera-scale
+#: frames (this app's smallest sensor is 1920x1080); a synthetic fixture
+#: smaller than this (e.g. this file's own small unit-test images) simply
+#: never exercises the fallback, by design, rather than needing its own
+#: separately-recalibrated threshold.
+_FALLBACK_MIN_FRAME_SIDE_PX = 256
+
+
+def _correlate(before: np.ndarray, after: np.ndarray) -> tuple[float, float, float] | None:
+    """The shared normalized-cross-correlation core -- mean-subtract,
+    energy-normalize, FFT-correlate, find the peak, unwrap it to a
+    (dx, dy) shift in `before`/`after`'s own pixel units. `None` if
+    either frame has zero variance (nothing to normalize by -- e.g. a
+    flat/saturated capture, incident 6fa2aa59). Factored out of
+    `measure_translation_offset` so the downsample fallback below can
+    reuse the exact same math at a reduced resolution instead of
+    duplicating it -- see that function's own docstring for why
+    unwhitened, energy-normalized correlation is used at all."""
+    height, width = before.shape
+    b = before.astype(np.float64) - before.mean()
+    a = after.astype(np.float64) - after.mean()
+    energy_norm = np.sqrt(np.sum(b * b) * np.sum(a * a))
+    if energy_norm <= 0.0:
+        return None
+    f1 = np.fft.fft2(b)
+    f2 = np.fft.fft2(a)
+    # f2 * conj(f1), not the other way round -- see
+    # measure_translation_offset's own comment on this same line.
+    correlation = np.fft.ifft2(f2 * np.conj(f1)).real / energy_norm
+    peak_row, peak_col = np.unravel_index(int(np.argmax(correlation)), correlation.shape)
+    score = float(correlation[peak_row, peak_col])
+    dy = float(peak_row if peak_row <= height // 2 else peak_row - height)
+    dx = float(peak_col if peak_col <= width // 2 else peak_col - width)
+    return dx, dy, score
+
+
+def _box_downsample(frame: np.ndarray, factor: int) -> np.ndarray:
+    """Average non-overlapping `factor`x`factor` blocks together -- a box
+    low-pass filter, cheap and dependency-free (matches this project's
+    own hand-rolled-over-adding-a-dependency choice elsewhere). Cropped
+    to the largest multiple of `factor` in each dimension first; real
+    camera frames are always far larger than a single block, so a few
+    discarded trailing rows/columns never meaningfully affects the
+    result."""
+    height, width = frame.shape
+    height2 = height - height % factor
+    width2 = width - width % factor
+    cropped = frame[:height2, :width2].astype(np.float64)
+    return cropped.reshape(height2 // factor, factor, width2 // factor, factor).mean(axis=(1, 3))
+
+
+def _fallback_downsampled_match(
+    before: np.ndarray, after: np.ndarray, min_score: float
+) -> TranslationOffset | None:
+    """Retries the correlation at `_FALLBACK_DOWNSAMPLE_FACTOR`x reduced
+    resolution -- see that constant's own docstring for the real incident
+    and evidence behind this. Only called once the full-resolution
+    correlation has already failed to clear `min_score`; returns `None`
+    (not a partial/best-effort guess) if the downsampled attempt doesn't
+    clear it either, or the frame is too small for this fallback to be
+    trustworthy (`_FALLBACK_MIN_FRAME_SIDE_PX`).
+
+    The returned `dx_px`/`dy_px` are only accurate to within
+    `_FALLBACK_DOWNSAMPLE_FACTOR` pixels (whatever this coarser
+    resolution's own single pixel represents once rescaled back up) --
+    coarser than this module's usual whole-pixel precision, but still far
+    more useful than the `None` this incident used to return outright for
+    Test Move's own purpose (learning which physical axis/direction is
+    which, not sub-pixel astrometry)."""
+    height, width = before.shape
+    if height < _FALLBACK_MIN_FRAME_SIDE_PX or width < _FALLBACK_MIN_FRAME_SIDE_PX:
+        return None
+    factor = _FALLBACK_DOWNSAMPLE_FACTOR
+    down_before = _box_downsample(before, factor)
+    down_after = _box_downsample(after, factor)
+    # Reusing _correlate's own zero-variance guard here is defensive
+    # rather than something realistic input can trigger in practice: a
+    # box-averaged block only comes out perfectly, bit-exactly flat if
+    # the *original* full-resolution content already was (already
+    # excluded above by the saturation guard, or by measure_translation_
+    # offset's own earlier full-resolution _correlate call returning None
+    # first) -- floating-point rounding in np.ndarray.mean() alone
+    # already keeps a genuinely varying input from averaging down to an
+    # exact constant (confirmed empirically: even literal bit-for-bit
+    # identical repeated blocks left ~1e-13 residual variance after
+    # subtracting the block mean back out).
+    result = _correlate(down_before, down_after)
+    if result is None:
+        return None
+    dx, dy, score = result
+    if score < min_score:
+        return None
+    return TranslationOffset(dx_px=dx * factor, dy_px=dy * factor, score=score)
+
+
 @dataclass(frozen=True)
 class TranslationOffset:
     """How far `after` is shifted relative to `before`, in pixels
@@ -163,11 +292,19 @@ def measure_translation_offset(
     incident ef49ecb1 -- see `_DEFAULT_MAX_SATURATED_FRACTION`'s own
     docstring: a large *partially* saturated region, unlike a fully flat
     frame, has nonzero variance and would otherwise sail through this
-    check while still confidently misreporting the shift), or the
-    correlation peak doesn't clear `min_score` (not enough shared
-    structure to trust, or `before`/`after` genuinely unrelated). The
-    caller should treat any of these the same as detect_sources() finding
-    no star: don't report a displacement with nothing real behind it.
+    check while still confidently misreporting the shift), or neither the
+    full-resolution correlation peak nor a reduced-resolution fallback
+    attempt (real incident 93ba361f -- see `_FALLBACK_DOWNSAMPLE_FACTOR`'s
+    own docstring: independent per-pixel sensor noise can swamp a real
+    shift at full resolution alone) clears `min_score` (not enough shared
+    structure to trust even once that noise is averaged down, or
+    `before`/`after` genuinely unrelated). The caller should treat any of
+    these the same as detect_sources() finding no star: don't report a
+    displacement with nothing real behind it. A `TranslationOffset`
+    returned via the fallback is only accurate to within
+    `_FALLBACK_DOWNSAMPLE_FACTOR` pixels, not this module's usual
+    whole-pixel precision -- still whatever axis/direction Test Move
+    needs, just coarser.
     """
     if before.shape != after.shape:
         raise ValueError("before and after must be the same shape")
@@ -180,18 +317,9 @@ def measure_translation_offset(
     ):
         return None
 
-    height, width = before.shape
     # Mean-subtracted so a brightness/exposure difference between the two
     # captures doesn't bias the match toward wherever the frame happens
     # to be brightest -- standard normalized-cross-correlation practice.
-    b = before.astype(np.float64) - before.mean()
-    a = after.astype(np.float64) - after.mean()
-    energy_norm = np.sqrt(np.sum(b * b) * np.sum(a * a))
-    if energy_norm <= 0.0:
-        return None
-
-    f1 = np.fft.fft2(b)
-    f2 = np.fft.fft2(a)
     # f2 * conj(f1), not the other way round: the peak of this cross-power
     # spectrum's inverse FFT lands at the forward shift from `before` to
     # `after` (verified empirically against known np.roll() shifts in
@@ -202,17 +330,26 @@ def measure_translation_offset(
     # contrast telescope frames (incident a4ffe048); dividing the whole
     # correlation surface by both frames' own total energy afterward is
     # the standard normalized-cross-correlation-coefficient normalization
-    # instead, applied once rather than per frequency bin.
-    correlation = np.fft.ifft2(f2 * np.conj(f1)).real / energy_norm
-    peak_row, peak_col = np.unravel_index(int(np.argmax(correlation)), correlation.shape)
-    score = float(correlation[peak_row, peak_col])
-    if score < min_score:
+    # instead, applied once rather than per frequency bin. See
+    # `_correlate`'s own docstring -- shared with the downsample fallback
+    # below.
+    result = _correlate(before, after)
+    if result is None:
         return None
+    dx, dy, score = result
+    if score < min_score:
+        # Real incident 93ba361f: before giving up outright, retry at a
+        # reduced resolution -- see `_FALLBACK_DOWNSAMPLE_FACTOR`'s own
+        # docstring for why (independent per-pixel sensor noise can
+        # swamp a real shift's contribution to this module's own
+        # whole-frame energy normalization at full resolution, even
+        # though the shift is still clearly recoverable once that noise
+        # is averaged down).
+        return _fallback_downsampled_match(before, after, min_score)
 
     # The peak position wraps around at the frame edges (a shift of -1
     # looks identical to a shift of height-1 under a circular assumption)
     # -- fold anything past the frame's midpoint back to the equivalent
-    # negative shift.
-    dy = float(peak_row if peak_row <= height // 2 else peak_row - height)
-    dx = float(peak_col if peak_col <= width // 2 else peak_col - width)
+    # negative shift. Already done inside `_correlate` itself, so `dx`/
+    # `dy` here are already unwrapped.
     return TranslationOffset(dx_px=dx, dy_px=dy, score=score)
