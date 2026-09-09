@@ -3823,6 +3823,84 @@ class TestMountTestMovePanel:
         assert settle_values == [MountAlignmentSettings().settle_ms]
         window.close()
 
+    def test_a_nudge_that_cannot_confirm_one_cameras_displacement_still_reports_the_other(
+        self, qapp: object
+    ) -> None:
+        """Real request: the pulse itself already ran by the time either
+        camera's own "after" frame gets measured -- the mount is wherever
+        it physically ended up regardless of whether that displacement
+        can be confirmed. The old all-or-nothing behavior here reported
+        "Move failed" for the *whole* nudge the moment either camera's
+        own match failed, even when the other camera measured it fine --
+        inconsistent with _finish_calibration_step's own established
+        per-camera partial-success handling (diagnostic d14c3a9b). A
+        camera that can't confirm this move must not block the other
+        camera's own confirmed reading, must not disable any nudge
+        button (nothing here should look like a failure to keep clicking
+        past), and the mount must not be treated as needing to "undo"
+        anything -- it stays exactly where the pulse left it."""
+        pulse_mount = FakeMountAdapter()
+        window = MainWindow(
+            _textured_camera(seed=10),
+            guide_camera=_textured_camera(seed=11),
+            device_lister=lambda: [],
+            mount=FakeMountPark(start_parked=True),
+            pulse_mount=pulse_mount,
+        )
+        self._connect_and_stream_cameras(window)
+        window._mount_panel._connect_button.setChecked(True)
+        window._test_move_panel._connect_button.setChecked(True)
+        panel = window._test_move_panel
+        panel._terrestrial_button.click()
+
+        def _response(axis: MountAxis, dx_px: float, dy_px: float) -> AxisResponse:
+            return AxisResponse(
+                axis=axis, direction=AxisDirection.POSITIVE, duration_ms=1000,
+                dx_px=dx_px, dy_px=dy_px, px_per_ms=0.0,
+            )
+
+        panel._calibration["left"] = CalibrationMatrix(
+            responses={
+                (MountAxis.AXIS1, AxisDirection.POSITIVE): _response(MountAxis.AXIS1, 100.0, 0.0),
+                (MountAxis.AXIS2, AxisDirection.POSITIVE): _response(MountAxis.AXIS2, 0.0, 100.0),
+            }
+        )
+        panel._update_buttons_enabled()
+
+        # Main: flat/featureless every capture -- measure_translation_offset's
+        # own explicit zero-variance guard, same real shape as the
+        # calibration-side precedent test. Guide: a real, known shift.
+        flat = np.full((120, 120), 500.0)
+        rng = np.random.default_rng(20)
+        base = rng.normal(loc=500.0, scale=80.0, size=(120, 120))
+        panel._get_left_frame = lambda: flat
+        panel._wait_for_left_frame = lambda _reference, _timeout: _ok_result(flat)
+        panel._get_right_frame, panel._wait_for_right_frame = _stepped_frame_pair(
+            base, [((0, 0), (0, 6))]
+        )
+
+        panel._nudge_buttons["left"]["Right"].click()
+        deadline = time.monotonic() + 5.0
+        while panel._runner.is_busy:
+            assert time.monotonic() < deadline, "nudge never completed"
+            time.sleep(0.01)
+        panel._poll()
+
+        # The pulse ran regardless -- not refused, not rolled back.
+        assert pulse_mount.pulse_log != []
+        assert "Move failed" not in panel._result_label.text()
+        lines = {
+            line.split(":", 1)[0]: line for line in panel._result_label.text().split(" | ")
+        }
+        assert "displacement not confirmed" in lines["Main"]
+        assert "dx=" in lines["Guide"] and "dy=" in lines["Guide"]
+        assert panel.diagnostic_context()["last_failure_classes"] == {"left": "match_failed"}
+        # Nothing about this looks like a failure to keep clicking past --
+        # every nudge button for a camera with a calibration matrix stays
+        # enabled, exactly as it would after a fully-confirmed move.
+        assert panel._nudge_buttons["left"]["Right"].isEnabled()
+        window.close()
+
     def test_nudge_button_scales_down_a_move_whose_computed_pulse_is_unsafely_long(
         self, qapp: object
     ) -> None:

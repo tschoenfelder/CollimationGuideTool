@@ -189,6 +189,27 @@ _FALLBACK_VALIDATION_FACTOR = 2 * _FALLBACK_DOWNSAMPLE_FACTOR
 #: between the two.
 _FALLBACK_MAX_SCORE_GROWTH_RATIO = 1.25
 
+#: Once the x8 fallback's own coarse match is validated as trustworthy
+#: (cleared `min_score` and the plateau check above), the *full-
+#: resolution* correlation's own peak -- already computed by the caller
+#: to decide whether the fallback was even needed -- usually still sits
+#: right at the real shift; it just wasn't confident enough (too much
+#: independent noise contributing to the whole-frame energy
+#: normalization) to trust on its own. Preferring that precise location
+#: over the coarse `x * _FALLBACK_DOWNSAMPLE_FACTOR` position recovers
+#: this module's usual whole-pixel precision instead of only
+#: `_FALLBACK_DOWNSAMPLE_FACTOR`-pixel granularity, in the common case
+#: where the two agree. Verified against 93ba361f's own two real,
+#: already-validated recoveries: axis1's full-resolution peak matched
+#: the coarse x8 position *exactly* (0px difference); axis2's differed
+#: by (11, 10)px -- both real cases fit comfortably inside twice the
+#: downsample factor, which is what this tolerance uses. A full-
+#: resolution peak *outside* this tolerance is discarded in favor of the
+#: coarse (already-validated) position instead -- it most likely reflects
+#: noise dominating the full-resolution peak search rather than the real
+#: shift the coarse, noise-suppressed pass found.
+_FULL_RES_AGREEMENT_TOLERANCE_PX = 2 * _FALLBACK_DOWNSAMPLE_FACTOR
+
 
 def _correlate(before: np.ndarray, after: np.ndarray) -> tuple[float, float, float] | None:
     """The shared normalized-cross-correlation core -- mean-subtract,
@@ -234,7 +255,11 @@ def _box_downsample(frame: np.ndarray, factor: int) -> np.ndarray:
 
 
 def _fallback_downsampled_match(
-    before: np.ndarray, after: np.ndarray, min_score: float
+    before: np.ndarray,
+    after: np.ndarray,
+    min_score: float,
+    *,
+    full_res_offset: tuple[float, float] | None,
 ) -> TranslationOffset | None:
     """Retries the correlation at `_FALLBACK_DOWNSAMPLE_FACTOR`x reduced
     resolution -- see that constant's own docstring for the real incident
@@ -244,13 +269,12 @@ def _fallback_downsampled_match(
     clear it either, or the frame is too small for this fallback to be
     trustworthy (`_FALLBACK_MIN_FRAME_SIDE_PX`).
 
-    The returned `dx_px`/`dy_px` are only accurate to within
-    `_FALLBACK_DOWNSAMPLE_FACTOR` pixels (whatever this coarser
-    resolution's own single pixel represents once rescaled back up) --
-    coarser than this module's usual whole-pixel precision, but still far
-    more useful than the `None` this incident used to return outright for
-    Test Move's own purpose (learning which physical axis/direction is
-    which, not sub-pixel astrometry).
+    `full_res_offset` is the full-resolution `_correlate()` peak the
+    caller already computed (`None` only if that frame pair had zero
+    variance) -- see `_FULL_RES_AGREEMENT_TOLERANCE_PX`'s own docstring:
+    once the coarse match here is validated, this is used to recover
+    whole-pixel precision instead of only `_FALLBACK_DOWNSAMPLE_FACTOR`-
+    pixel granularity whenever the two agree closely enough.
 
     Real incident 6cb859d2-7a94-4e44-8aff-585f0bf2466b: `min_score`
     clearing the x8 attempt alone isn't sufficient -- also validated
@@ -291,6 +315,14 @@ def _fallback_downsampled_match(
     _, _, validation_score = validation_result
     if validation_score > score * _FALLBACK_MAX_SCORE_GROWTH_RATIO:
         return None
+
+    if full_res_offset is not None:
+        full_dx, full_dy = full_res_offset
+        if (
+            abs(full_dx - dx * factor) <= _FULL_RES_AGREEMENT_TOLERANCE_PX
+            and abs(full_dy - dy * factor) <= _FULL_RES_AGREEMENT_TOLERANCE_PX
+        ):
+            return TranslationOffset(dx_px=full_dx, dy_px=full_dy, score=score)
 
     return TranslationOffset(dx_px=dx * factor, dy_px=dy * factor, score=score)
 
@@ -354,10 +386,12 @@ def measure_translation_offset(
     `before`/`after` genuinely unrelated). The caller should treat any of
     these the same as detect_sources() finding no star: don't report a
     displacement with nothing real behind it. A `TranslationOffset`
-    returned via the fallback is only accurate to within
-    `_FALLBACK_DOWNSAMPLE_FACTOR` pixels, not this module's usual
-    whole-pixel precision -- still whatever axis/direction Test Move
-    needs, just coarser.
+    returned via the fallback is usually still at this module's normal
+    whole-pixel precision -- see `_FULL_RES_AGREEMENT_TOLERANCE_PX`'s own
+    docstring: once the coarse match is validated, the full-resolution
+    peak's own location is preferred whenever it agrees closely enough,
+    falling back to only `_FALLBACK_DOWNSAMPLE_FACTOR`-pixel granularity
+    when it doesn't.
     """
     if before.shape != after.shape:
         raise ValueError("before and after must be the same shape")
@@ -398,7 +432,7 @@ def measure_translation_offset(
         # whole-frame energy normalization at full resolution, even
         # though the shift is still clearly recoverable once that noise
         # is averaged down).
-        return _fallback_downsampled_match(before, after, min_score)
+        return _fallback_downsampled_match(before, after, min_score, full_res_offset=(dx, dy))
 
     # The peak position wraps around at the frame edges (a shift of -1
     # looks identical to a shift of height-1 under a circular assumption)

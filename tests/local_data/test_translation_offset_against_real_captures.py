@@ -107,11 +107,24 @@ def test_noisy_main_frames_now_recover_a_real_match_via_the_fallback(axis_name: 
     real, human-visible structure -- independent per-pixel sensor noise
     swamped the whole-frame energy normalization. After: the downsampled
     fallback recovers a real match for both, using the actual frames
-    that exposed the bug, not just a synthetic reconstruction."""
+    that exposed the bug, not just a synthetic reconstruction.
+
+    Pinned to the exact real values (not just "is not None"): the full-
+    resolution correlation peak's own precise location -- computed
+    directly against these same real frames while designing the
+    _FULL_RES_AGREEMENT_TOLERANCE_PX refinement -- agrees with the
+    validated x8 answer (axis1 exactly; axis2 within 11px), so this
+    regresses to whole-pixel precision (axis1: -168, -136; axis2: -315,
+    426), not the coarser x8-block-quantized position (axis2 would
+    otherwise round to -304, 416)."""
     before = _load_noisy_main(f"{axis_name}_before_left")
     after = _load_noisy_main(f"{axis_name}_after_left")
 
-    assert measure_translation_offset(before, after) is not None
+    offset = measure_translation_offset(before, after)
+
+    assert offset is not None
+    expected = {"axis1": (-168.0, -136.0), "axis2": (-315.0, 426.0)}[axis_name]
+    assert (offset.dx_px, offset.dy_px) == expected
 
 
 @pytest.mark.skipif(

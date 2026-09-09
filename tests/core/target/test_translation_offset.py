@@ -244,7 +244,17 @@ def test_a_noisy_large_frame_pair_recovers_the_shift_via_the_downsampled_fallbac
     *added* noise, since both are the same statistical process. This
     fixture is deliberately large (480x640, above
     _FALLBACK_MIN_FRAME_SIDE_PX) -- the fallback is disabled below that
-    threshold on purpose (see that constant's own docstring)."""
+    threshold on purpose (see that constant's own docstring).
+
+    Real request: reduce noise so a real shift correlates *better*, not
+    just *at all* -- once the coarse x8 match is validated, the full-
+    resolution peak's own (still slightly noisy) location is preferred
+    over the coarse answer's `_FALLBACK_DOWNSAMPLE_FACTOR`-pixel
+    granularity whenever the two agree (see
+    `_FULL_RES_AGREEMENT_TOLERANCE_PX`'s own docstring) -- close to the
+    true shift, not necessarily bit-exact the way the coarse, blocky
+    x8 position happened to be for this fixture's exact-multiple-of-8
+    shift."""
     before, after = _noisy_shifted_scene_pair(
         (480, 640), shift=(16, -24), seed=42, noise_scale=700.0
     )
@@ -252,8 +262,8 @@ def test_a_noisy_large_frame_pair_recovers_the_shift_via_the_downsampled_fallbac
     offset = measure_translation_offset(before, after)
 
     assert offset is not None
-    assert offset.dx_px == -24.0
-    assert offset.dy_px == 16.0
+    assert abs(offset.dx_px - (-24.0)) <= 2.0
+    assert abs(offset.dy_px - 16.0) <= 2.0
     assert offset.score >= 0.15  # _DEFAULT_MIN_SCORE
 
 

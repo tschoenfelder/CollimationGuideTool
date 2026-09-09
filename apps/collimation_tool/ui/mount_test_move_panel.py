@@ -1265,7 +1265,7 @@ class MountTestMovePanel(QWidget):
             self._result_label.setText(f"Move failed: {self._last_error}")
             return
         responses: dict[str, AxisResponse] = {}
-        failed: list[str] = []
+        unconfirmed: list[str] = []
         for key in ("left", "right"):
             # axis/direction are a display-only placeholder here (unused by
             # _format_response) -- a composed move blends both real axes,
@@ -1276,21 +1276,39 @@ class MountTestMovePanel(QWidget):
                 pending.before[key], after[key],
             )
             if response is None:
-                failed.append(key)
+                unconfirmed.append(key)
                 self._last_failure_classes[key] = MeasurementFailureClass.MATCH_FAILED
             else:
                 responses[key] = response
-        if failed:
-            self._last_error = (
-                f"not enough structure to measure a displacement in: {', '.join(failed)}"
-            )
-            self._result_label.setText(f"Move failed: {self._last_error}")
-            return
-        self._last_responses = responses
-        self._last_error = None
+        # Real request: the pulse itself already ran -- the mount is
+        # wherever it physically ended up regardless of whether either
+        # camera's own "after" frame could be correlated against its
+        # "before". Not being able to confirm *how far* it moved is a
+        # measurement-quality problem, not a move failure: unlike the old
+        # all-or-nothing behavior here (any one camera's own match
+        # failing used to report "Move failed" for the whole nudge, even
+        # for a camera that measured it fine), this now mirrors
+        # _finish_calibration_step's own established per-camera partial-
+        # success handling (real report, diagnostic d14c3a9b) -- a camera
+        # that can't confirm this move doesn't block another camera's own
+        # confirmed reading, and buttons/state are never held back from
+        # the point the mount actually reached, so the user can keep
+        # nudging (or trying again for the unconfirmed camera) rather
+        # than getting stuck behind a "failed" move that, physically,
+        # already happened.
+        self._last_responses = responses or self._last_responses
+        self._last_error = (
+            f"could not confirm the displacement for: {', '.join(unconfirmed)} "
+            "-- the move itself still happened"
+            if unconfirmed
+            else None
+        )
         parts = [
-            f"{_CAMERA_LABELS[key]}: {_format_response(response)}"
-            for key, response in responses.items()
+            f"{_CAMERA_LABELS[key]}: {_format_response(responses[key])}"
+            if key in responses
+            else f"{_CAMERA_LABELS[key]}: moved, displacement not confirmed"
+            for key in ("left", "right")
+            if key in responses or key in unconfirmed
         ]
         suffix = (
             f" (safety-capped at {self._settings.max_nudge_pulse_ms}ms -- click again to "
