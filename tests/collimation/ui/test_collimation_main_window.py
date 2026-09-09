@@ -3455,8 +3455,12 @@ class TestMountTestMovePanel:
 
         assert "left" not in panel._calibration
         assert "right" not in panel._calibration
-        assert not panel._nudge_buttons["left"]["RA +"].isEnabled()
-        assert not panel._nudge_buttons["right"]["RA +"].isEnabled()
+        # Real request (diagnostic 5e71b958): RA+/RA-/Dec+/Dec- must
+        # still move the mount directly even with no successful
+        # calibration for either camera -- see _update_buttons_enabled's
+        # own docstring.
+        assert panel._nudge_buttons["left"]["RA +"].isEnabled()
+        assert panel._nudge_buttons["right"]["RA +"].isEnabled()
         assert "too close to parallel" in panel._result_label.text()
         # AXIS1 (the zero one here) measured nothing on either camera --
         # the "may be a real mount/cable issue" branch, not the "confirmed
@@ -3584,7 +3588,11 @@ class TestMountTestMovePanel:
         ]
         assert "left" not in panel._calibration
         assert "right" in panel._calibration
-        assert not panel._nudge_buttons["left"]["RA +"].isEnabled()
+        # Real request (diagnostic 5e71b958): Main's own nudge buttons
+        # stay usable (fixed-duration fallback) even though it has no
+        # calibration matrix -- see _update_buttons_enabled's own
+        # docstring.
+        assert panel._nudge_buttons["left"]["RA +"].isEnabled()
         assert panel._nudge_buttons["right"]["RA +"].isEnabled()
         lines = {line.split(":", 1)[0]: line for line in panel._result_label.text().split("\n")}
         assert "excluded from this calibration" in lines["Main"]
@@ -3669,7 +3677,9 @@ class TestMountTestMovePanel:
         )
         panel._update_buttons_enabled()
         assert panel._nudge_buttons["left"]["RA +"].isEnabled()
-        assert not panel._nudge_buttons["right"]["RA +"].isEnabled()  # no matrix for "right"
+        # Real request (diagnostic 5e71b958): still usable (fixed-
+        # duration fallback) even with no matrix for "right" at all.
+        assert panel._nudge_buttons["right"]["RA +"].isEnabled()
 
         panel._nudge_buttons["left"]["RA +"].click()
         # Real incident ca728d27 -- paused across the before/after bracket
@@ -3697,6 +3707,46 @@ class TestMountTestMovePanel:
         assert "Main" in panel._result_label.text()
         assert "Guide" in panel._result_label.text()
         assert "failed" not in panel._result_label.text().lower()
+        window.close()
+
+    def test_nudge_button_moves_the_mount_with_no_calibration_at_all(
+        self, qapp: object
+    ) -> None:
+        """Real request, diagnostic 5e71b958 ("Calibration failed again
+        and move buttons not accessible"): RA+/RA-/Dec+/Dec- must move
+        the mount directly by RA/Dec even when calibration has never
+        succeeded for this camera -- terrestrial calibration can fail for
+        reasons that have nothing to do with whether the mount itself can
+        still be moved (not enough structure to correlate, or one axis
+        reading a real physical zero that run), and the buttons existing
+        at all was the whole point. With no calibrated rate to solve a
+        target-distance duration from, a click pulses for the same fixed
+        duration a calibration test step itself uses
+        (`MountAlignmentSettings.pulse_ms`) instead of refusing."""
+        pulse_mount = FakeMountAdapter()
+        window = self._window(
+            mount_park=FakeMountPark(start_parked=True), pulse_mount=pulse_mount
+        )
+        self._connect_and_stream_cameras(window)
+        window._mount_panel._connect_button.setChecked(True)
+        window._test_move_panel._connect_button.setChecked(True)
+        panel = window._test_move_panel
+
+        assert panel._calibration == {}
+        assert panel._nudge_buttons["left"]["Dec -"].isEnabled()
+
+        panel._nudge_buttons["left"]["Dec -"].click()
+        deadline = time.monotonic() + 5.0
+        while panel._runner.is_busy:
+            assert time.monotonic() < deadline, "nudge never completed"
+            time.sleep(0.01)
+        panel._poll()
+
+        settings = MountAlignmentSettings()
+        assert pulse_mount.pulse_log == [
+            (MountAxis.AXIS2, AxisDirection.NEGATIVE, settings.pulse_ms)
+        ]
+        assert "Move failed" not in panel._result_label.text()
         window.close()
 
     def test_nudge_target_scales_with_this_cameras_own_frame_size(self, qapp: object) -> None:

@@ -1149,57 +1149,77 @@ class MountTestMovePanel(QWidget):
         self._resume_auto_exposure()
 
     def _on_nudge_clicked(self, camera_key: str, axis: MountAxis, direction: AxisDirection) -> None:
-        matrix = self._calibration.get(camera_key)
-        if matrix is None:
-            return  # defensive -- button should be disabled without a matrix
-        # Calibration only ever stores the POSITIVE-direction response
-        # per axis (see _CALIBRATION_STEPS) -- its own rate
-        # (magnitude_px / duration_ms) is direction-symmetric, so this is
-        # the right response to solve a duration from regardless of
-        # whether this click is RA+/RA-/Dec+/Dec-; the requested
-        # `direction` (not the calibration response's own POSITIVE one)
-        # is what actually gets pulsed below.
-        response = matrix.response_for(axis, AxisDirection.POSITIVE)
         axis_label = _AXIS_LABELS[axis]
         direction_label = "+" if direction is AxisDirection.POSITIVE else "-"
-        if response.magnitude_px <= 0 or response.duration_ms <= 0:
-            # Shouldn't happen for a non-degenerate matrix (is_degenerate()
-            # already rejects two too-parallel/near-zero axes at
-            # calibration time) -- defensive, so a genuinely zero rate
-            # can't divide-by-zero below instead of reporting cleanly.
-            self._last_error = (
-                f"{axis_label} measured no usable motion during calibration -- "
-                "try Run Calibration again."
+        matrix = self._calibration.get(camera_key)
+        if matrix is None:
+            # Real request: RA+/RA-/Dec+/Dec- must move the mount directly
+            # by RA/Dec, not be held hostage to a calibration matrix
+            # existing at all -- real diagnostic 5e71b958 ("Calibration
+            # failed again and move buttons not accessible"): terrestrial
+            # calibration can genuinely fail for reasons that have nothing
+            # to do with whether the mount itself can still be moved (a
+            # camera's own view lacking enough structure to correlate, or
+            # one axis reading a real physical zero that run -- neither
+            # stops a raw axis pulse from working). See
+            # _update_buttons_enabled's own docstring for the matching
+            # button-enablement change. With no calibrated rate to solve a
+            # target-distance duration from, this pulses for the same
+            # fixed duration a calibration test step itself uses
+            # (`self._settings.pulse_ms`) instead -- a real, modest, safe
+            # move either way, not a refusal just because calibration
+            # hasn't succeeded (yet, or at all) for this specific camera.
+            duration_ms = self._settings.pulse_ms
+        else:
+            # Calibration only ever stores the POSITIVE-direction response
+            # per axis (see _CALIBRATION_STEPS) -- its own rate
+            # (magnitude_px / duration_ms) is direction-symmetric, so this
+            # is the right response to solve a duration from regardless of
+            # whether this click is RA+/RA-/Dec+/Dec-; the requested
+            # `direction` (not the calibration response's own POSITIVE
+            # one) is what actually gets pulsed below.
+            response = matrix.response_for(axis, AxisDirection.POSITIVE)
+            if response.magnitude_px <= 0 or response.duration_ms <= 0:
+                # Shouldn't happen for a non-degenerate matrix
+                # (is_degenerate() already rejects two too-parallel/
+                # near-zero axes at calibration time) -- defensive, so a
+                # genuinely zero rate can't divide-by-zero below instead
+                # of reporting cleanly.
+                self._last_error = (
+                    f"{axis_label} measured no usable motion during calibration -- "
+                    "try Run Calibration again."
+                )
+                self._result_label.setText(f"Move failed: {self._last_error}")
+                return
+            # Real request: a nudge should move a large, decisive distance
+            # for rough alignment -- half *this camera's own* frame width --
+            # not a small fixed pixel count (a future "slow down near
+            # target" fine-adjustment mode is explicitly deferred, not
+            # this). A direct single-axis move has no natural "which screen
+            # dimension" the way the old composed screen-relative move did
+            # (its own on-screen direction depends on how this camera
+            # happens to be rotated relative to the mount) -- frame width
+            # is used uniformly for both axes as one predictable
+            # reference. Main and Guide have very different resolutions,
+            # so this needs the clicked camera's actual frame dimensions,
+            # not a shared constant -- peek at one frame before computing
+            # the target (cheap: the same cached read the "before"
+            # capture below makes moments later anyway).
+            frame_getter = (
+                self._get_left_frame if camera_key == "left" else self._get_right_frame
             )
-            self._result_label.setText(f"Move failed: {self._last_error}")
-            return
-        # Real request: a nudge should move a large, decisive distance
-        # for rough alignment -- half *this camera's own* frame width --
-        # not a small fixed pixel count (a future "slow down near
-        # target" fine-adjustment mode is explicitly deferred, not
-        # this). A direct single-axis move has no natural "which screen
-        # dimension" the way the old composed screen-relative move did
-        # (its own on-screen direction depends on how this camera
-        # happens to be rotated relative to the mount) -- frame width is
-        # used uniformly for both axes as one predictable reference.
-        # Main and Guide have very different resolutions, so this needs
-        # the clicked camera's actual frame dimensions, not a shared
-        # constant -- peek at one frame before computing the target
-        # (cheap: the same cached read the "before" capture below makes
-        # moments later anyway).
-        frame_getter = self._get_left_frame if camera_key == "left" else self._get_right_frame
-        peek_frame = frame_getter()
-        if peek_frame is None:
-            self._last_error = f"{self._missing_label(self._target_mode())} before pulsing"
-            self._result_label.setText(f"Move failed: {self._last_error}")
-            return
-        _frame_height, frame_width = peek_frame.shape[:2]
-        target_px = self._settings.nudge_target_fraction * frame_width
-        rate_px_per_ms = response.magnitude_px / response.duration_ms
-        duration_ms = round(target_px / rate_px_per_ms)
-        if duration_ms <= 0:
-            self._result_label.setText(f"{_CAMERA_LABELS[camera_key]}: nothing to move.")
-            return
+            peek_frame = frame_getter()
+            if peek_frame is None:
+                self._last_error = f"{self._missing_label(self._target_mode())} before pulsing"
+                self._result_label.setText(f"Move failed: {self._last_error}")
+                return
+            _frame_height, frame_width = peek_frame.shape[:2]
+            target_px = self._settings.nudge_target_fraction * frame_width
+            rate_px_per_ms = response.magnitude_px / response.duration_ms
+            duration_ms = round(target_px / rate_px_per_ms)
+            if duration_ms <= 0:
+                self._result_label.setText(f"{_CAMERA_LABELS[camera_key]}: nothing to move.")
+                return
         # Real report, diagnostic de295656: "Guide showing buttons, but
         # movement far too much" -- linearly extrapolating a slow-
         # calibrated axis's own rate out to whatever duration a nudge's
@@ -1439,10 +1459,21 @@ class MountTestMovePanel(QWidget):
         ready = self._connected and park_status.available and not busy
         self._run_calibration_button.setEnabled(ready)
         self._stop_button.setEnabled(self._connected and busy)
-        for camera_key, buttons in self._nudge_buttons.items():
-            has_matrix = camera_key in self._calibration
+        # Real request: RA+/RA-/Dec+/Dec- must be usable to move the mount
+        # by RA/Dec directly, not held hostage to a calibration matrix
+        # existing at all -- real diagnostic 5e71b958 ("Calibration failed
+        # again and move buttons not accessible"): terrestrial calibration
+        # can genuinely fail for reasons that have nothing to do with
+        # whether the mount itself can still be moved (e.g. a camera's own
+        # view lacking enough structure to correlate, or one axis reading
+        # a real physical zero this run -- neither stops a raw axis pulse
+        # from working). Gated the same as Run Calibration itself
+        # (`ready` alone) -- see `_on_nudge_clicked`'s own docstring for
+        # how it now solves a duration with or without a real
+        # per-camera calibration.
+        for buttons in self._nudge_buttons.values():
             for button in buttons.values():
-                button.setEnabled(ready and has_matrix)
+                button.setEnabled(ready)
 
         # Explain *why* the calibration/nudge buttons are disabled, rather
         # than leaving them silently unresponsive -- see module docstring's
