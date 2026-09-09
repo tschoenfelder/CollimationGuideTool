@@ -7,6 +7,7 @@ from astrotool_core.frames.frame import Frame
 from astrotool_core.frames.pixel_format import (
     BayerPattern,
     demosaic,
+    gray_world_white_balance,
     is_bayer,
     mosaic_from_rgb,
     rgb_to_luma,
@@ -18,6 +19,7 @@ __all__ = [
     "Frame",
     "build_analysis_plane",
     "demosaic",
+    "gray_world_white_balance",
     "is_bayer",
     "mosaic_from_rgb",
     "rgb_to_luma",

@@ -3,6 +3,7 @@ import pytest
 from astrotool_core.frames.pixel_format import (
     BayerPattern,
     demosaic,
+    gray_world_white_balance,
     is_bayer,
     mosaic_from_rgb,
     rgb_to_luma,
@@ -141,3 +142,58 @@ class TestRgbToLuma:
         luma = rgb_to_luma(rgb)
         assert luma.shape == (8, 8)
         assert np.allclose(luma, 1000.0, atol=1.0), pattern
+
+
+class TestGrayWorldWhiteBalance:
+    def test_a_green_biased_real_capture_balances_to_neutral(self) -> None:
+        """Real diagnostics 3bc76175/99926503: Guide's real raw captures
+        showed green reading ~1.4-3x red/blue even pre-demosaic (e.g.
+        real channel means (R, G, B) approximately (157, 207, 81)) --
+        demosaic() itself reconstructs each channel correctly, but
+        nothing corrects for the sensor's own per-channel sensitivity
+        difference, producing the real, visually-confirmed green-
+        dominant live view. After balancing, all three channels' own
+        means must match (the gray-world assumption), not just "look less
+        green" qualitatively."""
+        rng = np.random.default_rng(1)
+        shape = (64, 64)
+        r = rng.normal(157.0, 20.0, size=shape)
+        g = rng.normal(207.0, 20.0, size=shape)
+        b = rng.normal(81.0, 20.0, size=shape)
+        rgb = np.stack([r, g, b], axis=-1).astype(np.float32)
+
+        balanced = gray_world_white_balance(rgb)
+
+        means = balanced.reshape(-1, 3).mean(axis=0)
+        assert np.allclose(means[0], means[1], rtol=0.02)
+        assert np.allclose(means[1], means[2], rtol=0.02)
+
+    def test_an_already_neutral_image_is_left_close_to_unchanged(self) -> None:
+        rng = np.random.default_rng(2)
+        rgb = rng.normal(500.0, 50.0, size=(32, 32, 3)).astype(np.float32)
+
+        balanced = gray_world_white_balance(rgb)
+
+        assert np.allclose(balanced, rgb, rtol=0.05)
+
+    def test_a_fully_black_frame_is_returned_unchanged_not_divided_by_zero(self) -> None:
+        rgb = np.zeros((8, 8, 3), dtype=np.float32)
+
+        balanced = gray_world_white_balance(rgb)
+
+        assert np.allclose(balanced, 0.0)
+
+    def test_gain_is_clamped_for_a_near_zero_channel(self) -> None:
+        """A channel whose own mean is a tiny fraction of the overall mean
+        (e.g. a genuinely near-black color channel next to bright ones)
+        must not solve for an enormous gain that blows its own noise
+        floor out to a garish, useless result."""
+        rgb = np.zeros((16, 16, 3), dtype=np.float32)
+        rgb[..., 0] = 1000.0  # bright red
+        rgb[..., 1] = 1000.0  # bright green
+        rgb[..., 2] = 1.0  # near-black blue
+
+        balanced = gray_world_white_balance(rgb)
+
+        # 4x is this function's own documented cap.
+        assert np.allclose(balanced[..., 2], 4.0, atol=0.01)

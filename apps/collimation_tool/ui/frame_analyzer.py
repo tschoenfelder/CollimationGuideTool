@@ -17,9 +17,14 @@ a color camera's raw frame is a Bayer mosaic, not a valid mono plane on
 its own (see `astrotool_core.frames.pixel_format`). The demosaiced RGB
 is used two ways: `rgb_to_luma()` of it feeds the mono analysis plane
 (donut/star detection cares about spatial intensity, not color), while
-the full RGB itself is what gets percentile-stretched for display (see
-`stretch_rgb_to_uint8`) — a mono camera has no RGB to speak of, so its
-frame is stretched directly instead.
+the full RGB itself -- white-balanced first, real diagnostics
+3bc76175/99926503: a real Bayer sensor's own uncorrected green-channel
+bias otherwise passes straight through as a visibly green-tinted live
+view, see `gray_world_white_balance`'s own docstring for why this is
+display-only, not applied to the mono analysis plane -- is what gets
+percentile-stretched for display (see `stretch_rgb_to_uint8`) — a mono
+camera has no RGB to speak of, so its frame is stretched directly
+instead.
 """
 
 from __future__ import annotations
@@ -28,7 +33,13 @@ import threading
 from dataclasses import dataclass
 
 import numpy as np
-from astrotool_core.frames import BayerPattern, build_analysis_plane, demosaic, rgb_to_luma
+from astrotool_core.frames import (
+    BayerPattern,
+    build_analysis_plane,
+    demosaic,
+    gray_world_white_balance,
+    rgb_to_luma,
+)
 from astrotool_core.frames.frame import Frame
 
 from collimation_tool.application.collimation_controller import CollimationController
@@ -84,8 +95,20 @@ class FrameAnalyzer:
             # picture seems mono": the live view was always built from
             # the analysis-only mono plane, so a color sensor's feed
             # never showed color at all).
+            #
+            # White-balanced for display only, real diagnostics
+            # 3bc76175/99926503: a real Bayer sensor's own uncorrected
+            # per-channel sensitivity difference (green reading ~1.4-3x
+            # red/blue) otherwise passes straight through to a strongly
+            # green-tinted live view — see gray_world_white_balance's own
+            # docstring for why this is deliberately NOT applied to
+            # `mono_override`/`plane` above (a separate real check found
+            # detection performs *better* on the current, unbalanced
+            # luma).
             stretched = (
-                stretch_rgb_to_uint8(rgb) if rgb is not None else stretch_to_uint8(plane.mono)
+                stretch_rgb_to_uint8(gray_world_white_balance(rgb))
+                if rgb is not None
+                else stretch_to_uint8(plane.mono)
             )
             outcome = AnalysisOutcome(
                 frame=frame, stretched=stretched, result=result, recommendation=recommendation

@@ -55,6 +55,49 @@ def rgb_to_luma(rgb: np.ndarray) -> np.ndarray:
     return result
 
 
+def gray_world_white_balance(rgb: np.ndarray) -> np.ndarray:
+    """Scale each of an (H, W, 3) RGB image's channels so their means match
+    -- the "gray world" assumption (a real scene's average color, over
+    enough pixels, is roughly neutral gray) -- for **display only**.
+
+    Real diagnostics 3bc76175/99926503: Guide (`GPCMOS02000KPA`) confirmed
+    a genuine Bayer color sensor whose green photosites read
+    substantially higher than red/blue even in the raw, pre-demosaic
+    data (~1.4-3x in real captures) -- `demosaic()` itself reconstructs
+    each channel correctly (see that function's own docstring), but
+    nothing anywhere corrects for the sensor's own per-channel
+    sensitivity difference, so a real, uncorrected green cast passes
+    straight through to the live view (confirmed visually against the
+    real saved display image: strongly green-dominant, not a neutral
+    starfield). This is deliberately *not* applied before `rgb_to_luma()`
+    for detection/measurement -- a separate real evidence check (same
+    diagnostics) found `detect_sources()` actually performs *better* on
+    the current, unbalanced luma than on other candidate corrections
+    tried for that purpose; this function exists solely to make the
+    operator's own live view look right, scoped to
+    `stretch_rgb_to_uint8()`'s own caller.
+
+    Each channel's own mean is computed from the whole frame (cheap
+    relative to the demosaic/stretch work already done on it) and scaled
+    by `overall_mean / channel_mean`, clamped so a channel with an
+    already-near-zero mean (a genuinely black frame) can't blow up into
+    a huge gain -- same defensive shape as `live_view.py`'s own
+    `hi <= lo` flat-frame handling."""
+    rgb = np.asarray(rgb, dtype=np.float32)
+    channel_means = rgb.reshape(-1, 3).mean(axis=0)
+    overall_mean = float(channel_means.mean())
+    if overall_mean <= 0.0:
+        return rgb
+    # A channel whose own mean is a tiny fraction of the overall mean
+    # would otherwise solve for an enormous gain (amplifying that
+    # channel's own noise floor into visible garbage) -- capped at 4x,
+    # comfortably above the ~3x green/blue ratio real captures showed,
+    # but not so high a near-black channel gets blown out.
+    gains = np.clip(overall_mean / np.maximum(channel_means, overall_mean * 0.05), 0.25, 4.0)
+    balanced: np.ndarray = rgb * gains
+    return balanced
+
+
 def demosaic(plane: np.ndarray, pattern: BayerPattern) -> np.ndarray:
     """Convert a single mosaiced (or mono) plane into an (H, W, 3) float32 RGB image.
 
