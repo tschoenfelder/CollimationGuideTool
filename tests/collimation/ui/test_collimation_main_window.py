@@ -2557,19 +2557,23 @@ class TestMountTestMovePanel:
     """Mount-alignment tool — see MountTestMovePanel's docstring.
     FakeMountAdapter stands in for a real IndiMountPulseAdapter here; the
     INDI wire protocol itself is covered by tests/core/mount and
-    tests/contracts instead. The math (compose_screen_move) is covered by
-    tests/core/mount/test_axis_calibration.py; MountTestMoveRunner's own
-    sequencing is covered by test_mount_test_move_runner.py. These tests
-    are about the panel's own wiring (connect lifecycle, calibration
-    driving the runner in sequence, per-camera nudge gating, result
-    rendering) -- deliberately using static single-frame cameras (like
-    every other class in this file), so every calibrated AxisResponse is
-    (dx=0, dy=0): fine for star mode (a real response either way, see
-    response_from_positions), degenerate for a nudge's compose_screen_move
-    (AXIS1/AXIS2 measure literally identical zero vectors) -- the "click a
-    nudge and see it submit the right pulses" test below injects its own
-    non-degenerate CalibrationMatrix directly rather than fighting a real
-    streaming camera's own timing to script two different frames at two
+    tests/contracts instead. `compose_screen_move` itself (no longer
+    called by this panel -- see its own docstring for why the direction
+    pad is RA+/RA-/Dec+/Dec- now, not composed screen-relative moves) is
+    covered by tests/core/mount/test_axis_calibration.py;
+    MountTestMoveRunner's own sequencing is covered by
+    test_mount_test_move_runner.py. These tests are about the panel's own
+    wiring (connect lifecycle, calibration driving the runner in
+    sequence, per-camera nudge gating, result rendering) -- deliberately
+    using static single-frame cameras (like every other class in this
+    file), so every calibrated AxisResponse is (dx=0, dy=0): fine for
+    star mode (a real response either way, see response_from_positions),
+    but a zero magnitude a direct single-axis nudge can't solve a
+    duration from (see `_on_nudge_clicked`'s own zero-rate guard) -- the
+    "click a nudge and see it submit the right pulse" test below injects
+    its own non-degenerate, nonzero-rate CalibrationMatrix directly
+    rather than fighting a real streaming camera's own timing to script
+    two different frames at two
     different moments (see ReplayCamera/StreamController: frames arrive on
     a background thread, not one-per-_poll_frame()-call)."""
 
@@ -3451,8 +3455,8 @@ class TestMountTestMovePanel:
 
         assert "left" not in panel._calibration
         assert "right" not in panel._calibration
-        assert not panel._nudge_buttons["left"]["Right"].isEnabled()
-        assert not panel._nudge_buttons["right"]["Right"].isEnabled()
+        assert not panel._nudge_buttons["left"]["RA +"].isEnabled()
+        assert not panel._nudge_buttons["right"]["RA +"].isEnabled()
         assert "too close to parallel" in panel._result_label.text()
         # AXIS1 (the zero one here) measured nothing on either camera --
         # the "may be a real mount/cable issue" branch, not the "confirmed
@@ -3580,8 +3584,8 @@ class TestMountTestMovePanel:
         ]
         assert "left" not in panel._calibration
         assert "right" in panel._calibration
-        assert not panel._nudge_buttons["left"]["Right"].isEnabled()
-        assert panel._nudge_buttons["right"]["Right"].isEnabled()
+        assert not panel._nudge_buttons["left"]["RA +"].isEnabled()
+        assert panel._nudge_buttons["right"]["RA +"].isEnabled()
         lines = {line.split(":", 1)[0]: line for line in panel._result_label.text().split("\n")}
         assert "excluded from this calibration" in lines["Main"]
         assert "RA-axis" in lines["Guide"] and "Dec-axis" in lines["Guide"]
@@ -3639,7 +3643,7 @@ class TestMountTestMovePanel:
         context = window._diagnostic_context()
         assert context["mount_test_move"]["target_mode"] == "terrestrial"
 
-    def test_nudge_button_composes_and_submits_the_predicted_pulses(self, qapp: object) -> None:
+    def test_nudge_button_solves_and_submits_the_predicted_pulse(self, qapp: object) -> None:
         # A hand-crafted, axis-aligned calibration (rather than one built
         # by a real Run Calibration pass) -- see class docstring for why:
         # a static single-frame camera's own calibration is degenerate.
@@ -3664,10 +3668,10 @@ class TestMountTestMovePanel:
             }
         )
         panel._update_buttons_enabled()
-        assert panel._nudge_buttons["left"]["Right"].isEnabled()
-        assert not panel._nudge_buttons["right"]["Right"].isEnabled()  # no matrix for "right"
+        assert panel._nudge_buttons["left"]["RA +"].isEnabled()
+        assert not panel._nudge_buttons["right"]["RA +"].isEnabled()  # no matrix for "right"
 
-        panel._nudge_buttons["left"]["Right"].click()
+        panel._nudge_buttons["left"]["RA +"].click()
         # Real incident ca728d27 -- paused across the before/after bracket
         # of a nudge too, same as calibration (see the dedicated
         # calibration-pause test above).
@@ -3683,10 +3687,10 @@ class TestMountTestMovePanel:
         assert window._left_panel._auto_exposure_paused is False
         assert window._right_panel._auto_exposure_paused is False
 
-        # axis1 rate is 100px/1000ms = 0.1 px/ms; the star fixture's own
-        # 120x120 frame and the default nudge_target_fraction=0.5 give a
-        # target of 120*0.5 = 60px -> 60 / 0.1 = 600ms, axis1 only
-        # (already screen-aligned).
+        # RA's own calibrated rate is 100px/1000ms = 0.1 px/ms; the star
+        # fixture's own 120x120 frame and the default
+        # nudge_target_fraction=0.5 give a target of 120*0.5 = 60px ->
+        # 60 / 0.1 = 600ms, directly on AXIS1 (RA+'s own axis).
         settings = MountAlignmentSettings()
         assert pulse_mount.pulse_log == [(MountAxis.AXIS1, AxisDirection.POSITIVE, 600)]
         assert pulse_mount.rate_log == [settings.rate_preset]
@@ -3748,19 +3752,22 @@ class TestMountTestMovePanel:
             panel._poll()
 
         settings = MountAlignmentSettings()
-        # axis1 rate is 1px/1ms; Right moves along width, Up/Down along
-        # height -- each camera's own frame, not a shared constant.
-        _click_and_wait("left", "Right")
+        # axis1/axis2 rate is 1px/1ms; the target is nudge_target_fraction
+        # of this camera's own frame *width*, used uniformly for both axes
+        # (a single-axis move has no "which screen dimension" the way the
+        # old composed screen-relative move did -- see _on_nudge_clicked's
+        # own docstring) -- each camera's own frame, not a shared constant.
+        _click_and_wait("left", "RA +")
         assert pulse_mount.pulse_log[-1] == (
             MountAxis.AXIS1, AxisDirection.POSITIVE, round(400 * settings.nudge_target_fraction)
         )
-        _click_and_wait("right", "Right")
+        _click_and_wait("right", "RA +")
         assert pulse_mount.pulse_log[-1] == (
             MountAxis.AXIS1, AxisDirection.POSITIVE, round(100 * settings.nudge_target_fraction)
         )
-        _click_and_wait("left", "Down")
+        _click_and_wait("left", "Dec +")
         assert pulse_mount.pulse_log[-1] == (
-            MountAxis.AXIS2, AxisDirection.POSITIVE, round(200 * settings.nudge_target_fraction)
+            MountAxis.AXIS2, AxisDirection.POSITIVE, round(400 * settings.nudge_target_fraction)
         )
         panel.stop()
 
@@ -3769,8 +3776,8 @@ class TestMountTestMovePanel:
     ) -> None:
         """Real report: "calibration doesn't wait for mount to be
         stabilized" -- confirms the configured settle_ms actually reaches
-        MountTestMoveRunner.submit_sequence() for a nudge, not just
-        Run Calibration's own submit() calls."""
+        MountTestMoveRunner.submit() for a nudge, not just Run
+        Calibration's own submit() calls."""
         pulse_mount = FakeMountAdapter()
         mount_park = FakeMountPark(start_parked=True)
         window = self._window(mount_park=mount_park, pulse_mount=pulse_mount)
@@ -3794,26 +3801,28 @@ class TestMountTestMovePanel:
         panel._update_buttons_enabled()
 
         settle_values: list[int | None] = []
-        real_submit_sequence = panel._runner.submit_sequence
+        real_submit = panel._runner.submit
 
-        def spy_submit_sequence(
+        def spy_submit(
             mount_park: MountParkPort,
             mount: MountPort,
-            steps: list[tuple[MountAxis, AxisDirection, int]],
+            axis: MountAxis,
+            direction: AxisDirection,
+            pulse_ms: int,
             *,
             rate_preset: str | None = None,
             park_after: bool = True,
             settle_ms: int = 0,
         ) -> bool:
             settle_values.append(settle_ms)
-            return real_submit_sequence(
-                mount_park, mount, steps,
+            return real_submit(
+                mount_park, mount, axis, direction, pulse_ms,
                 rate_preset=rate_preset, park_after=park_after, settle_ms=settle_ms,
             )
 
-        panel._runner.submit_sequence = spy_submit_sequence  # type: ignore[method-assign]
+        panel._runner.submit = spy_submit  # type: ignore[method-assign]
 
-        panel._nudge_buttons["left"]["Right"].click()
+        panel._nudge_buttons["left"]["RA +"].click()
         deadline = time.monotonic() + 5.0
         while panel._runner.is_busy:
             assert time.monotonic() < deadline, "nudge never completed"
@@ -3879,7 +3888,7 @@ class TestMountTestMovePanel:
             base, [((0, 0), (0, 6))]
         )
 
-        panel._nudge_buttons["left"]["Right"].click()
+        panel._nudge_buttons["left"]["RA +"].click()
         deadline = time.monotonic() + 5.0
         while panel._runner.is_busy:
             assert time.monotonic() < deadline, "nudge never completed"
@@ -3898,7 +3907,7 @@ class TestMountTestMovePanel:
         # Nothing about this looks like a failure to keep clicking past --
         # every nudge button for a camera with a calibration matrix stays
         # enabled, exactly as it would after a fully-confirmed move.
-        assert panel._nudge_buttons["left"]["Right"].isEnabled()
+        assert panel._nudge_buttons["left"]["RA +"].isEnabled()
         window.close()
 
     def test_nudge_button_scales_down_a_move_whose_computed_pulse_is_unsafely_long(
@@ -3936,10 +3945,9 @@ class TestMountTestMovePanel:
         panel = window._test_move_panel
 
         # AXIS1 a normal, fast rate; AXIS2 a real but tiny one (matches
-        # the incident's own Guide AXIS2 shape) -- orthogonal, so not
-        # degenerate, but "Down" (pure +y) needs only AXIS2, whose tiny
-        # rate solves to a wildly long duration for this frame's own
-        # half-height target.
+        # the incident's own Guide AXIS2 shape) -- "Dec +" pulses AXIS2
+        # directly, whose tiny rate solves to a wildly long duration for
+        # this frame's own half-width target.
         def _response(axis: MountAxis, dx_px: float, dy_px: float) -> AxisResponse:
             return AxisResponse(
                 axis=axis, direction=AxisDirection.POSITIVE, duration_ms=1000,
@@ -3954,13 +3962,12 @@ class TestMountTestMovePanel:
         )
         panel._update_buttons_enabled()
 
-        panel._nudge_buttons["left"]["Down"].click()
+        panel._nudge_buttons["left"]["Dec +"].click()
 
         cap_ms = MountAlignmentSettings().max_nudge_pulse_ms
-        # Submitted immediately at the clamped duration -- AXIS1's own
-        # contribution was already 0 (a pure +y target), so only AXIS2
-        # pulses, scaled down to exactly the cap rather than the ~120s
-        # the uncapped extrapolation would have solved for.
+        # Submitted immediately at the clamped duration, scaled down to
+        # exactly the cap rather than the ~120s the uncapped
+        # extrapolation would have solved for.
         assert pulse_mount.pulse_log == [(MountAxis.AXIS2, AxisDirection.POSITIVE, cap_ms)]
         assert "safety-capped" in panel._result_label.text()
         assert str(cap_ms) in panel._result_label.text()
@@ -3977,9 +3984,20 @@ class TestMountTestMovePanel:
         assert "click again to continue" in panel._result_label.text()
         window.close()
 
-    def test_nudge_button_reports_an_error_for_a_degenerate_calibration(
+    def test_nudge_button_reports_an_error_for_an_axis_with_no_usable_motion(
         self, qapp: object
     ) -> None:
+        """A calibration matrix always comes from `_finish_calibration`,
+        which already refuses to store one whose AXIS1/AXIS2 responses
+        are degenerate (too close to parallel to invert) -- so a nudge's
+        own single-axis pulse (no matrix inversion involved at all,
+        unlike the earlier composed screen-relative move) never itself
+        hits that check. What a nudge *does* still need to guard against
+        directly: a real, non-degenerate matrix whose OWN clicked axis
+        nonetheless measured exactly zero motion (a legitimate matrix as
+        a whole -- axis1/axis2 aren't parallel -- doesn't guarantee
+        neither one is individually degenerate) -- dividing by that axis's
+        own zero rate must report cleanly, not crash."""
         pulse_mount = FakeMountAdapter()
         window = self._window(
             mount_park=FakeMountPark(start_parked=True), pulse_mount=pulse_mount
@@ -3989,26 +4007,25 @@ class TestMountTestMovePanel:
         window._test_move_panel._connect_button.setChecked(True)
         panel = window._test_move_panel
 
-        # AXIS1+ and AXIS2+ both moving purely +x -- degenerate, can't
-        # span the image plane (see test_axis_calibration.py's own
-        # dedicated coverage of compose_screen_move's ValueError itself).
-        def _response(axis: MountAxis, dx_px: float) -> AxisResponse:
+        def _response(axis: MountAxis, dx_px: float, dy_px: float) -> AxisResponse:
             return AxisResponse(
                 axis=axis, direction=AxisDirection.POSITIVE, duration_ms=1000,
-                dx_px=dx_px, dy_px=0.0, px_per_ms=0.0,
+                dx_px=dx_px, dy_px=dy_px, px_per_ms=0.0,
             )
 
         panel._calibration["left"] = CalibrationMatrix(
             responses={
-                (MountAxis.AXIS1, AxisDirection.POSITIVE): _response(MountAxis.AXIS1, 100.0),
-                (MountAxis.AXIS2, AxisDirection.POSITIVE): _response(MountAxis.AXIS2, 200.0),
+                (MountAxis.AXIS1, AxisDirection.POSITIVE): _response(MountAxis.AXIS1, 0.0, 0.0),
+                (MountAxis.AXIS2, AxisDirection.POSITIVE): _response(MountAxis.AXIS2, 0.0, 100.0),
             }
         )
         panel._update_buttons_enabled()
 
-        panel._nudge_buttons["left"]["Up"].click()
+        panel._nudge_buttons["left"]["RA +"].click()
 
         assert "Move failed" in panel._result_label.text()
+        assert "RA-axis" in panel._result_label.text()
+        assert "no usable motion" in panel._result_label.text()
         assert pulse_mount.pulse_log == []
         window.close()
 
@@ -4124,7 +4141,7 @@ class TestTrackingMode:
         pulse_mount = FakeMountAdapter()
         mount_park = _StubbornMountPark(start_parked=False)
         panel = _static_frame_panel(mount_park, pulse_mount=pulse_mount)
-        # A fast enough rate that the composed nudge duration stays well
+        # A fast enough rate that the solved nudge duration stays well
         # under max_nudge_pulse_ms -- otherwise the pre-existing "too
         # long" guard (unrelated to tracking) fires first, before this
         # panel ever reaches its own tracking check.
@@ -4140,7 +4157,7 @@ class TestTrackingMode:
         )
         panel._update_buttons_enabled()
 
-        panel._on_nudge_clicked("left", "Up")
+        panel._on_nudge_clicked("left", MountAxis.AXIS1, AxisDirection.POSITIVE)
 
         assert "tracking" in panel._result_label.text().lower()
         assert pulse_mount.pulse_log == []

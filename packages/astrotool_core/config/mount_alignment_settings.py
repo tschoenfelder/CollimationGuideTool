@@ -36,10 +36,11 @@ _DEFAULT_PULSE_MS = 1000
 #: alignment ("the buttons should move half a window in the direction
 #: specified"), not a small fixed pixel count -- a future "slow down
 #: near target" fine-adjustment mode is explicitly deferred, not this.
-#: Fraction of *this camera's own* frame width (Left/Right) or height
-#: (Up/Down) -- see MountTestMovePanel._on_nudge_clicked's own docstring
-#: for why it has to be a fraction of the actual frame, not a fixed
-#: pixel count, given Main and Guide have very different resolutions.
+#: Fraction of *this camera's own* frame width, used uniformly for
+#: RA+/RA-/Dec+/Dec- alike (see MountTestMovePanel._on_nudge_clicked's
+#: own docstring for why it has to be a fraction of the actual frame,
+#: not a fixed pixel count, given Main and Guide have very different
+#: resolutions).
 _DEFAULT_NUDGE_TARGET_FRACTION = 0.5
 #: Real report: "calibration doesn't wait for mount to be stabilized" --
 #: MountTestMoveRunner used to capture the "after" frame the instant
@@ -64,8 +65,8 @@ _DEFAULT_SETTLE_MS = 1000
 #: measurement from *that* point on, not the first barely-fresh one.
 _DEFAULT_FRAME_SETTLE_MS = 500
 #: Real report (diagnostic de295656): "Guide showing buttons, but
-#: movement far too much" -- compose_screen_move() had no cap at all on
-#: the pulse duration it solves for, linearly extrapolating from the
+#: movement far too much" -- the pulse duration solved from a click's own
+#: calibrated rate had no cap at all, linearly extrapolating from the
 #: pulse_ms-long calibration rate out to whatever duration a nudge's
 #: target displacement needs. For an axis with a slow calibrated rate
 #: (Guide's own AXIS2 that run: 13px per 500ms), a half-window target
@@ -87,10 +88,8 @@ _DEFAULT_FRAME_SETTLE_MS = 500
 #: same button again produced a smaller step (nudge_target_fraction is
 #: fixed, so a second click solved for the identical target and hit the
 #: identical refusal every time). `MountTestMovePanel._on_nudge_clicked`
-#: now scales every solved step down by the same factor instead (so the
-#: *longest* one lands exactly on this cap), preserving the composed
-#: move's intended on-screen direction while actually moving as far as
-#: safely possible this click -- clicking again genuinely continues
+#: now clamps the solved duration down to this cap instead, moving as far
+#: as safely possible this click -- clicking again genuinely continues
 #: toward the original target. Independently tunable like every other
 #: setting here; needing several clicks to reach one target is itself a
 #: signal that axis's calibrated rate is unreliably slow -- consider Run
@@ -102,22 +101,24 @@ _DEFAULT_MAX_NUDGE_PULSE_MS = 3000
 class MountAlignmentSettings:
     """`pulse_ms`/`rate_preset` are used for every calibration test pulse
     (the return pulse reuses the same values, trusting a symmetric
-    response). `nudge_target_fraction` is the on-screen displacement a
-    single direction-pad click aims for, as a fraction of the clicked
-    camera's own frame width (Left/Right) or height (Up/Down);
-    `compose_screen_move` solves the (axis1_ms, axis2_ms) pulse pair that
-    should produce it for that camera's own calibration. `settle_ms` is
-    how long MountTestMoveRunner waits after a pulse (or composed
-    sequence of pulses) physically stops before reporting done -- see
-    that module's own docstring. `frame_settle_ms` is a *second*,
-    camera-side buffer on top of that: how long MountTestMovePanel waits
-    again, after the video stream first confirms it has caught up past
-    the pulse, before actually taking the frame used for measurement --
-    see that panel's own `_capture_both` docstring. `max_nudge_pulse_ms`
-    caps how long a single composed nudge pulse is allowed to run --
-    a solved move exceeding it is scaled down (direction preserved) to
-    land exactly on this cap rather than refused outright -- see that
-    constant's own docstring."""
+    response). `nudge_target_fraction` is the displacement a single
+    RA+/RA-/Dec+/Dec- direction-pad click aims for, as a fraction of the
+    clicked camera's own frame width, used the same way for either axis
+    (see `MountTestMovePanel._on_nudge_clicked`'s own docstring for why a
+    direct single-axis move has no natural "which screen dimension" the
+    way an earlier composed screen-relative move did); the click's own
+    calibrated rate for that one axis (`AxisResponse.magnitude_px /
+    duration_ms`) solves the pulse duration that should produce it.
+    `settle_ms` is how long MountTestMoveRunner waits after a pulse
+    physically stops before reporting done -- see that module's own
+    docstring. `frame_settle_ms` is a *second*, camera-side buffer on top
+    of that: how long MountTestMovePanel waits again, after the video
+    stream first confirms it has caught up past the pulse, before
+    actually taking the frame used for measurement -- see that panel's
+    own `_capture_both` docstring. `max_nudge_pulse_ms` caps how long a
+    single nudge pulse is allowed to run -- a solved duration exceeding
+    it is clamped down to land exactly on this cap rather than refused
+    outright -- see that constant's own docstring."""
 
     pulse_ms: int = _DEFAULT_PULSE_MS
     rate_preset: str = _DEFAULT_RATE_PRESET

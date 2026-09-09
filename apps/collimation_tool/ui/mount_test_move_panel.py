@@ -1,16 +1,31 @@
 """MountTestMovePanel — mount-alignment tool: calibrate how each mount axis
-moves *each camera's own frame*, then offer per-camera Up/Down/Left/Right
-buttons that pulse the mount in whatever combination actually produces that
-on-screen direction for that specific camera.
+moves *each camera's own frame*, then offer per-camera RA+/RA-/Dec+/Dec-
+buttons that each pulse exactly the one named axis and report how far that
+moved this specific camera's own view.
 
 Reworked from the original "Test Move" diagnostic (raw N/S/E/W buttons that
 just reported the resulting displacement as text) into an alignment tool
-requested directly: "aligning primary and secondary scope" needs direction
-buttons that are correct *per camera*, since Main and Guide can be rotated
-differently relative to each other and to the mount's RA/Dec axes — reading
-dx/dy/angle numbers after each raw-axis click and inferring the mapping by
-hand doesn't scale to that. See `astrotool_core.mount.axis_calibration`'s
-`compose_screen_move` for the actual two-axis inversion this is built on.
+requested directly: "aligning primary and secondary scope" needs a
+calibrated per-camera reading of dx/dy/angle for each axis, since Main and
+Guide can be rotated differently relative to each other and to the mount's
+RA/Dec axes — reading those numbers after each raw-axis click and inferring
+the mapping by hand doesn't scale to that; showing the calibrated response
+(`_format_response`) after every axis click does.
+
+An earlier version of the direction pad instead composed a *screen-
+relative* Up/Down/Left/Right move (`astrotool_core.mount.axis_calibration`'s
+`compose_screen_move`, a two-axis matrix inversion solving for whichever
+combination of both axes lands on-screen in the requested direction for
+that camera's own rotation). Real request (diagnostic 6cb859d2's own
+follow-up): a button labelled "Up" told an operator nothing about *which
+physical axis* (or combination of both) was actually about to move,
+confusing before ever having a feel for how a given camera sits relative to
+the mount — the direction pad now pulses one axis directly per button
+instead, so the label itself (RA/Dec, this module's own established
+axis-name convention -- see `_AXIS_LABELS`) is never ambiguous.
+`compose_screen_move` itself is unchanged and still independently tested
+(`tests/core/mount/test_axis_calibration.py`) -- just no longer called from
+this panel.
 
 Own `MountPort` connection, separate from `MountParkPanel`'s `MountParkPort`
 connection to the same device (same pattern as
@@ -52,14 +67,17 @@ pulse or measure — a half-built calibration is worse than none, since a
 direction button would then be silently wrong for whichever axis never got
 re-measured.
 
-Clicking a direction-pad button solves `compose_screen_move` for that
-camera's own calibration and the clicked direction, submits the resulting
-1-2 pulses back-to-back via `MountTestMoveRunner.submit_sequence`, and
-reports the resulting displacement the same way a calibration step does —
-reusing `_capture`/`_build_response`/`_format_response` unchanged. A
-degenerate calibration (AXIS1/AXIS2 responses too close to parallel to
-invert) surfaces as an error asking the user to recalibrate rather than
-sending a wild pulse.
+Clicking a direction-pad button solves a duration from that camera's own
+calibrated rate for the clicked axis (`AxisResponse.magnitude_px /
+duration_ms`) and a target distance (`nudge_target_fraction` of this
+camera's own frame width), submits that single pulse via
+`MountTestMoveRunner.submit`, and reports the resulting displacement the
+same way a calibration step does — reusing `_capture`/`_build_response`/
+`_format_response` unchanged. A degenerate calibration (AXIS1/AXIS2
+responses too close to parallel to invert) is already refused at `Run
+Calibration` time (`_finish_calibration`'s own `is_degenerate()` check,
+before any camera's four buttons ever enable) — this panel never builds a
+`CalibrationMatrix` a nudge could read a degenerate response out of.
 
 Real hardware motion with no way to interrupt it once started is a real
 safety gap (incident 9551627f) — the "Stop" button, wired to
@@ -118,8 +136,8 @@ cameras in `_capture_both`), (B) the actual pixel-level displacement
 measurement (`measure_translation_offset`, called only from
 `_build_response`, knows nothing about mount motion or timing), and (C)
 axis-response/calibration derivation (`astrotool_core.mount.axis_calibration`
--- `response_from_positions`, `is_degenerate`, `compose_screen_move`, none
-of which touch a camera or a clock). A failure's real layer is tracked
+-- `response_from_positions`, `is_degenerate`, neither of which touch a
+camera or a clock). A failure's real layer is tracked
 per camera in `self._last_failure_classes` (`MeasurementFailureClass`,
 exposed via `diagnostic_context()`'s `last_failure_classes`) and echoed
 into the free-text result label via `_capture_failure_detail()` -- so a
@@ -168,7 +186,6 @@ from astrotool_core.config import MountAlignmentSettings
 from astrotool_core.mount.axis_calibration import (
     AxisResponse,
     CalibrationMatrix,
-    compose_screen_move,
     is_degenerate,
     response_from_positions,
 )
@@ -280,14 +297,26 @@ _CAMERA_LABELS = {"left": "Main", "right": "Guide"}
 _AXIS_LABELS = {MountAxis.AXIS1: "RA-axis", MountAxis.AXIS2: "Dec-axis"}
 _OTHER_CAMERA = {"left": "right", "right": "left"}
 
-#: Right/Left are the horizontal frame axis, Down/Up the vertical one, in
-#: the same x-right/y-down image-space convention as `AxisResponse.angle_degrees`.
-_SCREEN_DIRECTIONS: dict[str, tuple[float, float]] = {
-    "Up": (0.0, -1.0),
-    "Down": (0.0, 1.0),
-    "Left": (-1.0, 0.0),
-    "Right": (1.0, 0.0),
-}
+#: Real request: the direction pad used to be screen-relative
+#: (Up/Down/Left/Right), each button composing a move via
+#: `compose_screen_move` that could pulse *both* mount axes together
+#: whenever the camera is rotated relative to the mount -- unambiguous
+#: once calibrated, but the button's own label ("Up") told an operator
+#: nothing about which physical axis (or axes) was actually about to
+#: move, especially confusing before ever having a feel for how this
+#: particular camera sits relative to the mount. Replaced with one
+#: button per axis/direction instead -- each pulses exactly the one
+#: named axis, so the label itself is never ambiguous. `_AXIS_LABELS`
+#: above is the same RA/Dec naming already used everywhere else in this
+#: module (diagnostic messages, `_format_response`'s callers) --
+#: `MountAxis.AXIS1` is RA, `MountAxis.AXIS2` is Dec, by convention (not
+#: verified against a specific mount's own physical axis assignment).
+_NUDGE_BUTTONS: tuple[tuple[str, MountAxis, AxisDirection], ...] = (
+    ("RA +", MountAxis.AXIS1, AxisDirection.POSITIVE),
+    ("RA -", MountAxis.AXIS1, AxisDirection.NEGATIVE),
+    ("Dec +", MountAxis.AXIS2, AxisDirection.POSITIVE),
+    ("Dec -", MountAxis.AXIS2, AxisDirection.NEGATIVE),
+)
 
 
 @dataclass(frozen=True)
@@ -327,12 +356,21 @@ class _PendingAction:
     #: move (unused for a calibration step, which has its own step.axis to
     #: report against instead).
     duration_ms: int = 0
-    #: Real diagnostic 6cb859d2: True if `_on_nudge_clicked` scaled this
-    #: move's steps down to stay within `max_nudge_pulse_ms` -- see that
-    #: method's own docstring. `_finish_nudge` uses this to tell the user
-    #: the move landed short of the originally requested target on
-    #: purpose, not a failure, and that another click continues it.
+    #: Real diagnostic 6cb859d2: True if `_on_nudge_clicked` clamped this
+    #: move's duration down to `max_nudge_pulse_ms` -- see that method's
+    #: own docstring. `_finish_nudge` uses this to tell the user the move
+    #: landed short of the originally requested target on purpose, not a
+    #: failure, and that another click continues it.
     clamped: bool = False
+    #: The single axis/direction a nudge (not a calibration step, which
+    #: has its own `step.axis`/`step.direction` instead) actually pulsed
+    #: -- real request: direction-pad buttons are RA+/RA-/Dec+/Dec- now
+    #: (see `_build_direction_pad`'s own docstring for why the earlier
+    #: screen-relative Up/Down/Left/Right composed moves were replaced),
+    #: so unlike the old composed move, a nudge's own axis/direction is
+    #: real and known up front, not a display-only placeholder.
+    axis: MountAxis | None = None
+    direction: AxisDirection | None = None
 
 
 class MountTestMovePanel(QWidget):
@@ -530,18 +568,21 @@ class MountTestMovePanel(QWidget):
         self._update_buttons_enabled()
 
     def _build_direction_pad(self, camera_key: str) -> QHBoxLayout:
+        """One button per `_NUDGE_BUTTONS` entry -- see that constant's own
+        docstring for why RA+/RA-/Dec+/Dec- replaced the earlier screen-
+        relative Up/Down/Left/Right pad."""
         row = QHBoxLayout()
         row.addWidget(QLabel(f"{_CAMERA_LABELS[camera_key]}:"))
         buttons: dict[str, QPushButton] = {}
-        for direction_name in ("Up", "Down", "Left", "Right"):
-            button = QPushButton(direction_name)
+        for label, axis, direction in _NUDGE_BUTTONS:
+            button = QPushButton(label)
             button.setEnabled(False)
             button.clicked.connect(
-                lambda _checked=False, key=camera_key, name=direction_name: (
-                    self._on_nudge_clicked(key, name)
+                lambda _checked=False, key=camera_key, a=axis, d=direction: (
+                    self._on_nudge_clicked(key, a, d)
                 )
             )
-            buttons[direction_name] = button
+            buttons[label] = button
             row.addWidget(button)
         row.addStretch(1)
         self._nudge_buttons[camera_key] = buttons
@@ -1107,90 +1148,84 @@ class MountTestMovePanel(QWidget):
         self._result_label.setText("\n".join(lines))
         self._resume_auto_exposure()
 
-    def _on_nudge_clicked(self, camera_key: str, direction_name: str) -> None:
+    def _on_nudge_clicked(self, camera_key: str, axis: MountAxis, direction: AxisDirection) -> None:
         matrix = self._calibration.get(camera_key)
         if matrix is None:
             return  # defensive -- button should be disabled without a matrix
-        axis1_response = matrix.response_for(MountAxis.AXIS1, AxisDirection.POSITIVE)
-        axis2_response = matrix.response_for(MountAxis.AXIS2, AxisDirection.POSITIVE)
-        unit_dx, unit_dy = _SCREEN_DIRECTIONS[direction_name]
+        # Calibration only ever stores the POSITIVE-direction response
+        # per axis (see _CALIBRATION_STEPS) -- its own rate
+        # (magnitude_px / duration_ms) is direction-symmetric, so this is
+        # the right response to solve a duration from regardless of
+        # whether this click is RA+/RA-/Dec+/Dec-; the requested
+        # `direction` (not the calibration response's own POSITIVE one)
+        # is what actually gets pulsed below.
+        response = matrix.response_for(axis, AxisDirection.POSITIVE)
+        axis_label = _AXIS_LABELS[axis]
+        direction_label = "+" if direction is AxisDirection.POSITIVE else "-"
+        if response.magnitude_px <= 0 or response.duration_ms <= 0:
+            # Shouldn't happen for a non-degenerate matrix (is_degenerate()
+            # already rejects two too-parallel/near-zero axes at
+            # calibration time) -- defensive, so a genuinely zero rate
+            # can't divide-by-zero below instead of reporting cleanly.
+            self._last_error = (
+                f"{axis_label} measured no usable motion during calibration -- "
+                "try Run Calibration again."
+            )
+            self._result_label.setText(f"Move failed: {self._last_error}")
+            return
         # Real request: a nudge should move a large, decisive distance
-        # for rough alignment -- half *this camera's own* frame width
-        # (Left/Right) or height (Up/Down) -- not a small fixed pixel
-        # count (a future "slow down near target" fine-adjustment mode
-        # is explicitly deferred, not this). Main and Guide have very
-        # different resolutions, so this needs the clicked camera's
-        # actual frame dimensions, not a shared constant -- peek at one
-        # frame before computing the target (cheap: the same cached read
-        # the "before" capture below makes moments later anyway).
+        # for rough alignment -- half *this camera's own* frame width --
+        # not a small fixed pixel count (a future "slow down near
+        # target" fine-adjustment mode is explicitly deferred, not
+        # this). A direct single-axis move has no natural "which screen
+        # dimension" the way the old composed screen-relative move did
+        # (its own on-screen direction depends on how this camera
+        # happens to be rotated relative to the mount) -- frame width is
+        # used uniformly for both axes as one predictable reference.
+        # Main and Guide have very different resolutions, so this needs
+        # the clicked camera's actual frame dimensions, not a shared
+        # constant -- peek at one frame before computing the target
+        # (cheap: the same cached read the "before" capture below makes
+        # moments later anyway).
         frame_getter = self._get_left_frame if camera_key == "left" else self._get_right_frame
         peek_frame = frame_getter()
         if peek_frame is None:
             self._last_error = f"{self._missing_label(self._target_mode())} before pulsing"
             self._result_label.setText(f"Move failed: {self._last_error}")
             return
-        frame_height, frame_width = peek_frame.shape[:2]
-        target_dx_px = unit_dx * frame_width * self._settings.nudge_target_fraction
-        target_dy_px = unit_dy * frame_height * self._settings.nudge_target_fraction
-        try:
-            steps = compose_screen_move(
-                axis1_response, axis2_response, target_dx_px=target_dx_px, target_dy_px=target_dy_px
-            )
-        except ValueError as exc:
-            self._last_error = str(exc)
-            self._result_label.setText(f"Move failed: {exc} — try Run Calibration again.")
-            return
-        if not steps:
-            self._result_label.setText(
-                f"{_CAMERA_LABELS[camera_key]}: already aligned for {direction_name.lower()}."
-            )
+        _frame_height, frame_width = peek_frame.shape[:2]
+        target_px = self._settings.nudge_target_fraction * frame_width
+        rate_px_per_ms = response.magnitude_px / response.duration_ms
+        duration_ms = round(target_px / rate_px_per_ms)
+        if duration_ms <= 0:
+            self._result_label.setText(f"{_CAMERA_LABELS[camera_key]}: nothing to move.")
             return
         # Real report, diagnostic de295656: "Guide showing buttons, but
-        # movement far too much" -- compose_screen_move() has no cap of
-        # its own, linearly extrapolating each axis's calibrated rate
-        # (measured over one pulse_ms-long pulse) out to whatever
-        # duration this nudge's target needs. A slow-calibrated axis can
-        # solve for a wildly long pulse -- previously discovered only
-        # once IndiMountPulseAdapter's own hardware ceiling silently
-        # clamped it, with no warning that what got sent no longer
-        # matched what was solved for, and even the clamped pulse can
-        # produce far more real motion than that short a calibration
-        # reliably predicts that far out. The target is already known
-        # here, before any pulse is sent, so this is caught right here
-        # instead, before ever touching the mount.
+        # movement far too much" -- linearly extrapolating a slow-
+        # calibrated axis's own rate out to whatever duration a nudge's
+        # target needs can solve for a wildly long pulse -- previously
+        # discovered only once IndiMountPulseAdapter's own hardware
+        # ceiling silently clamped it, with no warning that what got
+        # sent no longer matched what was solved for, and even the
+        # clamped pulse can produce far more real motion than that short
+        # a calibration reliably predicts that far out. The target is
+        # already known here, before any pulse is sent, so this is
+        # caught right here instead, before ever touching the mount.
         #
         # Real report, diagnostic 6cb859d2: refusing the move outright
         # used to be the whole story here, with the shown message itself
         # suggesting "...or click again for a smaller step" -- but
         # nothing about clicking the same button again actually produced
         # a smaller step (nudge_target_fraction is a fixed setting, so a
-        # second click solves for the identical target and hits the
+        # second click solved for the identical target and hit the
         # identical refusal every time; the message promised a workflow
-        # that didn't exist). Scaling every solved step down by the same
-        # factor instead -- so the *longest* one lands exactly on the cap
-        # -- preserves the composed move's intended on-screen direction
-        # (both axes' durations shrink together, not just the one that
-        # tripped the cap) while actually moving as far as safely
-        # possible this click. A real, smaller step now, not a refusal --
-        # clicking again genuinely continues toward the original target,
-        # matching what the message already told the user to expect.
-        longest_ms = max(duration_ms for _axis, _direction, duration_ms in steps)
-        clamped = longest_ms > self._settings.max_nudge_pulse_ms
+        # that didn't exist). Clamping the duration down to the cap
+        # instead -- a real, smaller step now, not a refusal -- clicking
+        # again genuinely continues toward the original target, matching
+        # what the message already told the user to expect.
+        clamped = duration_ms > self._settings.max_nudge_pulse_ms
         if clamped:
-            scale = self._settings.max_nudge_pulse_ms / longest_ms
-            steps = [
-                (axis, direction, round(duration_ms * scale))
-                for axis, direction, duration_ms in steps
-            ]
-            # A step that was already short relative to the longest one
-            # can round down to 0 once scaled -- omit it, same convention
-            # compose_screen_move itself uses for an already-aligned axis.
-            steps = [step for step in steps if step[2] > 0]
-            if not steps:
-                self._result_label.setText(
-                    f"{_CAMERA_LABELS[camera_key]}: already aligned for {direction_name.lower()}."
-                )
-                return
+            duration_ms = self._settings.max_nudge_pulse_ms
 
         mode = self._target_mode()
         self._last_failure_classes = {}
@@ -1214,8 +1249,8 @@ class MountTestMovePanel(QWidget):
             )
             self._result_label.setText(f"Move failed: {self._last_error}")
             return
-        started = self._runner.submit_sequence(
-            self._mount_park, self._mount, steps,
+        started = self._runner.submit(
+            self._mount_park, self._mount, axis, direction, duration_ms,
             rate_preset=self._settings.rate_preset, park_after=False,
             settle_ms=self._settings.settle_ms,
         )
@@ -1226,8 +1261,10 @@ class MountTestMovePanel(QWidget):
             kind="nudge",
             before=before,
             mode=mode,
-            duration_ms=sum(duration_ms for _, _, duration_ms in steps),
+            duration_ms=duration_ms,
             clamped=clamped,
+            axis=axis,
+            direction=direction,
         )
         suffix = (
             f" (safety-capped at {self._settings.max_nudge_pulse_ms}ms -- click again to continue)"
@@ -1235,7 +1272,7 @@ class MountTestMovePanel(QWidget):
             else ""
         )
         self._result_label.setText(
-            f"Moving {_CAMERA_LABELS[camera_key]} {direction_name.lower()}…{suffix}"
+            f"Moving {_CAMERA_LABELS[camera_key]} {axis_label} {direction_label}…{suffix}"
         )
         self._update_buttons_enabled()
 
@@ -1264,15 +1301,16 @@ class MountTestMovePanel(QWidget):
             )
             self._result_label.setText(f"Move failed: {self._last_error}")
             return
+        assert pending.axis is not None and pending.direction is not None
         responses: dict[str, AxisResponse] = {}
         unconfirmed: list[str] = []
         for key in ("left", "right"):
-            # axis/direction are a display-only placeholder here (unused by
-            # _format_response) -- a composed move blends both real axes,
-            # it doesn't correspond to a single one. duration_ms is the
-            # real total elapsed time across every sub-pulse.
+            # axis/direction are pending's own real single-axis move now
+            # (unused by _format_response either way, but no longer a
+            # placeholder -- see _PendingAction's own docstring for why
+            # this changed from the old composed-move shape).
             response = self._build_response(
-                pending.mode, MountAxis.AXIS1, AxisDirection.POSITIVE, pending.duration_ms,
+                pending.mode, pending.axis, pending.direction, pending.duration_ms,
                 pending.before[key], after[key],
             )
             if response is None:
