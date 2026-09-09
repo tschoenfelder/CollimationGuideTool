@@ -3749,6 +3749,63 @@ class TestMountTestMovePanel:
         assert "Move failed" not in panel._result_label.text()
         window.close()
 
+    def test_nudge_pulses_the_mount_without_waiting_for_a_fresh_before_frame(
+        self, qapp: object
+    ) -> None:
+        """Real report: "decouple moving mount from taking frames and
+        analysing (which is blocking movement right now)". Once any pulse
+        has ever completed in this panel's lifetime, `_last_pulse_completed_at`
+        is set (see its own docstring) -- calibration's own "before"
+        capture correctly *wants* the freshness wait that gates on it
+        (real diagnostic 93ba361f), but a nudge used to be routed through
+        that same multi-second `acquire_settled_frames` wait, so
+        `self._runner.submit()` -- the actual mount pulse -- didn't even
+        get called until the wait finished. A nudge's own "before"
+        capture must always use the instant/no-wait path so the pulse
+        fires immediately, regardless of how long ago the mount last
+        moved."""
+        wait_calls: list[float] = []
+
+        def slow_wait(reference: float, _timeout: float) -> FrameAcquisitionResult:
+            wait_calls.append(reference)
+            return _ok_result(np.zeros((10, 10), dtype=np.float32))
+
+        pulse_mount = FakeMountAdapter()
+        pulse_mount.connect()  # FakeMountAdapter rejects pulses until connected
+        panel = MountTestMovePanel(
+            pulse_mount,
+            mount_park=FakeMountPark(start_parked=True),
+            get_left_frame=lambda: np.zeros((10, 10), dtype=np.float32),
+            get_right_frame=lambda: np.zeros((10, 10), dtype=np.float32),
+            wait_for_left_frame=slow_wait,
+            wait_for_right_frame=slow_wait,
+        )
+        panel._connected = True  # _poll() itself is a no-op otherwise
+        panel._terrestrial_button.click()
+        # Simulate a pulse that already completed earlier in this panel's
+        # lifetime -- exactly the condition that used to gate a nudge's
+        # own "before" capture behind the slow freshness wait.
+        panel._last_pulse_completed_at = time.monotonic()
+
+        panel._on_nudge_clicked("left", MountAxis.AXIS1, AxisDirection.POSITIVE)
+
+        # The decisive evidence: the "before" capture never went anywhere
+        # near the slow freshness-wait path at all -- proven independently
+        # of thread-scheduling timing, unlike trying to measure how long
+        # the call took.
+        assert wait_calls == []
+        deadline = time.monotonic() + 5.0
+        while panel._runner.is_busy:
+            assert time.monotonic() < deadline, "nudge never completed"
+            time.sleep(0.01)
+        panel._poll()
+
+        assert pulse_mount.pulse_log == [
+            (MountAxis.AXIS1, AxisDirection.POSITIVE, panel._settings.pulse_ms)
+        ]
+        assert "Move failed" not in panel._result_label.text()
+        panel.stop()
+
     def test_nudge_target_scales_with_this_cameras_own_frame_size(self, qapp: object) -> None:
         """Real request: nudges should move "half a window" for rough
         alignment, not a small fixed pixel count -- and Main/Guide have

@@ -1254,14 +1254,24 @@ class MountTestMovePanel(QWidget):
         # any early-exit path below) -- see the constructor's own
         # docstring and real incident ca728d27.
         self._pause_auto_exposure()
-        # Real diagnostic 93ba361f: an earlier pulse (a previous nudge or
-        # calibration run in this panel's lifetime) may have just moved
-        # the mount -- see _last_pulse_completed_at's own docstring. None
-        # on a panel where nothing has pulsed yet keeps the original
-        # instant/no-wait behavior.
-        before = self._capture_both(
-            mode, diagnostic_label="nudge_before", after_monotonic=self._last_pulse_completed_at
-        )
+        # Real request: "decouple moving mount from taking frames and
+        # analysing (which is blocking movement right now)" -- unlike a
+        # calibration step (a scripted sequence where the *previous*
+        # step's own return pulse just moved the mount moments earlier,
+        # so its "before" genuinely needs _last_pulse_completed_at's
+        # freshness wait -- real diagnostic 93ba361f), a nudge is a single
+        # user-initiated click with nothing else running concurrently.
+        # Routing it through that same multi-second acquire_settled_frames
+        # wait meant self._runner.submit() below -- the actual mount
+        # pulse -- didn't even get called until the wait finished, so the
+        # mount visibly didn't move for however long the wait took. A
+        # nudge's own "before" capture always uses the instant/no-wait
+        # path instead (`after_monotonic=None`), trading a small chance of
+        # a slightly stale "before" frame (only realistic for a very fast
+        # double-click, and only a measurement-confirmation concern --
+        # see _finish_nudge's own "don't block on failing to confirm"
+        # handling) for the mount pulse firing immediately.
+        before = self._capture_both(mode, diagnostic_label="nudge_before", after_monotonic=None)
         if before is None:
             self._resume_auto_exposure()
             self._last_error = self._capture_failure_message(
