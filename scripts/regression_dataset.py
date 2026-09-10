@@ -81,7 +81,9 @@ def main(argv: list[str] | None = None) -> int:
     if bundle is None:
         diagnostics = Path.home() / ".CollimationGuideTool" / "diagnostics"
         print(
-            f"error: no diagnostic bundle matches {args.uuid!r} (looked under {diagnostics})",
+            f"error: no diagnostic bundle matches {args.uuid!r} (looked under {diagnostics})\n"
+            f"  if the failure was reproduced on the Pi, pull it first:\n"
+            f"    python scripts/pull_diagnostic_bundle.py --uuid {args.uuid}",
             file=sys.stderr,
         )
         return 2

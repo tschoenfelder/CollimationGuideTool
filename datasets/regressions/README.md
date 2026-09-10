@@ -100,10 +100,15 @@ pointer only when size or privacy genuinely rules that out.
 ## Intake workflow
 
 ```
+python scripts/pull_diagnostic_bundle.py --uuid <diagnostic-uuid>     # if reproduced on the Pi
 python scripts/regression_dataset.py --uuid <diagnostic-uuid> --issue 34
 ```
 
-Resolves the bundle via `astrotool_core.diagnostics.find_bundle`, creates
+`pull_diagnostic_bundle.py` `ssh`+`scp`s the bundle from the rig's Pi
+(`~/.CollimationGuideTool/diagnostics/<uuid>/`, host `rasppi3` by default) into
+the local diagnostics tree — the one networked step; skip it when the failure
+was reproduced on the dev box. Then `regression_dataset.py` (never networked)
+resolves the bundle via `astrotool_core.diagnostics.find_bundle`, creates
 `datasets/regressions/34/`, copies `frames/` at full resolution and the bundle's
 `incident.json` / `application.log` into `provenance/`, and writes `expected.json`
 and `README.md` skeletons pre-filled from `incident.json` with `TODO` markers.

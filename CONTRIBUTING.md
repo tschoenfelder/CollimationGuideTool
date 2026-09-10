@@ -244,6 +244,21 @@ that come up in review:
 `datasets/regressions/<id>/` directory with a malformed `expected.json`, or with
 no wired test, fails the build rather than becoming dead data.
 
+### Getting the frames off the rig
+
+A field failure is captured as a bundle on the Pi itself
+(`~/.CollimationGuideTool/diagnostics/<uuid>/`). Pull it to the dev box before
+scaffolding:
+
+```bash
+python scripts/pull_diagnostic_bundle.py --uuid <uuid>     # ssh+scp from rasppi3
+python scripts/regression_dataset.py --uuid <uuid> --issue <n>
+```
+
+`pull_diagnostic_bundle.py` is the only part of this tooling that touches the
+network; `regression_dataset.py` never does. `--host` overrides the ssh target
+(default `rasppi3`, from `~/.ssh/config`).
+
 ## Public interfaces
 
 Each `astrotool_core/<subsystem>/__init__.py` is the only supported import
