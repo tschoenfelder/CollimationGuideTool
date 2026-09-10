@@ -30,6 +30,22 @@ def mount(server: FakeIndiServer) -> Iterator[IndiMountParkAdapter]:
     adapter.disconnect()
 
 
+class TestConnectionLoss:
+    """Real incident b6d3384b: an indiserver connection drop turned
+    Unpark / toggling Connect into an unhandled BrokenPipeError through
+    the Qt slot."""
+
+    def test_park_unpark_disconnect_do_not_raise_after_the_connection_drops(
+        self, mount: IndiMountParkAdapter, server: FakeIndiServer
+    ) -> None:
+        mount.connect()
+        server.stop()  # kill indiserver mid-session
+
+        mount.unpark()  # must not raise
+        mount.park()  # must not raise
+        mount.disconnect()  # must not raise
+
+
 class TestNotConnected:
     def test_is_available_is_false(self) -> None:
         adapter = IndiMountParkAdapter("127.0.0.1", 1)

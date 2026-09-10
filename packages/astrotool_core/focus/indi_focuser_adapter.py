@@ -165,9 +165,12 @@ class IndiFocuserAdapter(FocuserPort):
 
     def disconnect(self) -> None:
         if self._connected:
-            self._client.send_new_switch_vector(
-                self._device_name, "CONNECTION", {"DISCONNECT": True}
-            )
+            # Best-effort -- a dropped connection must not crash teardown
+            # (real incident b6d3384b), same convention as move()/stop().
+            with contextlib.suppress(ConnectionError, OSError):
+                self._client.send_new_switch_vector(
+                    self._device_name, "CONNECTION", {"DISCONNECT": True}
+                )
         self._client.close()
         self._connected = False
         self._available = False
@@ -229,14 +232,18 @@ class IndiFocuserAdapter(FocuserPort):
         _log.info(
             "IndiFocuserAdapter.move(): steps=%d (from position=%d)", steps, self.get_position()
         )
-        self._client.send_new_switch_vector(
-            self._device_name,
-            "FOCUS_MOTION",
-            {"FOCUS_INWARD": steps < 0, "FOCUS_OUTWARD": steps >= 0},
-        )
-        self._client.send_new_number_vector(
-            self._device_name, "REL_FOCUS_POSITION", {"FOCUS_RELATIVE_POSITION": abs(steps)}
-        )
+        # Best-effort -- a dropped indiserver connection must not crash the
+        # caller (real incident b6d3384b), same convention as stop() /
+        # IndiMountParkAdapter._send_track_off().
+        with contextlib.suppress(ConnectionError, OSError):
+            self._client.send_new_switch_vector(
+                self._device_name,
+                "FOCUS_MOTION",
+                {"FOCUS_INWARD": steps < 0, "FOCUS_OUTWARD": steps >= 0},
+            )
+            self._client.send_new_number_vector(
+                self._device_name, "REL_FOCUS_POSITION", {"FOCUS_RELATIVE_POSITION": abs(steps)}
+            )
 
     def move_absolute(self, steps: int) -> FocuserMoveResult:
         start_position = self.get_position()
@@ -260,9 +267,15 @@ class IndiFocuserAdapter(FocuserPort):
         # response at all -- it sent, then always returned accepted=True
         # regardless of what the driver actually did.
         previous_vector = self._client.get_vector(self._device_name, "ABS_FOCUS_POSITION")
-        self._client.send_new_number_vector(
-            self._device_name, "ABS_FOCUS_POSITION", {"FOCUS_ABSOLUTE_POSITION": steps}
-        )
+        try:
+            self._client.send_new_number_vector(
+                self._device_name, "ABS_FOCUS_POSITION", {"FOCUS_ABSOLUTE_POSITION": steps}
+            )
+        except (ConnectionError, OSError):
+            # Dropped connection -- clean rejection, not a crash (see move()).
+            return FocuserMoveResult(
+                accepted=False, target_position=steps, start_position=start_position
+            )
         confirmed = self._client.wait_for_vector(
             self._device_name,
             "ABS_FOCUS_POSITION",
@@ -287,9 +300,10 @@ class IndiFocuserAdapter(FocuserPort):
         _log.info(
             "IndiFocuserAdapter.stop(): aborting motion at position=%d", self.get_position()
         )
-        self._client.send_new_switch_vector(
-            self._device_name, "FOCUS_ABORT_MOTION", {"ABORT": True}
-        )
+        with contextlib.suppress(ConnectionError, OSError):  # see move()
+            self._client.send_new_switch_vector(
+                self._device_name, "FOCUS_ABORT_MOTION", {"ABORT": True}
+            )
 
     def _get_abs_position_vector(self) -> VectorState | None:
         if not self.is_available:

@@ -132,9 +132,14 @@ class IndiMountParkAdapter(MountParkPort):
     def disconnect(self) -> None:
         self._cancel_pending_track_off_retries()
         if self._connected:
-            self._client.send_new_switch_vector(
-                self._device_name, "CONNECTION", {"DISCONNECT": True}
-            )
+            # A dropped connection must not crash the teardown path (real
+            # incident b6d3384b: toggling Connect after an indiserver drop
+            # raised BrokenPipeError through the Qt slot) -- same
+            # best-effort-send convention as _send_track_off().
+            with contextlib.suppress(ConnectionError, OSError):
+                self._client.send_new_switch_vector(
+                    self._device_name, "CONNECTION", {"DISCONNECT": True}
+                )
         self._client.close()
         self._connected = False
         self._available = False
@@ -209,7 +214,14 @@ class IndiMountParkAdapter(MountParkPort):
         # unpark() itself still cancels stale ones from a previous cycle
         # before arming its own.
         _log.info("IndiMountParkAdapter.park(): parking %r", self._device_name)
-        self._client.send_new_switch_vector(self._device_name, "TELESCOPE_PARK", {"PARK": True})
+        # Best-effort send -- a dropped indiserver connection must not
+        # crash the caller (real incident b6d3384b), same convention as
+        # _send_track_off(). status().available reads False on the next
+        # poll so the UI won't treat the mount as usable regardless.
+        with contextlib.suppress(ConnectionError, OSError):
+            self._client.send_new_switch_vector(
+                self._device_name, "TELESCOPE_PARK", {"PARK": True}
+            )
 
     def unpark(self) -> None:
         if not self.is_available:
@@ -219,7 +231,10 @@ class IndiMountParkAdapter(MountParkPort):
             self._device_name,
         )
         self._cancel_pending_track_off_retries()
-        self._client.send_new_switch_vector(self._device_name, "TELESCOPE_PARK", {"UNPARK": True})
+        with contextlib.suppress(ConnectionError, OSError):  # see park()
+            self._client.send_new_switch_vector(
+                self._device_name, "TELESCOPE_PARK", {"UNPARK": True}
+            )
         self._send_track_off()
         for delay_s in _TRACK_OFF_RETRY_DELAYS_S:
             timer = threading.Timer(delay_s, self._send_track_off)

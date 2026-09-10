@@ -323,6 +323,23 @@ class TestMotionOffConfirmation:
         assert abort_calls == []
 
 
+class TestConnectionLoss:
+    """Real incident b6d3384b: an indiserver connection drop turned Stop
+    (abort) and a Dec- nudge (pulse_axis) into an unhandled
+    BrokenPipeError / a daemon-thread crash that froze the panel."""
+
+    def test_abort_and_pulse_axis_do_not_raise_after_the_connection_drops(
+        self, mount: IndiMountPulseAdapter, server: FakeIndiServer
+    ) -> None:
+        mount.connect()
+        server.stop()  # kill indiserver mid-session
+
+        mount.abort()  # must not raise
+
+        result = mount.pulse_axis(MountAxis.AXIS1, AxisDirection.POSITIVE, 500)
+        assert result.accepted is False
+
+
 class TestMountInterfaceUnavailable:
     def test_connect_succeeds_but_mount_is_not_available(self) -> None:
         fake = FakeIndiServer(mount_available=False)

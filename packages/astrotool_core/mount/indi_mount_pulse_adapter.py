@@ -62,6 +62,7 @@ pulse from one the driver quietly refused.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import time
 
@@ -164,9 +165,12 @@ class IndiMountPulseAdapter:
 
     def disconnect(self) -> None:
         if self._connected:
-            self._client.send_new_switch_vector(
-                self._device_name, "CONNECTION", {"DISCONNECT": True}
-            )
+            # Best-effort -- a dropped connection must not crash teardown
+            # (real incident b6d3384b), same convention as abort().
+            with contextlib.suppress(ConnectionError, OSError):
+                self._client.send_new_switch_vector(
+                    self._device_name, "CONNECTION", {"DISCONNECT": True}
+                )
         self._client.close()
         self._connected = False
         self._available = False
@@ -199,9 +203,14 @@ class IndiMountPulseAdapter:
         if not self.is_available:
             return
         _log.info("IndiMountPulseAdapter.abort(): aborting motion on %r", self._device_name)
-        self._client.send_new_switch_vector(
-            self._device_name, "TELESCOPE_ABORT_MOTION", {"ABORT": True}
-        )
+        # A best-effort safety command -- if the indiserver connection has
+        # dropped there is nothing more this can do, and it must not crash
+        # the caller (real incident b6d3384b: Stop pressed after a dropped
+        # connection raised BrokenPipeError straight through the Qt slot).
+        with contextlib.suppress(ConnectionError, OSError):
+            self._client.send_new_switch_vector(
+                self._device_name, "TELESCOPE_ABORT_MOTION", {"ABORT": True}
+            )
 
     def pulse_axis(
         self,
@@ -213,6 +222,29 @@ class IndiMountPulseAdapter:
     ) -> CommandResult:
         if not self.is_available:
             return CommandResult(accepted=False, message="not connected")
+        try:
+            return self._pulse_axis_impl(axis, direction, duration_ms, rate_preset)
+        except ConnectionError as exc:
+            # The indiserver connection dropped mid-pulse -- IndiClient has
+            # already marked itself disconnected. Report a clean failure
+            # instead of letting ConnectionError escape: it would
+            # otherwise propagate out of MountTestMoveRunner._run() on its
+            # daemon thread, killing the thread before it clears is_busy
+            # and freezing the panel (real incident b6d3384b).
+            _log.warning(
+                "IndiMountPulseAdapter.pulse_axis(): connection lost mid-pulse on %r: %s",
+                self._device_name,
+                exc,
+            )
+            return CommandResult(accepted=False, message="mount connection lost during the pulse")
+
+    def _pulse_axis_impl(
+        self,
+        axis: MountAxis,
+        direction: AxisDirection,
+        duration_ms: int,
+        rate_preset: str | None,
+    ) -> CommandResult:
         vector_name, element = _MOTION_VECTOR[(axis, direction)]
         clamped_ms = max(_MIN_PULSE_MS, min(_MAX_PULSE_MS, duration_ms))
         selected_rate = rate_preset if rate_preset is not None else self._slew_rate_element

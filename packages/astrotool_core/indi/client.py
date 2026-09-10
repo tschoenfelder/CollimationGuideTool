@@ -111,6 +111,24 @@ class IndiClient:
         if thread is not None:
             thread.join(timeout=2.0)
 
+    def _mark_disconnected(self) -> None:
+        """Drop the socket and wake any waiter -- called when a send, or
+        the read loop, discovers the connection is gone, so `is_connected`
+        stops reporting `True` for a dead socket and a pending
+        `wait_for_vector` returns promptly instead of blocking out its
+        full timeout. Idempotent; safe to call from the reader thread
+        itself (unlike `close()`, it never joins). Real incident
+        b6d3384b: an undetected dropped indiserver connection left the
+        "test move" pulse retrying into minute-long UI freezes, and every
+        subsequent send crashed the caller with a bare `BrokenPipeError`."""
+        self._stop.set()
+        sock, self._sock = self._sock, None
+        if sock is not None:
+            with contextlib.suppress(OSError):
+                sock.close()
+        with self._cond:
+            self._cond.notify_all()
+
     def _read_loop(self) -> None:
         sock = self._sock
         if sock is None:
@@ -125,6 +143,10 @@ class IndiClient:
             if not chunk:
                 break
             self._parser.feed(chunk)
+        if not self._stop.is_set():
+            # Fell out on EOF or a socket error, not a close() request --
+            # reflect the drop so is_connected stops lying.
+            self._mark_disconnected()
 
     def _on_element(self, element: ParsedElement) -> None:
         if element.tag not in _TRACKED_VECTOR_TAGS:
@@ -140,7 +162,19 @@ class IndiClient:
         sock = self._sock
         if sock is None:
             raise ConnectionError("IndiClient: not connected")
-        sock.sendall(fragment.encode("utf-8"))
+        try:
+            sock.sendall(fragment.encode("utf-8"))
+        except OSError as exc:
+            # A dropped / half-open connection (indiserver gone, network
+            # down): sendall raises OSError/BrokenPipeError, not the
+            # ConnectionError this class's docstring promises and every
+            # `contextlib.suppress(ConnectionError, OSError)` / `except
+            # ConnectionError` site in the adapters already expects. Mark
+            # the client disconnected and re-raise as ConnectionError so a
+            # bare BrokenPipeError never propagates through a Qt slot to
+            # sys.excepthook (real incident b6d3384b).
+            self._mark_disconnected()
+            raise ConnectionError(f"IndiClient: send failed, connection lost: {exc}") from exc
 
     def send_get_properties(self, device: str | None = None) -> None:
         attr = f' device="{xml_escape_attr(device)}"' if device else ""
@@ -183,6 +217,8 @@ class IndiClient:
         deadline = time.monotonic() + timeout_s
         with self._cond:
             while True:
+                if self._sock is None:
+                    return None  # connection lost -- don't block out the timeout
                 vector = self._vectors.get((device, name))
                 if vector is not None and (predicate is None or predicate(vector)):
                     return vector

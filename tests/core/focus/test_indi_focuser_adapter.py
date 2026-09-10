@@ -30,6 +30,24 @@ def focuser(server: FakeIndiServer) -> Iterator[IndiFocuserAdapter]:
     adapter.disconnect()
 
 
+class TestConnectionLoss:
+    """Real incident b6d3384b was a mount crash, but the focuser's own
+    sends had the same unguarded shape -- a dropped indiserver connection
+    must degrade to a clean no-op / rejection, not a BrokenPipeError."""
+
+    def test_move_stop_move_absolute_do_not_raise_after_the_connection_drops(
+        self, focuser: IndiFocuserAdapter, server: FakeIndiServer
+    ) -> None:
+        focuser.connect()
+        server.stop()  # kill indiserver mid-session
+
+        focuser.move(50)  # must not raise
+        focuser.stop()  # must not raise
+
+        result = focuser.move_absolute(6000)
+        assert result.accepted is False
+
+
 class TestNotConnected:
     def test_is_available_is_false(self) -> None:
         adapter = IndiFocuserAdapter("127.0.0.1", 1)

@@ -3,6 +3,7 @@ FakeIndiServer — no indiserver/libindi install needed."""
 
 from __future__ import annotations
 
+import time
 from collections.abc import Iterator
 
 import pytest
@@ -125,6 +126,52 @@ class TestWaitForVectorTimeout:
     def test_returns_none_if_never_defined(self, client: IndiClient) -> None:
         result = client.wait_for_vector("LX200 OnStep", "NEVER_DEFINED", timeout_s=0.2)
         assert result is None
+
+
+class TestConnectionLoss:
+    """Real incident b6d3384b: an indiserver connection drop turned every
+    subsequent mount/focuser send into an unhandled `BrokenPipeError` and
+    left `wait_for_vector` blocking out its full timeout on the dead
+    socket (minute-long "test move" UI freezes)."""
+
+    def test_a_write_error_becomes_connection_error_and_marks_disconnected(
+        self, client: IndiClient
+    ) -> None:
+        class _DeadSocket:
+            def sendall(self, _data: bytes) -> None:
+                raise BrokenPipeError(32, "Broken pipe")
+
+            def close(self) -> None:
+                pass
+
+        client._sock = _DeadSocket()  # type: ignore[assignment]
+
+        with pytest.raises(ConnectionError):
+            client.send_new_switch_vector("LX200 OnStep", "TELESCOPE_ABORT_MOTION", {"ABORT": True})
+        assert not client.is_connected
+
+    def test_a_dropped_server_is_detected_and_wait_for_vector_returns_promptly(
+        self, server: FakeIndiServer
+    ) -> None:
+        c = IndiClient(server.host, server.port)
+        c.connect()
+        assert c.is_connected
+        server.stop()  # kill the server side of the connection
+
+        deadline = time.monotonic() + 3.0
+        while c.is_connected and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert not c.is_connected  # the read loop noticed the EOF
+
+        # A send after the drop raises ConnectionError, never a bare
+        # BrokenPipeError, and wait_for_vector returns at once rather than
+        # blocking its whole 5s timeout on the dead socket.
+        with pytest.raises(ConnectionError):
+            c.send_new_switch_vector("LX200 OnStep", "TELESCOPE_ABORT_MOTION", {"ABORT": True})
+        started = time.monotonic()
+        assert c.wait_for_vector("LX200 OnStep", "TELESCOPE_MOTION_NS", timeout_s=5.0) is None
+        assert time.monotonic() - started < 1.0
+        c.close()
 
 
 class TestNotConnected:
