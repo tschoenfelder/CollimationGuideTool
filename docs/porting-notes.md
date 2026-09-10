@@ -606,3 +606,46 @@ overlap. Everything in `apps/*/ui/` and `apps/*/main.py` is new.
   and deliberately fails if data shows up without a real replay test
   replacing the skip, so the placeholder can't silently rot once populated.
 - Stage: 8
+
+## Issue #6 — real-world bug regression dataset intake
+
+### datasets/regressions/README.md + datasets/regressions/example/
+- Source: new. The documented schema/convention (issue #6, AC#1) plus a fully
+  synthetic worked example (AC#8: a frame and its `numpy.roll`-shifted copy,
+  ~40 KB each, committed — no real data). `example/expected.json` carries
+  `"issue": 6` and an empty `diagnostic_uuids`, and is exercised by the generic
+  driver on every CI run.
+- Stage: post-v0.1.0 (issue #6)
+
+### tests/regressions/_loader.py — RegressionManifest, load_manifest, resolve_input, BOUNDARIES, run_case, assert_case_expectation
+- Source: new. Parses/validates the `datasets/regressions/<id>/expected.json`
+  envelope and resolves case inputs (a `local_test_data/` path is a pointer to
+  git-ignored data → `None` when absent → caller skips). `BOUNDARIES` is the
+  named-boundary registry (AC#4), seeded with `measure_translation_offset`;
+  downstream issues (#28/#29/#30) append their own. `assert_case_expectation`
+  is the one tolerance/exact comparison every regression dataset shares —
+  deliberately not `tests/integration/_golden_master.assert_matches_golden`
+  (that helper is private to `tests/integration/` and requires both dicts to
+  carry every tolerance key; this one also handles exact/boolean/`None` keys
+  and a `local_test_data`-absent skip).
+- Stage: post-v0.1.0 (issue #6)
+
+### tests/regressions/test_regression_datasets.py + test_every_regression_dataset_is_wired.py
+- Source: new. The generic driver (parametrized over every registered dataset's
+  cases) and the loud dead-data guard (AC#5) — the guard mirrors
+  `tests/integration/test_placeholder_datasets_skip_cleanly.py`: a
+  `datasets/regressions/<id>/` with a malformed `expected.json`, or with an
+  unregistered `boundary` and no bespoke `tests/regressions/test_*.py` naming
+  it, fails the build. `tests/regressions/` was added to `scripts/check.sh
+  --release`, `scripts/check.ps1 -Release` and `.github/workflows/quality.yml`.
+- Stage: post-v0.1.0 (issue #6)
+
+### scripts/regression_dataset.py
+- Source: new. Bundle → dataset scaffolder (issue #6, "automate"): resolves a
+  diagnostic UUID via `astrotool_core.diagnostics.find_bundle`, copies the real
+  `frames/` at full resolution + the bundle's `incident.json`/`application.log`
+  into `provenance/`, and writes `expected.json` / `README.md` skeletons
+  pre-filled from `incident.json` with `TODO` markers (`boundary: "TODO"` — so
+  the wiring guard fails until a human finishes it). No network, no
+  downsampling; refuses an existing target unless `--force`.
+- Stage: post-v0.1.0 (issue #6)

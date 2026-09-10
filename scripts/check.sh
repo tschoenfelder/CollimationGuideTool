@@ -3,7 +3,8 @@
 # regardless of which app the change appears to touch (see CONTRIBUTING.md).
 #
 # Pass --release before pushing a release: additionally runs tests/contracts,
-# tests/integration, and the below-UI tests/acceptance regression suite.
+# tests/integration, tests/regressions (real-world bug datasets), and the
+# below-UI tests/acceptance regression suite.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -33,8 +34,8 @@ echo "== import-linter =="
 "$BIN/lint-imports"
 
 if [ "$RELEASE" = "1" ]; then
-  echo "== pytest: full release gate (core, collimation, guide, contracts, integration, acceptance) =="
-  "$BIN/pytest" tests/core tests/collimation tests/guide tests/contracts tests/integration tests/acceptance
+  echo "== pytest: full release gate (core, collimation, guide, contracts, integration, regressions, acceptance) =="
+  "$BIN/pytest" tests/core tests/collimation tests/guide tests/contracts tests/integration tests/regressions tests/acceptance
 else
   echo "== pytest: core, collimation, guide =="
   "$BIN/pytest" tests/core tests/collimation tests/guide

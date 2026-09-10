@@ -219,6 +219,31 @@ find_bundle("<uuid-or-prefix>")` resolves it to its directory (a full UUID
 or an unambiguous prefix both work) — no service/database lookup needed,
 just the directory convention above.
 
+## Real-world regression datasets
+
+A reproducible field defect in image analysis / calibration / registration
+should become a **permanent regression case** when a diagnostic bundle captured
+the actual frames that exposed it: `reproduce → failing test → fix → permanent
+passing test` (issue #6).
+
+Capture it under `datasets/regressions/<issue-id>/` — the schema and the
+`scripts/regression_dataset.py` intake helper are documented in
+[`datasets/regressions/README.md`](datasets/regressions/README.md). Two rules
+that come up in review:
+
+- **Expected values are independently authored.** Each case's `rationale` in
+  `expected.json` must state how its expected result was derived from something
+  *other than* the implementation under test — a hand measurement, a known
+  software transform, a physical ground truth, or "must reject, by inspection".
+  Never paste `measure_translation_offset()` / the calibrator's own output as
+  the expectation.
+- **Real data is additive, not a replacement.** The synthetic
+  `datasets/acceptance/` scenarios stay the deterministic baseline.
+
+`tests/regressions/` runs in `scripts/check.sh --release` and CI. A
+`datasets/regressions/<id>/` directory with a malformed `expected.json`, or with
+no wired test, fails the build rather than becoming dead data.
+
 ## Public interfaces
 
 Each `astrotool_core/<subsystem>/__init__.py` is the only supported import

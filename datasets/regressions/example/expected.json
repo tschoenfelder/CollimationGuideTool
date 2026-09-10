@@ -1,0 +1,27 @@
+{
+  "issue": 6,
+  "diagnostic_uuids": [],
+  "git_commit_at_capture": "n/a (synthetic template — see README.md)",
+  "user_report": "n/a — this dataset carries no real capture; it is the copy-me template for issue #6.",
+  "optical_setup": "n/a (synthetic)",
+  "boundary": "measure_translation_offset",
+  "cases": [
+    {
+      "name": "known_software_shift_is_recovered",
+      "inputs": {
+        "before": "frames/base.fits",
+        "after": "frames/shifted.fits"
+      },
+      "expect": {
+        "match": true,
+        "dx_px": 30.0,
+        "dy_px": 12.0
+      },
+      "tolerances": {
+        "dx_px": 1.0,
+        "dy_px": 1.0
+      },
+      "rationale": "frames/shifted.fits is frames/base.fits displaced by exactly (dy=12, dx=30) px via np.roll (recipe in README.md). The expected dx_px/dy_px are the applied transform, computed independently of measure_translation_offset(); the tolerance covers only whole-pixel rounding."
+    }
+  ]
+}

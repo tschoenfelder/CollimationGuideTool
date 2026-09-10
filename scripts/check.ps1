@@ -2,7 +2,8 @@
 # regardless of which app the change appears to touch (see CONTRIBUTING.md).
 #
 # Pass -Release before pushing a release: additionally runs tests/contracts,
-# tests/integration, and the below-UI tests/acceptance regression suite.
+# tests/integration, tests/regressions (real-world bug datasets), and the
+# below-UI tests/acceptance regression suite.
 param(
     [switch]$Release
 )
@@ -31,8 +32,8 @@ Write-Host "== import-linter =="
 if (-not $?) { exit 1 }
 
 if ($Release) {
-    Write-Host "== pytest: full release gate (core, collimation, guide, contracts, integration, acceptance) =="
-    & "$Bin\pytest" tests/core tests/collimation tests/guide tests/contracts tests/integration tests/acceptance
+    Write-Host "== pytest: full release gate (core, collimation, guide, contracts, integration, regressions, acceptance) =="
+    & "$Bin\pytest" tests/core tests/collimation tests/guide tests/contracts tests/integration tests/regressions tests/acceptance
 } else {
     Write-Host "== pytest: core, collimation, guide =="
     & "$Bin\pytest" tests/core tests/collimation tests/guide
