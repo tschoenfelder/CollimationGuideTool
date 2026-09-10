@@ -25,7 +25,10 @@ from pathlib import Path
 import numpy as np
 import pytest
 from astropy.io import fits
-from astrotool_core.target.translation_offset import measure_translation_offset
+from astrotool_core.target.translation_offset import (
+    TranslationOffset,
+    measure_translation_offset,
+)
 
 _DATASET_DIR = (
     Path(__file__).resolve().parents[2]
@@ -153,3 +156,175 @@ def test_featureless_main_frames_report_no_usable_match_not_a_spurious_zero(
     after = _load_featureless_main(f"{axis_name}_after_left")
 
     assert measure_translation_offset(before, after) is None
+
+
+# ---------------------------------------------------------------------------
+# af7d27b7 -- terrestrial "Run Calibration" + a nudge, both cameras severely
+# underexposed (2.0 ms; the bracket runs with auto-exposure paused).
+# Diagnostic af7d27b7-7216-4421-a993-a63cbd111822, git commit 7234354.
+# Full writeup + per-frame map:
+# local_test_data/af7d27b7_terrestrial_calibration_2026-09-10/README.md
+# ---------------------------------------------------------------------------
+
+_AF7D27B7_DIR = (
+    Path(__file__).resolve().parents[2]
+    / "local_test_data"
+    / "af7d27b7_terrestrial_calibration_2026-09-10"
+    / "frames"
+)
+
+
+def _load_af7d27b7(name: str) -> np.ndarray:
+    data = fits.getdata(_AF7D27B7_DIR / f"{name}.fits")
+    return np.asarray(data, dtype=np.float32)
+
+
+@pytest.mark.skipif(
+    not _AF7D27B7_DIR.is_dir(),
+    reason=f"real-hardware dataset not present locally at {_AF7D27B7_DIR}",
+)
+@pytest.mark.parametrize(
+    ("axis_name", "expected"),
+    [
+        ("axis1", (0.0, 402.0)),
+        ("axis2", (469.0, 0.0)),
+        ("nudge", (0.0, -208.0)),
+    ],
+)
+def test_af7d27b7_guide_pairs_still_recover_their_recorded_shifts(
+    axis_name: str, expected: tuple[float, float]
+) -> None:
+    """Guide (GPCMOS02000KPA) had just enough real signal for all three
+    pulses. These exact displacements match `incident.json`'s own
+    `calibration.right` (axis1/axis2) and `last_result.right` (nudge)
+    entries -- a regression guard that a future estimator change must
+    keep reproducing them from the real frames."""
+    before = _load_af7d27b7(f"guide_{axis_name}_before")
+    after = _load_af7d27b7(f"guide_{axis_name}_after")
+
+    offset = measure_translation_offset(before, after)
+
+    assert offset is not None
+    assert (offset.dx_px, offset.dy_px) == expected
+
+
+@pytest.mark.skipif(
+    not _AF7D27B7_DIR.is_dir(),
+    reason=f"real-hardware dataset not present locally at {_AF7D27B7_DIR}",
+)
+@pytest.mark.xfail(
+    strict=False,
+    reason="issue #28 known gap: Main (ATR585M) frames from this terrestrial "
+    "calibration bracket are captured at 2.0 ms / gain 769 with almost no real "
+    "signal (heavy uniform sensor grain, a faint large-scale gradient). The "
+    "user reports a recognisable pattern and expects a shift to be detected "
+    "here; the estimator currently returns None (axis1/axis2) or a confident "
+    "(0, 0) (nudge, though the bright point source visibly leaves the frame). "
+    "Flips to XPASS when the calibration flow reaches an adequate per-target "
+    "exposure before the bracket, or the estimator gets more sensitive.",
+)
+@pytest.mark.parametrize("axis_name", ["axis1", "axis2", "nudge"])
+def test_af7d27b7_main_pairs_should_yield_a_usable_nonzero_shift(axis_name: str) -> None:
+    before = _load_af7d27b7(f"main_{axis_name}_before")
+    after = _load_af7d27b7(f"main_{axis_name}_after")
+
+    offset = measure_translation_offset(before, after)
+
+    assert offset is not None
+    assert (offset.dx_px, offset.dy_px) != (0.0, 0.0)
+
+
+# ---------------------------------------------------------------------------
+# 12bea18a -- terrestrial "Run Calibration" that failed both cameras
+# ("in terrestrial mode stars should be usable for movement
+# identification"). Diagnostic 12bea18a-47f2-4089-a6df-3ef9796fae97, git
+# commit 7234354. Frame numbers are the bundle's own frame_N.fits:
+# 6/8, 7/9     = axis1 before/after, left=Main / right=Guide
+# 10/12, 11/13 = axis2 before/after, left=Main / right=Guide
+# 14/16, 15/17 = nudge before/after, left=Main / right=Guide
+# Full writeup:
+# local_test_data/12bea18a_terrestrial_star_features_2026-09-10/README.md
+# ---------------------------------------------------------------------------
+
+_12BEA18A_DIR = (
+    Path(__file__).resolve().parents[2]
+    / "local_test_data"
+    / "12bea18a_terrestrial_star_features_2026-09-10"
+    / "frames"
+)
+
+_12BEA18A_PAIRS = {
+    "main_axis1": ("frame_6", "frame_8"),
+    "guide_axis1": ("frame_7", "frame_9"),
+    "main_axis2": ("frame_10", "frame_12"),
+    "guide_axis2": ("frame_11", "frame_13"),
+    "main_nudge": ("frame_14", "frame_16"),
+    "guide_nudge": ("frame_15", "frame_17"),
+}
+
+
+def _measure_12bea18a(pair: str) -> TranslationOffset | None:
+    before_name, after_name = _12BEA18A_PAIRS[pair]
+    before = np.asarray(fits.getdata(_12BEA18A_DIR / f"{before_name}.fits"), dtype=np.float32)
+    after = np.asarray(fits.getdata(_12BEA18A_DIR / f"{after_name}.fits"), dtype=np.float32)
+    return measure_translation_offset(before, after)
+
+
+@pytest.mark.skipif(
+    not _12BEA18A_DIR.is_dir(),
+    reason=f"real-hardware dataset not present locally at {_12BEA18A_DIR}",
+)
+@pytest.mark.parametrize(
+    ("pair", "expected"),
+    [
+        ("guide_axis2", (319.0, 2.0)),
+        ("guide_nudge", (-112.0, 0.0)),
+    ],
+)
+def test_12bea18a_guide_pairs_with_real_signal_still_match(
+    pair: str, expected: tuple[float, float]
+) -> None:
+    """Guide's AXIS2 and nudge pulses carried just enough signal for a
+    real measurement -- these match `incident.json`
+    `calibration.right.axis2` and `last_result.right` exactly. Regression
+    guard against a silent change to that behaviour."""
+    offset = _measure_12bea18a(pair)
+    assert offset is not None
+    assert (offset.dx_px, offset.dy_px) == expected
+
+
+@pytest.mark.skipif(
+    not _12BEA18A_DIR.is_dir(),
+    reason=f"real-hardware dataset not present locally at {_12BEA18A_DIR}",
+)
+@pytest.mark.xfail(
+    strict=False,
+    reason="issue #28 known gap: Guide's AXIS1 pulse is real, but its frames "
+    "are underexposed enough (0.5 ms / gain 100) that the estimator returns a "
+    "confident (0, 0) -- the 'false zero' that made calibration.right "
+    "degenerate (last_failure_classes.right = calibration_invalid). Should "
+    "recover a real non-zero shift; flips to XPASS when it does.",
+)
+def test_12bea18a_guide_axis1_should_not_be_a_false_zero() -> None:
+    offset = _measure_12bea18a("guide_axis1")
+    assert offset is not None
+    assert (offset.dx_px, offset.dy_px) != (0.0, 0.0)
+
+
+@pytest.mark.skipif(
+    not _12BEA18A_DIR.is_dir(),
+    reason=f"real-hardware dataset not present locally at {_12BEA18A_DIR}",
+)
+@pytest.mark.xfail(
+    strict=False,
+    reason="issue #28 known gap: every Main pair from this bracket returns "
+    "None (0.5-1.0 ms / gain 100 -- sensor minimum, featureless at the pixel "
+    "level). The user's premise is that faint stars in these frames should be "
+    "usable for movement identification; flips to XPASS when the calibration "
+    "flow reaches an adequate exposure before the bracket.",
+)
+@pytest.mark.parametrize("pair", ["main_axis1", "main_axis2", "main_nudge"])
+def test_12bea18a_main_pairs_should_yield_a_usable_nonzero_shift(pair: str) -> None:
+    offset = _measure_12bea18a(pair)
+    assert offset is not None
+    assert (offset.dx_px, offset.dy_px) != (0.0, 0.0)
