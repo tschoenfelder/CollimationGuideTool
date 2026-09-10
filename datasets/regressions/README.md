@@ -131,3 +131,12 @@ independent source, fill the README's `TODO` sections, and run
 `datasets/regressions/example/` is a fully synthetic worked case (a frame and a
 `numpy.roll`-shifted copy of it) — no real data. It exists so this convention
 always ships a runnable end-to-end example and a copy-me template (AC#8).
+
+## `28/`
+
+`datasets/regressions/28/` is the **scaffold** for issue #28's translation-estimator
+corpus (and issue #32's "one interface for terrestrial + star frames"). The case
+structure and independently-authored expectations are committed; the frames are
+not — every input is a `local_test_data/28_corpus/…` pointer, so the whole
+dataset skips until that git-ignored tree is populated. See its own `README.md`
+for the four data categories and the candidate-comparison plan.

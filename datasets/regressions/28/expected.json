@@ -1,0 +1,74 @@
+{
+  "issue": 28,
+  "diagnostic_uuids": [
+    "af7d27b7-7216-4421-a993-a63cbd111822",
+    "08d264f8-2068-404b-acf3-ed93d777233d",
+    "12bea18a-47f2-4089-a6df-3ef9796fae97"
+  ],
+  "git_commit_at_capture": "7234354b22e7",
+  "user_report": "Prove one translation estimator offline on: 10 stationary frames per camera (pairwise near-zero shifts); known 10-1000 px software shifts; real physical before/after pairs. It must work on both a textured terrestrial frame and a sparse star/point-source frame (issue #32) through one production interface.",
+  "optical_setup": "Main ATR585M 3840x2160; Guide GPCMOS02000KPA (colour) 1920x1080",
+  "boundary": "measure_translation_offset",
+  "cases": [
+    {
+      "name": "stationary_main_pair_00_01_is_zero",
+      "inputs": {
+        "before": "local_test_data/28_corpus/stationary/main_00.fits",
+        "after": "local_test_data/28_corpus/stationary/main_01.fits"
+      },
+      "expect": { "match": true, "dx_px": 0.0, "dy_px": 0.0 },
+      "tolerances": { "dx_px": 1.5, "dy_px": 1.5 },
+      "rationale": "Two consecutive same-camera frames captured with the rig static and the mount not commanded between them. The true displacement is zero by construction of the capture, not by anything the estimator reports; tolerance covers sub-pixel centroid noise only."
+    },
+    {
+      "name": "stationary_guide_pair_00_01_is_zero",
+      "inputs": {
+        "before": "local_test_data/28_corpus/stationary/guide_00.fits",
+        "after": "local_test_data/28_corpus/stationary/guide_01.fits"
+      },
+      "expect": { "match": true, "dx_px": 0.0, "dy_px": 0.0 },
+      "tolerances": { "dx_px": 1.5, "dy_px": 1.5 },
+      "rationale": "As stationary_main_pair_00_01_is_zero, for the Guide camera. Zero shift is a property of the static capture; the estimator must not invent motion."
+    },
+    {
+      "name": "known_shift_guide_x_120px",
+      "inputs": {
+        "before": "local_test_data/28_corpus/known_shift/guide_base.fits",
+        "after": "local_test_data/28_corpus/known_shift/guide_roll_x120.fits"
+      },
+      "expect": { "match": true, "dx_px": 120.0, "dy_px": 0.0 },
+      "tolerances": { "dx_px": 1.0, "dy_px": 1.0 },
+      "rationale": "guide_roll_x120.fits is numpy.roll(guide_base.fits, 120, axis=1) — an exact, known software translation of a real frame. Independent of the estimator (numpy, not measure_translation_offset)."
+    },
+    {
+      "name": "known_shift_guide_xy_640_360px",
+      "inputs": {
+        "before": "local_test_data/28_corpus/known_shift/guide_base.fits",
+        "after": "local_test_data/28_corpus/known_shift/guide_roll_x640_y360.fits"
+      },
+      "expect": { "match": true, "dx_px": 640.0, "dy_px": 360.0 },
+      "tolerances": { "dx_px": 1.0, "dy_px": 1.0 },
+      "rationale": "numpy.roll(guide_base.fits, (360, 640), axis=(0, 1)) — a large, exact, known 2-D software translation. Exercises the 10-1000 px end of the range."
+    },
+    {
+      "name": "real_physical_guide_axis1_af7d27b7",
+      "inputs": {
+        "before": "local_test_data/28_corpus/real_pairs/guide_axis1_before.fits",
+        "after": "local_test_data/28_corpus/real_pairs/guide_axis1_after.fits"
+      },
+      "expect": { "match": true, "dx_px": 0.0, "dy_px": 402.0 },
+      "tolerances": { "dx_px": 2.0, "dy_px": 2.0 },
+      "rationale": "A real mount-pulse before/after pair (diagnostic af7d27b7). Expected value is the shift recorded in that bundle's own incident.json calibration.right.axis1, cross-checked as non-degenerate against the orthogonal axis2 vector from the same run — not read back from measure_translation_offset."
+    },
+    {
+      "name": "star_field_guide_pair_through_same_interface",
+      "inputs": {
+        "before": "local_test_data/28_corpus/star/guide_star_before.fits",
+        "after": "local_test_data/28_corpus/star/guide_star_after.fits"
+      },
+      "expect": { "match": true },
+      "tolerances": {},
+      "rationale": "Issue #32: a sparse point-source (star) before/after pair fed through the SAME measure_translation_offset entry point as the textured terrestrial cases. A usable match is required; dx/dy pins are added once the pair's true shift is measured by hand (star centroids) and recorded here."
+    }
+  ]
+}
