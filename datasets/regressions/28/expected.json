@@ -61,6 +61,26 @@
       "rationale": "A real mount-pulse before/after pair (diagnostic af7d27b7). Expected value is the shift recorded in that bundle's own incident.json calibration.right.axis1, cross-checked as non-degenerate against the orthogonal axis2 vector from the same run — not read back from measure_translation_offset."
     },
     {
+      "name": "real_physical_main_axis1_run1",
+      "inputs": {
+        "before": "local_test_data/28_corpus/real_pairs/run1_main_axis1_before.fits",
+        "after": "local_test_data/28_corpus/real_pairs/run1_main_axis1_after.fits"
+      },
+      "expect": { "match": true, "dx_px": 0.0, "dy_px": -104.0 },
+      "tolerances": { "dx_px": 2.0, "dy_px": 2.0 },
+      "rationale": "First real Main-camera pair from diagnostic c17bb07b-5579-4126-b69b-bad17182946c (a live 'Run Calibration' verification of the pulse-settle fix from commit cacc779). Expected value is the shift recorded in that bundle's own incident.json calibration.left.axis1, cross-checked as non-degenerate against the orthogonal axis2 vector ((-170, 226)) from the same run — not read back from measure_translation_offset. First real_pairs case for Main (previously Guide-only)."
+    },
+    {
+      "name": "real_physical_main_axis2_run3",
+      "inputs": {
+        "before": "local_test_data/28_corpus/real_pairs/run3_main_axis2_before.fits",
+        "after": "local_test_data/28_corpus/real_pairs/run3_main_axis2_after.fits"
+      },
+      "expect": { "match": true, "dx_px": 259.0, "dy_px": 939.0 },
+      "tolerances": { "dx_px": 2.0, "dy_px": 2.0 },
+      "rationale": "A real, large-magnitude (974px) Main-camera pair from diagnostic 8ce36f8a-ed0c-4531-900a-4257050d84ee (the third of three live verification runs of the pulse-settle fix, same session as c17bb07b/859f2520). Expected value is the shift recorded in that bundle's own incident.json calibration.left.axis2, cross-checked as non-degenerate against the orthogonal axis1 vector ((-50, -23)) from the same run. Exercises real-frame coverage toward the large end of the 10-1000px range that known_shift/'s numpy.roll cases already cover synthetically."
+    },
+    {
       "name": "star_field_guide_pair_through_same_interface",
       "inputs": {
         "before": "local_test_data/28_corpus/star/guide_star_before.fits",
