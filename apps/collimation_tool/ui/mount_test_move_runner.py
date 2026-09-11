@@ -233,6 +233,21 @@ class MountTestMoveRunner:
             mount_park.unpark()
         else:
             mount_park.stop_tracking()
+            # Real diagnostic ba2b3259: `_wait_for_parked` just below is a
+            # same-poll, zero-delay no-op on this branch -- status().parked
+            # is already False (this mount was unparked by an earlier step
+            # in the same "Run Calibration" run), so nothing gives the
+            # driver's own separate motion-gate (see
+            # `_PULSE_REJECTION_RETRIES`'s own docstring) any time to catch
+            # up with the stop_tracking() just issued before the pulse loop
+            # below fires its first attempt. In that real run 3 of 4 steps
+            # hit exactly this and only succeeded on retry, each paying the
+            # round trip through a doomed first attempt before
+            # `_PULSE_REJECTION_RETRY_DELAY_S` even started counting.
+            # Reusing that same already-proven-sufficient delay here, up
+            # front, avoids that round trip in the common case; retry
+            # (below) still covers the rest.
+            time.sleep(_PULSE_REJECTION_RETRY_DELAY_S)
         try:
             if not _wait_for_parked(mount_park, want_parked=False, timeout_s=_UNPARK_TIMEOUT_S):
                 error = "mount did not confirm unparked in time -- aborting test move"

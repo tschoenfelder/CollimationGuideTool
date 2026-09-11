@@ -361,6 +361,54 @@ class TestMountTestMoveRunner:
         assert outcome.pulsed is False
         assert elapsed_s < 2.0  # nowhere near the 5s settle -- correctly skipped
 
+    def test_settle_precedes_the_first_pulse_attempt_after_stop_tracking(self) -> None:
+        # Real diagnostic ba2b3259: `_wait_for_parked` is a same-poll,
+        # zero-delay no-op once the mount is already confirmed unparked --
+        # true for every step after the very first in a "Run Calibration"
+        # run -- so nothing gave the driver's own separate motion-gate (see
+        # `_PULSE_REJECTION_RETRIES`'s own docstring) any time to catch up
+        # with the `stop_tracking()` just issued before the first pulse
+        # attempt. In that real run, 3 of the 4 steps got rejected on their
+        # first attempt and only succeeded on retry. Confirms a settle
+        # delay is now inserted BEFORE the first pulse attempt of a
+        # `stop_tracking()`-only `submit()`, not left solely to
+        # retry-after-rejection to recover.
+        mount_park = FakeMountPark(start_parked=True)
+        mount = FakeMountAdapter()
+        mount.connect()
+        runner = MountTestMoveRunner()
+        import collimation_tool.ui.mount_test_move_runner as runner_module
+
+        original_delay = runner_module._PULSE_REJECTION_RETRY_DELAY_S
+        runner_module._PULSE_REJECTION_RETRY_DELAY_S = 0.05
+        try:
+            # First submit(): mount starts parked -> full unpark() cycle.
+            runner.submit(
+                mount_park, mount, MountAxis.AXIS1, AxisDirection.POSITIVE, 10, park_after=False
+            )
+            assert _wait_for(lambda: not runner.is_busy)
+
+            # Second submit(): already unparked -> the stop_tracking() branch.
+            started_at = time.monotonic()
+            runner.submit(
+                mount_park, mount, MountAxis.AXIS2, AxisDirection.POSITIVE, 10, park_after=False
+            )
+            assert _wait_for(lambda: not runner.is_busy)
+            elapsed_s = time.monotonic() - started_at
+        finally:
+            runner_module._PULSE_REJECTION_RETRY_DELAY_S = original_delay
+
+        outcome = runner.take_latest()
+        assert outcome is not None
+        assert outcome.pulsed is True
+        assert elapsed_s >= 0.05
+        # Accepted on the very first attempt -- the delay ran BEFORE
+        # pulsing, not because a rejection-triggered retry consumed it.
+        assert mount.pulse_log == [
+            (MountAxis.AXIS1, AxisDirection.POSITIVE, 10),
+            (MountAxis.AXIS2, AxisDirection.POSITIVE, 10),
+        ]
+
     def test_a_pulse_rejected_on_every_attempt_still_gives_up_eventually(self) -> None:
         mount = FakeMountAdapter(reject_first_n_pulses=999)  # never accepts
         mount.connect()
