@@ -29,6 +29,7 @@ from astrotool_core.target.translation_offset import (
     TranslationOffset,
     measure_translation_offset,
 )
+from astrotool_core.testing.shift_grid import KNOWN_SHIFT_GRID, ShiftCase
 
 _DATASET_DIR = (
     Path(__file__).resolve().parents[2]
@@ -328,3 +329,115 @@ def test_12bea18a_main_pairs_should_yield_a_usable_nonzero_shift(pair: str) -> N
     offset = _measure_12bea18a(pair)
     assert offset is not None
     assert (offset.dx_px, offset.dy_px) != (0.0, 0.0)
+
+
+# ---------------------------------------------------------------------------
+# 28_corpus known-shift grid -- issues #28 (textured terrestrial) and #32
+# (sparse star/point-source), same shared deterministic grid
+# (astrotool_core.testing.shift_grid.KNOWN_SHIFT_GRID), applied via
+# numpy.roll to two different real base frames: a textured Guide frame
+# (known_shift/guide_base.fits) and a real Guide star frame (star/
+# guide_star_base.fits, the same frame local_test_data/28_corpus/README.md
+# documents as 1 real detected source). Both are 1920x1080 -- shifts beyond
+# max_unaliased_shift_px((1080, 1920)) == (960, 540) are EXPECTED to read
+# back as their exact circular alias, not the applied value: this is a
+# property of any content this module measures at a shift this large
+# relative to the frame (see max_unaliased_shift_px's own docstring for the
+# real evidence), not a #32-specific sparse-content gap.
+# ---------------------------------------------------------------------------
+
+_28_CORPUS_DIR = Path(__file__).resolve().parents[2] / "local_test_data" / "28_corpus"
+_KNOWN_SHIFT_DIR = _28_CORPUS_DIR / "known_shift"
+_STAR_DIR = _28_CORPUS_DIR / "star"
+
+_28_CORPUS_SKIP = pytest.mark.skipif(
+    not _28_CORPUS_DIR.is_dir(),
+    reason=f"real-hardware dataset not present locally at {_28_CORPUS_DIR}",
+)
+
+_28_SHAPE = (1080, 1920)  # Guide
+
+
+def _load_28(path: Path) -> np.ndarray:
+    return np.asarray(fits.getdata(path), dtype=np.float32)
+
+
+def _expected_wrapped(applied: int, dimension: int) -> float:
+    """What `measure_translation_offset()` reports for an `applied` shift
+    along one axis of a frame `dimension` pixels wide/tall, accounting for
+    `_correlate`'s own circular-shift unwrap -- see `max_unaliased_shift_px`'s
+    docstring. Verified against this exact real corpus while building it:
+    applied (0, 640) on this 1080-tall frame measured back as exactly
+    (0, -440); this formula reproduces that (`640 % 1080 == 640`,
+    `640 > 540` so `640 - 1080 == -440`)."""
+    wrapped = applied % dimension
+    return float(wrapped if wrapped <= dimension // 2 else wrapped - dimension)
+
+
+def _assert_grid_case_matches(offset: TranslationOffset | None, case: ShiftCase) -> None:
+    assert offset is not None, case.name
+    assert offset.dx_px == _expected_wrapped(case.dx, _28_SHAPE[1]), case.name
+    assert offset.dy_px == _expected_wrapped(case.dy, _28_SHAPE[0]), case.name
+
+
+@_28_CORPUS_SKIP
+@pytest.mark.parametrize(
+    "case",
+    [case for case in KNOWN_SHIFT_GRID if not (case.dx == 0 and case.dy == 0)],
+    ids=lambda case: case.name,
+)
+def test_28_corpus_textured_known_shift_grid_matches_or_correctly_aliases(
+    case: ShiftCase,
+) -> None:
+    """Issue #28's full 0-1000px grid against a real textured Guide frame.
+    Every case recovers exactly, or (only past max_unaliased_shift_px)
+    its exact circular alias -- never a genuinely wrong displacement."""
+    before = _load_28(_KNOWN_SHIFT_DIR / "guide_base.fits")
+    after = _load_28(_KNOWN_SHIFT_DIR / f"guide_roll_{case.name}.fits")
+
+    _assert_grid_case_matches(measure_translation_offset(before, after), case)
+
+
+@_28_CORPUS_SKIP
+def test_28_corpus_textured_known_shift_zero_is_high_confidence_zero() -> None:
+    before = _load_28(_KNOWN_SHIFT_DIR / "guide_base.fits")
+
+    offset = measure_translation_offset(before, before.copy())
+
+    assert offset is not None
+    assert (offset.dx_px, offset.dy_px) == (0.0, 0.0)
+    assert offset.score > 0.9
+
+
+@_28_CORPUS_SKIP
+@pytest.mark.parametrize(
+    "case",
+    [case for case in KNOWN_SHIFT_GRID if not (case.dx == 0 and case.dy == 0)],
+    ids=lambda case: case.name,
+)
+def test_32_corpus_star_content_known_shift_grid_matches_or_correctly_aliases(
+    case: ShiftCase,
+) -> None:
+    """Issue #32: the SAME grid against a real Guide STAR frame (1 real
+    detected source, see local_test_data/28_corpus/README.md) -- proves
+    the existing, unmodified estimator already handles sparse/point-source
+    content through the same one interface used for textured terrestrial
+    content, exactly matching the textured test above case-for-case. No new
+    internal strategy was needed for this corpus (see this module's own
+    TestSparseStarContent in tests/core/target/test_translation_offset.py
+    for the synthetic characterization this real-frame evidence confirms)."""
+    before = _load_28(_STAR_DIR / "guide_star_base.fits")
+    after = _load_28(_STAR_DIR / f"guide_star_roll_{case.name}.fits")
+
+    _assert_grid_case_matches(measure_translation_offset(before, after), case)
+
+
+@_28_CORPUS_SKIP
+def test_32_corpus_star_content_known_shift_zero_is_high_confidence_zero() -> None:
+    before = _load_28(_STAR_DIR / "guide_star_base.fits")
+
+    offset = measure_translation_offset(before, before.copy())
+
+    assert offset is not None
+    assert (offset.dx_px, offset.dy_px) == (0.0, 0.0)
+    assert offset.score > 0.9

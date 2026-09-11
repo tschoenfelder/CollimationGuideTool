@@ -22,12 +22,20 @@ from astrotool_core.testing.replay_dataset import (
     load_expected,
     load_frames,
 )
+from astrotool_core.testing.shift_grid import (
+    CI_SHIFT_GRID_SUBSET,
+    KNOWN_SHIFT_GRID,
+    ShiftCase,
+)
 
 __all__ = [
+    "CI_SHIFT_GRID_SUBSET",
     "FakeIndiServer",
     "FakeMountAdapter",
     "FakeMountPark",
     "FakeTouptekCamera",
+    "KNOWN_SHIFT_GRID",
+    "ShiftCase",
     "StarSpec",
     "bayer_star_field_image",
     "discover_fits_paths",

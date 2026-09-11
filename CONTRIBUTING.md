@@ -259,6 +259,18 @@ python scripts/regression_dataset.py --uuid <uuid> --issue <n>
 network; `regression_dataset.py` never does. `--host` overrides the ssh target
 (default `rasppi3`, from `~/.ssh/config`).
 
+### Comparing translation-estimator algorithm changes
+
+`measure_translation_offset()`'s real-frame corpus (issue #28) is a separate
+workflow from dataset intake above — it's for evaluating/optimizing the
+estimator itself, not pinning one field bug. Run
+`python scripts/translation_estimator_benchmark.py` before and after a
+change to compare (writes `docs/quality/translation_estimator_benchmark.
+{json,md}`; measurement-only, no threshold enforced, same philosophy as
+`scripts/quality_report.py`). See `datasets/regressions/28/README.md` for
+the corpus layout and `astrotool_core.testing.shift_grid` for the shared
+known-shift grid.
+
 ## Public interfaces
 
 Each `astrotool_core/<subsystem>/__init__.py` is the only supported import

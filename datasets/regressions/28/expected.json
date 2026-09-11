@@ -69,6 +69,36 @@
       "expect": { "match": true },
       "tolerances": {},
       "rationale": "Issue #32: a sparse point-source (star) before/after pair fed through the SAME measure_translation_offset entry point as the textured terrestrial cases. A usable match is required; dx/dy pins are added once the pair's true shift is measured by hand (star centroids) and recorded here."
+    },
+    {
+      "name": "known_shift_guide_x_small_pos_10px",
+      "inputs": {
+        "before": "local_test_data/28_corpus/known_shift/guide_base.fits",
+        "after": "local_test_data/28_corpus/known_shift/guide_roll_x_small_pos.fits"
+      },
+      "expect": { "match": true, "dx_px": 10.0, "dy_px": 0.0 },
+      "tolerances": { "dx_px": 1.0, "dy_px": 1.0 },
+      "rationale": "numpy.roll(guide_base.fits, 10, axis=1) via astrotool_core.testing.shift_grid.KNOWN_SHIFT_GRID's 'x_small_pos' entry — an exact, known small translation near issue #32's own '~10px' lower bound. Independent of the estimator (numpy, not measure_translation_offset)."
+    },
+    {
+      "name": "star_known_shift_guide_x_small_pos_10px",
+      "inputs": {
+        "before": "local_test_data/28_corpus/star/guide_star_base.fits",
+        "after": "local_test_data/28_corpus/star/guide_star_roll_x_small_pos.fits"
+      },
+      "expect": { "match": true, "dx_px": 10.0, "dy_px": 0.0 },
+      "tolerances": { "dx_px": 1.0, "dy_px": 1.0 },
+      "rationale": "Issue #32: the SAME shift_grid entry as known_shift_guide_x_small_pos_10px, applied to the real Guide STAR base frame instead — proves the shared grid recovers exactly on sparse/point-source content too, through the same one interface. numpy.roll, independent of the estimator."
+    },
+    {
+      "name": "star_known_shift_guide_diag_unequal_pp_reads_as_its_exact_alias",
+      "inputs": {
+        "before": "local_test_data/28_corpus/star/guide_star_base.fits",
+        "after": "local_test_data/28_corpus/star/guide_star_roll_diag_unequal_pp.fits"
+      },
+      "expect": { "match": true, "dx_px": 120.0, "dy_px": -440.0 },
+      "tolerances": { "dx_px": 1.0, "dy_px": 1.0 },
+      "rationale": "The applied shift is numpy.roll(guide_star_base.fits, (640, 120), axis=(0, 1)) — dx=120, dy=640 — but this 1920x1080 frame's own max_unaliased_shift_px is (960, 540): 640 exceeds the 540 dy bound, so measure_translation_offset() correctly reports the exact circular alias 640-1080=-440, not 640. Independently derived from max_unaliased_shift_px's own documented formula (astrotool_core.target.translation_offset), verified against this exact real measurement while building the corpus — not copied from a live run of the estimator on this pair. Pins issue #28's own 'may expose a valid operating limit rather than a defect' edge consideration as a permanent regression guard: a future change that silently 'fixes' or worsens this large-shift aliasing behavior should be a deliberate, evidence-driven decision, not an accidental one this test lets slip by."
     }
   ]
 }

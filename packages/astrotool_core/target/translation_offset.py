@@ -211,6 +211,31 @@ _FALLBACK_MAX_SCORE_GROWTH_RATIO = 1.25
 _FULL_RES_AGREEMENT_TOLERANCE_PX = 2 * _FALLBACK_DOWNSAMPLE_FACTOR
 
 
+def max_unaliased_shift_px(shape: tuple[int, int]) -> tuple[int, int]:
+    """`(max_dx, max_dy)`: the largest positive shift `measure_translation_
+    offset()` reports without its own circular-shift unwrap folding a
+    larger true shift down to a smaller, mathematically-exact-but-not-the-
+    applied-shift alias -- see this module's "Correlating via FFT assumes a
+    circular shift" docstring section, and `_correlate`'s own "fold
+    anything past the frame's midpoint" comment, which this mirrors
+    exactly (`width // 2`, `height // 2`). `shape` is `(height, width)`,
+    matching every other 2D array convention in this module.
+
+    Issues #28/#32: confirmed against a real 1920x1080 Guide star frame
+    while building the sparse-content corpus -- a synthetic (0, +640)
+    shift (max_dy here is 540) measured back as exactly (0, -440), i.e.
+    `640 - 1080`. Not a defect, and not specific to sparse/star content:
+    any shift beyond this bound aliases for ANY content this module
+    measures, an inherent property of FFT-evaluated circular correlation
+    at a shift this large relative to the frame -- exactly issue #28's own
+    predicted "may expose a valid operating limit rather than a defect".
+    `scripts/translation_estimator_benchmark.py` uses this to classify a
+    large-shift mismatch as an expected alias rather than a genuine wrong
+    answer."""
+    height, width = shape
+    return width // 2, height // 2
+
+
 def _correlate(before: np.ndarray, after: np.ndarray) -> tuple[float, float, float] | None:
     """The shared normalized-cross-correlation core -- mean-subtract,
     energy-normalize, FFT-correlate, find the peak, unwrap it to a
@@ -341,6 +366,89 @@ class TranslationOffset:
     score: float
 
 
+def _measure_with_tier(
+    before: np.ndarray,
+    after: np.ndarray,
+    min_score: float,
+    max_saturated_fraction: float,
+) -> tuple[TranslationOffset | None, str]:
+    """Shared implementation behind both `measure_translation_offset()` and
+    `measure_translation_offset_with_tier()` -- one estimator, one code path.
+    Returns the same result `measure_translation_offset()` does, plus which
+    internal tier produced it: `"full_res"`, `"fallback_x8"`, or `"none"`
+    (issues #28/#32: `scripts/translation_estimator_benchmark.py` and any
+    future internal strategy need this to tell "full-resolution correlation
+    nailed it" apart from "only the noisy-fallback path saved it" -- without
+    changing which answer any existing caller gets)."""
+    if before.shape != after.shape:
+        raise ValueError("before and after must be the same shape")
+    if before.ndim != 2:
+        raise ValueError("before/after must be 2D mono arrays")
+
+    if (
+        _near_max_fraction(before) > max_saturated_fraction
+        or _near_max_fraction(after) > max_saturated_fraction
+    ):
+        return None, "none"
+
+    # Mean-subtracted so a brightness/exposure difference between the two
+    # captures doesn't bias the match toward wherever the frame happens
+    # to be brightest -- standard normalized-cross-correlation practice.
+    # f2 * conj(f1), not the other way round: the peak of this cross-power
+    # spectrum's inverse FFT lands at the forward shift from `before` to
+    # `after` (verified empirically against known np.roll() shifts in
+    # this module's own tests -- swapping the operands flips every sign).
+    # Deliberately *not* whitened (no division by |cross_power| here) --
+    # see module docstring for why full phase correlation's per-frequency
+    # magnitude normalization badly mismeasures real, defocused/low-
+    # contrast telescope frames (incident a4ffe048); dividing the whole
+    # correlation surface by both frames' own total energy afterward is
+    # the standard normalized-cross-correlation-coefficient normalization
+    # instead, applied once rather than per frequency bin. See
+    # `_correlate`'s own docstring -- shared with the downsample fallback
+    # below.
+    result = _correlate(before, after)
+    if result is None:
+        return None, "none"
+    dx, dy, score = result
+    if score < min_score:
+        # Real incident 93ba361f: before giving up outright, retry at a
+        # reduced resolution -- see `_FALLBACK_DOWNSAMPLE_FACTOR`'s own
+        # docstring for why (independent per-pixel sensor noise can
+        # swamp a real shift's contribution to this module's own
+        # whole-frame energy normalization at full resolution, even
+        # though the shift is still clearly recoverable once that noise
+        # is averaged down).
+        fallback = _fallback_downsampled_match(before, after, min_score, full_res_offset=(dx, dy))
+        return fallback, ("fallback_x8" if fallback is not None else "none")
+
+    # The peak position wraps around at the frame edges (a shift of -1
+    # looks identical to a shift of height-1 under a circular assumption)
+    # -- fold anything past the frame's midpoint back to the equivalent
+    # negative shift. Already done inside `_correlate` itself, so `dx`/
+    # `dy` here are already unwrapped.
+    return TranslationOffset(dx_px=dx, dy_px=dy, score=score), "full_res"
+
+
+def measure_translation_offset_with_tier(
+    before: np.ndarray,
+    after: np.ndarray,
+    *,
+    min_score: float = _DEFAULT_MIN_SCORE,
+    max_saturated_fraction: float = _DEFAULT_MAX_SATURATED_FRACTION,
+) -> tuple[TranslationOffset | None, str]:
+    """Diagnostic variant of `measure_translation_offset()` that also
+    reports which internal tier produced the result -- `"full_res"`,
+    `"fallback_x8"`, or `"none"` today. For tooling
+    (`scripts/translation_estimator_benchmark.py`) and tests that need to
+    know which strategy answered; production callers (e.g.
+    `MountTestMovePanel`) should keep using `measure_translation_offset()`
+    itself -- the tier is diagnostic metadata about the ONE estimator's own
+    internal strategy selection, not a second, competing estimator. See
+    `measure_translation_offset()`'s own docstring for the algorithm."""
+    return _measure_with_tier(before, after, min_score, max_saturated_fraction)
+
+
 def measure_translation_offset(
     before: np.ndarray,
     after: np.ndarray,
@@ -393,50 +501,5 @@ def measure_translation_offset(
     falling back to only `_FALLBACK_DOWNSAMPLE_FACTOR`-pixel granularity
     when it doesn't.
     """
-    if before.shape != after.shape:
-        raise ValueError("before and after must be the same shape")
-    if before.ndim != 2:
-        raise ValueError("before/after must be 2D mono arrays")
-
-    if (
-        _near_max_fraction(before) > max_saturated_fraction
-        or _near_max_fraction(after) > max_saturated_fraction
-    ):
-        return None
-
-    # Mean-subtracted so a brightness/exposure difference between the two
-    # captures doesn't bias the match toward wherever the frame happens
-    # to be brightest -- standard normalized-cross-correlation practice.
-    # f2 * conj(f1), not the other way round: the peak of this cross-power
-    # spectrum's inverse FFT lands at the forward shift from `before` to
-    # `after` (verified empirically against known np.roll() shifts in
-    # this module's own tests -- swapping the operands flips every sign).
-    # Deliberately *not* whitened (no division by |cross_power| here) --
-    # see module docstring for why full phase correlation's per-frequency
-    # magnitude normalization badly mismeasures real, defocused/low-
-    # contrast telescope frames (incident a4ffe048); dividing the whole
-    # correlation surface by both frames' own total energy afterward is
-    # the standard normalized-cross-correlation-coefficient normalization
-    # instead, applied once rather than per frequency bin. See
-    # `_correlate`'s own docstring -- shared with the downsample fallback
-    # below.
-    result = _correlate(before, after)
-    if result is None:
-        return None
-    dx, dy, score = result
-    if score < min_score:
-        # Real incident 93ba361f: before giving up outright, retry at a
-        # reduced resolution -- see `_FALLBACK_DOWNSAMPLE_FACTOR`'s own
-        # docstring for why (independent per-pixel sensor noise can
-        # swamp a real shift's contribution to this module's own
-        # whole-frame energy normalization at full resolution, even
-        # though the shift is still clearly recoverable once that noise
-        # is averaged down).
-        return _fallback_downsampled_match(before, after, min_score, full_res_offset=(dx, dy))
-
-    # The peak position wraps around at the frame edges (a shift of -1
-    # looks identical to a shift of height-1 under a circular assumption)
-    # -- fold anything past the frame's midpoint back to the equivalent
-    # negative shift. Already done inside `_correlate` itself, so `dx`/
-    # `dy` here are already unwrapped.
-    return TranslationOffset(dx_px=dx, dy_px=dy, score=score)
+    offset, _tier = _measure_with_tier(before, after, min_score, max_saturated_fraction)
+    return offset

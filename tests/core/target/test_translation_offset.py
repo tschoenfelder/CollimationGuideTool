@@ -1,6 +1,11 @@
 import numpy as np
 import pytest
-from astrotool_core.target.translation_offset import measure_translation_offset
+from astrotool_core.target.translation_offset import (
+    max_unaliased_shift_px,
+    measure_translation_offset,
+    measure_translation_offset_with_tier,
+)
+from astrotool_core.testing import CI_SHIFT_GRID_SUBSET, ShiftCase, StarSpec, star_field_image
 
 
 def _textured_image(shape: tuple[int, int], seed: int) -> np.ndarray:
@@ -333,3 +338,201 @@ def test_two_unrelated_large_scenes_still_report_no_usable_match_after_the_fallb
     after = _smooth_scene((480, 640), seed=200)
 
     assert measure_translation_offset(before, after) is None
+
+
+class TestMeasureTranslationOffsetWithTier:
+    """Issues #28/#32: `scripts/translation_estimator_benchmark.py` and any
+    future internal strategy (e.g. a sparse-content fallback) need to know
+    *which* of this module's internal tiers actually produced a result --
+    without that, a benchmark report can't tell "full-resolution correlation
+    nailed it" apart from "only the noisy-fallback path saved it", and a
+    future tier can't be evaluated in isolation. `measure_translation_offset_
+    with_tier()` is a thin, additive wrapper around the exact same shared
+    implementation `measure_translation_offset()` itself calls -- diagnostic
+    metadata about the ONE estimator's own internal strategy selection, not a
+    second production estimator (see this module's own docstring)."""
+
+    def test_reports_full_res_for_a_confident_full_resolution_match(self) -> None:
+        before = _textured_image((128, 128), seed=1)
+        after = np.roll(before, shift=(3, -5), axis=(0, 1))
+
+        offset, tier = measure_translation_offset_with_tier(before, after)
+
+        assert offset is not None
+        assert tier == "full_res"
+
+    def test_reports_fallback_x8_when_only_the_downsampled_retry_clears_min_score(self) -> None:
+        before, after = _noisy_shifted_scene_pair(
+            (480, 640), shift=(16, -24), seed=42, noise_scale=700.0
+        )
+
+        offset, tier = measure_translation_offset_with_tier(before, after)
+
+        assert offset is not None
+        assert tier == "fallback_x8"
+
+    def test_reports_none_when_nothing_clears_min_score(self) -> None:
+        before = _textured_image((128, 128), seed=4)
+        after = _textured_image((128, 128), seed=5)
+
+        offset, tier = measure_translation_offset_with_tier(before, after)
+
+        assert offset is None
+        assert tier == "none"
+
+    def test_agrees_with_measure_translation_offset_on_the_offset_itself(self) -> None:
+        """Same shared implementation, not a second, potentially-divergent
+        code path -- the plain function's answer must always equal the
+        tier-reporting variant's own `offset`, for every tier."""
+        before = _textured_image((128, 128), seed=1)
+        after = np.roll(before, shift=(3, -5), axis=(0, 1))
+
+        plain = measure_translation_offset(before, after)
+        with_tier, _tier = measure_translation_offset_with_tier(before, after)
+
+        assert plain == with_tier
+
+
+def _sparse_star_image(shape: tuple[int, int], seed: int, *, margin: int = 80) -> np.ndarray:
+    """Issue #32: a terrestrial-mode scene that's mostly/only stars --
+    a handful of Gaussian point sources over a flat background (built on
+    `astrotool_core.testing.star_field_image`, the same synthetic generator
+    `tests/core/target/test_detector.py` already uses), standing in for a
+    real sparse star field the way `_textured_image` stands in for ordinary
+    terrestrial content. Deterministically jittered (seeded), 3-6 stars, so
+    no two draws are degenerate/symmetric -- a real symmetric star pattern
+    is exactly the "ambiguous repeated pattern" issue #32 itself allows the
+    estimator to reject, which would make an unlucky fixture flaky rather
+    than meaningfully test anything."""
+    rng = np.random.default_rng(seed)
+    height, width = shape
+    star_count = int(rng.integers(3, 7))
+    stars = [
+        StarSpec(
+            x=float(rng.uniform(margin, width - margin)),
+            y=float(rng.uniform(margin, height - margin)),
+            peak=float(rng.uniform(2000.0, 6000.0)),
+            sigma=float(rng.uniform(1.5, 3.0)),
+        )
+        for _ in range(star_count)
+    ]
+    return star_field_image(shape, stars, background=100.0)
+
+
+class TestMaxUnaliasedShiftPx:
+    """`max_unaliased_shift_px` (issues #28/#32): the largest `(|dx|, |dy|)`
+    `_correlate`'s own unwrap ("fold anything past the frame's midpoint
+    back to the equivalent negative shift") reports without aliasing --
+    used by `scripts/translation_estimator_benchmark.py` to classify a
+    large-shift "wrong displacement" as an expected alias rather than a
+    genuine estimator defect, exactly as issue #28's own "Important edge
+    consideration" anticipates."""
+
+    def test_matches_half_the_frame_dimensions(self) -> None:
+        assert max_unaliased_shift_px((1080, 1920)) == (960, 540)
+        assert max_unaliased_shift_px((128, 128)) == (64, 64)
+
+    def test_a_shift_at_the_bound_is_recovered_exactly_not_aliased(self) -> None:
+        before = _textured_image((256, 256), seed=11)
+        max_dx, max_dy = max_unaliased_shift_px((256, 256))
+        after = np.roll(before, shift=(max_dy, max_dx), axis=(0, 1))
+
+        offset = measure_translation_offset(before, after)
+
+        assert offset is not None
+        assert offset.dx_px == float(max_dx)
+        assert offset.dy_px == float(max_dy)
+
+
+class TestSparseStarContent:
+    """Issue #32: the same one estimator must work when the shared image
+    structure is mainly/only stars/point sources, not just extended
+    terrestrial texture -- without requiring ASTAP or any external plate
+    solver (this whole file never imports one). These tests characterize
+    the CURRENT (unmodified) estimator's behavior on sparse content first,
+    per both issues' own "don't guess, measure the real envelope"
+    instruction -- a third internal strategy (point-source-consensus
+    matching) is deliberately NOT added unless this evidence shows it's
+    needed.
+
+    `_SHAPE` is deliberately larger than the grid's own 1000px ceiling on
+    every side: `_correlate`'s own circular-shift unwrap folds any raw
+    shift past half the frame's dimension to its equivalent negative
+    (e.g. a true +640 shift on a 1000px-tall frame reads back as -360) --
+    a real, expected property of any FFT-correlation approach to a shift
+    this large relative to the frame, not a defect (see the module's own
+    "Correlating via FFT assumes a circular shift" docstring section) and
+    not specific to sparse content. A frame this test's own size (2200px)
+    keeps every grid entry within the *unaliased* regime, so these tests
+    characterize whether sparse content itself is recoverable -- not
+    whether a too-small fixture aliases a large shift. Issue #28's own
+    "may expose a valid operating limit rather than a defect" edge
+    consideration applies directly to *real* Guide frames (1920x1080,
+    where a shift approaching 1000px NECESSARILY exceeds half the
+    1080px-tall sensor and will alias for real) -- that is exactly the
+    kind of operating-envelope finding `scripts/translation_estimator_
+    benchmark.py` (Phase 1b) is meant to surface from real corpus data,
+    not something a synthetic fixture should paper over by picking a
+    frame size no real sensor has."""
+
+    _SHAPE = (2200, 2200)
+
+    @pytest.mark.parametrize(
+        "case", CI_SHIFT_GRID_SUBSET, ids=[case.name for case in CI_SHIFT_GRID_SUBSET]
+    )
+    def test_known_shift_is_recovered_or_cleanly_rejected_never_wrong(
+        self, case: ShiftCase
+    ) -> None:
+        before = _sparse_star_image(self._SHAPE, seed=1)
+        after = np.roll(before, shift=(case.dy, case.dx), axis=(0, 1))
+
+        offset = measure_translation_offset(before, after)
+
+        if offset is None:
+            return  # a clean, honest "no usable match" is acceptable
+        # A confidently WRONG displacement is never acceptable, at any
+        # magnitude or content class (issue #28's explicit taxonomy) --
+        # this is the one outcome that must not occur.
+        assert offset.dx_px == float(case.dx), case.name
+        assert offset.dy_px == float(case.dy), case.name
+
+    def test_a_shift_beyond_the_unaliased_range_reads_back_as_its_own_alias(self) -> None:
+        """Synthetic reproduction of evidence found building #32's corpus:
+        on a REAL 1920x1080 Guide star frame, applying a (0, +640) shift
+        (`max_unaliased_shift_px`'s own dy bound at this shape is 540)
+        measured back as exactly (0, -440) -- `640 - 1080 == -440`, the
+        mathematically exact circular alias, not noise or a wrong answer
+        (see `tests/local_data/test_translation_offset_against_real_
+        captures.py`'s star-content shift-grid test for the real-frame
+        pin). This is issue #28's own predicted "may expose a valid
+        operating limit rather than a defect" for ANY content at a shift
+        beyond half the frame, not something specific to sparse content --
+        confirms `max_unaliased_shift_px` matches `_correlate`'s own
+        unwrap behavior at the exact same shape/shift the real frame
+        exposed it at."""
+        shape = (1080, 1920)
+        base = _sparse_star_image(shape, seed=5)
+        _max_dx, max_dy = max_unaliased_shift_px(shape)
+        applied_dy = max_dy + 100  # 640, well past the 540 bound
+
+        after = np.roll(base, shift=(applied_dy, 0), axis=(0, 1))
+        offset = measure_translation_offset(base, after)
+
+        assert offset is not None
+        assert offset.dx_px == 0.0
+        assert offset.dy_px == float(applied_dy - shape[0])  # the exact circular alias
+
+    def test_stationary_pair_is_near_zero_high_confidence(self) -> None:
+        """Issue #32 Test B's synthetic analogue: two independent noise
+        realizations of the same star layout (mirrors
+        test_zero_shift_reports_near_zero_offset_and_a_high_score's own
+        shape) -- the true displacement is zero by construction."""
+        before = _sparse_star_image(self._SHAPE, seed=2)
+        after = before.copy()
+
+        offset = measure_translation_offset(before, after)
+
+        assert offset is not None
+        assert offset.dx_px == 0.0
+        assert offset.dy_px == 0.0
+        assert offset.score > 0.9
