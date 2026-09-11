@@ -1,27 +1,29 @@
 {
   "summary": {
-    "total_cases": 57,
+    "total_cases": 146,
     "outcome_counts": {
-      "correct_match": 41,
+      "correct_match": 105,
+      "wrong_displacement": 25,
       "aliased": 16
     },
     "error_stats": {
-      "mean_abs_x_error_px": 0.0,
+      "mean_abs_x_error_px": 0.0381,
       "median_abs_x_error_px": 0.0,
-      "max_abs_x_error_px": 0.0,
-      "mean_abs_y_error_px": 0.0,
+      "max_abs_x_error_px": 1.0,
+      "mean_abs_y_error_px": 0.0571,
       "median_abs_y_error_px": 0.0,
-      "max_abs_y_error_px": 0.0
+      "max_abs_y_error_px": 1.0
     },
     "score_distribution": {
-      "count": 57,
-      "mean": 0.9893,
-      "min": 0.3877,
+      "count": 146,
+      "mean": 0.9748,
+      "min": 0.9456,
       "max": 1.0
     },
     "outcome_by_magnitude_bucket": {
       "zero": {
-        "correct_match": 3
+        "correct_match": 67,
+        "wrong_displacement": 25
       },
       "small": {
         "correct_match": 16
@@ -36,9 +38,9 @@
     },
     "per_camera": {
       "guide": {
-        "cases_tested": 57,
+        "cases_tested": 101,
         "outcome_counts": {
-          "correct_match": 41,
+          "correct_match": 85,
           "aliased": 16
         },
         "error_stats": {
@@ -49,11 +51,26 @@
           "median_abs_y_error_px": 0.0,
           "max_abs_y_error_px": 0.0
         }
+      },
+      "main": {
+        "cases_tested": 45,
+        "outcome_counts": {
+          "correct_match": 20,
+          "wrong_displacement": 25
+        },
+        "error_stats": {
+          "mean_abs_x_error_px": 0.2,
+          "median_abs_x_error_px": 0.0,
+          "max_abs_x_error_px": 1.0,
+          "mean_abs_y_error_px": 0.3,
+          "median_abs_y_error_px": 0.0,
+          "max_abs_y_error_px": 1.0
+        }
       }
     },
     "runtime": {
-      "total_ms": 18729.91,
-      "mean_per_case_ms": 328.5949
+      "total_ms": 96860.18,
+      "mean_per_case_ms": 663.4259
     }
   },
   "cases": [
@@ -65,10 +82,1167 @@
       "applied_dy": 0.0,
       "measured_dx": 0.0,
       "measured_dy": 0.0,
-      "score": 0.3877158750720486,
+      "score": 0.982629258272194,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 359.3
+      "runtime_ms": 282.19
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_00_vs_guide_02",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.97996741442589,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 286.6
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_00_vs_guide_03",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9662233800424394,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 291.34
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_00_vs_guide_04",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9582982798124687,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 292.35
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_00_vs_guide_05",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9592607528856529,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 289.32
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_00_vs_guide_06",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9528244849873286,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 287.54
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_00_vs_guide_07",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9504461032183662,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 288.97
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_00_vs_guide_08",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9455504523109644,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 281.4
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_00_vs_guide_09",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9523292733849218,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 284.03
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_01_vs_guide_02",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9913282224366194,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 284.21
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_01_vs_guide_03",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9768786027462165,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 282.0
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_01_vs_guide_04",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9600411372064827,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 283.17
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_01_vs_guide_05",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9614870482886295,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 289.19
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_01_vs_guide_06",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9566746054534343,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 290.4
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_01_vs_guide_07",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.955341500769046,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 281.61
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_01_vs_guide_08",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9501200283037932,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 283.01
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_01_vs_guide_09",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9590657040863088,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 288.09
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_02_vs_guide_03",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9782521863455965,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 289.42
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_02_vs_guide_04",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.960229425392705,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 287.32
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_02_vs_guide_05",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9631334777954402,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 294.81
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_02_vs_guide_06",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9570008106702363,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 290.29
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_02_vs_guide_07",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9565509224895105,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 291.11
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_02_vs_guide_08",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.950645895855338,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 289.39
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_02_vs_guide_09",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9601691523973966,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 293.07
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_03_vs_guide_04",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.963635289570494,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 285.53
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_03_vs_guide_05",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9673246075897852,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 292.65
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_03_vs_guide_06",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.962126957720495,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 304.83
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_03_vs_guide_07",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9587505646310204,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 288.69
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_03_vs_guide_08",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9592292232100537,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 285.87
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_03_vs_guide_09",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9713431787863698,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 299.98
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_04_vs_guide_05",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9665867456599265,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 288.31
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_04_vs_guide_06",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9691072247658747,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 288.32
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_04_vs_guide_07",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9704822215535976,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 295.82
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_04_vs_guide_08",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9690874610417007,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 291.54
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_04_vs_guide_09",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9617991735187171,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 289.78
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_05_vs_guide_06",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9745361337875815,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 286.62
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_05_vs_guide_07",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9761332931215626,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 293.75
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_05_vs_guide_08",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.972570292020179,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 290.6
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_05_vs_guide_09",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9674853070444961,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 290.18
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_06_vs_guide_07",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9842047654905993,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 294.22
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_06_vs_guide_08",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9649480930249593,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 288.65
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_06_vs_guide_09",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9635372804238915,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 293.85
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_07_vs_guide_08",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9654712241896001,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 300.7
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_07_vs_guide_09",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9602188684017826,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 291.04
+    },
+    {
+      "camera": "guide",
+      "category": "stationary",
+      "dataset": "guide_08_vs_guide_09",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9713585403556451,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 295.18
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_00_vs_main_01",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9609551983355338,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 1715.12
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_00_vs_main_02",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 2.0,
+      "measured_dy": 0.0,
+      "score": 0.9520224049326608,
+      "outcome": "wrong_displacement",
+      "tier": "full_res",
+      "runtime_ms": 1701.56
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_00_vs_main_03",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 1.0,
+      "score": 0.9589130791017754,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 1603.92
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_00_vs_main_04",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 2.0,
+      "measured_dy": 0.0,
+      "score": 0.9573895926045513,
+      "outcome": "wrong_displacement",
+      "tier": "full_res",
+      "runtime_ms": 1471.61
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_00_vs_main_05",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 2.0,
+      "measured_dy": 1.0,
+      "score": 0.9519746780077226,
+      "outcome": "wrong_displacement",
+      "tier": "full_res",
+      "runtime_ms": 1522.56
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_00_vs_main_06",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 1.0,
+      "measured_dy": 2.0,
+      "score": 0.9503499139506371,
+      "outcome": "wrong_displacement",
+      "tier": "full_res",
+      "runtime_ms": 1472.59
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_00_vs_main_07",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 2.0,
+      "measured_dy": 3.0,
+      "score": 0.9527405452151023,
+      "outcome": "wrong_displacement",
+      "tier": "full_res",
+      "runtime_ms": 1501.63
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_00_vs_main_08",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 5.0,
+      "measured_dy": 0.0,
+      "score": 0.9483682772451814,
+      "outcome": "wrong_displacement",
+      "tier": "full_res",
+      "runtime_ms": 1487.13
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_00_vs_main_09",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 3.0,
+      "measured_dy": 2.0,
+      "score": 0.9463545087385148,
+      "outcome": "wrong_displacement",
+      "tier": "full_res",
+      "runtime_ms": 1574.85
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_01_vs_main_02",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9603274468358284,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 1506.2
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_01_vs_main_03",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 1.0,
+      "score": 0.955383850944466,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 1526.96
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_01_vs_main_04",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9568693912703646,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 1511.67
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_01_vs_main_05",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9518132263887442,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 1562.35
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_01_vs_main_06",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 2.0,
+      "score": 0.9466286016167744,
+      "outcome": "wrong_displacement",
+      "tier": "full_res",
+      "runtime_ms": 1495.67
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_01_vs_main_07",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 3.0,
+      "score": 0.9499120612906669,
+      "outcome": "wrong_displacement",
+      "tier": "full_res",
+      "runtime_ms": 1577.4
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_01_vs_main_08",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 4.0,
+      "measured_dy": 0.0,
+      "score": 0.9509693698881017,
+      "outcome": "wrong_displacement",
+      "tier": "full_res",
+      "runtime_ms": 1514.66
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_01_vs_main_09",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 1.0,
+      "measured_dy": 2.0,
+      "score": 0.9482487025542263,
+      "outcome": "wrong_displacement",
+      "tier": "full_res",
+      "runtime_ms": 1466.57
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_02_vs_main_03",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": -1.0,
+      "measured_dy": 1.0,
+      "score": 0.9575861894244089,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 1476.27
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_02_vs_main_04",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9534217714139077,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 1491.81
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_02_vs_main_05",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.951814727488433,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 1493.27
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_02_vs_main_06",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": -2.0,
+      "measured_dy": 2.0,
+      "score": 0.9479000513549654,
+      "outcome": "wrong_displacement",
+      "tier": "full_res",
+      "runtime_ms": 1506.02
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_02_vs_main_07",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 3.0,
+      "score": 0.9486378192719045,
+      "outcome": "wrong_displacement",
+      "tier": "full_res",
+      "runtime_ms": 1519.36
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_02_vs_main_08",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 3.0,
+      "measured_dy": 0.0,
+      "score": 0.9499140253748214,
+      "outcome": "wrong_displacement",
+      "tier": "full_res",
+      "runtime_ms": 1500.15
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_02_vs_main_09",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 1.0,
+      "measured_dy": 2.0,
+      "score": 0.9506094251126088,
+      "outcome": "wrong_displacement",
+      "tier": "full_res",
+      "runtime_ms": 1505.23
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_03_vs_main_04",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 2.0,
+      "measured_dy": 0.0,
+      "score": 0.9588069576346744,
+      "outcome": "wrong_displacement",
+      "tier": "full_res",
+      "runtime_ms": 1508.38
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_03_vs_main_05",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 1.0,
+      "measured_dy": 0.0,
+      "score": 0.9526632738419031,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 1517.15
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_03_vs_main_06",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.95826303453273,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 1569.96
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_03_vs_main_07",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9572766817712703,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 1453.57
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_03_vs_main_08",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 4.0,
+      "measured_dy": -1.0,
+      "score": 0.9511400714996906,
+      "outcome": "wrong_displacement",
+      "tier": "full_res",
+      "runtime_ms": 1573.73
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_03_vs_main_09",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 2.0,
+      "measured_dy": 0.0,
+      "score": 0.9544797883125041,
+      "outcome": "wrong_displacement",
+      "tier": "full_res",
+      "runtime_ms": 1432.39
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_04_vs_main_05",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9573061717444351,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 1443.85
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_04_vs_main_06",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": -1.0,
+      "measured_dy": 1.0,
+      "score": 0.956291217538595,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 1436.39
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_04_vs_main_07",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 2.0,
+      "score": 0.9567992421641118,
+      "outcome": "wrong_displacement",
+      "tier": "full_res",
+      "runtime_ms": 1423.88
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_04_vs_main_08",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 2.0,
+      "measured_dy": 0.0,
+      "score": 0.952719643169189,
+      "outcome": "wrong_displacement",
+      "tier": "full_res",
+      "runtime_ms": 1542.14
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_04_vs_main_09",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 1.0,
+      "measured_dy": 1.0,
+      "score": 0.9504711898948364,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 1399.73
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_05_vs_main_06",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9537320570371043,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 1410.93
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_05_vs_main_07",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 1.0,
+      "score": 0.9560645641291522,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 1401.54
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_05_vs_main_08",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 3.0,
+      "measured_dy": 0.0,
+      "score": 0.9525439631409249,
+      "outcome": "wrong_displacement",
+      "tier": "full_res",
+      "runtime_ms": 1441.89
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_05_vs_main_09",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9519414517112719,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 1561.3
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_06_vs_main_07",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9609347560878422,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 1445.81
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_06_vs_main_08",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 3.0,
+      "measured_dy": -2.0,
+      "score": 0.9530454165983401,
+      "outcome": "wrong_displacement",
+      "tier": "full_res",
+      "runtime_ms": 1416.09
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_06_vs_main_09",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 3.0,
+      "measured_dy": 0.0,
+      "score": 0.950135522546004,
+      "outcome": "wrong_displacement",
+      "tier": "full_res",
+      "runtime_ms": 1419.66
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_07_vs_main_08",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 2.0,
+      "measured_dy": -4.0,
+      "score": 0.9585997567295664,
+      "outcome": "wrong_displacement",
+      "tier": "full_res",
+      "runtime_ms": 1520.56
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_07_vs_main_09",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": 0.0,
+      "measured_dy": 0.0,
+      "score": 0.9566897255015986,
+      "outcome": "correct_match",
+      "tier": "full_res",
+      "runtime_ms": 1465.8
+    },
+    {
+      "camera": "main",
+      "category": "stationary",
+      "dataset": "main_08_vs_main_09",
+      "applied_dx": 0.0,
+      "applied_dy": 0.0,
+      "measured_dx": -2.0,
+      "measured_dy": 2.0,
+      "score": 0.9547333875780165,
+      "outcome": "wrong_displacement",
+      "tier": "full_res",
+      "runtime_ms": 1560.84
     },
     {
       "camera": "guide",
@@ -81,7 +1255,7 @@
       "score": 1.0000000000000004,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 328.44
+      "runtime_ms": 278.74
     },
     {
       "camera": "guide",
@@ -94,7 +1268,7 @@
       "score": 1.0000000000000004,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 317.15
+      "runtime_ms": 279.32
     },
     {
       "camera": "guide",
@@ -107,7 +1281,7 @@
       "score": 1.0000000000000007,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 319.63
+      "runtime_ms": 278.31
     },
     {
       "camera": "guide",
@@ -120,7 +1294,7 @@
       "score": 0.9999999999999946,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 346.63
+      "runtime_ms": 281.94
     },
     {
       "camera": "guide",
@@ -133,7 +1307,7 @@
       "score": 1.0000000000000002,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 318.63
+      "runtime_ms": 275.87
     },
     {
       "camera": "guide",
@@ -146,7 +1320,7 @@
       "score": 1.0000000000000002,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 321.29
+      "runtime_ms": 278.74
     },
     {
       "camera": "guide",
@@ -159,7 +1333,7 @@
       "score": 1.0000000000000002,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 353.25
+      "runtime_ms": 336.79
     },
     {
       "camera": "guide",
@@ -172,7 +1346,7 @@
       "score": 1.0000000000000004,
       "outcome": "aliased",
       "tier": "full_res",
-      "runtime_ms": 323.31
+      "runtime_ms": 307.29
     },
     {
       "camera": "guide",
@@ -185,7 +1359,7 @@
       "score": 1.0000000000000002,
       "outcome": "aliased",
       "tier": "full_res",
-      "runtime_ms": 324.4
+      "runtime_ms": 279.11
     },
     {
       "camera": "guide",
@@ -198,7 +1372,7 @@
       "score": 1.0000000000000002,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 331.11
+      "runtime_ms": 279.98
     },
     {
       "camera": "guide",
@@ -211,7 +1385,7 @@
       "score": 0.9999999999999947,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 313.62
+      "runtime_ms": 284.4
     },
     {
       "camera": "guide",
@@ -224,7 +1398,7 @@
       "score": 0.9999999999999947,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 317.58
+      "runtime_ms": 282.12
     },
     {
       "camera": "guide",
@@ -237,7 +1411,7 @@
       "score": 1.0000000000000004,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 340.42
+      "runtime_ms": 283.92
     },
     {
       "camera": "guide",
@@ -250,7 +1424,7 @@
       "score": 1.0000000000000002,
       "outcome": "aliased",
       "tier": "full_res",
-      "runtime_ms": 329.86
+      "runtime_ms": 287.26
     },
     {
       "camera": "guide",
@@ -263,7 +1437,7 @@
       "score": 1.0000000000000002,
       "outcome": "aliased",
       "tier": "full_res",
-      "runtime_ms": 321.22
+      "runtime_ms": 283.82
     },
     {
       "camera": "guide",
@@ -276,7 +1450,7 @@
       "score": 1.0000000000000002,
       "outcome": "aliased",
       "tier": "full_res",
-      "runtime_ms": 344.34
+      "runtime_ms": 282.32
     },
     {
       "camera": "guide",
@@ -289,7 +1463,7 @@
       "score": 1.0000000000000004,
       "outcome": "aliased",
       "tier": "full_res",
-      "runtime_ms": 311.38
+      "runtime_ms": 284.67
     },
     {
       "camera": "guide",
@@ -302,7 +1476,7 @@
       "score": 1.0000000000000004,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 321.74
+      "runtime_ms": 291.18
     },
     {
       "camera": "guide",
@@ -315,7 +1489,7 @@
       "score": 0.9999999999999947,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 354.75
+      "runtime_ms": 282.92
     },
     {
       "camera": "guide",
@@ -328,7 +1502,7 @@
       "score": 1.0000000000000004,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 305.43
+      "runtime_ms": 286.9
     },
     {
       "camera": "guide",
@@ -341,7 +1515,7 @@
       "score": 1.0000000000000004,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 311.45
+      "runtime_ms": 288.8
     },
     {
       "camera": "guide",
@@ -354,7 +1528,7 @@
       "score": 1.0000000000000002,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 349.59
+      "runtime_ms": 284.5
     },
     {
       "camera": "guide",
@@ -367,7 +1541,7 @@
       "score": 1.0000000000000002,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 334.27
+      "runtime_ms": 278.26
     },
     {
       "camera": "guide",
@@ -380,7 +1554,7 @@
       "score": 1.0000000000000004,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 326.02
+      "runtime_ms": 281.78
     },
     {
       "camera": "guide",
@@ -393,7 +1567,7 @@
       "score": 1.0000000000000004,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 338.5
+      "runtime_ms": 286.56
     },
     {
       "camera": "guide",
@@ -406,7 +1580,7 @@
       "score": 1.0,
       "outcome": "aliased",
       "tier": "full_res",
-      "runtime_ms": 317.54
+      "runtime_ms": 273.32
     },
     {
       "camera": "guide",
@@ -419,7 +1593,7 @@
       "score": 1.0,
       "outcome": "aliased",
       "tier": "full_res",
-      "runtime_ms": 312.56
+      "runtime_ms": 275.93
     },
     {
       "camera": "guide",
@@ -432,7 +1606,7 @@
       "score": 1.0000000000000002,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 343.63
+      "runtime_ms": 281.09
     },
     {
       "camera": "guide",
@@ -445,7 +1619,7 @@
       "score": 1.0,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 323.95
+      "runtime_ms": 270.59
     },
     {
       "camera": "guide",
@@ -458,7 +1632,7 @@
       "score": 0.9999999999999322,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 323.28
+      "runtime_ms": 278.5
     },
     {
       "camera": "guide",
@@ -471,7 +1645,7 @@
       "score": 1.0000000000000002,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 360.78
+      "runtime_ms": 287.75
     },
     {
       "camera": "guide",
@@ -484,7 +1658,7 @@
       "score": 1.0,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 323.29
+      "runtime_ms": 295.94
     },
     {
       "camera": "guide",
@@ -497,7 +1671,7 @@
       "score": 0.9999999999999324,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 315.43
+      "runtime_ms": 286.83
     },
     {
       "camera": "guide",
@@ -510,7 +1684,7 @@
       "score": 1.0,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 342.55
+      "runtime_ms": 289.17
     },
     {
       "camera": "guide",
@@ -523,7 +1697,7 @@
       "score": 0.9999999999999322,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 333.15
+      "runtime_ms": 292.72
     },
     {
       "camera": "guide",
@@ -536,7 +1710,7 @@
       "score": 1.0,
       "outcome": "aliased",
       "tier": "full_res",
-      "runtime_ms": 308.47
+      "runtime_ms": 286.36
     },
     {
       "camera": "guide",
@@ -549,7 +1723,7 @@
       "score": 1.0,
       "outcome": "aliased",
       "tier": "full_res",
-      "runtime_ms": 353.08
+      "runtime_ms": 290.37
     },
     {
       "camera": "guide",
@@ -562,7 +1736,7 @@
       "score": 1.0,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 348.96
+      "runtime_ms": 295.35
     },
     {
       "camera": "guide",
@@ -575,7 +1749,7 @@
       "score": 1.0000000000000002,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 324.86
+      "runtime_ms": 325.87
     },
     {
       "camera": "guide",
@@ -588,7 +1762,7 @@
       "score": 0.9999999999999324,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 342.02
+      "runtime_ms": 357.06
     },
     {
       "camera": "guide",
@@ -601,7 +1775,7 @@
       "score": 1.0,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 306.33
+      "runtime_ms": 286.46
     },
     {
       "camera": "guide",
@@ -614,7 +1788,7 @@
       "score": 0.9999999999999324,
       "outcome": "aliased",
       "tier": "full_res",
-      "runtime_ms": 321.29
+      "runtime_ms": 289.77
     },
     {
       "camera": "guide",
@@ -627,7 +1801,7 @@
       "score": 0.9999999999999322,
       "outcome": "aliased",
       "tier": "full_res",
-      "runtime_ms": 338.15
+      "runtime_ms": 288.63
     },
     {
       "camera": "guide",
@@ -640,7 +1814,7 @@
       "score": 0.9999999999999325,
       "outcome": "aliased",
       "tier": "full_res",
-      "runtime_ms": 324.96
+      "runtime_ms": 288.52
     },
     {
       "camera": "guide",
@@ -653,7 +1827,7 @@
       "score": 1.0000000000000002,
       "outcome": "aliased",
       "tier": "full_res",
-      "runtime_ms": 302.9
+      "runtime_ms": 289.41
     },
     {
       "camera": "guide",
@@ -666,7 +1840,7 @@
       "score": 0.9999999999999322,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 336.13
+      "runtime_ms": 285.19
     },
     {
       "camera": "guide",
@@ -679,7 +1853,7 @@
       "score": 1.0000000000000002,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 312.59
+      "runtime_ms": 289.0
     },
     {
       "camera": "guide",
@@ -692,7 +1866,7 @@
       "score": 1.0,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 321.12
+      "runtime_ms": 295.68
     },
     {
       "camera": "guide",
@@ -705,7 +1879,7 @@
       "score": 1.0000000000000002,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 335.05
+      "runtime_ms": 293.02
     },
     {
       "camera": "guide",
@@ -718,7 +1892,7 @@
       "score": 0.9999999999999325,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 323.35
+      "runtime_ms": 283.39
     },
     {
       "camera": "guide",
@@ -731,7 +1905,7 @@
       "score": 0.9999999999999325,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 317.52
+      "runtime_ms": 287.47
     },
     {
       "camera": "guide",
@@ -744,7 +1918,7 @@
       "score": 1.0000000000000002,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 347.06
+      "runtime_ms": 289.05
     },
     {
       "camera": "guide",
@@ -757,7 +1931,7 @@
       "score": 0.9999999999999325,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 319.6
+      "runtime_ms": 292.0
     },
     {
       "camera": "guide",
@@ -770,7 +1944,7 @@
       "score": 1.0000000000000002,
       "outcome": "aliased",
       "tier": "full_res",
-      "runtime_ms": 322.05
+      "runtime_ms": 289.5
     },
     {
       "camera": "guide",
@@ -783,7 +1957,7 @@
       "score": 0.9999999999999325,
       "outcome": "aliased",
       "tier": "full_res",
-      "runtime_ms": 347.49
+      "runtime_ms": 301.24
     },
     {
       "camera": "guide",
@@ -796,7 +1970,7 @@
       "score": 0.9999999999999999,
       "outcome": "correct_match",
       "tier": "full_res",
-      "runtime_ms": 317.46
+      "runtime_ms": 292.41
     }
   ]
 }

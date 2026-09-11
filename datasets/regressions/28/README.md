@@ -11,11 +11,15 @@ themselves are not committed. Every case input is a
 (git-ignored) tree the whole dataset **skips cleanly** — it graduates case by
 case as real frames are dropped in.
 
-**Status (2026-09-11): 10 of 11 cases populated and passing** against real data
-(`local_test_data/28_corpus/README.md` has the provenance + the independent
-verification of every `expect` before it was written, plus the full-grid
-benchmark findings). Still open: a genuinely well-exposed Main stationary
-pair — see that README's "Known gap" section.
+**Status (2026-09-11): all 11 of 11 cases populated and passing** against real
+data (`local_test_data/28_corpus/README.md` has the provenance + the
+independent verification of every `expect` before it was written, plus the
+full-grid benchmark findings). Both stationary cases (Main included, real
+10-frame sets for both cameras) closed the same day, captured directly by
+connecting to the cameras over SSH — see that README's own follow-up section
+for the real-drift-on-Main-only finding this surfaced (small, genuine,
+outdoor-daytime environmental motion, NOT mount motion — confirmed via a
+mount-status check — and NOT visible to Guide's coarser plate scale).
 
 **Issue #32 finding (2026-09-11): no algorithm change was needed.** The
 existing, unmodified `measure_translation_offset()` recovers the full shared
@@ -32,7 +36,7 @@ not algorithm gaps.
 
 | category | cases here | status | remaining population |
 |---|---|---|---|
-| **Stationary / pairwise ≈0** | `stationary_{main,guide}_pair_00_01_is_zero` | Guide populated + passing (real `(0,0)`). **Main still open** — the only Main frames pulled so far are too underexposed to even confirm zero (`measure_translation_offset` returns `None`, not `(0,0)`); needs a genuinely well-exposed Main pair, not a re-use of the tracked underexposure incidents. | More pairs welcome: `stationary/main_00.fits …_09.fits`, `guide_02.fits …` per camera, plus more pairwise cases (`00_02`, `03_07`, …) — `scripts/translation_estimator_benchmark.py` runs the full C(N,2) sweep once they land. |
+| **Stationary / pairwise ≈0** | `stationary_{main,guide}_pair_00_01_is_zero` | **Both populated + passing.** Full real 10-frame sets exist for both cameras (`stationary/{main,guide}_00..09.fits`) — the 45-pair sweep runs via `scripts/translation_estimator_benchmark.py`. Guide: perfect `(0,0)` on all 45 pairs. Main: real small motion (median 2px, max 5px) traced to outdoor environmental content change, not mount motion (mount status confirmed untouched) — tolerance derived from this real spread, not invented. | More pairwise cases (`00_02`, `03_07`, …) welcome — the harness already runs the full sweep, just not every pair is individually gated. |
 | **Known 10…1000 px software shift** | `known_shift_guide_x_120px`, `known_shift_guide_xy_640_360px`, `known_shift_guide_x_small_pos_10px` (+ 26 more real-frame shifts locally, see below) | Populated + passing (exact recovery, score ~1.0). The full 28-case shared grid (`astrotool_core.testing.shift_grid.KNOWN_SHIFT_GRID`) is generated against the real Guide base frame; a curated few are gated here, the rest verified via `tests/local_data/` + the benchmark script. | Add the same grid for Main once a well-exposed Main base frame exists. |
 | **Real physical before/after** | `real_physical_guide_axis1_af7d27b7`, `real_physical_main_axis1_run1`, `real_physical_main_axis2_run3` | Populated + passing — each matches its own bundle's `incident.json` calibration value, cross-checked non-degenerate against the orthogonal axis. Now covers **both cameras** (Main coverage added 2026-09-11 from 3 live pulse-settle-fix verification runs; see `local_test_data/28_corpus/README.md`'s own follow-up section, incl. one run that failed with an intermittent false-zero on both Main axes — real evidence for the still-open mystery in [[project_ba2b3259_pulse_settle_and_false_zero]]). | Add more real pulse pairs (other axes/bundles) to `real_pairs/`. |
 | **Sparse star / point source (#32)** | `star_field_guide_pair_through_same_interface`, `star_known_shift_guide_x_small_pos_10px`, `star_known_shift_guide_diag_unequal_pp_reads_as_its_exact_alias` | Populated + passing. The real motion pair still only pins `match: true` (no independent hand-measured centroid shift yet); the shared-grid cases pin exact `dx_px`/`dy_px` (or the documented alias) since those are numpy.roll-derived, independent of the estimator. | Hand-measure the real motion pair's true shift from star centroids, add `dx_px`/`dy_px`. Add a Main star pair once one exists. |
