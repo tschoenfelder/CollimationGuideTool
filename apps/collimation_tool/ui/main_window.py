@@ -450,6 +450,16 @@ class MainWindow(QMainWindow):
             "mount": self._mount_panel.diagnostic_context(),
             "mount_test_move": self._test_move_panel.diagnostic_context(),
         }
+        stability_evidence = self._test_move_panel.diagnostic_stability_evidence()
+        if stability_evidence:
+            # Issue #30: per-camera evidence from the most recent
+            # verify_stability=True capture(s) -- see that method's own
+            # docstring. Nested separately from "mount_test_move" above
+            # rather than merged into it, so a pulled bundle can tell at a
+            # glance whether the stability layer even ran for this
+            # attempt (real incidents like 859f2520 had no way to show
+            # this before this wiring).
+            context["mount_test_move_stability"] = stability_evidence
         if self._last_calibration_result is not None:
             # The calibration result behind whatever polygon the guide
             # panel is currently drawing — see _last_calibration_result's

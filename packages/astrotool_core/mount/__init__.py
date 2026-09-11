@@ -10,6 +10,7 @@ from astrotool_core.mount.axis_calibration import (
     calibrate_axes,
     calibrate_axis,
     calibrate_axis_multi,
+    is_degenerate,
     response_from_positions,
 )
 from astrotool_core.mount.indi_adapter import IndiMountAdapter
@@ -25,6 +26,12 @@ from astrotool_core.mount.port import (
     MountCapabilities,
     MountPort,
     MountStatus,
+)
+from astrotool_core.mount.tracking_mode import (
+    TrackingMode,
+    TrackingVerificationResult,
+    TrackingVerificationStatus,
+    ensure_tracking_mode,
 )
 
 __all__ = [
@@ -43,8 +50,13 @@ __all__ = [
     "MountStatus",
     "NoMountAdapter",
     "NoMountPark",
+    "TrackingMode",
+    "TrackingVerificationResult",
+    "TrackingVerificationStatus",
     "calibrate_axes",
     "calibrate_axis",
     "calibrate_axis_multi",
+    "ensure_tracking_mode",
+    "is_degenerate",
     "response_from_positions",
 ]

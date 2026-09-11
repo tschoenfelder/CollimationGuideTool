@@ -43,6 +43,15 @@ from collimation_tool.ui.mount_test_move_panel import (
 
 _SHAPE = (240, 240)
 _CENTER = (120.0, 120.0)
+#: Issue #30: a flat/all-zero frame has zero variance, which
+#: measure_translation_offset's own zero-variance guard refuses outright
+#: (see e.g. test_a_later_steps_before_capture_waits_for_a_frame_after_
+#: the_previous_pulse's own comment) -- check_image_stability (now run on
+#: every verify_stability=True capture's own drawn samples) hits that
+#: same guard and reports INDETERMINATE, never STABLE. Real, textured
+#: content that a test double can return identically call after call
+#: (stabilizes immediately) without accidentally exercising that guard.
+_NON_FLAT_FRAME = np.random.default_rng(0).normal(loc=500.0, scale=80.0, size=(10, 10))
 
 
 def _donut_camera(offset: tuple[float, float]) -> ReplayCamera:
@@ -74,7 +83,10 @@ def _textured_camera(seed: int) -> ReplayCamera:
 
 
 def _stepped_frame_pair(
-    base: np.ndarray, shifts: list[tuple[tuple[int, int], tuple[int, int]]]
+    base: np.ndarray,
+    shifts: list[tuple[tuple[int, int], tuple[int, int]]],
+    *,
+    stability_sample_count: int = 3,
 ) -> tuple[Callable[[], np.ndarray], StableFrameWaiter]:
     """A (get_frame, wait_for_frame) pair for injecting synthetic
     per-calibration-step frame content, for a panel's `_get_left_frame`/
@@ -83,25 +95,21 @@ def _stepped_frame_pair(
     step, in step order (axis1 test, axis2 test; return steps don't
     capture anything).
 
-    `get_frame` supplies only the very first measured step's own
-    "before" -- the one capture `MountTestMovePanel._capture_both` still
-    makes without any freshness wait (nothing has pulsed yet in a fresh
-    Run Calibration click). Every other capture -- every step's "after",
-    and every step's "before" from the second measured step onward --
-    goes through `wait_for_frame` instead (real diagnostic
-    93ba361f-18c6-46f6-9a53-fd05be821b01: a later step's own "before"
-    needs the same freshness wait its "after" already gets, since the
-    *previous* step's own return pulse just moved the mount -- see
-    `_last_pulse_completed_at`'s own docstring in mount_test_move_panel.py).
-    `acquire_settled_frames`'s own two-stage settle (real report: "still
-    2-3 frames are shown showing movement") calls `wait_for_frame` twice
-    per logical capture, both of which must return the *same* content --
-    `wait_for_frame` only advances to the next scripted entry every
-    *second* call, not every call."""
-    # In call order: [axis1-after, axis2-before, axis2-after, axis3-before, ...]
-    # -- get_frame supplies axis1's own "before" outside this sequence.
-    sequence: list[tuple[int, int]] = [shifts[0][1]]
-    for before, after in shifts[1:]:
+    Issue #30: with `verify_stability=True` now the default for every
+    calibration capture -- including the very first measured step's own
+    "before", which used to be the one exception routed through
+    `get_frame()` instead -- every capture in a calibration run goes
+    through `wait_for_frame` now, `get_frame()` included (kept only as a
+    harmless fallback in case some other, non-calibration call site still
+    reads it). `acquire_verified_frame`'s own sliding window draws
+    `stability_sample_count` consecutive samples that must all agree
+    before a capture is accepted, so `wait_for_frame` only advances to
+    the next scripted (before/after) entry every `stability_sample_count`
+    calls, not every call -- every sample drawn for one logical capture
+    must return the identical content, or the fake window would never
+    stabilize."""
+    sequence: list[tuple[int, int]] = []
+    for before, after in shifts:
         sequence.append(before)
         sequence.append(after)
     wait_calls = 0
@@ -112,7 +120,7 @@ def _stepped_frame_pair(
 
     def wait_frame(_reference: float, _timeout: float) -> FrameAcquisitionResult:
         nonlocal wait_calls
-        dy, dx = sequence[wait_calls // 2]
+        dy, dx = sequence[wait_calls // stability_sample_count]
         wait_calls += 1
         return _ok_result(np.roll(np.roll(base, dy, axis=0), dx, axis=1))
 
@@ -121,15 +129,19 @@ def _stepped_frame_pair(
 
 def _stepped_star_pair(
     positions: list[tuple[tuple[float, float], tuple[float, float]]],
+    *,
+    stability_sample_count: int = 3,
 ) -> tuple[Callable[[], np.ndarray], StableFrameWaiter]:
-    """Star-mode counterpart to `_stepped_frame_pair` -- same
-    get_frame()-supplies-only-the-first-before /
-    wait_frame()-advances-every-second-call shape (see that function's
-    own docstring for why), one ((before_x, before_y), (after_x, after_y))
-    centroid pair per measured step, but rendering a single_star_image at
-    that position instead of rolling a shared noise array."""
-    sequence: list[tuple[float, float]] = [positions[0][1]]
-    for before, after in positions[1:]:
+    """Star-mode counterpart to `_stepped_frame_pair` -- see that
+    function's own docstring for why every scripted entry (this one
+    included) now advances every `stability_sample_count` calls, not
+    every call, and why `wait_for_frame` (not `get_frame`) now supplies
+    every capture in a calibration run, one ((before_x, before_y),
+    (after_x, after_y)) centroid pair per measured step, rendering a
+    single_star_image at that position instead of rolling a shared noise
+    array."""
+    sequence: list[tuple[float, float]] = []
+    for before, after in positions:
         sequence.append(before)
         sequence.append(after)
     wait_calls = 0
@@ -140,7 +152,7 @@ def _stepped_star_pair(
 
     def wait_frame(_reference: float, _timeout: float) -> FrameAcquisitionResult:
         nonlocal wait_calls
-        x, y = sequence[wait_calls // 2]
+        x, y = sequence[wait_calls // stability_sample_count]
         wait_calls += 1
         return _ok_result(
             single_star_image((120, 120), x=x, y=y, peak=2000.0, sigma=2.5, background=100.0)
@@ -2641,7 +2653,7 @@ class TestMountTestMovePanel:
 
         def wait_and_record(reference: float, _timeout: float) -> FrameAcquisitionResult:
             calls.append(reference)
-            return _ok_result(np.zeros((10, 10), dtype=np.float32))
+            return _ok_result(_NON_FLAT_FRAME)
 
         settings = MountAlignmentSettings(frame_settle_ms=50)  # keep the test fast
         panel = MountTestMovePanel(
@@ -2651,21 +2663,27 @@ class TestMountTestMovePanel:
             get_right_frame=lambda: np.zeros((10, 10), dtype=np.float32),
             settings=settings,
             wait_for_left_frame=wait_and_record,
-            wait_for_right_frame=lambda _reference, _timeout: _ok_result(
-                np.zeros((10, 10), dtype=np.float32)
-            ),
+            wait_for_right_frame=lambda _reference, _timeout: _ok_result(_NON_FLAT_FRAME),
         )
 
         reference = time.monotonic()
         result = panel._capture_both("terrestrial", after_monotonic=reference)
 
         assert result is not None
-        assert len(calls) == 2
-        # The second call's own reference is at least frame_settle_ms
-        # later than the first -- confirms the buffer actually elapsed
-        # between the two waits, not just that the callback ran twice
-        # back-to-back with the same timestamp.
-        assert calls[1] - calls[0] >= settings.frame_settle_ms / 1000.0
+        # Issue #30: `verify_stability=True` (the default) draws a whole
+        # `stability_sample_count`-frame window (3, unchanged by this
+        # test's own settings) before trusting a capture -- identical
+        # content every draw stabilizes immediately once the window
+        # fills, so exactly 3 calls, not the old two-stage mechanism's
+        # fixed 2.
+        assert len(calls) == 3
+        # The *first* call's own reference is frame_settle_ms later than
+        # the original pulse-completion reference -- confirms the settle
+        # buffer is folded into the very first sample's own reference,
+        # before the stability window even starts drawing (not, as under
+        # the old two-stage mechanism, an actual elapsed delay between a
+        # first and second wait).
+        assert calls[0] - reference == pytest.approx(settings.frame_settle_ms / 1000.0)
         panel.stop()
 
     def test_after_capture_never_grants_the_second_wait_if_the_first_never_catches_up(
@@ -2685,15 +2703,22 @@ class TestMountTestMovePanel:
             get_left_frame=lambda: np.zeros((10, 10), dtype=np.float32),
             get_right_frame=lambda: np.zeros((10, 10), dtype=np.float32),
             wait_for_left_frame=never_catches_up,
-            wait_for_right_frame=lambda _reference, _timeout: _ok_result(
-                np.zeros((10, 10), dtype=np.float32)
-            ),
+            # Real, non-flat content (see _NON_FLAT_FRAME's own docstring)
+            # so the right camera's own stability window resolves
+            # immediately instead of spinning for the full
+            # stability_timeout_s default -- this test only cares about
+            # the left camera's own call_count either way.
+            wait_for_right_frame=lambda _reference, _timeout: _ok_result(_NON_FLAT_FRAME),
         )
 
         result = panel._capture_both("terrestrial", after_monotonic=time.monotonic())
 
         assert result is None
-        assert call_count == 1  # never attempted the second ("settled") wait
+        # Issue #30: acquire_verified_frame() returns CAPTURE_INVALID the
+        # instant the underlying (issue #27) exposure-timing wait itself
+        # fails -- never attempts a second sample draw toward the
+        # stability window at all.
+        assert call_count == 1
         panel.stop()
 
     def test_capture_both_uses_a_longer_timeout_for_a_long_real_exposure(
@@ -2718,7 +2743,7 @@ class TestMountTestMovePanel:
 
         def record_timeout(_reference: float, timeout: float) -> FrameAcquisitionResult:
             timeouts.append(timeout)
-            return _ok_result(np.zeros((10, 10), dtype=np.float32))
+            return _ok_result(_NON_FLAT_FRAME)
 
         panel = MountTestMovePanel(
             FakeMountAdapter(),
@@ -2744,14 +2769,26 @@ class TestMountTestMovePanel:
         self, qapp: object
     ) -> None:
         """No get_left/right_exposure_gain wired (the default, e.g. any
-        caller/test that doesn't need diagnostic_camera_state()) -- must
-        fall back to the original fixed timeout unchanged, not silently
-        make every wait needlessly slow when exposure is unknown."""
+        caller/test that doesn't need diagnostic_camera_state()) -- the
+        exposure-scaling input must fall back to the original fixed
+        constant unchanged, not silently stretched when exposure is
+        unknown.
+
+        Issue #30: the *displayed* per-call timeout is no longer that
+        bare constant, though -- `_verified_capture_timeout_s()` is
+        `max(stability_timeout_s, fresh_frame_timeout_s() *
+        stability_sample_count)`, and the default `stability_timeout_s`
+        (8.0s) floor already exceeds `2.0 * 3 = 6.0s`, so 8.0s wins even
+        with no exposure info. What this test actually pins is that the
+        *fresh_frame_timeout_s() input itself* didn't get stretched by a
+        phantom exposure reading -- confirmed indirectly since 8.0s (the
+        floor) is what's observed, not some larger value a stretched
+        input would have produced."""
         timeouts: list[float] = []
 
         def record_timeout(_reference: float, timeout: float) -> FrameAcquisitionResult:
             timeouts.append(timeout)
-            return _ok_result(np.zeros((10, 10), dtype=np.float32))
+            return _ok_result(_NON_FLAT_FRAME)
 
         panel = MountTestMovePanel(
             FakeMountAdapter(),
@@ -2765,7 +2802,14 @@ class TestMountTestMovePanel:
         result = panel._capture_both("terrestrial", after_monotonic=time.monotonic())
 
         assert result is not None
-        assert timeouts and all(t == 2.0 for t in timeouts)
+        # 3 samples per camera (the default stability_sample_count) x 2
+        # cameras, not the old two-stage mechanism's fixed 2 per camera.
+        assert len(timeouts) == 6
+        # The very first call's own budget is the full deadline; every
+        # later one can only be <= that (the remaining-budget shrinks as
+        # the sliding window draws more samples), never larger.
+        assert timeouts[0] == pytest.approx(8.0)
+        assert all(t <= 8.0 for t in timeouts)
         panel.stop()
 
     def test_starts_disconnected_with_calibration_and_nudge_buttons_disabled(
@@ -2872,11 +2916,17 @@ class TestMountTestMovePanel:
         even started (a completely different real-world scene), because
         it used to be grabbed via the instant/no-wait path even though
         AXIS1's own *return* pulse had physically moved the mount moments
-        earlier. Only the very first measured step's own "before" (AXIS1
-        -- nothing has pulsed yet in a fresh Run Calibration click)
-        should still use the instant path; every later one (AXIS2's) must
-        go through the same freshness-wait machinery every "after"
-        capture already does."""
+        earlier. AXIS2's own "before" must go through the same
+        freshness-wait machinery every "after" capture already does.
+
+        Issue #30: `verify_stability=True` (now the default for every
+        calibration capture) means even AXIS1's own very first "before"
+        -- nothing has pulsed yet in a fresh Run Calibration click, so
+        there's no prior-pulse reference to wait from -- still goes
+        through the stability-verified `wait_for_frame` path (using "now"
+        as its own reference), not the old bare instant `get_frame()`
+        read. `get_frame()` is therefore never called at all in a
+        calibration run any more; kept wired here only to confirm that."""
         pulse_mount = FakeMountAdapter()
         mount_park = FakeMountPark(start_parked=True)
         window = self._window(mount_park=mount_park, pulse_mount=pulse_mount)
@@ -2911,12 +2961,12 @@ class TestMountTestMovePanel:
 
         self._run_calibration_to_completion(panel)
 
-        # Exactly one instant (no-wait) capture -- AXIS1's own "before".
-        # Every other capture (AXIS1's "after", AXIS2's "before", AXIS2's
-        # "after" -- 3 captures x 2 calls each for the two-stage settle)
-        # goes through the freshness-wait path instead.
-        assert get_frame_calls == 1
-        assert wait_frame_calls == 6
+        # No instant (no-wait) captures at all any more -- all 4 captures
+        # (AXIS1's before/after, AXIS2's before/after) go through the
+        # stability-verified freshness-wait path, 3 samples each (the
+        # default stability_sample_count) = 12.
+        assert get_frame_calls == 0
+        assert wait_frame_calls == 12
         window.close()
 
     def test_calibration_steps_pass_the_configured_settle_ms_to_the_runner(
@@ -3023,16 +3073,19 @@ class TestMountTestMovePanel:
         window._test_move_panel._connect_button.setChecked(True)
         panel = window._test_move_panel
 
-        # Capture order is: AXIS1 before(1), AXIS1 after(2,3 -- the
-        # two-stage settle calls wait_for_left_frame twice, see
+        # Capture order is: AXIS1 before(1-3), AXIS1 after(4-6) -- issue
+        # #30's verify_stability=True draws a whole stability_sample_count
+        # (3, default) window per capture now, AXIS1's own "before"
+        # included (nothing has pulsed yet, so it uses "now" as its own
+        # reference instead of the old bare instant read -- see
         # MountTestMovePanel._capture_both's own docstring), [AXIS1
-        # return has no capture], AXIS2 before(4,5 -- real diagnostic
-        # 93ba361f: a later step's own "before" now gets the same
-        # two-stage settle its "after" already did, see
-        # _last_pulse_completed_at's own docstring), AXIS2 after(6,7) --
-        # the 6th left-camera call overall (AXIS2's own "after", first of
-        # its two). Fail exactly that one so AXIS1 completes normally and
-        # AXIS2's forward pulse has already been sent before anything
+        # return has no capture], AXIS2 before(7-9 -- real diagnostic
+        # 93ba361f: a later step's own "before" gets the same
+        # freshness/stability wait its "after" already gets, see
+        # _last_pulse_completed_at's own docstring), AXIS2 after(10-12) --
+        # the 10th left-camera call overall (AXIS2's own "after", first of
+        # its window). Fail exactly that one so AXIS1 completes normally
+        # and AXIS2's forward pulse has already been sent before anything
         # fails.
         real_get_left_frame = panel._get_left_frame
         call_count = 0
@@ -3040,7 +3093,7 @@ class TestMountTestMovePanel:
         def flaky_get_left_frame() -> np.ndarray | None:
             nonlocal call_count
             call_count += 1
-            return None if call_count >= 6 else real_get_left_frame()
+            return None if call_count >= 10 else real_get_left_frame()
 
         panel._get_left_frame = flaky_get_left_frame
         # "After" captures go through this instead of _get_left_frame
@@ -3134,17 +3187,18 @@ class TestMountTestMovePanel:
         original_delay = runner_module._PULSE_REJECTION_RETRY_DELAY_S
         runner_module._PULSE_REJECTION_RETRY_DELAY_S = 0.01  # keep the test fast
 
-        # See the sibling test above for why this is the 6th left-camera
-        # call (the two-stage settle calls wait_for_left_frame twice per
-        # "after", and -- real diagnostic 93ba361f -- twice per "before"
-        # from the second measured step onward too).
+        # See the sibling test above for why this is the 10th left-camera
+        # call (issue #30's verify_stability=True draws a whole
+        # stability_sample_count-frame window per capture now, AXIS1's
+        # own "before" included, and -- real diagnostic 93ba361f -- every
+        # "before" from the second measured step onward too).
         real_get_left_frame = panel._get_left_frame
         call_count = 0
 
         def flaky_get_left_frame() -> np.ndarray | None:
             nonlocal call_count
             call_count += 1
-            return None if call_count >= 6 else real_get_left_frame()
+            return None if call_count >= 10 else real_get_left_frame()
 
         panel._get_left_frame = flaky_get_left_frame
         # "After" captures go through this instead of _get_left_frame
@@ -3548,7 +3602,15 @@ class TestMountTestMovePanel:
         with Main's bad one. Main here is flat/textureless every capture
         (measure_translation_offset's own explicit zero-variance guard,
         not merely a low score) -- it must not block Guide, whose frames
-        genuinely differ per axis, from completing its own calibration."""
+        genuinely differ per axis, from completing its own calibration.
+
+        Issue #30: `_capture_both` now runs that same zero-variance-
+        sensitive estimator one layer earlier too (inside its own
+        stability check), so Main's flat frames now fail there
+        (`IMAGE_NOT_STABLE`) rather than surviving capture and only
+        failing later at the measurement step (`MATCH_FAILED`) --
+        `_capture_both`'s own per-camera tolerance (see its docstring)
+        is what keeps this from also taking Guide down with it."""
         pulse_mount = FakeMountAdapter()
         window = MainWindow(
             _textured_camera(seed=10),
@@ -3562,6 +3624,12 @@ class TestMountTestMovePanel:
         window._test_move_panel._connect_button.setChecked(True)
         panel = window._test_move_panel
         panel._terrestrial_button.click()
+        # Main's own stability window can never resolve (flat content,
+        # every sample) -- a short timeout keeps this test fast instead
+        # of burning the full stability_timeout_s default 4 times over.
+        panel._settings = MountAlignmentSettings(
+            stability_sample_interval_s=0.0, stability_timeout_s=0.5,
+        )
 
         flat = np.full((120, 120), 500.0)
         rng = np.random.default_rng(15)
@@ -3575,7 +3643,12 @@ class TestMountTestMovePanel:
             base, [((0, 0), (0, 6)), ((0, 0), (6, 0))]
         )
 
-        self._run_calibration_to_completion(panel)
+        # Main's own stability window never resolves (flat content) --
+        # each of its 4 captures burns close to _verified_capture_timeout_s
+        # (floored by the real ~2s exposure-scaled freshness budget, not
+        # this test's own short stability_timeout_s override above), so
+        # the whole run needs a longer overall budget than the default.
+        self._run_calibration_to_completion(panel, timeout_s=30.0)
 
         settings = MountAlignmentSettings()
         # All 4 steps still ran -- Main failing didn't cut the shared
@@ -3597,52 +3670,62 @@ class TestMountTestMovePanel:
         lines = {line.split(":", 1)[0]: line for line in panel._result_label.text().split("\n")}
         assert "excluded from this calibration" in lines["Main"]
         assert "RA-axis" in lines["Guide"] and "Dec-axis" in lines["Guide"]
-        # Issue #27: valid frames were obtained for Main (it's flat, not
-        # missing) but the translation estimator found no trustworthy
-        # match -- MATCH_FAILED, not CAPTURE_INVALID. Guide succeeded
-        # outright, so it carries no failure class at all.
-        assert panel.diagnostic_context()["last_failure_classes"] == {"left": "match_failed"}
+        # Issue #30: Main's own capture never verifies stable (flat
+        # content, the same zero-variance guard as #27's own translation
+        # estimator) -- IMAGE_NOT_STABLE, distinct from a frame never
+        # arriving at all. Guide succeeded outright, so it carries no
+        # failure class at all.
+        assert panel.diagnostic_context()["last_failure_classes"] == {"left": "image_not_stable"}
         window.close()
 
-    def test_both_cameras_failing_structure_still_aborts_and_returns_the_mount(
+    def test_both_cameras_failing_before_capture_aborts_without_ever_pulsing(
         self, qapp: object
     ) -> None:
+        """Real report, diagnostic d14c3a9b, extended by issue #30's own
+        BEFORE-frame validity requirement ("the same quality bar applies
+        both times, not just post-motion"): when *neither* camera can
+        even produce a stability-verified "before" frame (both flat/
+        featureless here, the same zero-variance guard as the sibling
+        single-camera test above), there is nothing to build a baseline
+        from for either camera -- `_capture_both` returns empty and the
+        whole step aborts *before* ever pulsing the mount, strictly safer
+        than the old behavior (pulse first, only discover the frames
+        were useless once the "after" measurement failed too)."""
         # Panel constructed directly rather than via a full MainWindow --
-        # this scenario (both cameras aborting simultaneously, then a
-        # separate wait for the stranded return pulse's own background
-        # thread to finish) doesn't need CameraPanel/FocuserPanel/
-        # MountParkPanel at all, and constructing them anyway measurably
-        # raised this project's known Windows/Qt-teardown segfault's odds
-        # in earlier testing here (see the Quit-cleanup fix's own lesson:
-        # "test a single panel's own logic by constructing that panel
-        # directly, not via a full MainWindow").
+        # doesn't need CameraPanel/FocuserPanel/MountParkPanel at all,
+        # and constructing them anyway measurably raised this project's
+        # known Windows/Qt-teardown segfault's odds in earlier testing
+        # here (see the Quit-cleanup fix's own lesson: "test a single
+        # panel's own logic by constructing that panel directly, not via
+        # a full MainWindow").
         pulse_mount = FakeMountAdapter()
         panel = MountTestMovePanel(
             pulse_mount,
             mount_park=FakeMountPark(start_parked=True),
             get_left_frame=lambda: np.full((120, 120), 500.0, dtype=np.float32),
             get_right_frame=lambda: np.full((120, 120), 500.0, dtype=np.float32),
+            # Neither camera's own stability window can ever resolve
+            # (flat content) -- a short timeout keeps this test fast
+            # (still bounded below by the fixed 2.0s exposure-unaware
+            # freshness floor x the default 3-sample window, ~6s).
+            settings=MountAlignmentSettings(
+                stability_sample_interval_s=0.0, stability_timeout_s=0.2
+            ),
         )
         panel._connect_button.setChecked(True)
         panel._terrestrial_button.click()
 
-        self._run_calibration_to_completion(panel)
-        deadline = time.monotonic() + 5.0
-        while panel._runner.is_busy:
-            assert time.monotonic() < deadline, "stranded return pulse never completed"
-            time.sleep(0.01)
-        panel._poll()
+        self._run_calibration_to_completion(panel, timeout_s=15.0)
 
-        settings = MountAlignmentSettings()
-        # Aborted after AXIS1's own test+return -- never reached AXIS2,
-        # nothing left to gain once both cameras have failed.
-        assert pulse_mount.pulse_log == [
-            (MountAxis.AXIS1, AxisDirection.POSITIVE, settings.pulse_ms),
-            (MountAxis.AXIS1, AxisDirection.NEGATIVE, settings.pulse_ms),
-        ]
+        # Never even reached the mount -- neither camera could produce a
+        # usable "before" frame at all.
+        assert pulse_mount.pulse_log == []
         assert not panel._calibration
         assert "Calibration failed" in panel._result_label.text()
-        assert "either camera" in panel._result_label.text()
+        assert "before pulsing" in panel._result_label.text()
+        assert panel.diagnostic_context()["last_failure_classes"] == {
+            "left": "image_not_stable", "right": "image_not_stable",
+        }
         panel.stop()
 
     def test_diagnostic_context_reports_the_current_target_mode(self, qapp: object) -> None:
@@ -3768,7 +3851,7 @@ class TestMountTestMovePanel:
 
         def slow_wait(reference: float, _timeout: float) -> FrameAcquisitionResult:
             wait_calls.append(reference)
-            return _ok_result(np.zeros((10, 10), dtype=np.float32))
+            return _ok_result(_NON_FLAT_FRAME)
 
         pulse_mount = FakeMountAdapter()
         pulse_mount.connect()  # FakeMountAdapter rejects pulses until connected
@@ -3954,7 +4037,15 @@ class TestMountTestMovePanel:
         camera's own confirmed reading, must not disable any nudge
         button (nothing here should look like a failure to keep clicking
         past), and the mount must not be treated as needing to "undo"
-        anything -- it stays exactly where the pulse left it."""
+        anything -- it stays exactly where the pulse left it.
+
+        Issue #30: the nudge's own "after" capture (unlike its "before")
+        goes through the same verify_stability=True policy as
+        calibration's own after-captures now -- Main's flat frames fail
+        there (`IMAGE_NOT_STABLE`) rather than surviving capture and only
+        failing later at the measurement step. `_capture_both`'s own
+        per-camera tolerance (see its docstring) is what keeps this from
+        also withholding Guide's own confirmed reading."""
         pulse_mount = FakeMountAdapter()
         window = MainWindow(
             _textured_camera(seed=10),
@@ -3968,6 +4059,11 @@ class TestMountTestMovePanel:
         window._test_move_panel._connect_button.setChecked(True)
         panel = window._test_move_panel
         panel._terrestrial_button.click()
+        # Main's own stability window can never resolve (flat content) --
+        # a short timeout keeps this test fast.
+        panel._settings = MountAlignmentSettings(
+            stability_sample_interval_s=0.0, stability_timeout_s=0.2,
+        )
 
         def _response(axis: MountAxis, dx_px: float, dy_px: float) -> AxisResponse:
             return AxisResponse(
@@ -4010,7 +4106,7 @@ class TestMountTestMovePanel:
         }
         assert "displacement not confirmed" in lines["Main"]
         assert "dx=" in lines["Guide"] and "dy=" in lines["Guide"]
-        assert panel.diagnostic_context()["last_failure_classes"] == {"left": "match_failed"}
+        assert panel.diagnostic_context()["last_failure_classes"] == {"left": "image_not_stable"}
         # Nothing about this looks like a failure to keep clicking past --
         # every nudge button for a camera with a calibration matrix stays
         # enabled, exactly as it would after a fully-confirmed move.
@@ -4148,7 +4244,10 @@ class _StubbornMountPark(FakeMountPark):
 
 
 def _static_frame_panel(
-    mount_park: FakeMountPark, *, pulse_mount: FakeMountAdapter | None = None
+    mount_park: FakeMountPark,
+    *,
+    pulse_mount: FakeMountAdapter | None = None,
+    settings: MountAlignmentSettings | None = None,
 ) -> MountTestMovePanel:
     # A real detectable star, not a blank frame -- star mode's own
     # _capture() runs detect_sources() on it, which a blank/flat frame
@@ -4160,6 +4259,13 @@ def _static_frame_panel(
         mount_park=mount_park,
         get_left_frame=lambda: star.copy(),
         get_right_frame=lambda: star.copy(),
+        # Issue #30: every capture here now goes through the real
+        # verify_stability=True policy (the identical `star` content
+        # each draw stabilizes immediately regardless) -- a zero sample
+        # interval keeps this class's several `_capture_both`-driving
+        # tests fast, mirroring this file's existing "keep the test
+        # fast" idiom (e.g. frame_settle_ms=50 overrides elsewhere).
+        settings=settings or MountAlignmentSettings(stability_sample_interval_s=0.0),
     )
 
 
@@ -4329,4 +4435,148 @@ class TestTrackingMode:
         # disturbing again, is what this test pins.
         assert mount_park.start_tracking_count >= 1
         assert panel._last_tracking_error is None  # not stuck reporting a mismatch
+        panel.stop()
+
+
+class TestMotionAwareCapture:
+    """Issue #30's deeper image-*stability* layer, now wired into
+    `_capture_both` (`verify_stability=True`, the default for every
+    capture except a nudge's own "before" -- see that method's own
+    docstring). TestTrackingMode above covers the tracking-repair half
+    of issue #30; this class covers the post-motion stability half:
+    `MeasurementFailureClass.IMAGE_NOT_STABLE`,
+    `diagnostic_stability_evidence()`, and the one deliberate
+    verify_stability=False exception."""
+
+    def test_tracking_failure_blocks_before_any_stability_wait(self, qapp: object) -> None:
+        """`_verify_tracking_mode()` runs before either capture branch in
+        `_capture_both` -- a mount that can't be brought into the
+        required tracking mode must never even start drawing samples for
+        the stability window."""
+        mount_park = _StubbornMountPark(start_parked=False)
+        calls = 0
+
+        def wait_and_count(_reference: float, _timeout: float) -> FrameAcquisitionResult:
+            nonlocal calls
+            calls += 1
+            return _ok_result(np.zeros((10, 10), dtype=np.float32))
+
+        panel = MountTestMovePanel(
+            FakeMountAdapter(),
+            mount_park=mount_park,
+            get_left_frame=lambda: np.zeros((10, 10), dtype=np.float32),
+            get_right_frame=lambda: np.zeros((10, 10), dtype=np.float32),
+            wait_for_left_frame=wait_and_count,
+            wait_for_right_frame=wait_and_count,
+        )
+
+        result = panel._capture_both("star", after_monotonic=time.monotonic())
+
+        assert result is None
+        assert calls == 0
+        panel.stop()
+
+    def test_a_capture_that_never_settles_reports_image_not_stable(self, qapp: object) -> None:
+        """A source whose own content keeps changing between samples
+        (simulating real wind/vibration -- see `_MOTION_STATUS_MESSAGES`'
+        own wording) never produces a stable window before the deadline
+        -- must fail with `IMAGE_NOT_STABLE`, distinct from a frame never
+        arriving at all (`CAPTURE_INVALID`)."""
+        settings = MountAlignmentSettings(
+            stability_sample_interval_s=0.0, stability_sample_count=2, stability_timeout_s=0.2,
+        )
+        calls = 0
+
+        def flickering(_reference: float, _timeout: float) -> FrameAcquisitionResult:
+            nonlocal calls
+            calls += 1
+            x, y = (10.0, 10.0) if calls % 2 else (40.0, 40.0)
+            return _ok_result(
+                single_star_image((60, 60), x=x, y=y, peak=2000.0, sigma=2.5, background=100.0)
+            )
+
+        panel = MountTestMovePanel(
+            FakeMountAdapter(),
+            mount_park=FakeMountPark(start_parked=True),
+            get_left_frame=lambda: np.zeros((10, 10), dtype=np.float32),
+            get_right_frame=lambda: np.zeros((10, 10), dtype=np.float32),
+            settings=settings,
+            wait_for_left_frame=flickering,
+            wait_for_right_frame=lambda _reference, _timeout: _ok_result(
+                single_star_image(
+                    (60, 60), x=30.0, y=30.0, peak=2000.0, sigma=2.5, background=100.0
+                )
+            ),
+        )
+
+        result = panel._capture_both("star", after_monotonic=time.monotonic())
+
+        # Issue #30: right's own stability check succeeds independently --
+        # _capture_both's per-camera tolerance (see its own docstring)
+        # doesn't null out a camera that succeeded just because left's
+        # own window never settled, mirroring the tolerance already
+        # applied one layer up at the measurement step.
+        assert result is not None
+        assert set(result) == {"right"}
+        assert result["right"] == pytest.approx((30.0, 30.0), abs=0.1)
+        assert panel.diagnostic_context()["last_failure_classes"]["left"] == "image_not_stable"
+        assert "right" not in panel.diagnostic_context()["last_failure_classes"]
+        assert "wind" in panel._capture_failure_detail().lower()
+        panel.stop()
+
+    def test_diagnostic_stability_evidence_captures_real_stability_evidence(
+        self, qapp: object
+    ) -> None:
+        star = single_star_image((40, 40), x=20.0, y=20.0, peak=2000.0, sigma=2.5, background=100.0)
+        settings = MountAlignmentSettings(stability_sample_interval_s=0.0)
+        panel = MountTestMovePanel(
+            FakeMountAdapter(),
+            mount_park=FakeMountPark(start_parked=True),
+            get_left_frame=lambda: star.copy(),
+            get_right_frame=lambda: star.copy(),
+            settings=settings,
+        )
+
+        result = panel._capture_both(
+            "star", diagnostic_label="axis1_before", after_monotonic=time.monotonic()
+        )
+
+        assert result is not None
+        evidence = panel.diagnostic_stability_evidence()
+        assert set(evidence) == {"left", "right"}
+        assert evidence["left"]["status"] == "ok"
+        assert evidence["left"]["stability_status"] == "stable"
+        assert evidence["left"]["samples_checked"] == settings.stability_sample_count
+        panel.stop()
+
+    def test_nudge_before_capture_skips_the_stability_layer_but_after_does_not(
+        self, qapp: object
+    ) -> None:
+        """Real request: a nudge's own "before" capture must stay on the
+        instant/no-wait path (`verify_stability=False`, set by
+        `_on_nudge_clicked`) -- confirms it also skips the stability
+        layer entirely (no `diagnostic_stability_evidence()` entries),
+        while the matching "after" capture (upgraded to the same policy
+        as calibration's own after-captures) does not."""
+        star = single_star_image((40, 40), x=20.0, y=20.0, peak=2000.0, sigma=2.5, background=100.0)
+        settings = MountAlignmentSettings(stability_sample_interval_s=0.0)
+        panel = MountTestMovePanel(
+            FakeMountAdapter(),
+            mount_park=FakeMountPark(start_parked=True),
+            get_left_frame=lambda: star.copy(),
+            get_right_frame=lambda: star.copy(),
+            settings=settings,
+        )
+
+        before = panel._capture_both(
+            "star", diagnostic_label="nudge_before", after_monotonic=None, verify_stability=False
+        )
+        assert before is not None
+        assert panel.diagnostic_stability_evidence() == {}
+
+        after = panel._capture_both(
+            "star", diagnostic_label="nudge_after", after_monotonic=time.monotonic()
+        )
+        assert after is not None
+        assert set(panel.diagnostic_stability_evidence()) == {"left", "right"}
         panel.stop()

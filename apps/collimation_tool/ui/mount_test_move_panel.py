@@ -157,13 +157,30 @@ confirmation this matters: `MountTestMoveRunner._run()`'s own existing
 disturbed on every single commanded pulse in a calibration sequence, not
 just a hypothetical one. A tracking-state precondition failure is its own
 `MeasurementFailureClass.TRACKING_STATE_INVALID`, distinct from a
-capture/match/calibration-derivation one. Deeper post-motion image-
-*stability* verification (`astrotool_core.acquisition.
-motion_aware_acquisition`, also issue #30) exists and is fully tested at
-the core level but is not yet wired into this panel's own before/after
-capture flow -- a wider, riskier change to this file's existing call-
-count-sensitive test coverage than this pass's own tracking-mode wiring
-(see project memory for the full reasoning).
+capture/match/calibration-derivation one.
+
+Deeper post-motion image-*stability* verification
+(`astrotool_core.acquisition.motion_aware_acquisition`, also issue #30)
+is now wired into every before/after capture this panel makes, through
+the same single choke point (`_capture_both`, `verify_stability=True` by
+default): instead of trusting the first frame whose own exposure
+postdates a commanded pulse's completion (issue #27's own bar), a whole
+`stability_sample_count`-frame sliding window must measure within
+`stability_tolerance_px` of itself, consecutive-pair-to-consecutive-pair,
+before either a BEFORE or an AFTER frame is trusted for calibration --
+the minimum settle time configured (`frame_settle_ms`) is only ever a
+*lower bound*, never proof of stability on its own. A capture that never
+stabilizes before its deadline gets its own
+`MeasurementFailureClass.IMAGE_NOT_STABLE`, distinct from a frame never
+arriving at all (`CAPTURE_INVALID`). The sole deliberate exception is a
+nudge's own "before" capture (`verify_stability=False`), which keeps the
+existing instant/no-wait path so a manual nudge's mount pulse fires
+immediately rather than waiting on a multi-sample settle check -- see
+`_on_nudge_clicked`'s own docstring. Movement context
+(`CommandedMovementContext`) and the stability evidence itself
+(`diagnostic_stability_evidence()`) are threaded through for a future
+adaptive-settle model this issue explicitly defers building, not
+consulted for control flow here.
 """
 
 from __future__ import annotations
@@ -175,23 +192,29 @@ from enum import Enum
 from typing import Any, Literal
 
 import numpy as np
-from astrotool_core.acquisition.stable_frame_acquisition import (
+from astrotool_core.acquisition import (
+    CommandedMovementContext,
     DeliveredFrame,
     FrameAcquisitionResult,
     FrameAcquisitionStatus,
+    MotionAwareFrameResult,
+    MotionAwareStatus,
     StableFrameWaiter,
-    acquire_settled_frames,
+    acquire_verified_frames,
 )
 from astrotool_core.config import MountAlignmentSettings
-from astrotool_core.mount.axis_calibration import (
+from astrotool_core.mount import (
+    AxisDirection,
     AxisResponse,
     CalibrationMatrix,
+    MountAxis,
+    MountParkPort,
+    MountPort,
+    TrackingMode,
+    ensure_tracking_mode,
     is_degenerate,
     response_from_positions,
 )
-from astrotool_core.mount.park_port import MountParkPort
-from astrotool_core.mount.port import AxisDirection, MountAxis, MountPort
-from astrotool_core.mount.tracking_mode import TrackingMode, ensure_tracking_mode
 from astrotool_core.target.detector import detect_sources
 from astrotool_core.target.translation_offset import measure_translation_offset
 from PySide6.QtCore import QTimer
@@ -214,14 +237,16 @@ FrameGetter = Callable[[], np.ndarray | None]
 #: available" abort path), not silently downgraded to a stale one.
 _FRESH_FRAME_TIMEOUT_S = 2.0
 
-#: Issue #27: this panel composes `astrotool_core.acquisition.
-#: stable_frame_acquisition.acquire_settled_frames` over its own two named
+#: Issue #27/#30: this panel composes `astrotool_core.acquisition.
+#: motion_aware_acquisition.acquire_verified_frames` over its own two named
 #: sources ("left"/"right") -- `wait_for_left_frame`/`wait_for_right_frame`
 #: (constructor params, normally `CameraPanel.wait_for_frame_after` bound
-#: per camera) share that module's own `StableFrameWaiter` contract:
+#: per camera) share issue #27's own `StableFrameWaiter` contract:
 #: `(reference_monotonic, timeout_s) -> FrameAcquisitionResult`, whose
 #: `.status` distinguishes *why* a wait failed instead of collapsing every
-#: cause into a bare `None`.
+#: cause into a bare `None` -- the underlying exposure-timing half
+#: `acquire_verified_frames` itself waits on before ever reaching its own
+#: stability check.
 _STATUS_MESSAGES: dict[FrameAcquisitionStatus, str] = {
     FrameAcquisitionStatus.TIMEOUT: "timed out waiting for a frame",
     FrameAcquisitionStatus.EXPOSURE_OVERLAPPED_MOTION: (
@@ -231,6 +256,23 @@ _STATUS_MESSAGES: dict[FrameAcquisitionStatus, str] = {
     FrameAcquisitionStatus.CAMERA_UNAVAILABLE: "camera not available",
     FrameAcquisitionStatus.SETTLE_NOT_REACHED: "caught up, but no frame after the settle wait",
     FrameAcquisitionStatus.CANCELLED: "cancelled",
+}
+
+#: Issue #30: message text for a capture that got frames (unlike anything
+#: in `_STATUS_MESSAGES` above) but couldn't verify them stable --
+#: distinct wording so the two failure classes read differently, not just
+#: differ in their `MeasurementFailureClass` value. Keyed by
+#: `MotionAwareStatus`, never includes `OK`/`CAPTURE_INVALID` (the latter
+#: is instead resolved through `_STATUS_MESSAGES` via
+#: `MotionAwareFrameResult.diagnostics["capture_status"]` -- see
+#: `_capture_failure_detail()`).
+_MOTION_STATUS_MESSAGES: dict[MotionAwareStatus, str] = {
+    MotionAwareStatus.IMAGE_NOT_STABLE: (
+        "image kept moving beyond tolerance -- possible wind/vibration, not a "
+        "measurement-algorithm problem"
+    ),
+    MotionAwareStatus.SETTLE_TIMEOUT: "timed out before a full stability check could even run",
+    MotionAwareStatus.CANCELLED: "cancelled",
 }
 
 
@@ -256,6 +298,13 @@ class MeasurementFailureClass(Enum):
     #: (star = ON, terrestrial = OFF) -- a mount-state precondition
     #: failure, not a frame-capture or measurement one.
     TRACKING_STATE_INVALID = "tracking_state_invalid"
+    #: Issue #30: frames were obtained (unlike CAPTURE_INVALID), but a
+    #: full `stability_sample_count`-frame window never measured within
+    #: `stability_tolerance_px` of itself before the deadline -- a
+    #: genuinely distinct layer from "never got a frame at all" (e.g.
+    #: wind/vibration kept the image moving, not a streaming/connection
+    #: problem).
+    IMAGE_NOT_STABLE = "image_not_stable"
 
 
 def _frame_acquisition_result(frame: np.ndarray | None) -> FrameAcquisitionResult:
@@ -277,6 +326,32 @@ def _frame_acquisition_result(frame: np.ndarray | None) -> FrameAcquisitionResul
 
 def _pixels_if_ok(result: FrameAcquisitionResult) -> np.ndarray | None:
     return result.frame.pixels if result.ok and result.frame is not None else None
+
+
+def _capture_invalid_result(status: FrameAcquisitionStatus) -> MotionAwareFrameResult:
+    """Wraps a bare `FrameAcquisitionStatus` -- the instant/no-wait
+    (`verify_stability=False`) path's own only possible failure -- into a
+    `MotionAwareFrameResult`, so `self._last_capture_failures` has one
+    uniform type regardless of which path produced it and
+    `_capture_failure_detail()` doesn't need to know which one did."""
+    return MotionAwareFrameResult(
+        MotionAwareStatus.CAPTURE_INVALID, diagnostics={"capture_status": status.value}
+    )
+
+
+def _stability_evidence_dict(result: MotionAwareFrameResult) -> dict[str, Any]:
+    """One capture's worth of `diagnostic_stability_evidence()` --
+    `result.diagnostics` already carries `CommandedMovementContext.as_dict()`
+    (and, for a `CAPTURE_INVALID` result, `capture_status`); this adds the
+    stability check's own outcome on top, when one actually ran (a
+    `CAPTURE_INVALID`/`CANCELLED` result reached before any window
+    completed leaves `result.stability` `None`)."""
+    evidence: dict[str, Any] = {"status": result.status.value, **result.diagnostics}
+    if result.stability is not None:
+        evidence["stability_status"] = result.stability.status.value
+        evidence["max_displacement_px"] = result.stability.max_displacement_px
+        evidence["samples_checked"] = result.stability.samples_checked
+    return evidence
 
 #: "star" measures a point-source centroid via detect_sources() (precise,
 #: but needs an actual star -- see incident 6fa2aa59: correctly refuses
@@ -462,7 +537,11 @@ class MountTestMovePanel(QWidget):
         #: whose "after" (or "before") wait didn't come back OK -- see
         #: `_capture_failure_detail()`. Short-lived (overwritten every
         #: `_capture_both` call), unlike `_last_failure_classes` below.
-        self._last_capture_failures: dict[str, FrameAcquisitionStatus] = {}
+        #: Uniformly `MotionAwareFrameResult` regardless of whether the
+        #: failure came from the `verify_stability=True` path or the
+        #: instant `verify_stability=False` one -- see
+        #: `_capture_invalid_result()`.
+        self._last_capture_failures: dict[str, MotionAwareFrameResult] = {}
         #: Set by `_verify_tracking_mode()` (via `_capture_both`) whenever
         #: the mount's own tracking state didn't match (and couldn't be
         #: repaired into) what the current target mode requires -- see
@@ -503,6 +582,18 @@ class MountTestMovePanel(QWidget):
         #: click, see `_on_run_calibration_clicked`'s own reset) -- the
         #: original instant/no-wait behavior is still correct then.
         self._last_pulse_completed_at: float | None = None
+        #: Issue #30: diagnostics-only context about whatever commanded
+        #: movement the *next* capture's stability check is settling
+        #: from -- set at the same two points `_last_pulse_completed_at`
+        #: is (`_finish_calibration_step`/`_finish_nudge`), reset
+        #: alongside it in `_on_run_calibration_clicked`. Never consulted
+        #: for control flow, only threaded into `acquire_verified_frames`
+        #: so `diagnostic_stability_evidence()` can correlate settle
+        #: behavior with what actually moved, for a future adaptive-
+        #: settle model this issue explicitly defers building.
+        self._last_movement_context: CommandedMovementContext | None = None
+        #: See diagnostic_stability_evidence()'s own docstring.
+        self._last_diagnostic_stability: dict[str, dict[str, Any]] = {}
 
         self._title_label = QLabel(f"<b>{title}</b>")
         self._connect_button = QPushButton("Connect")
@@ -689,12 +780,24 @@ class MountTestMovePanel(QWidget):
         slowest_s = max(exposures_ms) / 1000.0
         return max(_FRESH_FRAME_TIMEOUT_S, 2.0 * slowest_s + 1.0)
 
+    def _verified_capture_timeout_s(self) -> float:
+        """Total deadline for one `verify_stability=True` capture -- has
+        to cover the whole `stability_sample_count`-frame sliding window,
+        not just one frame wait, so it's `_fresh_frame_timeout_s()`
+        scaled by that count (never less than
+        `self._settings.stability_timeout_s`'s own configured floor)."""
+        return max(
+            self._settings.stability_timeout_s,
+            self._fresh_frame_timeout_s() * self._settings.stability_sample_count,
+        )
+
     def _capture_both(
         self,
         mode: TargetMode,
         *,
         diagnostic_label: str | None = None,
         after_monotonic: float | None = None,
+        verify_stability: bool = True,
     ) -> dict[str, _Measurement] | None:
         """Capture both cameras' "before"/"after" measurement in one shot,
         or None if either is missing -- the caller decides how to phrase
@@ -739,12 +842,29 @@ class MountTestMovePanel(QWidget):
         *then* takes the frame actually used for measurement -- from
         *that* later point, not the first barely-fresh one.
 
-        Issue #27: the two-stage catch-up/settle composition above now
-        lives in `astrotool_core.acquisition.stable_frame_acquisition.
-        acquire_settled_frames` (the "A" layer, camera-count-independent
-        by construction) -- this method supplies it with this panel's own
-        two named sources and stashes per-camera failure detail in
-        `self._last_capture_failures` for `_capture_failure_detail()`.
+        Issue #27: the underlying exposure-timing wait -- "is this frame's
+        own exposure provably past the reference?" -- lives in
+        `astrotool_core.acquisition.stable_frame_acquisition` (the "A"
+        layer, camera-count-independent by construction).
+
+        Issue #30: by default (`verify_stability=True`), every capture --
+        including this run's very first "before", using "now" as its own
+        reference when there's no prior pulse to settle from -- also goes
+        through `astrotool_core.acquisition.motion_aware_acquisition.
+        acquire_verified_frames`'s own stability-verified policy layered
+        on top of that same exposure-timing wait: a whole
+        `stability_sample_count`-frame sliding window must measure within
+        `stability_tolerance_px` of itself before a frame is trusted, not
+        just the first one whose own exposure happens to postdate the
+        reference. The sole exception is a nudge's own "before" capture
+        (`verify_stability=False`, set by its one caller,
+        `_on_nudge_clicked`), which keeps the original instant/no-wait
+        read -- see that method's own docstring for why. Either way, this
+        method stashes per-camera failure detail in
+        `self._last_capture_failures` for `_capture_failure_detail()`,
+        and (only for the verified path) stability evidence in
+        `self._last_diagnostic_stability` for
+        `diagnostic_stability_evidence()`.
 
         Issue #30: checks/repairs the mount's own tracking state (see
         `_verify_tracking_mode`) before attempting either capture --
@@ -754,32 +874,56 @@ class MountTestMovePanel(QWidget):
         this method IS the thing every before/after capture goes
         through."""
         self._last_capture_failures = {}
+        self._last_diagnostic_stability = {}
         self._last_tracking_error = self._verify_tracking_mode()
         if self._last_tracking_error is not None:
             return None
-        if after_monotonic is None:
+        if not verify_stability:
             left_frame = self._get_left_frame()
             right_frame = self._get_right_frame()
             if left_frame is None:
-                self._last_capture_failures["left"] = FrameAcquisitionStatus.CAMERA_UNAVAILABLE
+                self._last_capture_failures["left"] = _capture_invalid_result(
+                    FrameAcquisitionStatus.CAMERA_UNAVAILABLE
+                )
             if right_frame is None:
-                self._last_capture_failures["right"] = FrameAcquisitionStatus.CAMERA_UNAVAILABLE
+                self._last_capture_failures["right"] = _capture_invalid_result(
+                    FrameAcquisitionStatus.CAMERA_UNAVAILABLE
+                )
         else:
-            timeout_s = self._fresh_frame_timeout_s()
-            results = acquire_settled_frames(
+            # The minimum-settle offset only applies when there's an
+            # actual prior pulse to settle from -- "prove stability
+            # starting right now" for the first-step (`after_monotonic`
+            # is None) case doesn't need it.
+            base_reference = (
+                after_monotonic if after_monotonic is not None else time.monotonic()
+            )
+            settle_s = (
+                self._settings.frame_settle_ms / 1000.0 if after_monotonic is not None else 0.0
+            )
+            results = acquire_verified_frames(
                 {"left": self._wait_for_left_frame, "right": self._wait_for_right_frame},
-                reference_monotonic=after_monotonic,
-                timeout_s=timeout_s,
-                settle_ms=self._settings.frame_settle_ms,
+                reference_monotonic=base_reference + settle_s,
+                timeout_s=self._verified_capture_timeout_s(),
+                stability_tolerance_px=self._settings.stability_tolerance_px,
+                stability_sample_count=self._settings.stability_sample_count,
+                stability_sample_interval_s=self._settings.stability_sample_interval_s,
+                movement_context=self._last_movement_context,
             )
             self._last_capture_failures = {
-                key: result.status for key, result in results.items() if not result.ok
+                key: result for key, result in results.items() if not result.ok
             }
-            left_frame = _pixels_if_ok(results["left"])
-            right_frame = _pixels_if_ok(results["right"])
+            self._last_diagnostic_stability = {
+                key: _stability_evidence_dict(result) for key, result in results.items()
+            }
+            left_frame = results["left"].frame
+            right_frame = results["right"].frame
         if self._last_capture_failures:
-            for key in self._last_capture_failures:
-                self._last_failure_classes[key] = MeasurementFailureClass.CAPTURE_INVALID
+            for key, result in self._last_capture_failures.items():
+                self._last_failure_classes[key] = (
+                    MeasurementFailureClass.CAPTURE_INVALID
+                    if result.status is MotionAwareStatus.CAPTURE_INVALID
+                    else MeasurementFailureClass.IMAGE_NOT_STABLE
+                )
         if diagnostic_label is not None:
             if left_frame is not None:
                 self._last_diagnostic_frames[f"{diagnostic_label}_left"] = left_frame
@@ -796,26 +940,58 @@ class MountTestMovePanel(QWidget):
             "right": self._capture(mode, right_frame),
         }
         missing = [key for key, measurement in raw.items() if measurement is None]
-        if missing:
+        # Issue #30: a camera whose own STABILITY check failed (a frame
+        # *was* captured, just couldn't be verified stable --
+        # IMAGE_NOT_STABLE/SETTLE_TIMEOUT/CANCELLED) is simply absent
+        # from the returned dict, not a reason to null out a camera that
+        # succeeded -- mirrors the per-camera tolerance
+        # `_finish_calibration_step`/`_finish_nudge` already apply one
+        # layer up, at the *measurement* step (real diagnostic
+        # d14c3a9b): a featureless/unstable camera's own stability check
+        # hits the same zero-variance guard `measure_translation_offset`
+        # already tolerates there. Any OTHER reason a camera ends up
+        # missing here -- no frame captured at all (CAPTURE_INVALID, a
+        # more fundamental streaming/connection problem), or a valid,
+        # stable frame this mode's own reduction still couldn't use
+        # (e.g. star mode's "no star detected") -- still aborts the
+        # whole capture, unchanged from before issue #30 (see
+        # _finish_calibration_step's own docstring: "a camera with
+        # literally no frame at all is a more fundamental ... problem").
+        # Every caller checks `if not result:` (covers both `None` here,
+        # and this dict coming back empty because *every* camera
+        # failed), never `is None` alone.
+        if missing and any(
+            key not in self._last_capture_failures
+            or self._last_capture_failures[key].status is MotionAwareStatus.CAPTURE_INVALID
+            for key in missing
+        ):
             return None
-        return raw  # type: ignore[return-value]
+        return {key: measurement for key, measurement in raw.items() if measurement is not None}
 
     def _capture_failure_detail(self) -> str:
         """A short, status-specific note appended to a generic capture-
         failure message -- e.g. `" (Main: every frame's own exposure
-        overlapped the move...)"` -- built from `self._last_capture_failures`
+        overlapped the move...)"` or `" (Guide: image kept moving beyond
+        tolerance...)"` -- built from `self._last_capture_failures`
         (whichever camera(s) `_capture_both`'s most recent call actually
-        failed on, and why -- see `FrameAcquisitionStatus`). Issue #27:
-        this is the concrete "make failures from frame acquisition ...
-        distinguishable" ask -- previously every one of these causes
-        collapsed into the same generic "no frame available" text. Empty
-        string if nothing informative is known."""
+        failed on, and why). Issue #27: this is the concrete "make
+        failures from frame acquisition ... distinguishable" ask --
+        previously every one of these causes collapsed into the same
+        generic "no frame available" text. Issue #30 extends it with the
+        stability layer's own distinct wording
+        (`_MOTION_STATUS_MESSAGES`), keyed off `MotionAwareStatus` rather
+        than the underlying `FrameAcquisitionStatus` for anything past
+        `CAPTURE_INVALID`. Empty string if nothing informative is known."""
         if not self._last_capture_failures:
             return ""
-        parts = [
-            f"{_CAMERA_LABELS[key]}: {_STATUS_MESSAGES[status]}"
-            for key, status in self._last_capture_failures.items()
-        ]
+        parts = []
+        for key, result in self._last_capture_failures.items():
+            if result.status is MotionAwareStatus.CAPTURE_INVALID:
+                capture_status = FrameAcquisitionStatus(result.diagnostics["capture_status"])
+                message = _STATUS_MESSAGES[capture_status]
+            else:
+                message = _MOTION_STATUS_MESSAGES[result.status]
+            parts.append(f"{_CAMERA_LABELS[key]}: {message}")
         return " (" + "; ".join(parts) + ")"
 
     def _capture_failure_message(self, generic: str) -> str:
@@ -855,6 +1031,20 @@ class MountTestMovePanel(QWidget):
         wired (optional -- see constructor)."""
         return dict(self._last_diagnostic_camera_state)
 
+    def diagnostic_stability_evidence(self) -> dict[str, dict[str, Any]]:
+        """Issue #30's own diagnostics ask: per-camera evidence from the
+        most recent `verify_stability=True` capture -- `{"status":
+        ..., "stability_status": ..., "max_displacement_px": ...,
+        "samples_checked": ..., ...CommandedMovementContext fields}`,
+        keyed "left"/"right" (never populated by a nudge's own instant
+        "before" capture, which skips the stability layer entirely --
+        see `_capture_both`'s own docstring). This is what would have let
+        a pulled diagnostic bundle answer "did the stability check even
+        run, and what did it measure" for a real incident like
+        `859f2520` -- something no bundle pulled before this wiring could
+        show at all."""
+        return {key: dict(evidence) for key, evidence in self._last_diagnostic_stability.items()}
+
     def _pause_auto_exposure(self) -> None:
         self._set_left_auto_exposure_paused(True)
         self._set_right_auto_exposure_paused(True)
@@ -869,12 +1059,14 @@ class MountTestMovePanel(QWidget):
         self._calibration_failed_cameras = set()
         self._last_failure_classes = {}
         # Real diagnostic 93ba361f: reset so this run's own very first
-        # "before" capture uses the original instant/no-wait path (see
-        # _last_pulse_completed_at's own docstring) -- nothing has moved
-        # yet in *this* attempt, even if an earlier nudge or calibration
-        # run left a stale (but harmless to reuse as a reference) old
-        # timestamp behind.
+        # "before" capture uses "now" as its own stability-check reference
+        # (see _last_pulse_completed_at's own docstring) -- nothing has
+        # moved yet in *this* attempt, even if an earlier nudge or
+        # calibration run left a stale (but harmless to reuse as a
+        # reference) old timestamp behind. _last_movement_context resets
+        # alongside it -- see that attribute's own docstring.
         self._last_pulse_completed_at = None
+        self._last_movement_context = None
         # Paused for the whole 4-step sequence, not just per-step -- see
         # the constructor's own docstring on _set_left/right_auto_exposure_paused.
         # Resumed in _abort_calibration (every failure path) and
@@ -902,7 +1094,7 @@ class MountTestMovePanel(QWidget):
             captured = self._capture_both(
                 mode, diagnostic_label=label, after_monotonic=self._last_pulse_completed_at
             )
-            if captured is None:
+            if not captured:
                 self._abort_calibration(
                     self._capture_failure_message(f"{self._missing_label(mode)} before pulsing")
                 )
@@ -1028,6 +1220,14 @@ class MountTestMovePanel(QWidget):
         # knows to wait for the stream to catch up past this motion
         # instead of grabbing whatever's already cached.
         self._last_pulse_completed_at = completed_at
+        self._last_movement_context = CommandedMovementContext(
+            movement_type=pending.kind,
+            duration_ms=self._settings.pulse_ms,
+            rate_preset=self._settings.rate_preset,
+            axis=step.axis.name,
+            direction=step.direction.name,
+            minimum_settle_ms=self._settings.frame_settle_ms,
+        )
         # Issue #30: tracking state must be re-verified after *every*
         # commanded pulse, not only ones immediately followed by a
         # capture -- a "move back" return step's own pulse can just as
@@ -1049,7 +1249,7 @@ class MountTestMovePanel(QWidget):
                 diagnostic_label=f"{step.axis.name.lower()}_after",
                 after_monotonic=completed_at,
             )
-            if after is None:
+            if not after:
                 self._abort_calibration(
                     self._capture_failure_message(
                         f"{self._missing_label(pending.mode)} after the move"
@@ -1062,6 +1262,17 @@ class MountTestMovePanel(QWidget):
             for key in ("left", "right"):
                 if key in self._calibration_failed_cameras:
                     continue  # already excluded -- no point re-measuring it
+                if key not in pending.before or key not in after:
+                    # Issue #30: this camera's own before or after capture
+                    # never produced a usable frame at all (see
+                    # _capture_both's own docstring -- CAPTURE_INVALID/
+                    # IMAGE_NOT_STABLE already recorded in
+                    # _last_failure_classes there) -- excluded the same as
+                    # any other per-camera measurement failure below, not
+                    # a reason to abort a camera that DID succeed.
+                    newly_failed.append(key)
+                    self._calibration_failed_cameras.add(key)
+                    continue
                 response = self._build_response(
                     pending.mode, step.axis, step.direction, self._settings.pulse_ms,
                     pending.before[key], after[key],
@@ -1271,8 +1482,10 @@ class MountTestMovePanel(QWidget):
         # double-click, and only a measurement-confirmation concern --
         # see _finish_nudge's own "don't block on failing to confirm"
         # handling) for the mount pulse firing immediately.
-        before = self._capture_both(mode, diagnostic_label="nudge_before", after_monotonic=None)
-        if before is None:
+        before = self._capture_both(
+            mode, diagnostic_label="nudge_before", after_monotonic=None, verify_stability=False
+        )
+        if not before:
             self._resume_auto_exposure()
             self._last_error = self._capture_failure_message(
                 f"{self._missing_label(mode)} before pulsing"
@@ -1321,20 +1534,37 @@ class MountTestMovePanel(QWidget):
             return
         # See _last_pulse_completed_at's own docstring.
         self._last_pulse_completed_at = completed_at
+        assert pending.axis is not None and pending.direction is not None
+        self._last_movement_context = CommandedMovementContext(
+            movement_type=pending.kind,
+            duration_ms=pending.duration_ms,
+            rate_preset=self._settings.rate_preset,
+            axis=pending.axis.name,
+            direction=pending.direction.name,
+            minimum_settle_ms=self._settings.frame_settle_ms,
+        )
         after = self._capture_both(
             pending.mode, diagnostic_label="nudge_after", after_monotonic=completed_at
         )
         self._resume_auto_exposure()
-        if after is None:
+        if not after:
             self._last_error = self._capture_failure_message(
                 f"{self._missing_label(pending.mode)} after the move"
             )
             self._result_label.setText(f"Move failed: {self._last_error}")
             return
-        assert pending.axis is not None and pending.direction is not None
         responses: dict[str, AxisResponse] = {}
         unconfirmed: list[str] = []
         for key in ("left", "right"):
+            if key not in pending.before or key not in after:
+                # Issue #30: this camera's own before or after capture
+                # never produced a usable frame at all (already recorded
+                # in _last_failure_classes by _capture_both) -- treated
+                # the same as any other per-camera "can't confirm this
+                # move" outcome below, not a reason to withhold the other
+                # camera's own confirmed reading.
+                unconfirmed.append(key)
+                continue
             # axis/direction are pending's own real single-axis move now
             # (unused by _format_response either way, but no longer a
             # placeholder -- see _PendingAction's own docstring for why

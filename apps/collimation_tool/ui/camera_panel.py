@@ -69,13 +69,15 @@ from collections.abc import Callable
 from typing import Any
 
 import numpy as np
-from astrotool_core.acquisition.auto_exposure import AutoExposureConfig, compute_auto_exposure
-from astrotool_core.acquisition.stable_frame_acquisition import (
+from astrotool_core.acquisition import (
+    AutoExposureConfig,
     DeliveredFrame,
     FrameAcquisitionResult,
+    MailboxFrame,
+    StreamController,
     acquire_stable_frame,
+    compute_auto_exposure,
 )
-from astrotool_core.acquisition.stream_controller import MailboxFrame, StreamController
 from astrotool_core.camera import (
     DEMO_CAMERA_LABEL,
     CameraDescriptor,

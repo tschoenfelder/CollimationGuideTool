@@ -95,6 +95,31 @@ _DEFAULT_FRAME_SETTLE_MS = 500
 #: signal that axis's calibrated rate is unreliably slow -- consider Run
 #: Calibration again with a longer pulse_ms instead of raising this cap.
 _DEFAULT_MAX_NUDGE_PULSE_MS = 3000
+#: Issue #30: the largest consecutive-frame displacement (px) still treated
+#: as "stable enough to measure" -- see `astrotool_core.acquisition.
+#: image_stability.check_image_stability`'s own tolerance_px parameter,
+#: which this feeds directly. A starting value, not yet live-verified: sits
+#: inside the one piece of real evidence gathered so far
+#: (local_test_data/28_corpus/stationary/, captured 2026-09-11) -- Guide
+#: read an exact (0,0) across all 45 real stationary pairs, Main showed
+#: 0-5px of real outdoor-daytime environmental drift while genuinely
+#: mount-untouched. Tight enough to catch real instability, loose enough
+#: not to misclassify Main's own baseline noise as unstable forever. Needs
+#: tuning against a live "Run Calibration" attempt before being trusted,
+#: same as every other real-hardware-facing constant in this module.
+_DEFAULT_STABILITY_TOLERANCE_PX = 3.0
+#: Matches `acquisition.motion_aware_acquisition.acquire_verified_frame`'s
+#: own kwarg default -- no evidence yet to diverge from it.
+_DEFAULT_STABILITY_SAMPLE_COUNT = 3
+_DEFAULT_STABILITY_SAMPLE_INTERVAL_S = 0.2
+#: Issue #30 open question #4 ("max allowed wait for stability, bounded,
+#: cancellable"). Large enough to cover frame_settle_ms (1s default) plus
+#: several stability-window retries at typical short exposures; small
+#: enough that a genuinely wind-disturbed session fails explicitly within
+#: single-digit seconds instead of hanging the whole calibration sequence.
+#: A starting value, not yet live-verified -- see stability_tolerance_px's
+#: own docstring for the same caveat.
+_DEFAULT_STABILITY_TIMEOUT_S = 8.0
 
 
 @dataclass(frozen=True)
@@ -118,7 +143,19 @@ class MountAlignmentSettings:
     own `_capture_both` docstring. `max_nudge_pulse_ms` caps how long a
     single nudge pulse is allowed to run -- a solved duration exceeding
     it is clamped down to land exactly on this cap rather than refused
-    outright -- see that constant's own docstring."""
+    outright -- see that constant's own docstring.
+
+    Issue #30, the deeper image-stability layer `_capture_both` verifies
+    every before/after frame against (on top of `frame_settle_ms`'s own
+    fixed buffer, which stays a lower bound, not proof of stability):
+    `stability_tolerance_px` is the largest consecutive-frame displacement
+    still treated as stable; `stability_sample_count` is how many
+    consecutive frames must agree within that tolerance before a capture
+    is accepted; `stability_sample_interval_s` is the wait between drawing
+    each fresh sample in that window; `stability_timeout_s` bounds the
+    whole wait so a genuinely wind-disturbed or never-settling session
+    fails explicitly instead of hanging. See each constant's own
+    docstring for the real evidence behind its starting value."""
 
     pulse_ms: int = _DEFAULT_PULSE_MS
     rate_preset: str = _DEFAULT_RATE_PRESET
@@ -126,6 +163,10 @@ class MountAlignmentSettings:
     settle_ms: int = _DEFAULT_SETTLE_MS
     frame_settle_ms: int = _DEFAULT_FRAME_SETTLE_MS
     max_nudge_pulse_ms: int = _DEFAULT_MAX_NUDGE_PULSE_MS
+    stability_tolerance_px: float = _DEFAULT_STABILITY_TOLERANCE_PX
+    stability_sample_count: int = _DEFAULT_STABILITY_SAMPLE_COUNT
+    stability_sample_interval_s: float = _DEFAULT_STABILITY_SAMPLE_INTERVAL_S
+    stability_timeout_s: float = _DEFAULT_STABILITY_TIMEOUT_S
 
 
 def load_mount_alignment_settings(
@@ -176,6 +217,34 @@ def load_mount_alignment_settings(
     except (TypeError, ValueError):
         max_nudge_pulse_ms = defaults.max_nudge_pulse_ms
 
+    try:
+        stability_tolerance_px = float(
+            table.get("stability_tolerance_px", defaults.stability_tolerance_px)
+        )
+    except (TypeError, ValueError):
+        stability_tolerance_px = defaults.stability_tolerance_px
+
+    try:
+        stability_sample_count = int(
+            table.get("stability_sample_count", defaults.stability_sample_count)
+        )
+    except (TypeError, ValueError):
+        stability_sample_count = defaults.stability_sample_count
+
+    try:
+        stability_sample_interval_s = float(
+            table.get("stability_sample_interval_s", defaults.stability_sample_interval_s)
+        )
+    except (TypeError, ValueError):
+        stability_sample_interval_s = defaults.stability_sample_interval_s
+
+    try:
+        stability_timeout_s = float(
+            table.get("stability_timeout_s", defaults.stability_timeout_s)
+        )
+    except (TypeError, ValueError):
+        stability_timeout_s = defaults.stability_timeout_s
+
     return MountAlignmentSettings(
         pulse_ms=pulse_ms,
         rate_preset=rate_preset,
@@ -183,4 +252,8 @@ def load_mount_alignment_settings(
         settle_ms=settle_ms,
         frame_settle_ms=frame_settle_ms,
         max_nudge_pulse_ms=max_nudge_pulse_ms,
+        stability_tolerance_px=stability_tolerance_px,
+        stability_sample_count=stability_sample_count,
+        stability_sample_interval_s=stability_sample_interval_s,
+        stability_timeout_s=stability_timeout_s,
     )
