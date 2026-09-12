@@ -5,7 +5,13 @@ astrotool_core.mount.
 """
 
 from astrotool_core.target.detector import DetectionResult, detect_sources
+from astrotool_core.target.identity_match import (
+    IdentityMatchResult,
+    IdentityMatchStatus,
+    resolve_identity,
+)
 from astrotool_core.target.point_source import PointSource
+from astrotool_core.target.roi import Roi, compute_roi_bounds, crop_to_roi
 from astrotool_core.target.roi_selector import select_target
 from astrotool_core.target.roi_tracker import RoiTracker, TrackingResult, TrackingState
 from astrotool_core.target.translation_offset import (
@@ -17,14 +23,20 @@ from astrotool_core.target.translation_offset import (
 
 __all__ = [
     "DetectionResult",
+    "IdentityMatchResult",
+    "IdentityMatchStatus",
     "PointSource",
+    "Roi",
     "RoiTracker",
     "TrackingResult",
     "TrackingState",
     "TranslationOffset",
+    "compute_roi_bounds",
+    "crop_to_roi",
     "detect_sources",
     "max_unaliased_shift_px",
     "measure_translation_offset",
     "measure_translation_offset_with_tier",
+    "resolve_identity",
     "select_target",
 ]

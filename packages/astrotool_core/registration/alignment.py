@@ -11,9 +11,18 @@ from __future__ import annotations
 import math
 from dataclasses import dataclass
 
-from astrotool_core.registration.geometry import fully_contains, polygon_centroid, rect_polygon
-from astrotool_core.registration.optical_prior import OpticalPrior
-from astrotool_core.registration.result import CrossCameraRegistrationResult
+from astrotool_core.registration.geometry import (
+    Point,
+    fully_contains,
+    polygon_centroid,
+    rect_polygon,
+)
+from astrotool_core.registration.optical_prior import OpticalPrior, scale_ratio
+from astrotool_core.registration.result import (
+    CrossCameraRegistrationResult,
+    RegistrationMethod,
+    RegistrationStatus,
+)
 
 
 @dataclass(frozen=True)
@@ -80,4 +89,64 @@ def derive_alignment_guidance(
         direction_dy=unit_dy,
         magnitude_px=magnitude,
         description=description,
+    )
+
+
+def transform_point_a_to_b(
+    point_in_a: Point, prior_a: OpticalPrior, result: CrossCameraRegistrationResult
+) -> Point:
+    """Project an arbitrary point in optical train A's own pixel space
+    into B's, using the same "rotate about A's own center by
+    `result.rotation_deg`, scale by `result.scale`, then translate to
+    where A's own center actually landed" convention `rect_polygon`/
+    `polygon_a_in_b` already use elsewhere in this module and in both
+    registrars -- B's own frame center is never assumed; A's transformed
+    center is read directly from `polygon_centroid(result.polygon_a_in_b)`
+    (issue #15: turning "the star is at (x,y) in Main" into "the star
+    should appear near (x',y') in Guide" for guide-camera-assisted
+    reacquisition).
+
+    `result.polygon_a_in_b`/`result.rotation_deg`/`result.scale` must all
+    be set -- true for any `.ok` result (guaranteed by both registrars)."""
+    assert result.polygon_a_in_b is not None
+    assert result.rotation_deg is not None
+    assert result.scale is not None
+
+    center_b = polygon_centroid(result.polygon_a_in_b)
+    local_x = point_in_a[0] - prior_a.sensor_width_px / 2.0
+    local_y = point_in_a[1] - prior_a.sensor_height_px / 2.0
+    theta = math.radians(result.rotation_deg)
+    cos_t, sin_t = math.cos(theta), math.sin(theta)
+    scale = result.scale
+    rotated_x = scale * (cos_t * local_x - sin_t * local_y)
+    rotated_y = scale * (sin_t * local_x + cos_t * local_y)
+    return (center_b[0] + rotated_x, center_b[1] + rotated_y)
+
+
+def nominal_registration(
+    prior_a: OpticalPrior, prior_b: OpticalPrior
+) -> CrossCameraRegistrationResult:
+    """A's frame projected centered/unrotated into B's own frame, scaled
+    only from each train's own known plate scale -- issue #15's own
+    explicitly-allowed "nominal centered FOV relationship... only as an
+    explicitly uncalibrated fallback" when no real registration exists
+    yet. `confidence=0.0` is deliberate, not merely "unknown" -- a caller
+    (e.g. a guide-camera-assisted reacquisition controller) checking
+    "is calibration confidence sufficient for automatic mount movement"
+    must always refuse on this result, never mistake it for a real,
+    confident measurement."""
+    scale = scale_ratio(prior_a, prior_b)
+    center_b = (prior_b.sensor_width_px / 2.0, prior_b.sensor_height_px / 2.0)
+    polygon_a_in_b = rect_polygon(
+        prior_a.sensor_width_px * scale, prior_a.sensor_height_px * scale,
+        center=center_b, rotation_deg=0.0,
+    )
+    return CrossCameraRegistrationResult(
+        method=RegistrationMethod.TERRESTRIAL,
+        status=RegistrationStatus.OK_OVERLAP,
+        rotation_deg=0.0,
+        scale=scale,
+        polygon_a_in_b=polygon_a_in_b,
+        confidence=0.0,
+        diagnostics={"nominal": True},
     )
