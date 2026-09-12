@@ -5,6 +5,12 @@ astrotool_core.mount.
 """
 
 from astrotool_core.target.detector import DetectionResult, detect_sources
+from astrotool_core.target.frame_registration import (
+    FrameRegistrationOutcome,
+    FrameRegistrationResult,
+    register_frames,
+    shift_image,
+)
 from astrotool_core.target.identity_match import (
     IdentityMatchResult,
     IdentityMatchStatus,
@@ -23,6 +29,8 @@ from astrotool_core.target.translation_offset import (
 
 __all__ = [
     "DetectionResult",
+    "FrameRegistrationOutcome",
+    "FrameRegistrationResult",
     "IdentityMatchResult",
     "IdentityMatchStatus",
     "PointSource",
@@ -37,6 +45,8 @@ __all__ = [
     "max_unaliased_shift_px",
     "measure_translation_offset",
     "measure_translation_offset_with_tier",
+    "register_frames",
     "resolve_identity",
     "select_target",
+    "shift_image",
 ]
