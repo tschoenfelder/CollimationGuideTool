@@ -3,11 +3,14 @@ import math
 import pytest
 from astrotool_core.mount.axis_calibration import (
     AxisResponse,
+    CalibrationMatrix,
+    DirectionCharacterization,
     calibrate_axes,
     calibrate_axis,
     calibrate_axis_multi,
     compose_screen_move,
     is_degenerate,
+    solve_screen_move,
 )
 from astrotool_core.mount.port import AxisDirection, MountAxis
 from astrotool_core.testing.fake_mount import FakeMountAdapter
@@ -288,3 +291,127 @@ def test_calibration_matrix_response_for_looks_up_by_axis_and_direction() -> Non
     )
     response = matrix.response_for(MountAxis.AXIS1, AxisDirection.POSITIVE)
     assert response.dx_px == pytest.approx(30.0)
+
+
+class TestDirectionCharacterization:
+    """Issue #31's own backlash-revealing sequence (+, +, -, - per axis):
+    `first` is that direction's own first pulse this run (possibly
+    backlash-contaminated -- gear slack consumed instead of real motion),
+    `repeat` is the immediately-following second pulse in the same
+    direction (the reliable, steady-state response `CalibrationMatrix`
+    should trust)."""
+
+    def test_steady_state_is_the_repeat_pulse_not_the_first(self) -> None:
+        first = _response(MountAxis.AXIS1, dx_px=2.0, dy_px=0.0)
+        repeat = _response(MountAxis.AXIS1, dx_px=20.0, dy_px=0.0)
+        characterization = DirectionCharacterization(first=first, repeat=repeat)
+
+        assert characterization.steady_state is repeat
+
+    def test_backlash_deficit_is_the_shortfall_between_repeat_and_first(self) -> None:
+        first = _response(MountAxis.AXIS1, dx_px=2.0, dy_px=0.0)
+        repeat = _response(MountAxis.AXIS1, dx_px=20.0, dy_px=0.0)
+        characterization = DirectionCharacterization(first=first, repeat=repeat)
+
+        assert characterization.backlash_deficit_px == pytest.approx(18.0)
+
+    def test_backlash_deficit_is_floored_at_zero_when_first_is_not_smaller(self) -> None:
+        """A `first` reading that's not smaller than `repeat` (real
+        measurement noise, or genuinely no backlash this run) must not
+        read as *negative* backlash -- 0.0 means "none measurable", not
+        "found none , the two just happened to differ this way"."""
+        first = _response(MountAxis.AXIS1, dx_px=25.0, dy_px=0.0)
+        repeat = _response(MountAxis.AXIS1, dx_px=20.0, dy_px=0.0)
+        characterization = DirectionCharacterization(first=first, repeat=repeat)
+
+        assert characterization.backlash_deficit_px == 0.0
+
+    def test_real_dataset_axis1_positive_shows_measurable_backlash(self) -> None:
+        """Sanity check against this project's own real evidence
+        (local_test_data/calibration_dataset_2026-09-02, see
+        tests/local_data/test_calibration_against_real_captures.py):
+        AXIS1's own first-tested-direction pulse measured far smaller
+        than a normal pulse on this rig -- Main: dx=-18, dy=-15 (a real,
+        small pulse) vs. AXIS2's own same-run 800-1400px pulses. A
+        synthetic stand-in for "first" (the small, real reading) against
+        a "repeat" at a normal, undegraded magnitude must show a large,
+        real deficit, not a near-zero one."""
+        first = _response(MountAxis.AXIS1, dx_px=-18.0, dy_px=-15.0)
+        repeat = _response(MountAxis.AXIS1, dx_px=-900.0, dy_px=-750.0)
+        characterization = DirectionCharacterization(first=first, repeat=repeat)
+
+        assert characterization.backlash_deficit_px > 500.0
+
+
+class TestSolveScreenMove:
+    """Issue #31's own per-camera screen-relative solver: unlike
+    `compose_screen_move` (which assumes a single, direction-symmetric
+    rate per axis), this must use whichever direction's own measured
+    response the solve actually needs, since a real mount's + and -
+    rates are no longer assumed equal."""
+
+    def test_symmetric_matrix_matches_compose_screen_move_directly(self) -> None:
+        """When both directions genuinely share the same rate (the old
+        assumption, still a valid special case), the two-pass solve must
+        agree exactly with a direct `compose_screen_move` call."""
+        axis1_pos = _response(MountAxis.AXIS1, dx_px=100.0, dy_px=0.0)
+        axis1_neg = _response(MountAxis.AXIS1, dx_px=-100.0, dy_px=0.0)
+        axis2_pos = _response(MountAxis.AXIS2, dx_px=0.0, dy_px=100.0)
+        axis2_neg = _response(MountAxis.AXIS2, dx_px=0.0, dy_px=-100.0)
+        matrix = CalibrationMatrix(
+            responses={
+                (MountAxis.AXIS1, AxisDirection.POSITIVE): axis1_pos,
+                (MountAxis.AXIS1, AxisDirection.NEGATIVE): axis1_neg,
+                (MountAxis.AXIS2, AxisDirection.POSITIVE): axis2_pos,
+                (MountAxis.AXIS2, AxisDirection.NEGATIVE): axis2_neg,
+            }
+        )
+
+        direct = compose_screen_move(axis1_pos, axis2_pos, target_dx_px=-10.0, target_dy_px=0.0)
+        solved = solve_screen_move(matrix, target_dx_px=-10.0, target_dy_px=0.0)
+
+        assert solved == direct
+
+    def test_asymmetric_matrix_uses_the_direction_specific_rate(self) -> None:
+        """AXIS1's own NEGATIVE response is genuinely slower (real
+        mechanical asymmetry, not backlash noise) than its POSITIVE one
+        -- a target requiring AXIS1 to move negative must solve a
+        *longer* duration than naively reusing the positive-direction
+        rate (`compose_screen_move` alone) would."""
+        axis1_pos = _response(MountAxis.AXIS1, dx_px=100.0, dy_px=0.0)  # 0.1 px/ms
+        axis1_neg = _response(MountAxis.AXIS1, dx_px=-50.0, dy_px=0.0)  # 0.05 px/ms -- half rate
+        axis2_pos = _response(MountAxis.AXIS2, dx_px=0.0, dy_px=100.0)
+        axis2_neg = _response(MountAxis.AXIS2, dx_px=0.0, dy_px=-100.0)
+        matrix = CalibrationMatrix(
+            responses={
+                (MountAxis.AXIS1, AxisDirection.POSITIVE): axis1_pos,
+                (MountAxis.AXIS1, AxisDirection.NEGATIVE): axis1_neg,
+                (MountAxis.AXIS2, AxisDirection.POSITIVE): axis2_pos,
+                (MountAxis.AXIS2, AxisDirection.NEGATIVE): axis2_neg,
+            }
+        )
+
+        naive = compose_screen_move(axis1_pos, axis2_pos, target_dx_px=-10.0, target_dy_px=0.0)
+        solved = solve_screen_move(matrix, target_dx_px=-10.0, target_dy_px=0.0)
+
+        assert naive == [(MountAxis.AXIS1, AxisDirection.NEGATIVE, 100)]
+        # The real (half-rate) negative response needs twice as long a
+        # pulse to cover the same -10px target.
+        assert solved == [(MountAxis.AXIS1, AxisDirection.NEGATIVE, 200)]
+
+    def test_raises_for_degenerate_positive_pair(self) -> None:
+        axis1_pos = _response(MountAxis.AXIS1, dx_px=100.0, dy_px=0.0)
+        axis1_neg = _response(MountAxis.AXIS1, dx_px=-100.0, dy_px=0.0)
+        axis2_pos = _response(MountAxis.AXIS2, dx_px=200.0, dy_px=0.0)
+        axis2_neg = _response(MountAxis.AXIS2, dx_px=-200.0, dy_px=0.0)
+        matrix = CalibrationMatrix(
+            responses={
+                (MountAxis.AXIS1, AxisDirection.POSITIVE): axis1_pos,
+                (MountAxis.AXIS1, AxisDirection.NEGATIVE): axis1_neg,
+                (MountAxis.AXIS2, AxisDirection.POSITIVE): axis2_pos,
+                (MountAxis.AXIS2, AxisDirection.NEGATIVE): axis2_neg,
+            }
+        )
+
+        with pytest.raises(ValueError, match="parallel"):
+            solve_screen_move(matrix, target_dx_px=10.0, target_dy_px=0.0)

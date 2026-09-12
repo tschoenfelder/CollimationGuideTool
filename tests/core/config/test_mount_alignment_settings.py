@@ -31,7 +31,8 @@ def test_reads_a_full_table(tmp_path: Path) -> None:
         "nudge_target_fraction = 0.25\nsettle_ms = 800\nframe_settle_ms = 300\n"
         "max_nudge_pulse_ms = 2500\nstability_tolerance_px = 4.5\n"
         "stability_sample_count = 5\nstability_sample_interval_s = 0.3\n"
-        "stability_timeout_s = 12.0\n",
+        "stability_timeout_s = 12.0\nscreen_move_small_fraction = 0.04\n"
+        "screen_move_medium_fraction = 0.12\nscreen_move_large_fraction = 0.25\n",
         encoding="utf-8",
     )
     assert load_mount_alignment_settings(path) == MountAlignmentSettings(
@@ -39,6 +40,8 @@ def test_reads_a_full_table(tmp_path: Path) -> None:
         settle_ms=800, frame_settle_ms=300, max_nudge_pulse_ms=2500,
         stability_tolerance_px=4.5, stability_sample_count=5,
         stability_sample_interval_s=0.3, stability_timeout_s=12.0,
+        screen_move_small_fraction=0.04, screen_move_medium_fraction=0.12,
+        screen_move_large_fraction=0.25,
     )
 
 
@@ -59,6 +62,18 @@ def test_missing_individual_values_fall_back_to_defaults(tmp_path: Path) -> None
         == MountAlignmentSettings().stability_sample_interval_s
     )
     assert settings.stability_timeout_s == MountAlignmentSettings().stability_timeout_s
+    assert (
+        settings.screen_move_small_fraction
+        == MountAlignmentSettings().screen_move_small_fraction
+    )
+    assert (
+        settings.screen_move_medium_fraction
+        == MountAlignmentSettings().screen_move_medium_fraction
+    )
+    assert (
+        settings.screen_move_large_fraction
+        == MountAlignmentSettings().screen_move_large_fraction
+    )
 
 
 def test_malformed_max_nudge_pulse_ms_falls_back_to_default_without_dropping_the_others(
@@ -179,6 +194,54 @@ def test_malformed_stability_timeout_s_falls_back_to_default_without_dropping_th
     settings = load_mount_alignment_settings(path)
     assert settings.pulse_ms == 200
     assert settings.stability_timeout_s == MountAlignmentSettings().stability_timeout_s
+
+
+def test_malformed_screen_move_small_fraction_falls_back_to_default_without_dropping_the_others(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[mount_alignment]\npulse_ms = 200\nscreen_move_small_fraction = "not a number"\n',
+        encoding="utf-8",
+    )
+    settings = load_mount_alignment_settings(path)
+    assert settings.pulse_ms == 200
+    assert (
+        settings.screen_move_small_fraction
+        == MountAlignmentSettings().screen_move_small_fraction
+    )
+
+
+def test_malformed_screen_move_medium_fraction_falls_back_to_default_without_dropping_the_others(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[mount_alignment]\npulse_ms = 200\nscreen_move_medium_fraction = "not a number"\n',
+        encoding="utf-8",
+    )
+    settings = load_mount_alignment_settings(path)
+    assert settings.pulse_ms == 200
+    assert (
+        settings.screen_move_medium_fraction
+        == MountAlignmentSettings().screen_move_medium_fraction
+    )
+
+
+def test_malformed_screen_move_large_fraction_falls_back_to_default_without_dropping_the_others(
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text(
+        '[mount_alignment]\npulse_ms = 200\nscreen_move_large_fraction = "not a number"\n',
+        encoding="utf-8",
+    )
+    settings = load_mount_alignment_settings(path)
+    assert settings.pulse_ms == 200
+    assert (
+        settings.screen_move_large_fraction
+        == MountAlignmentSettings().screen_move_large_fraction
+    )
 
 
 def test_survives_a_sibling_cameras_table_in_the_same_file(tmp_path: Path) -> None:

@@ -20,12 +20,23 @@ that camera's own rotation). Real request (diagnostic 6cb859d2's own
 follow-up): a button labelled "Up" told an operator nothing about *which
 physical axis* (or combination of both) was actually about to move,
 confusing before ever having a feel for how a given camera sits relative to
-the mount — the direction pad now pulses one axis directly per button
-instead, so the label itself (RA/Dec, this module's own established
-axis-name convention -- see `_AXIS_LABELS`) is never ambiguous.
-`compose_screen_move` itself is unchanged and still independently tested
-(`tests/core/mount/test_axis_calibration.py`) -- just no longer called from
-this panel.
+the mount — the direction pad was replaced with one axis pulsed directly
+per button instead, so the label itself (RA/Dec, this module's own
+established axis-name convention -- see `_AXIS_LABELS`) is never ambiguous.
+
+Issue #31 Phase D brings screen-relative movement back, per camera, once
+that camera has a full, non-degenerate 4-direction `CalibrationMatrix`: a
+second pad (←/→/↑/↓, `ScreenDirection`) alongside the RA/Dec one (never
+instead of it -- the RA/Dec pad is this panel's own bootstrap control,
+available before any calibration exists at all, see `_CALIBRATION_STEPS`'s
+own Phase A note). `solve_screen_move` (`astrotool_core.mount`, wraps
+`compose_screen_move` -- see that function's own docstring for why a
+direction-aware wrapper was needed once opposite-direction responses
+stopped being assumed symmetric) solves which axis/direction/duration
+combination lands on-screen in the requested direction for that camera's
+own rotation, submitted as one `MountTestMoveRunner.submit_sequence()`
+call. Movement size is frame-relative (Small/Medium/Large,
+`MovementSize`), not a raw duration -- see `_screen_move_fraction()`.
 
 Own `MountPort` connection, separate from `MountParkPanel`'s `MountParkPort`
 connection to the same device (same pattern as
@@ -55,29 +66,48 @@ staying unparked between them. Parking back up when done stays the separate
 Mount panel's job, same as it already is for every other unparked action in
 this app.
 
-"Run Calibration" runs a fixed four-pulse sequence (see `_CALIBRATION_STEPS`):
-pulse AXIS1 positive, measure the resulting displacement in both cameras,
-pulse AXIS1 negative to return (trusted symmetric — no re-measurement, same
-duration/rate as the forward pulse), then the same for AXIS2. Each camera's
-two measured `AxisResponse`s become a `CalibrationMatrix`
-(`astrotool_core.mount.axis_calibration`) once both axes are measured, at
-which point that camera's four direction-pad buttons enable. Aborts the
-whole sequence (clearing any partial result) the moment any step fails to
-pulse or measure — a half-built calibration is worse than none, since a
-direction button would then be silently wrong for whichever axis never got
-re-measured.
+"Run Calibration" runs a fixed eight-pulse, backlash-revealing sequence
+(see `_CALIBRATION_STEPS`, issue #31 Phase C): for each axis, pulse
+positive (`FIRST`), pulse positive again (`REPEAT`), pulse negative
+(`FIRST`, the reversal), pulse negative again (`REPEAT`) -- every pulse is
+now measured (the old 4-step sequence trusted an *unmeasured*,
+direction-symmetric "return" pulse for the negative direction; real
+evidence (`tests/local_data/test_calibration_against_real_captures.py`)
+showed a direction's own first pulse this run can measure far smaller than
+its steady-state rate -- mechanical backlash/dead travel, not a
+measurement bug -- so opposite directions, and a direction's own first vs.
+repeated pulse, are never assumed to agree). Each direction's `FIRST`/
+`REPEAT` pair becomes a `DirectionCharacterization`
+(`astrotool_core.mount.axis_calibration`) -- `.steady_state` (the `REPEAT`
+response) is what a camera's `CalibrationMatrix` actually stores per
+`(axis, direction)`, `.backlash_deficit_px` is retained separately for
+diagnostics, never used as if it were the normal rate. A camera's full
+4-direction `CalibrationMatrix` becomes available once every direction
+measures successfully for it (`_finish_calibration`'s own
+`is_degenerate()` check on the two axes' positive-direction responses,
+same guard as before), at which point that camera's RA/Dec direction-pad
+buttons *and* its new screen-relative ←/→/↑/↓ pad (Phase D) both enable.
+Aborts the whole sequence (clearing any partial result) the moment any
+step fails to pulse or measure for every camera -- a half-built
+calibration is worse than none.
 
 Clicking a direction-pad button solves a duration from that camera's own
-calibrated rate for the clicked axis (`AxisResponse.magnitude_px /
-duration_ms`) and a target distance (`nudge_target_fraction` of this
-camera's own frame width), submits that single pulse via
-`MountTestMoveRunner.submit`, and reports the resulting displacement the
-same way a calibration step does — reusing `_capture`/`_build_response`/
-`_format_response` unchanged. A degenerate calibration (AXIS1/AXIS2
-responses too close to parallel to invert) is already refused at `Run
-Calibration` time (`_finish_calibration`'s own `is_degenerate()` check,
-before any camera's four buttons ever enable) — this panel never builds a
-`CalibrationMatrix` a nudge could read a degenerate response out of.
+calibrated rate for the clicked axis *in the clicked direction*
+(`AxisResponse.magnitude_px / duration_ms`, no longer assuming the
+opposite direction shares the same rate -- see Phase C above) and a
+target distance (`nudge_target_fraction` of this camera's own frame
+width), submits that single pulse via `MountTestMoveRunner.submit`, and
+reports the resulting displacement the same way a calibration step does
+— reusing `_capture`/`_build_response`/`_format_response` unchanged.
+Clicking a screen-relative pad button instead solves a (possibly
+two-axis) pulse sequence via `solve_screen_move` and submits it via
+`MountTestMoveRunner.submit_sequence`, deliberately *without* a
+synchronous "after" measurement -- see Phase E's own module-docstring
+paragraph below for why. A degenerate calibration (AXIS1/AXIS2 responses
+too close to parallel to invert) is already refused at `Run Calibration`
+time, before any camera's buttons ever enable — this panel never builds a
+`CalibrationMatrix` a nudge or screen-move could read a degenerate
+response out of.
 
 Real hardware motion with no way to interrupt it once started is a real
 safety gap (incident 9551627f) — the "Stop" button, wired to
@@ -181,6 +211,27 @@ immediately rather than waiting on a multi-sample settle check -- see
 (`diagnostic_stability_evidence()`) are threaded through for a future
 adaptive-settle model this issue explicitly defers building, not
 consulted for control flow here.
+
+Issue #31 Phase E: "fast manual positioning must not block on measurement
+frames" -- a screen-relative pad click (Phase D, above) is a positioning
+action, not a measurement one, so its handler (`_on_screen_move_clicked`/
+`_finish_screen_move`) never calls `_capture_both` at all, before *or*
+after the pulse -- not even the `verify_stability=True` default nudge's
+own "after" capture already uses. This was a deliberate choice, not an
+oversight found late: moving that wait to a background thread was
+investigated and rejected -- `CameraPanel`'s own `FrameMailbox`
+(`astrotool_core.acquisition.stream_controller`) is a single-slot queue,
+safe for one consumer, but a second independent consumer (a background
+verifier) would either starve the live view of frames or reintroduce the
+exact cross-thread camera-state race `MountTestMoveRunner`'s own
+docstring already documents a real crash from. Skipping the after-capture
+entirely for a pure positioning click sidesteps that risk altogether
+without touching threading -- the live view already shows whatever the
+move produced, motion-contaminated or not, which is exactly what this
+issue's own "DISPLAY FRAME may be motion-contaminated, MEASUREMENT FRAME
+must not be" distinction asks for. The existing RA+/RA-/Dec+/Dec- nudge
+buttons keep their current measure-and-report behavior unchanged -- this
+is a new, additional control, not a replacement.
 """
 
 from __future__ import annotations
@@ -207,6 +258,7 @@ from astrotool_core.mount import (
     AxisDirection,
     AxisResponse,
     CalibrationMatrix,
+    DirectionCharacterization,
     MountAxis,
     MountParkPort,
     MountPort,
@@ -214,6 +266,7 @@ from astrotool_core.mount import (
     ensure_tracking_mode,
     is_degenerate,
     response_from_positions,
+    solve_screen_move,
 )
 from astrotool_core.target.detector import detect_sources
 from astrotool_core.target.translation_offset import measure_translation_offset
@@ -394,36 +447,113 @@ _NUDGE_BUTTONS: tuple[tuple[str, MountAxis, AxisDirection], ...] = (
 )
 
 
+class ScreenDirection(Enum):
+    """Issue #31 Phase D: the four on-screen directions the screen-
+    relative pad understands, as a `(dx_sign, dy_sign)` unit vector in
+    the same image-array convention `AxisResponse.angle_degrees` already
+    documents (x right, y down) -- `solve_screen_move`'s own
+    `target_dx_px`/`target_dy_px` are this vector scaled by
+    `_screen_move_fraction()` times this camera's own frame width/height."""
+
+    LEFT = (-1, 0)
+    RIGHT = (1, 0)
+    UP = (0, -1)
+    DOWN = (0, 1)
+
+
+#: Issue #31 Phase D's own per-camera screen-relative pad -- unlike
+#: `_NUDGE_BUTTONS` (always available once connected, issue #31's own
+#: Phase A bootstrap requirement), these enable only once that camera has
+#: a full, non-degenerate 4-direction `CalibrationMatrix` -- see
+#: `_update_buttons_enabled`'s own docstring.
+_SCREEN_MOVE_BUTTONS: tuple[tuple[str, ScreenDirection], ...] = (
+    ("←", ScreenDirection.LEFT),
+    ("→", ScreenDirection.RIGHT),
+    ("↑", ScreenDirection.UP),
+    ("↓", ScreenDirection.DOWN),
+)
+
+
+class MovementSize(Enum):
+    """Issue #31 Phase D's own frame-relative movement sizes for the
+    screen-relative pad -- see `_screen_move_fraction()`. Deliberately a
+    fraction of *this camera's own* frame width/height (mirrors
+    `nudge_target_fraction`'s own reasoning), not a fixed pixel count."""
+
+    SMALL = "small"
+    MEDIUM = "medium"
+    LARGE = "large"
+
+
+_SIZE_BUTTONS: tuple[tuple[str, MovementSize], ...] = (
+    ("Small", MovementSize.SMALL),
+    ("Medium", MovementSize.MEDIUM),
+    ("Large", MovementSize.LARGE),
+)
+
+
+class _CalibrationStepRole(Enum):
+    """Issue #31 Phase C's own backlash-revealing sequence (see
+    `_CALIBRATION_STEPS`): `FIRST` is a direction's own first pulse this
+    run (may be backlash-contaminated -- the first commanded steps after
+    a direction reversal can consume mechanical gear slack instead of
+    turning the axis, see real evidence in
+    `tests/local_data/test_calibration_against_real_captures.py`);
+    `REPEAT` is the immediately-following second pulse in the same
+    direction -- the steady-state response a `CalibrationMatrix` should
+    trust (`DirectionCharacterization.steady_state`)."""
+
+    FIRST = "first"
+    REPEAT = "repeat"
+
+
 @dataclass(frozen=True)
 class _CalibrationStep:
-    """One pulse within the fixed calibration sequence. `measure=False`
-    marks a "move back" return pulse -- same axis/duration/rate, opposite
-    direction, no frame capture (a symmetric response is trusted, not
-    re-verified -- see module docstring)."""
+    """One measured pulse within the backlash-revealing calibration
+    sequence -- see `_CALIBRATION_STEPS`'s own docstring. Unlike the old
+    4-step sequence, every step is measured now -- issue #31 Phase C's
+    own backlash-revealing design needs a real measurement on both the
+    first and the repeated pulse in each direction to tell them apart,
+    not an unmeasured, assumed-symmetric "return" pulse."""
 
     axis: MountAxis
     direction: AxisDirection
-    measure: bool
+    role: _CalibrationStepRole
 
 
-#: AXIS1 positive, measure; AXIS1 negative, return; AXIS2 positive, measure;
-#: AXIS2 negative, return. Order doesn't matter functionally -- AXIS1 first
-#: is arbitrary.
+#: Issue #31 Phase C's own suggested backlash-revealing sequence, per
+#: axis: + (first), + (repeat), - (first, the reversal), - (repeat) --
+#: reveals whether a direction's own first pulse this run underperforms
+#: relative to its own steady state (mechanical backlash/dead travel),
+#: rather than assuming opposite-direction symmetry the way the old
+#: 4-step sequence did. AXIS1 first is arbitrary; order between axes
+#: doesn't matter functionally. No corrective "return to start" pulse is
+#: appended at the end of a clean run -- each axis's own 4 pulses are two
+#: full-length positive and two full-length negative (same `pulse_ms`
+#: every time), so a clean run's own net residual displacement is exactly
+#: zero; only a mid-sequence *abort* can leave a nonzero net, which
+#: `_abort_calibration`'s own corrective pulse handles -- see that
+#: method's own docstring.
 _CALIBRATION_STEPS: tuple[_CalibrationStep, ...] = (
-    _CalibrationStep(MountAxis.AXIS1, AxisDirection.POSITIVE, measure=True),
-    _CalibrationStep(MountAxis.AXIS1, AxisDirection.NEGATIVE, measure=False),
-    _CalibrationStep(MountAxis.AXIS2, AxisDirection.POSITIVE, measure=True),
-    _CalibrationStep(MountAxis.AXIS2, AxisDirection.NEGATIVE, measure=False),
+    _CalibrationStep(MountAxis.AXIS1, AxisDirection.POSITIVE, _CalibrationStepRole.FIRST),
+    _CalibrationStep(MountAxis.AXIS1, AxisDirection.POSITIVE, _CalibrationStepRole.REPEAT),
+    _CalibrationStep(MountAxis.AXIS1, AxisDirection.NEGATIVE, _CalibrationStepRole.FIRST),
+    _CalibrationStep(MountAxis.AXIS1, AxisDirection.NEGATIVE, _CalibrationStepRole.REPEAT),
+    _CalibrationStep(MountAxis.AXIS2, AxisDirection.POSITIVE, _CalibrationStepRole.FIRST),
+    _CalibrationStep(MountAxis.AXIS2, AxisDirection.POSITIVE, _CalibrationStepRole.REPEAT),
+    _CalibrationStep(MountAxis.AXIS2, AxisDirection.NEGATIVE, _CalibrationStepRole.FIRST),
+    _CalibrationStep(MountAxis.AXIS2, AxisDirection.NEGATIVE, _CalibrationStepRole.REPEAT),
 )
 
 
 @dataclass
 class _PendingAction:
     """State carried from a submit call to the matching `_poll()` completion
-    -- generalizes the old single set of `_pending_*` fields to cover both
-    a calibration step and a direction-pad nudge."""
+    -- generalizes the old single set of `_pending_*` fields to cover a
+    calibration step, a direction-pad nudge, and (issue #31 Phase D) a
+    screen-relative move."""
 
-    kind: Literal["calibration", "nudge"]
+    kind: Literal["calibration", "nudge", "screen_move"]
     before: dict[str, _Measurement]
     mode: TargetMode
     step: _CalibrationStep | None = None
@@ -443,9 +573,18 @@ class _PendingAction:
     #: (see `_build_direction_pad`'s own docstring for why the earlier
     #: screen-relative Up/Down/Left/Right composed moves were replaced),
     #: so unlike the old composed move, a nudge's own axis/direction is
-    #: real and known up front, not a display-only placeholder.
+    #: real and known up front, not a display-only placeholder. Unused
+    #: for a screen move, which can pulse either or both axes -- see
+    #: `label` below instead.
     axis: MountAxis | None = None
     direction: AxisDirection | None = None
+    #: Issue #31 Phase D: a screen move's own free-text description
+    #: ("Main left (Small)"), shown once `_finish_screen_move` confirms
+    #: the pulse sequence completed -- a screen move has no single
+    #: axis/direction to describe itself from the fields above, and (see
+    #: module docstring's own Phase E paragraph) never has a measured
+    #: response to report instead.
+    label: str | None = None
 
 
 class MountTestMovePanel(QWidget):
@@ -520,6 +659,39 @@ class MountTestMovePanel(QWidget):
         self._calibration_queue: list[_CalibrationStep] = []
         self._calibration_partial: dict[str, dict[MountAxis, AxisResponse]] = {
             "left": {}, "right": {},
+        }
+        #: Issue #31 Phase C: this run's own per-(axis,direction) FIRST
+        #: response, held until its own REPEAT arrives -- see
+        #: `_record_direction_response()`'s own docstring. Combined into
+        #: `_calibration_characterizations` once the pair completes,
+        #: never read directly otherwise.
+        self._pending_first_response: dict[
+            str, dict[tuple[MountAxis, AxisDirection], AxisResponse]
+        ] = {"left": {}, "right": {}}
+        #: Issue #31 Phase C: every completed `DirectionCharacterization`
+        #: this run, per camera -- the source both `_finish_calibration`'s
+        #: own full 4-direction `CalibrationMatrix` and
+        #: `diagnostic_backlash_evidence()` are built from.
+        #: `_calibration_partial` above stays populated the same
+        #: POSITIVE-direction-only shape it always had (each direction's
+        #: own `.steady_state`), so `diagnostic_context()`'s existing
+        #: contract doesn't change.
+        self._calibration_characterizations: dict[
+            str, dict[tuple[MountAxis, AxisDirection], DirectionCharacterization]
+        ] = {"left": {}, "right": {}}
+        #: Issue #31: net commanded displacement (ms, signed: + for a
+        #: POSITIVE pulse, - for NEGATIVE) accumulated so far this run for
+        #: each axis -- see `_abort_calibration`'s own docstring for why a
+        #: mid-sequence abort needs this (the old "strand the very next
+        #: queued step" trick assumed every measured step was immediately
+        #: followed by its own undoing return pulse, which the new
+        #: all-measured sequence no longer has). Always exactly 0 once an
+        #: axis's own 4-step group completes cleanly (two full-length
+        #: positive pulses, two full-length negative, same `pulse_ms`
+        #: every time) -- never explicitly reset, it cancels out on its
+        #: own; only relevant mid-group.
+        self._axis_net_pulse_ms: dict[MountAxis, int] = {
+            MountAxis.AXIS1: 0, MountAxis.AXIS2: 0,
         }
         self._calibration: dict[str, CalibrationMatrix] = {}
         self._last_responses: dict[str, AxisResponse] | None = None
@@ -635,6 +807,28 @@ class MountTestMovePanel(QWidget):
         main_pad_row = self._build_direction_pad("left")
         guide_pad_row = self._build_direction_pad("right")
 
+        #: Issue #31 Phase D: shared size selector -- one choice applies
+        #: to whichever screen-move button is clicked next, on either
+        #: camera (mirrors the single shared Target toggle above, not a
+        #: per-camera setting).
+        self._size_group = QButtonGroup(self)
+        self._size_group.setExclusive(True)
+        self._size_buttons: dict[MovementSize, QPushButton] = {}
+        size_row = QHBoxLayout()
+        size_row.addWidget(QLabel("Move size"))
+        for label, size in _SIZE_BUTTONS:
+            button = QPushButton(label)
+            button.setCheckable(True)
+            self._size_group.addButton(button)
+            self._size_buttons[size] = button
+            size_row.addWidget(button)
+        self._size_buttons[MovementSize.SMALL].setChecked(True)  # conservative default
+        size_row.addStretch(1)
+
+        self._screen_move_buttons: dict[str, dict[ScreenDirection, QPushButton]] = {}
+        main_screen_row = self._build_screen_move_pad("left")
+        guide_screen_row = self._build_screen_move_pad("right")
+
         self._result_label = QLabel("")
         self._result_label.setWordWrap(True)
 
@@ -649,6 +843,9 @@ class MountTestMovePanel(QWidget):
         layout.addLayout(calibration_row)
         layout.addLayout(main_pad_row)
         layout.addLayout(guide_pad_row)
+        layout.addLayout(size_row)
+        layout.addLayout(main_screen_row)
+        layout.addLayout(guide_screen_row)
         layout.addWidget(self._result_label)
         self.setLayout(layout)
 
@@ -677,6 +874,30 @@ class MountTestMovePanel(QWidget):
             row.addWidget(button)
         row.addStretch(1)
         self._nudge_buttons[camera_key] = buttons
+        return row
+
+    def _build_screen_move_pad(self, camera_key: str) -> QHBoxLayout:
+        """Issue #31 Phase D: one button per `_SCREEN_MOVE_BUTTONS` entry
+        -- disabled until this camera has a full, non-degenerate
+        4-direction `CalibrationMatrix` (see `_update_buttons_enabled`'s
+        own docstring), unlike `_build_direction_pad`'s own RA/Dec pad,
+        which is this panel's bootstrap control and enables as soon as
+        the mount is connected/movable."""
+        row = QHBoxLayout()
+        row.addWidget(QLabel(f"{_CAMERA_LABELS[camera_key]} screen:"))
+        buttons: dict[ScreenDirection, QPushButton] = {}
+        for label, screen_direction in _SCREEN_MOVE_BUTTONS:
+            button = QPushButton(label)
+            button.setEnabled(False)
+            button.clicked.connect(
+                lambda _checked=False, key=camera_key, d=screen_direction: (
+                    self._on_screen_move_clicked(key, d)
+                )
+            )
+            buttons[screen_direction] = button
+            row.addWidget(button)
+        row.addStretch(1)
+        self._screen_move_buttons[camera_key] = buttons
         return row
 
     def _on_toggle_connect(self, checked: bool) -> None:
@@ -1056,6 +1277,9 @@ class MountTestMovePanel(QWidget):
     def _on_run_calibration_clicked(self) -> None:
         self._calibration_queue = list(_CALIBRATION_STEPS)
         self._calibration_partial = {"left": {}, "right": {}}
+        self._pending_first_response = {"left": {}, "right": {}}
+        self._calibration_characterizations = {"left": {}, "right": {}}
+        self._axis_net_pulse_ms = {MountAxis.AXIS1: 0, MountAxis.AXIS2: 0}
         self._calibration_failed_cameras = set()
         self._last_failure_classes = {}
         # Real diagnostic 93ba361f: reset so this run's own very first
@@ -1067,7 +1291,7 @@ class MountTestMovePanel(QWidget):
         # alongside it -- see that attribute's own docstring.
         self._last_pulse_completed_at = None
         self._last_movement_context = None
-        # Paused for the whole 4-step sequence, not just per-step -- see
+        # Paused for the whole 8-step sequence, not just per-step -- see
         # the constructor's own docstring on _set_left/right_auto_exposure_paused.
         # Resumed in _abort_calibration (every failure path) and
         # _finish_calibration (success).
@@ -1081,25 +1305,25 @@ class MountTestMovePanel(QWidget):
             return
         step = self._calibration_queue[0]
         mode = self._target_mode()
-        before: dict[str, _Measurement] = {}
-        if step.measure:
-            label = f"{step.axis.name.lower()}_before"
-            # Real diagnostic 93ba361f: `_last_pulse_completed_at` is
-            # None only for this sequence's very first measured step
-            # (see _on_run_calibration_clicked's own reset) -- every
-            # later one (AXIS2's own "before") gets the same freshness
-            # wait its own "after" already has, since the *previous*
-            # step's return pulse just moved the mount. See
-            # _last_pulse_completed_at's own docstring.
-            captured = self._capture_both(
-                mode, diagnostic_label=label, after_monotonic=self._last_pulse_completed_at
+        label = (
+            f"{step.axis.name.lower()}_{step.direction.name.lower()}_{step.role.value}_before"
+        )
+        # Real diagnostic 93ba361f: `_last_pulse_completed_at` is None
+        # only for this sequence's very first step (see
+        # _on_run_calibration_clicked's own reset) -- every later one
+        # gets the same freshness wait its own "after" already has,
+        # since the *previous* step's own pulse just moved the mount.
+        # See _last_pulse_completed_at's own docstring.
+        captured = self._capture_both(
+            mode, diagnostic_label=label, after_monotonic=self._last_pulse_completed_at
+        )
+        if not captured:
+            self._abort_calibration(
+                self._capture_failure_message(f"{self._missing_label(mode)} before pulsing"),
+                axis=step.axis,
             )
-            if not captured:
-                self._abort_calibration(
-                    self._capture_failure_message(f"{self._missing_label(mode)} before pulsing")
-                )
-                return
-            before = captured
+            return
+        before = captured
         started = self._runner.submit(
             self._mount_park,
             self._mount,
@@ -1111,62 +1335,72 @@ class MountTestMovePanel(QWidget):
             settle_ms=self._settings.settle_ms,
         )
         if not started:
-            self._abort_calibration("mount busy — could not start calibration pulse")
+            self._abort_calibration(
+                "mount busy — could not start calibration pulse", axis=step.axis
+            )
             return
         self._calibration_queue.pop(0)
         self._pending = _PendingAction(kind="calibration", before=before, mode=mode, step=step)
         self._result_label.setText(
-            f"Calibrating {step.axis.name} ({step.direction.name.lower()})…"
+            f"Calibrating {step.axis.name} ({step.direction.name.lower()}, {step.role.value})…"
         )
         self._update_buttons_enabled()
 
-    def _abort_calibration(self, message: str, *, strand_return_step: bool = False) -> None:
+    def _abort_calibration(self, message: str, *, axis: MountAxis) -> None:
         """Stop the calibration sequence and report `message`.
 
-        `strand_return_step`: real incident a082144a -- if the step that
-        just failed was a "test" pulse whose forward move already
-        succeeded (only the *measurement* failed, after the fact), the
-        mount is now sitting off its original position with its own
-        paired "move back" return step still next in the queue. Clearing
-        the whole queue unconditionally (the old behavior) silently
-        dropped that return step too, leaving the mount stranded --
-        "not returning to start point" was a real, reproducible bug, not
-        user error. When true, that one return step (still at the front
-        of `_calibration_queue`, by construction of `_CALIBRATION_STEPS`
-        -- always immediately follows its own axis's test step) is
-        submitted before the queue is cleared, fire-and-forget: nothing
-        further in this calibration attempt depends on its outcome, and
-        `_poll()` already tolerates a completion with no matching
-        `_pending` (this is the same shape as any other untracked pulse).
+        `axis`: real incident a082144a, adapted for issue #31 Phase C's
+        own all-measured backlash sequence (see `_CALIBRATION_STEPS`'s
+        own docstring) -- there's no longer a single unmeasured "return"
+        pulse immediately following each measured one to strand and fire
+        fire-and-forget; a mid-group abort can instead leave several
+        same-direction pulses uncancelled. `self._axis_net_pulse_ms[axis]`
+        tracks `axis`'s own net commanded displacement so far this run
+        (updated in `_finish_calibration_step` right alongside
+        `_last_pulse_completed_at`); if nonzero, ONE corrective pulse --
+        the opposite direction, sized to cancel exactly that net -- is
+        submitted fire-and-forget before the queue clears, the same
+        "don't strand the mount" intent the old single-return-step trick
+        had. Nothing further in this calibration attempt depends on the
+        correction's own outcome, and `_poll()` already tolerates a
+        completion with no matching `_pending` (the same shape as any
+        other untracked pulse).
 
         Real report ("calibration failed is stated already while mount
         is moving"): this used to show the final "Calibration failed"
         text immediately, then submit the stranded return pulse right
         after -- so the mount kept visibly moving for several more
         seconds under a message that already read as final/settled.
-        When a return step is actually submitted, the message now says
-        so explicitly, and `_poll()` (via `_awaiting_stranded_return`)
-        updates it once that return pulse actually finishes -- to a
-        confirmation if it succeeded, or a explicit warning if it didn't
-        (real pulses can still fail -- see MountTestMoveRunner's own
-        retry logic, which already covers transient rejection but not
-        every possible failure).
+        When a correction is actually submitted, the message now says so
+        explicitly, and `_poll()` (via `_awaiting_stranded_return`)
+        updates it once that correction actually finishes -- to a
+        confirmation if it succeeded, or an explicit warning if it
+        didn't (real pulses can still fail -- see MountTestMoveRunner's
+        own retry logic, which already covers transient rejection but
+        not every possible failure).
         """
-        return_step = self._calibration_queue[0] if strand_return_step else None
+        net_ms = self._axis_net_pulse_ms[axis]
+        correction: tuple[AxisDirection, int] | None = None
+        if net_ms != 0:
+            correction = (
+                AxisDirection.NEGATIVE if net_ms > 0 else AxisDirection.POSITIVE,
+                abs(net_ms),
+            )
         self._calibration_queue = []
         self._pending = None
         self._last_error = message
-        suffix = " (returning mount to start position…)" if return_step is not None else ""
+        suffix = " (returning mount to start position…)" if correction is not None else ""
         self._result_label.setText(f"Calibration failed: {message}{suffix}")
         self._resume_auto_exposure()
-        if return_step is not None:
+        if correction is not None:
+            correction_direction, correction_ms = correction
             self._awaiting_stranded_return = True
             self._runner.submit(
                 self._mount_park,
                 self._mount,
-                return_step.axis,
-                return_step.direction,
-                self._settings.pulse_ms,
+                axis,
+                correction_direction,
+                correction_ms,
                 rate_preset=self._settings.rate_preset,
                 park_after=False,
                 settle_ms=self._settings.settle_ms,
@@ -1199,8 +1433,8 @@ class MountTestMovePanel(QWidget):
         whichever camera(s) keep succeeding still get a complete,
         usable calibration. Only once *both* cameras have failed is
         there nothing left to gain, and the sequence actually aborts
-        (still via `strand_return_step`, same as any other abort after a
-        successful forward pulse).
+        (still via `_abort_calibration`'s own corrective pulse, same as
+        any other abort after a successful pulse).
 
         Deliberately unchanged: a missing raw frame entirely (not a
         measured-but-too-noisy one) still aborts everything immediately,
@@ -1212,13 +1446,23 @@ class MountTestMovePanel(QWidget):
         step = pending.step
         assert step is not None
         if not pulsed:
-            self._abort_calibration(pulse_error or "pulse failed")
+            self._abort_calibration(pulse_error or "pulse failed", axis=step.axis)
             return
-        # Real diagnostic 93ba361f: recorded for every completed pulse
-        # (measured or a return step) -- see _last_pulse_completed_at's
-        # own docstring -- so the *next* step's own "before" capture
-        # knows to wait for the stream to catch up past this motion
-        # instead of grabbing whatever's already cached.
+        # Issue #31: every step is a real, measured pulse now (see
+        # _CALIBRATION_STEPS's own docstring) -- tracks this axis's own
+        # net commanded displacement so _abort_calibration can correct it
+        # if this run gets aborted before the axis's own 4-step group
+        # completes (which always cancels this back to exactly 0).
+        self._axis_net_pulse_ms[step.axis] += (
+            self._settings.pulse_ms
+            if step.direction is AxisDirection.POSITIVE
+            else -self._settings.pulse_ms
+        )
+        # Real diagnostic 93ba361f: recorded for every completed pulse --
+        # see _last_pulse_completed_at's own docstring -- so the *next*
+        # step's own "before" capture knows to wait for the stream to
+        # catch up past this motion instead of grabbing whatever's
+        # already cached.
         self._last_pulse_completed_at = completed_at
         self._last_movement_context = CommandedMovementContext(
             movement_type=pending.kind,
@@ -1229,76 +1473,91 @@ class MountTestMovePanel(QWidget):
             minimum_settle_ms=self._settings.frame_settle_ms,
         )
         # Issue #30: tracking state must be re-verified after *every*
-        # commanded pulse, not only ones immediately followed by a
-        # capture -- a "move back" return step's own pulse can just as
-        # easily disturb it (the same real OnStep quirk that motivated
-        # this in the first place is a side effect of any TELESCOPE_PARK/
-        # UNPARK-adjacent command, not specifically a measured one), and
-        # nothing else would otherwise catch a wrong mode before the
-        # *next* step's own pulse goes out. `_capture_both` (below, for a
-        # measure step) re-checks this again on its own -- redundant but
-        # harmless for that case; this call is what covers a return-only
-        # step, which never reaches `_capture_both` at all.
+        # commanded pulse -- the same real OnStep quirk that motivated
+        # this is a side effect of any TELESCOPE_PARK/UNPARK-adjacent
+        # command, not specifically a measured one. `_capture_both`
+        # (below) re-checks this again on its own -- redundant but
+        # harmless.
         tracking_error = self._verify_tracking_mode()
         if tracking_error is not None:
-            self._abort_calibration(tracking_error, strand_return_step=step.measure)
+            self._abort_calibration(tracking_error, axis=step.axis)
             return
-        if step.measure:
-            after = self._capture_both(
-                pending.mode,
-                diagnostic_label=f"{step.axis.name.lower()}_after",
-                after_monotonic=completed_at,
+        label = f"{step.axis.name.lower()}_{step.direction.name.lower()}_{step.role.value}_after"
+        after = self._capture_both(
+            pending.mode, diagnostic_label=label, after_monotonic=completed_at
+        )
+        if not after:
+            self._abort_calibration(
+                self._capture_failure_message(
+                    f"{self._missing_label(pending.mode)} after the move"
+                ),
+                axis=step.axis,
             )
-            if not after:
-                self._abort_calibration(
-                    self._capture_failure_message(
-                        f"{self._missing_label(pending.mode)} after the move"
-                    ),
-                    strand_return_step=True,
-                )
-                return
-            responses: dict[str, AxisResponse] = {}
-            newly_failed: list[str] = []
-            for key in ("left", "right"):
-                if key in self._calibration_failed_cameras:
-                    continue  # already excluded -- no point re-measuring it
-                if key not in pending.before or key not in after:
-                    # Issue #30: this camera's own before or after capture
-                    # never produced a usable frame at all (see
-                    # _capture_both's own docstring -- CAPTURE_INVALID/
-                    # IMAGE_NOT_STABLE already recorded in
-                    # _last_failure_classes there) -- excluded the same as
-                    # any other per-camera measurement failure below, not
-                    # a reason to abort a camera that DID succeed.
-                    newly_failed.append(key)
-                    self._calibration_failed_cameras.add(key)
-                    continue
-                response = self._build_response(
-                    pending.mode, step.axis, step.direction, self._settings.pulse_ms,
-                    pending.before[key], after[key],
-                )
-                if response is None:
-                    newly_failed.append(key)
-                    self._calibration_failed_cameras.add(key)
-                    self._last_failure_classes[key] = MeasurementFailureClass.MATCH_FAILED
-                else:
-                    responses[key] = response
-                    self._calibration_partial[key][step.axis] = response
-            if len(self._calibration_failed_cameras) >= 2:
-                self._abort_calibration(
-                    "not enough structure to measure a displacement in either camera",
-                    strand_return_step=True,
-                )
-                return
-            if newly_failed:
-                self._last_error = (
-                    f"not enough structure to measure a displacement in: "
-                    f"{', '.join(newly_failed)} -- excluded from this calibration"
-                )
-            elif responses:
-                self._last_error = None
-            self._last_responses = responses or self._last_responses
+            return
+        responses: dict[str, AxisResponse] = {}
+        newly_failed: list[str] = []
+        for key in ("left", "right"):
+            if key in self._calibration_failed_cameras:
+                continue  # already excluded -- no point re-measuring it
+            if key not in pending.before or key not in after:
+                # Issue #30: this camera's own before or after capture
+                # never produced a usable frame at all (see
+                # _capture_both's own docstring -- CAPTURE_INVALID/
+                # IMAGE_NOT_STABLE already recorded in
+                # _last_failure_classes there) -- excluded the same as
+                # any other per-camera measurement failure below, not
+                # a reason to abort a camera that DID succeed.
+                newly_failed.append(key)
+                self._calibration_failed_cameras.add(key)
+                continue
+            response = self._build_response(
+                pending.mode, step.axis, step.direction, self._settings.pulse_ms,
+                pending.before[key], after[key],
+            )
+            if response is None:
+                newly_failed.append(key)
+                self._calibration_failed_cameras.add(key)
+                self._last_failure_classes[key] = MeasurementFailureClass.MATCH_FAILED
+                continue
+            responses[key] = response
+            self._record_direction_response(key, step, response)
+        if len(self._calibration_failed_cameras) >= 2:
+            self._abort_calibration(
+                "not enough structure to measure a displacement in either camera",
+                axis=step.axis,
+            )
+            return
+        if newly_failed:
+            self._last_error = (
+                f"not enough structure to measure a displacement in: "
+                f"{', '.join(newly_failed)} -- excluded from this calibration"
+            )
+        elif responses:
+            self._last_error = None
+        self._last_responses = responses or self._last_responses
         self._start_next_calibration_step()
+
+    def _record_direction_response(
+        self, camera_key: str, step: _CalibrationStep, response: AxisResponse
+    ) -> None:
+        """Issue #31 Phase C: stashes a `FIRST` response until its own
+        `REPEAT` arrives, then combines the pair into a
+        `DirectionCharacterization` (see that type's own docstring).
+        Also keeps `_calibration_partial` (the POSITIVE-direction
+        steady-state per axis) populated in exactly the same shape it
+        had before this issue, so `diagnostic_context()`'s own existing
+        contract doesn't change."""
+        key = (step.axis, step.direction)
+        if step.role is _CalibrationStepRole.FIRST:
+            self._pending_first_response[camera_key][key] = response
+            return
+        first = self._pending_first_response[camera_key].pop(key, None)
+        if first is None:
+            return  # shouldn't happen -- FIRST must have already succeeded to reach REPEAT
+        characterization = DirectionCharacterization(first=first, repeat=response)
+        self._calibration_characterizations[camera_key][key] = characterization
+        if step.direction is AxisDirection.POSITIVE:
+            self._calibration_partial[camera_key][step.axis] = characterization.steady_state
 
     def _finish_calibration(self) -> None:
         """Build each camera's `CalibrationMatrix`, unless its own
@@ -1342,10 +1601,18 @@ class MountTestMovePanel(QWidget):
                     )
                 )
                 continue
+            # Issue #31 Phase C: every measured direction's own
+            # steady-state response (not just the two POSITIVE ones) --
+            # _calibration_characterizations[key] always has all 4
+            # (axis, direction) entries by the time this camera reaches
+            # here (it would already be in _calibration_failed_cameras,
+            # handled above, if any of its 8 steps had failed).
             self._calibration[key] = CalibrationMatrix(
                 responses={
-                    (MountAxis.AXIS1, AxisDirection.POSITIVE): axis1,
-                    (MountAxis.AXIS2, AxisDirection.POSITIVE): axis2,
+                    direction_key: characterization.steady_state
+                    for direction_key, characterization in (
+                        self._calibration_characterizations[key].items()
+                    )
                 }
             )
             lines.append(
@@ -1382,14 +1649,13 @@ class MountTestMovePanel(QWidget):
             # hasn't succeeded (yet, or at all) for this specific camera.
             duration_ms = self._settings.pulse_ms
         else:
-            # Calibration only ever stores the POSITIVE-direction response
-            # per axis (see _CALIBRATION_STEPS) -- its own rate
-            # (magnitude_px / duration_ms) is direction-symmetric, so this
-            # is the right response to solve a duration from regardless of
-            # whether this click is RA+/RA-/Dec+/Dec-; the requested
-            # `direction` (not the calibration response's own POSITIVE
-            # one) is what actually gets pulsed below.
-            response = matrix.response_for(axis, AxisDirection.POSITIVE)
+            # Issue #31 Phase C: opposite-direction responses are never
+            # assumed symmetric any more -- calibration now measures (and
+            # stores) both directions' own steady-state rate per axis
+            # (see _CALIBRATION_STEPS), so this solves a duration from
+            # the *actually clicked* direction's own real rate, not a
+            # POSITIVE-direction stand-in.
+            response = matrix.response_for(axis, direction)
             if response.magnitude_px <= 0 or response.duration_ms <= 0:
                 # Shouldn't happen for a non-degenerate matrix
                 # (is_degenerate() already rejects two too-parallel/
@@ -1616,6 +1882,105 @@ class MountTestMovePanel(QWidget):
         )
         self._result_label.setText(" | ".join(parts) + suffix)
 
+    def _screen_move_size(self) -> MovementSize:
+        for size, button in self._size_buttons.items():
+            if button.isChecked():
+                return size
+        return MovementSize.SMALL  # unreachable -- the group always has one checked
+
+    def _screen_move_fraction(self) -> float:
+        return {
+            MovementSize.SMALL: self._settings.screen_move_small_fraction,
+            MovementSize.MEDIUM: self._settings.screen_move_medium_fraction,
+            MovementSize.LARGE: self._settings.screen_move_large_fraction,
+        }[self._screen_move_size()]
+
+    def _on_screen_move_clicked(self, camera_key: str, screen_direction: ScreenDirection) -> None:
+        """Issue #31 Phase D: solves and submits a (possibly two-axis)
+        pulse sequence that moves this camera's own image the requested
+        on-screen direction, by the currently-selected frame-relative
+        size. Deliberately never captures/measures an "after" frame --
+        see module docstring's own Phase E paragraph for why a
+        positioning click stays fire-and-forget rather than blocking on
+        a stability-verified measurement the way a calibration step or a
+        RA/Dec nudge does."""
+        matrix = self._calibration.get(camera_key)
+        if matrix is None:
+            return  # shouldn't be reachable -- the button stays disabled without one
+        frame_getter = self._get_left_frame if camera_key == "left" else self._get_right_frame
+        peek_frame = frame_getter()
+        if peek_frame is None:
+            self._last_error = f"{self._missing_label(self._target_mode())} before pulsing"
+            self._result_label.setText(f"Move failed: {self._last_error}")
+            return
+        frame_height, frame_width = peek_frame.shape[:2]
+        fraction = self._screen_move_fraction()
+        dx_sign, dy_sign = screen_direction.value
+        target_dx_px = dx_sign * fraction * frame_width
+        target_dy_px = dy_sign * fraction * frame_height
+        try:
+            steps = solve_screen_move(matrix, target_dx_px=target_dx_px, target_dy_px=target_dy_px)
+        except ValueError as exc:
+            self._last_error = str(exc)
+            self._result_label.setText(f"Move failed: {self._last_error}")
+            return
+        if not steps:
+            self._result_label.setText(f"{_CAMERA_LABELS[camera_key]}: nothing to move.")
+            return
+        # Real report, diagnostic de295656 (the same over-extrapolation
+        # risk _on_nudge_clicked's own docstring already covers) --
+        # clamp rather than refuse, same established philosophy, reusing
+        # the same setting (no separate safety cap for this control).
+        clamped = any(
+            duration_ms > self._settings.max_nudge_pulse_ms for _, _, duration_ms in steps
+        )
+        steps = [
+            (axis, direction, min(duration_ms, self._settings.max_nudge_pulse_ms))
+            for axis, direction, duration_ms in steps
+        ]
+        started = self._runner.submit_sequence(
+            self._mount_park, self._mount, steps,
+            rate_preset=self._settings.rate_preset, park_after=False,
+            settle_ms=self._settings.settle_ms,
+        )
+        if not started:
+            return  # a move is already running
+        size_label = self._screen_move_size().value.capitalize()
+        label = f"{_CAMERA_LABELS[camera_key]} {screen_direction.name.lower()} ({size_label})"
+        self._pending = _PendingAction(
+            kind="screen_move", before={}, mode=self._target_mode(), label=label, clamped=clamped,
+        )
+        suffix = (
+            f" (safety-capped at {self._settings.max_nudge_pulse_ms}ms/step)" if clamped else ""
+        )
+        self._result_label.setText(f"Moving {label}…{suffix}")
+        self._update_buttons_enabled()
+
+    def _finish_screen_move(
+        self,
+        pending: _PendingAction,
+        *,
+        pulsed: bool,
+        pulse_error: str | None,
+        completed_at: float,
+    ) -> None:
+        """Issue #31 Phase E: no "after" capture here -- see
+        `_on_screen_move_clicked`'s own docstring. The pulse itself
+        already ran regardless of anything below; there is no
+        measurement to confirm or fail."""
+        if not pulsed:
+            self._last_error = pulse_error or "pulse failed"
+            self._result_label.setText(f"Move failed: {self._last_error}")
+            return
+        self._last_pulse_completed_at = completed_at
+        suffix = (
+            f" (safety-capped at {self._settings.max_nudge_pulse_ms}ms/step -- click again to "
+            "continue toward the target)"
+            if pending.clamped
+            else ""
+        )
+        self._result_label.setText(f"{pending.label} — done.{suffix}")
+
     def _on_stop(self) -> None:
         # Duck-typed -- see module docstring's "Stop" section for why
         # this isn't a MountPort Protocol method.
@@ -1643,8 +2008,13 @@ class MountTestMovePanel(QWidget):
                         pending, pulsed=outcome.pulsed, pulse_error=outcome.error,
                         completed_at=completed_at,
                     )
-                else:
+                elif pending.kind == "nudge":
                     self._finish_nudge(
+                        pending, pulsed=outcome.pulsed, pulse_error=outcome.error,
+                        completed_at=completed_at,
+                    )
+                else:
+                    self._finish_screen_move(
                         pending, pulsed=outcome.pulsed, pulse_error=outcome.error,
                         completed_at=completed_at,
                     )
@@ -1715,6 +2085,17 @@ class MountTestMovePanel(QWidget):
             for button in buttons.values():
                 button.setEnabled(ready)
 
+        # Issue #31 Phase D: unlike the RA/Dec pad above, the
+        # screen-relative pad needs a real, non-degenerate 4-direction
+        # response model for *this specific camera* to solve from --
+        # enabled only once `self._calibration` actually has one (set in
+        # `_finish_calibration`), same "camera-independent" spirit as
+        # the RA/Dec pad's own docstring, just with a real prerequisite
+        # this time instead of none.
+        for camera_key, screen_buttons in self._screen_move_buttons.items():
+            for button in screen_buttons.values():
+                button.setEnabled(ready and camera_key in self._calibration)
+
         # Explain *why* the calibration/nudge buttons are disabled, rather
         # than leaving them silently unresponsive -- see module docstring's
         # incident note. Never stomps a "Calibrating…"/"Moving…"/result/
@@ -1759,6 +2140,27 @@ class MountTestMovePanel(QWidget):
             key: failure_class.value for key, failure_class in self._last_failure_classes.items()
         }
         return context
+
+    def diagnostic_backlash_evidence(self) -> dict[str, dict[str, dict[str, Any]]]:
+        """Issue #31 Phase C's own UUID-diagnostics ask: each camera's
+        per-(axis, direction) backlash characterization from the most
+        recent Run Calibration attempt -- e.g. `{"left": {"axis1_positive":
+        {"first": {...}, "repeat": {...}, "backlash_deficit_px": ...}}}`.
+        Folded into `MainWindow`'s diagnostic bundle alongside
+        `diagnostic_stability_evidence()` -- same "what would have let a
+        pulled bundle answer this question" reasoning that method's own
+        docstring gives for stability, applied here to backlash instead."""
+        return {
+            camera_key: {
+                f"{axis.name.lower()}_{direction.name.lower()}": {
+                    "first": _response_dict(characterization.first),
+                    "repeat": _response_dict(characterization.repeat),
+                    "backlash_deficit_px": characterization.backlash_deficit_px,
+                }
+                for (axis, direction), characterization in characterizations.items()
+            }
+            for camera_key, characterizations in self._calibration_characterizations.items()
+        }
 
     def stop(self) -> None:
         """Stop polling and disconnect. Safe to call whether or not connected."""

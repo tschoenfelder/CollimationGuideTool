@@ -7,11 +7,14 @@ much to move it — that is app-specific policy.
 from astrotool_core.mount.axis_calibration import (
     AxisResponse,
     CalibrationMatrix,
+    DirectionCharacterization,
     calibrate_axes,
     calibrate_axis,
     calibrate_axis_multi,
+    compose_screen_move,
     is_degenerate,
     response_from_positions,
+    solve_screen_move,
 )
 from astrotool_core.mount.indi_adapter import IndiMountAdapter
 from astrotool_core.mount.indi_mount_park_adapter import IndiMountParkAdapter
@@ -39,6 +42,7 @@ __all__ = [
     "AxisResponse",
     "CalibrationMatrix",
     "CommandResult",
+    "DirectionCharacterization",
     "IndiMountAdapter",
     "IndiMountParkAdapter",
     "IndiMountPulseAdapter",
@@ -56,7 +60,9 @@ __all__ = [
     "calibrate_axes",
     "calibrate_axis",
     "calibrate_axis_multi",
+    "compose_screen_move",
     "ensure_tracking_mode",
     "is_degenerate",
     "response_from_positions",
+    "solve_screen_move",
 ]

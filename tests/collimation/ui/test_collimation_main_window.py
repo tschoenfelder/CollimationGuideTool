@@ -37,7 +37,10 @@ from collimation_tool.ui.focuser_panel import FocuserPanel
 from collimation_tool.ui.main_window import MainWindow
 from collimation_tool.ui.mount_park_panel import MountParkPanel
 from collimation_tool.ui.mount_test_move_panel import (
+    _CALIBRATION_STEPS,
     MountTestMovePanel,
+    MovementSize,
+    ScreenDirection,
     _degenerate_calibration_message,
 )
 
@@ -91,9 +94,18 @@ def _stepped_frame_pair(
     """A (get_frame, wait_for_frame) pair for injecting synthetic
     per-calibration-step frame content, for a panel's `_get_left_frame`/
     `_wait_for_left_frame` (or `_right_`) pair -- `shifts` is one
-    ((before_dy, before_dx), (after_dy, after_dx)) entry per *measured*
-    step, in step order (axis1 test, axis2 test; return steps don't
-    capture anything).
+    ((before_dy, before_dx), (after_dy, after_dx)) entry per measured
+    *(axis, direction)*, in `_CALIBRATION_STEPS`' own order (axis1+,
+    axis1-, axis2+, axis2-) -- 4 entries for a full calibration run,
+    fewer for a partial one (e.g. a single nudge's own "after").
+
+    Issue #31 Phase C: every direction's own FIRST and REPEAT pulse now
+    capture independently (see `_CALIBRATION_STEPS`'s own docstring) --
+    since these tests aren't about backlash itself (see
+    `tests/core/mount/test_axis_calibration.py`'s own
+    `TestDirectionCharacterization` for that), each shift entry is used
+    for *both*, i.e. every scripted (before, after) pair backs 2 logical
+    captures, not 1.
 
     Issue #30: with `verify_stability=True` now the default for every
     calibration capture -- including the very first measured step's own
@@ -111,6 +123,8 @@ def _stepped_frame_pair(
     sequence: list[tuple[int, int]] = []
     for before, after in shifts:
         sequence.append(before)
+        sequence.append(after)
+        sequence.append(before)  # FIRST and REPEAT capture identically
         sequence.append(after)
     wait_calls = 0
 
@@ -135,13 +149,16 @@ def _stepped_star_pair(
     """Star-mode counterpart to `_stepped_frame_pair` -- see that
     function's own docstring for why every scripted entry (this one
     included) now advances every `stability_sample_count` calls, not
-    every call, and why `wait_for_frame` (not `get_frame`) now supplies
-    every capture in a calibration run, one ((before_x, before_y),
-    (after_x, after_y)) centroid pair per measured step, rendering a
+    every call, is duplicated for a direction's own FIRST and REPEAT
+    pulse, and why `wait_for_frame` (not `get_frame`) now supplies every
+    capture in a calibration run -- one ((before_x, before_y), (after_x,
+    after_y)) centroid pair per measured (axis, direction), rendering a
     single_star_image at that position instead of rolling a shared noise
     array."""
     sequence: list[tuple[float, float]] = []
     for before, after in positions:
+        sequence.append(before)
+        sequence.append(after)
         sequence.append(before)
         sequence.append(after)
     wait_calls = 0
@@ -2617,17 +2634,21 @@ class TestMountTestMovePanel:
 
     def _run_calibration_to_completion(self, panel: object, *, timeout_s: float = 15.0) -> None:
         """Click Run Calibration and drive the panel's poll loop until the
-        whole 4-step sequence finishes (or the timeout fires) -- mirrors
-        the existing "while runner.is_busy: sleep; poll()" pattern used
-        throughout this file for a single pulse, just repeated across the
-        sequence's several pulses.
+        whole 8-step sequence (issue #31 Phase C's own backlash-revealing
+        design -- see `_CALIBRATION_STEPS`'s own docstring) finishes (or
+        the timeout fires) -- mirrors the existing "while runner.is_busy:
+        sleep; poll()" pattern used throughout this file for a single
+        pulse, just repeated across the sequence's several pulses.
 
         `timeout_s` default raised from 5.0: MountAlignmentSettings'
         default settle_ms (1000ms, real -- see that module's own
         docstring) is a genuine per-step delay in MountTestMoveRunner
-        itself, not something a fake mount/park speeds up -- 4 real
-        calibration steps alone already cost ~4s before any other
-        overhead (frame capture, a slow mount_park fake, etc.)."""
+        itself, not something a fake mount/park speeds up -- 8 real
+        calibration steps alone already cost ~8s before any other
+        overhead (frame capture, a slow mount_park fake, etc.) --
+        callers driving a full real-camera run should pass a longer
+        explicit `timeout_s` (60s is the established convention in this
+        file)."""
         panel._run_calibration_button.click()  # type: ignore[attr-defined]
         deadline = time.monotonic() + timeout_s
         while panel._calibration_queue or panel._pending is not None:  # type: ignore[attr-defined]
@@ -2876,28 +2897,42 @@ class TestMountTestMovePanel:
         # test_run_calibration_reports_a_degenerate_axis... below). Fake
         # real per-axis motion by returning a star at a different position
         # each capture -- same monkeypatch pattern as flaky_get_left_frame
-        # a few tests below. Capture order per camera: axis1 before,
-        # axis1 after, axis2 before, axis2 after (the return steps take no
-        # measurement).
-        # Each entry is ((before_x, before_y), (after_x, after_y)) for
-        # one measured step (axis1 test, axis2 test).
+        # a few tests below. Each entry is ((before_x, before_y),
+        # (after_x, after_y)) for one measured (axis, direction), in
+        # _CALIBRATION_STEPS' own order (axis1+, axis1-, axis2+, axis2-);
+        # each direction's own FIRST and REPEAT pulse share the same
+        # entry (see _stepped_star_pair's own docstring).
         panel._get_left_frame, panel._wait_for_left_frame = _stepped_star_pair(
-            [((50.0, 50.0), (60.0, 50.0)), ((50.0, 50.0), (50.0, 60.0))]
+            [
+                ((50.0, 50.0), (60.0, 50.0)),
+                ((50.0, 50.0), (40.0, 50.0)),
+                ((50.0, 50.0), (50.0, 60.0)),
+                ((50.0, 50.0), (50.0, 40.0)),
+            ]
         )
         panel._get_right_frame, panel._wait_for_right_frame = _stepped_star_pair(
-            [((50.0, 50.0), (60.0, 50.0)), ((50.0, 50.0), (50.0, 60.0))]
+            [
+                ((50.0, 50.0), (60.0, 50.0)),
+                ((50.0, 50.0), (40.0, 50.0)),
+                ((50.0, 50.0), (50.0, 60.0)),
+                ((50.0, 50.0), (50.0, 40.0)),
+            ]
         )
 
-        self._run_calibration_to_completion(panel)
+        self._run_calibration_to_completion(panel, timeout_s=60.0)
 
         settings = MountAlignmentSettings()
         assert pulse_mount.pulse_log == [
             (MountAxis.AXIS1, AxisDirection.POSITIVE, settings.pulse_ms),
+            (MountAxis.AXIS1, AxisDirection.POSITIVE, settings.pulse_ms),
+            (MountAxis.AXIS1, AxisDirection.NEGATIVE, settings.pulse_ms),
             (MountAxis.AXIS1, AxisDirection.NEGATIVE, settings.pulse_ms),
             (MountAxis.AXIS2, AxisDirection.POSITIVE, settings.pulse_ms),
+            (MountAxis.AXIS2, AxisDirection.POSITIVE, settings.pulse_ms),
+            (MountAxis.AXIS2, AxisDirection.NEGATIVE, settings.pulse_ms),
             (MountAxis.AXIS2, AxisDirection.NEGATIVE, settings.pulse_ms),
         ]
-        assert pulse_mount.rate_log == [settings.rate_preset] * 4
+        assert pulse_mount.rate_log == [settings.rate_preset] * 8
         assert set(panel._calibration) == {"left", "right"}
         assert all(
             button.isEnabled()
@@ -2959,14 +2994,14 @@ class TestMountTestMovePanel:
         panel._get_right_frame = get_frame
         panel._wait_for_right_frame = wait_frame
 
-        self._run_calibration_to_completion(panel)
+        self._run_calibration_to_completion(panel, timeout_s=60.0)
 
-        # No instant (no-wait) captures at all any more -- all 4 captures
-        # (AXIS1's before/after, AXIS2's before/after) go through the
+        # No instant (no-wait) captures at all any more -- all 16
+        # captures (8 steps x before/after) go through the
         # stability-verified freshness-wait path, 3 samples each (the
-        # default stability_sample_count) = 12.
+        # default stability_sample_count) = 48.
         assert get_frame_calls == 0
-        assert wait_frame_calls == 12
+        assert wait_frame_calls == 48
         window.close()
 
     def test_calibration_steps_pass_the_configured_settle_ms_to_the_runner(
@@ -3006,9 +3041,9 @@ class TestMountTestMovePanel:
 
         panel._runner.submit = spy_submit  # type: ignore[method-assign]
 
-        self._run_calibration_to_completion(panel)
+        self._run_calibration_to_completion(panel, timeout_s=60.0)
 
-        assert settle_values == [MountAlignmentSettings().settle_ms] * 4
+        assert settle_values == [MountAlignmentSettings().settle_ms] * 8
         window.close()
 
     def test_calibration_pauses_both_cameras_auto_exposure_and_resumes_after(
@@ -3034,7 +3069,7 @@ class TestMountTestMovePanel:
         assert window._left_panel._auto_exposure_paused is True
         assert window._right_panel._auto_exposure_paused is True
 
-        self._run_calibration_to_completion(panel)
+        self._run_calibration_to_completion(panel, timeout_s=60.0)
 
         assert window._left_panel._auto_exposure_paused is False
         assert window._right_panel._auto_exposure_paused is False
@@ -3048,7 +3083,7 @@ class TestMountTestMovePanel:
         window._test_move_panel._connect_button.setChecked(True)
         panel = window._test_move_panel
 
-        self._run_calibration_to_completion(panel)
+        self._run_calibration_to_completion(panel, timeout_s=60.0)
 
         assert mount_park.park_count == 0
         assert mount_park.status().parked is False
@@ -3073,27 +3108,22 @@ class TestMountTestMovePanel:
         window._test_move_panel._connect_button.setChecked(True)
         panel = window._test_move_panel
 
-        # Capture order is: AXIS1 before(1-3), AXIS1 after(4-6) -- issue
-        # #30's verify_stability=True draws a whole stability_sample_count
-        # (3, default) window per capture now, AXIS1's own "before"
-        # included (nothing has pulsed yet, so it uses "now" as its own
-        # reference instead of the old bare instant read -- see
-        # MountTestMovePanel._capture_both's own docstring), [AXIS1
-        # return has no capture], AXIS2 before(7-9 -- real diagnostic
-        # 93ba361f: a later step's own "before" gets the same
-        # freshness/stability wait its "after" already gets, see
-        # _last_pulse_completed_at's own docstring), AXIS2 after(10-12) --
-        # the 10th left-camera call overall (AXIS2's own "after", first of
-        # its window). Fail exactly that one so AXIS1 completes normally
-        # and AXIS2's forward pulse has already been sent before anything
-        # fails.
+        # Issue #31 Phase C: 8 steps now (axis1+first, axis1+repeat,
+        # axis1-first, axis1-repeat, axis2+first, ...), every one measured
+        # (before+after, 3-sample stability window each = 6 left-camera
+        # calls per step). AXIS1's own full 4-step group succeeds cleanly
+        # (calls 1-24), AXIS2's own first (forward) pulse succeeds and its
+        # own "before" capture succeeds (calls 25-27), but its own "after"
+        # capture's first sample (call 28) fails -- AXIS2's forward pulse
+        # has already been sent before anything fails, matching real
+        # diagnostic a082144a's own scenario.
         real_get_left_frame = panel._get_left_frame
         call_count = 0
 
         def flaky_get_left_frame() -> np.ndarray | None:
             nonlocal call_count
             call_count += 1
-            return None if call_count >= 10 else real_get_left_frame()
+            return None if call_count >= 28 else real_get_left_frame()
 
         panel._get_left_frame = flaky_get_left_frame
         # "After" captures go through this instead of _get_left_frame
@@ -3106,7 +3136,7 @@ class TestMountTestMovePanel:
             flaky_get_left_frame()
         )
 
-        self._run_calibration_to_completion(panel)
+        self._run_calibration_to_completion(panel, timeout_s=60.0)
         # Real report: "calibration failed is stated already while mount
         # is moving" -- the message shown the instant the queue/pending
         # state above clears must say the mount is still returning, not
@@ -3133,8 +3163,15 @@ class TestMountTestMovePanel:
         panel._poll()
 
         settings = MountAlignmentSettings()
+        # AXIS1's own full 4-step group (+,+,-,-) succeeded, AXIS2's own
+        # forward (positive, first) pulse succeeded -- 5 real steps --
+        # then the corrective return pulse (issue #31: AXIS2's own net
+        # +pulse_ms so far, see _abort_calibration's own docstring) fires
+        # fire-and-forget.
         assert pulse_mount.pulse_log == [
             (MountAxis.AXIS1, AxisDirection.POSITIVE, settings.pulse_ms),
+            (MountAxis.AXIS1, AxisDirection.POSITIVE, settings.pulse_ms),
+            (MountAxis.AXIS1, AxisDirection.NEGATIVE, settings.pulse_ms),
             (MountAxis.AXIS1, AxisDirection.NEGATIVE, settings.pulse_ms),
             (MountAxis.AXIS2, AxisDirection.POSITIVE, settings.pulse_ms),
             (MountAxis.AXIS2, AxisDirection.NEGATIVE, settings.pulse_ms),
@@ -3187,18 +3224,16 @@ class TestMountTestMovePanel:
         original_delay = runner_module._PULSE_REJECTION_RETRY_DELAY_S
         runner_module._PULSE_REJECTION_RETRY_DELAY_S = 0.01  # keep the test fast
 
-        # See the sibling test above for why this is the 10th left-camera
-        # call (issue #30's verify_stability=True draws a whole
-        # stability_sample_count-frame window per capture now, AXIS1's
-        # own "before" included, and -- real diagnostic 93ba361f -- every
-        # "before" from the second measured step onward too).
+        # See the sibling test above for why this is the 28th left-camera
+        # call (issue #31 Phase C: 8 steps, 6 left-camera calls each --
+        # AXIS1's own full 4-step group completes cleanly first).
         real_get_left_frame = panel._get_left_frame
         call_count = 0
 
         def flaky_get_left_frame() -> np.ndarray | None:
             nonlocal call_count
             call_count += 1
-            return None if call_count >= 10 else real_get_left_frame()
+            return None if call_count >= 28 else real_get_left_frame()
 
         panel._get_left_frame = flaky_get_left_frame
         # "After" captures go through this instead of _get_left_frame
@@ -3212,7 +3247,7 @@ class TestMountTestMovePanel:
         )
 
         try:
-            self._run_calibration_to_completion(panel)
+            self._run_calibration_to_completion(panel, timeout_s=60.0)
             deadline = time.monotonic() + 5.0
             while panel._runner.is_busy:
                 assert time.monotonic() < deadline, "stranded return pulse never completed"
@@ -3249,7 +3284,7 @@ class TestMountTestMovePanel:
         assert panel._stop_button.isEnabled()
         assert not panel._run_calibration_button.isEnabled()
 
-        self._run_calibration_to_completion(panel)
+        self._run_calibration_to_completion(panel, timeout_s=60.0)
         assert not panel._stop_button.isEnabled()
         window.close()
 
@@ -3274,17 +3309,27 @@ class TestMountTestMovePanel:
         # measured responses to actually differ -- see
         # test_run_calibration_pulses_all_four_steps_in_order_and_builds_both_matrices's
         # own comment for why the shared static _star_camera fixture
-        # can't provide that on its own.
-        # Each entry is ((before_x, before_y), (after_x, after_y)) for
-        # one measured step (axis1 test, axis2 test).
+        # can't provide that on its own. Each entry is ((before_x,
+        # before_y), (after_x, after_y)) for one measured (axis,
+        # direction), in _CALIBRATION_STEPS' own order.
         panel._get_left_frame, panel._wait_for_left_frame = _stepped_star_pair(
-            [((50.0, 50.0), (60.0, 50.0)), ((50.0, 50.0), (50.0, 60.0))]
+            [
+                ((50.0, 50.0), (60.0, 50.0)),
+                ((50.0, 50.0), (40.0, 50.0)),
+                ((50.0, 50.0), (50.0, 60.0)),
+                ((50.0, 50.0), (50.0, 40.0)),
+            ]
         )
         panel._get_right_frame, panel._wait_for_right_frame = _stepped_star_pair(
-            [((50.0, 50.0), (60.0, 50.0)), ((50.0, 50.0), (50.0, 60.0))]
+            [
+                ((50.0, 50.0), (60.0, 50.0)),
+                ((50.0, 50.0), (40.0, 50.0)),
+                ((50.0, 50.0), (50.0, 60.0)),
+                ((50.0, 50.0), (50.0, 40.0)),
+            ]
         )
 
-        self._run_calibration_to_completion(panel)
+        self._run_calibration_to_completion(panel, timeout_s=60.0)
 
         context = window._diagnostic_context()
         calibration = context["mount_test_move"]["calibration"]
@@ -3314,14 +3359,18 @@ class TestMountTestMovePanel:
         window._test_move_panel._connect_button.setChecked(True)
         panel = window._test_move_panel
 
-        self._run_calibration_to_completion(panel)
+        self._run_calibration_to_completion(panel, timeout_s=60.0)
 
         frames = panel.diagnostic_frames()
+        # Issue #31 Phase C: every one of the 8 steps now gets its own
+        # unique before/after label (axis, direction, and FIRST/REPEAT
+        # role all distinguish it), not just 2.
         assert set(frames) == {
-            "axis1_before_left", "axis1_before_right",
-            "axis1_after_left", "axis1_after_right",
-            "axis2_before_left", "axis2_before_right",
-            "axis2_after_left", "axis2_after_right",
+            f"{step.axis.name.lower()}_{step.direction.name.lower()}_{step.role.value}_"
+            f"{phase}_{camera}"
+            for step in _CALIBRATION_STEPS
+            for phase in ("before", "after")
+            for camera in ("left", "right")
         }
         assert all(isinstance(array, np.ndarray) for array in frames.values())
         window.close()
@@ -3337,14 +3386,21 @@ class TestMountTestMovePanel:
         window._test_move_panel._connect_button.setChecked(True)
         panel = window._test_move_panel
 
-        self._run_calibration_to_completion(panel)
+        self._run_calibration_to_completion(panel, timeout_s=60.0)
 
         calib_sources = set()
         for frame in window._all_recent_frames():
             if isinstance(frame.header, fits.Header) and "CALIBSRC" in frame.header:
                 calib_sources.add(frame.header["CALIBSRC"])
-        assert "axis1_before_left" in calib_sources
-        assert "axis2_after_right" in calib_sources
+        first_step, last_step = _CALIBRATION_STEPS[0], _CALIBRATION_STEPS[-1]
+        assert (
+            f"{first_step.axis.name.lower()}_{first_step.direction.name.lower()}_"
+            f"{first_step.role.value}_before_left"
+        ) in calib_sources
+        assert (
+            f"{last_step.axis.name.lower()}_{last_step.direction.name.lower()}_"
+            f"{last_step.role.value}_after_right"
+        ) in calib_sources
         window.close()
 
     def test_calibration_diagnostic_frames_carry_the_exposure_and_gain_used(
@@ -3364,7 +3420,7 @@ class TestMountTestMovePanel:
         window._test_move_panel._connect_button.setChecked(True)
         panel = window._test_move_panel
 
-        self._run_calibration_to_completion(panel)
+        self._run_calibration_to_completion(panel, timeout_s=60.0)
 
         checked = 0
         for frame in window._all_recent_frames():
@@ -3374,7 +3430,7 @@ class TestMountTestMovePanel:
                 assert frame.header["EXPOSURE"] > 0.0
                 assert frame.header["GAIN"] > 0
                 checked += 1
-        assert checked == 8  # every CALIBSRC frame, not just some
+        assert checked == 32  # every CALIBSRC frame (8 steps x before/after x 2 cameras)
         window.close()
 
     def test_closing_the_window_disconnects_the_pulse_mount(self, qapp: object) -> None:
@@ -3452,16 +3508,16 @@ class TestMountTestMovePanel:
         rng = np.random.default_rng(12)
         base = rng.normal(loc=500.0, scale=80.0, size=(120, 120))
         # One independent sequence per camera -- each camera gets its own
-        # 2 measured steps (axis1 test, axis2 test), each a
-        # (before_shift, after_shift) pair.
+        # 4 measured (axis, direction) entries, in _CALIBRATION_STEPS'
+        # own order (axis1+, axis1-, axis2+, axis2-).
         panel._get_left_frame, panel._wait_for_left_frame = _stepped_frame_pair(
-            base, [((0, 0), (0, 6)), ((0, 0), (6, 0))]
+            base, [((0, 0), (0, 6)), ((0, 0), (0, -6)), ((0, 0), (6, 0)), ((0, 0), (-6, 0))]
         )
         panel._get_right_frame, panel._wait_for_right_frame = _stepped_frame_pair(
-            base, [((0, 0), (0, 6)), ((0, 0), (6, 0))]
+            base, [((0, 0), (0, 6)), ((0, 0), (0, -6)), ((0, 0), (6, 0)), ((0, 0), (-6, 0))]
         )
 
-        self._run_calibration_to_completion(panel)
+        self._run_calibration_to_completion(panel, timeout_s=60.0)
 
         assert set(panel._calibration) == {"left", "right"}
         assert "Calibration failed" not in panel._result_label.text()
@@ -3496,16 +3552,17 @@ class TestMountTestMovePanel:
         rng = np.random.default_rng(13)
         base = rng.normal(loc=500.0, scale=80.0, size=(120, 120))
         # AXIS1's before/after are identical -- no real motion, matching
-        # the incident exactly -- while AXIS2's genuinely differ. One
-        # independent sequence per camera, same reasoning as above.
+        # the incident exactly, on both directions -- while AXIS2's
+        # genuinely differ (mirrored positive/negative). One independent
+        # sequence per camera, same reasoning as above.
         panel._get_left_frame, panel._wait_for_left_frame = _stepped_frame_pair(
-            base, [((0, 0), (0, 0)), ((0, 0), (6, 0))]
+            base, [((0, 0), (0, 0)), ((0, 0), (0, 0)), ((0, 0), (6, 0)), ((0, 0), (-6, 0))]
         )
         panel._get_right_frame, panel._wait_for_right_frame = _stepped_frame_pair(
-            base, [((0, 0), (0, 0)), ((0, 0), (6, 0))]
+            base, [((0, 0), (0, 0)), ((0, 0), (0, 0)), ((0, 0), (6, 0)), ((0, 0), (-6, 0))]
         )
 
-        self._run_calibration_to_completion(panel)
+        self._run_calibration_to_completion(panel, timeout_s=60.0)
 
         assert "left" not in panel._calibration
         assert "right" not in panel._calibration
@@ -3564,15 +3621,15 @@ class TestMountTestMovePanel:
         base = rng.normal(loc=500.0, scale=80.0, size=(120, 120))
         # AXIS1 identical (no motion) on both cameras; AXIS2 identical on
         # Main but genuinely differs on Guide -- exactly diagnostic
-        # 0270868c's own pattern.
+        # 0270868c's own pattern. Both directions mirrored per axis.
         panel._get_left_frame, panel._wait_for_left_frame = _stepped_frame_pair(
-            base, [((0, 0), (0, 0)), ((0, 0), (0, 0))]
+            base, [((0, 0), (0, 0)), ((0, 0), (0, 0)), ((0, 0), (0, 0)), ((0, 0), (0, 0))]
         )
         panel._get_right_frame, panel._wait_for_right_frame = _stepped_frame_pair(
-            base, [((0, 0), (0, 0)), ((0, 0), (6, 0))]
+            base, [((0, 0), (0, 0)), ((0, 0), (0, 0)), ((0, 0), (6, 0)), ((0, 0), (-6, 0))]
         )
 
-        self._run_calibration_to_completion(panel)
+        self._run_calibration_to_completion(panel, timeout_s=60.0)
 
         assert "left" not in panel._calibration
         assert "right" not in panel._calibration
@@ -3625,10 +3682,14 @@ class TestMountTestMovePanel:
         panel = window._test_move_panel
         panel._terrestrial_button.click()
         # Main's own stability window can never resolve (flat content,
-        # every sample) -- a short timeout keeps this test fast instead
-        # of burning the full stability_timeout_s default 4 times over.
+        # every sample) -- 2 is the smallest window check_image_stability
+        # can ever accept (it needs at least 2 frames to compare a
+        # consecutive pair at all), so this keeps each of Main's own
+        # failing captures as close to the fixed ~2s exposure-scaled
+        # freshness floor as possible without breaking stability
+        # verification entirely.
         panel._settings = MountAlignmentSettings(
-            stability_sample_interval_s=0.0, stability_timeout_s=0.5,
+            stability_sample_interval_s=0.0, stability_timeout_s=0.5, stability_sample_count=2,
         )
 
         flat = np.full((120, 120), 500.0)
@@ -3640,23 +3701,28 @@ class TestMountTestMovePanel:
         # CameraPanel.wait_for_frame_after's own docstring.
         panel._wait_for_left_frame = lambda _reference, _timeout: _ok_result(flat)
         panel._get_right_frame, panel._wait_for_right_frame = _stepped_frame_pair(
-            base, [((0, 0), (0, 6)), ((0, 0), (6, 0))]
+            base,
+            [((0, 0), (0, 6)), ((0, 0), (0, -6)), ((0, 0), (6, 0)), ((0, 0), (-6, 0))],
+            stability_sample_count=2,
         )
 
         # Main's own stability window never resolves (flat content) --
-        # each of its 4 captures burns close to _verified_capture_timeout_s
-        # (floored by the real ~2s exposure-scaled freshness budget, not
-        # this test's own short stability_timeout_s override above), so
-        # the whole run needs a longer overall budget than the default.
-        self._run_calibration_to_completion(panel, timeout_s=30.0)
+        # each of its 16 captures (8 steps x before/after) burns close to
+        # the fixed ~2s exposure-scaled freshness floor, so the whole run
+        # needs a much longer overall budget than the default.
+        self._run_calibration_to_completion(panel, timeout_s=90.0)
 
         settings = MountAlignmentSettings()
-        # All 4 steps still ran -- Main failing didn't cut the shared
+        # All 8 steps still ran -- Main failing didn't cut the shared
         # mount sequence short.
         assert pulse_mount.pulse_log == [
             (MountAxis.AXIS1, AxisDirection.POSITIVE, settings.pulse_ms),
+            (MountAxis.AXIS1, AxisDirection.POSITIVE, settings.pulse_ms),
+            (MountAxis.AXIS1, AxisDirection.NEGATIVE, settings.pulse_ms),
             (MountAxis.AXIS1, AxisDirection.NEGATIVE, settings.pulse_ms),
             (MountAxis.AXIS2, AxisDirection.POSITIVE, settings.pulse_ms),
+            (MountAxis.AXIS2, AxisDirection.POSITIVE, settings.pulse_ms),
+            (MountAxis.AXIS2, AxisDirection.NEGATIVE, settings.pulse_ms),
             (MountAxis.AXIS2, AxisDirection.NEGATIVE, settings.pulse_ms),
         ]
         assert "left" not in panel._calibration
@@ -4579,4 +4645,184 @@ class TestMotionAwareCapture:
         )
         assert after is not None
         assert set(panel.diagnostic_stability_evidence()) == {"left", "right"}
+        panel.stop()
+
+
+class TestScreenRelativeMove:
+    """Issue #31 Phase D/E: per-camera screen-relative ←/→/↑/↓ controls,
+    solved via `solve_screen_move` from a full 4-direction
+    `CalibrationMatrix`, submitted via `MountTestMoveRunner.submit_sequence`
+    -- and, Phase E, never gated on a synchronous "after" measurement the
+    way a calibration step or RA/Dec nudge is."""
+
+    def _matrix(self) -> CalibrationMatrix:
+        """Axis-aligned camera (AXIS1 -> pure x, AXIS2 -> pure y) at
+        0.1 px/ms, opposite directions mirrored exactly (no asymmetry) --
+        the simplest possible case, matching
+        test_axis_calibration.py's own `compose_screen_move` precedent;
+        that module's own `TestSolveScreenMove` already covers the
+        direction-asymmetric math in isolation."""
+        return CalibrationMatrix(
+            responses={
+                (MountAxis.AXIS1, AxisDirection.POSITIVE): AxisResponse(
+                    axis=MountAxis.AXIS1, direction=AxisDirection.POSITIVE, duration_ms=1000,
+                    dx_px=100.0, dy_px=0.0, px_per_ms=0.1,
+                ),
+                (MountAxis.AXIS1, AxisDirection.NEGATIVE): AxisResponse(
+                    axis=MountAxis.AXIS1, direction=AxisDirection.NEGATIVE, duration_ms=1000,
+                    dx_px=-100.0, dy_px=0.0, px_per_ms=0.1,
+                ),
+                (MountAxis.AXIS2, AxisDirection.POSITIVE): AxisResponse(
+                    axis=MountAxis.AXIS2, direction=AxisDirection.POSITIVE, duration_ms=1000,
+                    dx_px=0.0, dy_px=100.0, px_per_ms=0.1,
+                ),
+                (MountAxis.AXIS2, AxisDirection.NEGATIVE): AxisResponse(
+                    axis=MountAxis.AXIS2, direction=AxisDirection.NEGATIVE, duration_ms=1000,
+                    dx_px=0.0, dy_px=-100.0, px_per_ms=0.1,
+                ),
+            }
+        )
+
+    def _panel(
+        self,
+        *,
+        mount: FakeMountAdapter | None = None,
+        settings: MountAlignmentSettings | None = None,
+    ) -> MountTestMovePanel:
+        pulse_mount = mount if mount is not None else FakeMountAdapter()
+        pulse_mount.connect()
+        # (height=100, width=200) -- distinct dimensions so a mixed-up
+        # width/height would show up as a wrong solved duration.
+        return MountTestMovePanel(
+            pulse_mount,
+            mount_park=FakeMountPark(start_parked=True),
+            get_left_frame=lambda: np.zeros((100, 200), dtype=np.float32),
+            get_right_frame=lambda: np.zeros((100, 200), dtype=np.float32),
+            settings=settings,
+        )
+
+    def _drive_to_completion(self, panel: MountTestMovePanel, *, timeout_s: float = 5.0) -> None:
+        deadline = time.monotonic() + timeout_s
+        while panel._runner.is_busy:
+            assert time.monotonic() < deadline, "screen move never completed"
+            time.sleep(0.01)
+        panel._poll()
+
+    def test_screen_move_buttons_disabled_without_a_valid_calibration(self, qapp: object) -> None:
+        panel = self._panel()
+        panel._connect_button.setChecked(True)
+        assert not panel._screen_move_buttons["left"][ScreenDirection.LEFT].isEnabled()
+        panel.stop()
+
+    def test_screen_move_buttons_enable_once_a_valid_calibration_exists(self, qapp: object) -> None:
+        panel = self._panel()
+        panel._connect_button.setChecked(True)
+        panel._calibration["left"] = self._matrix()
+        panel._update_buttons_enabled()
+        assert panel._screen_move_buttons["left"][ScreenDirection.LEFT].isEnabled()
+        # Camera-independent, same as calibration itself -- Guide has no
+        # matrix here, so its own pad must stay disabled.
+        assert not panel._screen_move_buttons["right"][ScreenDirection.LEFT].isEnabled()
+        panel.stop()
+
+    def test_clicking_left_solves_and_submits_the_right_pulse_sequence(self, qapp: object) -> None:
+        pulse_mount = FakeMountAdapter()
+        panel = self._panel(mount=pulse_mount)
+        panel._connect_button.setChecked(True)
+        panel._calibration["left"] = self._matrix()
+        panel._update_buttons_enabled()
+
+        panel._on_screen_move_clicked("left", ScreenDirection.LEFT)
+        self._drive_to_completion(panel)
+
+        # Small (default) = 5% of this camera's own 200px-wide frame =
+        # 10px target, left = -dx -- AXIS1's own 0.1 px/ms rate (either
+        # direction, symmetric here) solves 100ms.
+        assert pulse_mount.pulse_log == [(MountAxis.AXIS1, AxisDirection.NEGATIVE, 100)]
+        assert "Main left (Small)" in panel._result_label.text()
+        panel.stop()
+
+    def test_medium_size_solves_a_larger_duration_than_small(self, qapp: object) -> None:
+        pulse_mount = FakeMountAdapter()
+        panel = self._panel(mount=pulse_mount)
+        panel._connect_button.setChecked(True)
+        panel._calibration["left"] = self._matrix()
+        panel._update_buttons_enabled()
+        panel._size_buttons[MovementSize.MEDIUM].setChecked(True)
+
+        panel._on_screen_move_clicked("left", ScreenDirection.RIGHT)
+        self._drive_to_completion(panel)
+
+        # Medium (15%, default settings) of 200px = 30px target -- 3x
+        # Small's own 10px target, so 3x the duration (300ms vs 100ms).
+        assert pulse_mount.pulse_log == [(MountAxis.AXIS1, AxisDirection.POSITIVE, 300)]
+        panel.stop()
+
+    def test_screen_move_clamps_to_the_safety_cap(self, qapp: object) -> None:
+        pulse_mount = FakeMountAdapter()
+        settings = MountAlignmentSettings(max_nudge_pulse_ms=50, screen_move_small_fraction=0.05)
+        panel = self._panel(mount=pulse_mount, settings=settings)
+        panel._connect_button.setChecked(True)
+        panel._calibration["left"] = self._matrix()
+        panel._update_buttons_enabled()
+
+        panel._on_screen_move_clicked("left", ScreenDirection.LEFT)
+        self._drive_to_completion(panel)
+
+        # Solved duration (100ms, same math as the first test above)
+        # exceeds max_nudge_pulse_ms=50 -- clamped down, not refused, same
+        # established philosophy as _on_nudge_clicked's own safety cap.
+        assert pulse_mount.pulse_log == [(MountAxis.AXIS1, AxisDirection.NEGATIVE, 50)]
+        assert "safety-capped" in panel._result_label.text()
+        panel.stop()
+
+    def test_screen_move_never_captures_or_measures_an_after_frame(self, qapp: object) -> None:
+        """Issue #31 Phase E's own concrete regression guard: a
+        screen-relative click must never invoke the stability-verified
+        (or any) frame wait after its pulse completes -- see
+        `_on_screen_move_clicked`'s own docstring for why."""
+        pulse_mount = FakeMountAdapter()
+        panel = self._panel(mount=pulse_mount)
+        panel._connect_button.setChecked(True)
+        panel._calibration["left"] = self._matrix()
+        panel._update_buttons_enabled()
+        wait_calls = 0
+
+        def counting_wait(_reference: float, _timeout: float) -> FrameAcquisitionResult:
+            nonlocal wait_calls
+            wait_calls += 1
+            return _ok_result(np.zeros((10, 10), dtype=np.float32))
+
+        panel._wait_for_left_frame = counting_wait
+        panel._wait_for_right_frame = counting_wait
+
+        panel._on_screen_move_clicked("left", ScreenDirection.LEFT)
+        self._drive_to_completion(panel)
+
+        assert wait_calls == 0
+        assert panel.diagnostic_stability_evidence() == {}
+        assert "done" in panel._result_label.text()
+        panel.stop()
+
+    def test_screen_move_reports_a_pulse_rejection(self, qapp: object) -> None:
+        # Clicking Connect below calls this same pulse_mount's own
+        # .connect() (MountTestMovePanel._on_toggle_connect), so a merely
+        # *unconnected* mount can't simulate a rejected pulse here --
+        # reject every retry attempt instead (see FakeMountAdapter's own
+        # docstring on reject_first_n_pulses).
+        pulse_mount = FakeMountAdapter(reject_first_n_pulses=999)
+        panel = MountTestMovePanel(
+            pulse_mount,
+            mount_park=FakeMountPark(start_parked=True),
+            get_left_frame=lambda: np.zeros((100, 200), dtype=np.float32),
+            get_right_frame=lambda: np.zeros((100, 200), dtype=np.float32),
+        )
+        panel._connect_button.setChecked(True)
+        panel._calibration["left"] = self._matrix()
+        panel._update_buttons_enabled()
+
+        panel._on_screen_move_clicked("left", ScreenDirection.LEFT)
+        self._drive_to_completion(panel)
+
+        assert "Move failed" in panel._result_label.text()
         panel.stop()

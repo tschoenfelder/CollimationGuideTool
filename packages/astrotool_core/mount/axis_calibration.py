@@ -227,6 +227,119 @@ def compose_screen_move(
     return steps
 
 
+@dataclass(frozen=True)
+class DirectionCharacterization:
+    """Issue #31's own backlash-revealing sequence (+, +, -, - per axis,
+    every pulse measured -- see `MountTestMovePanel`'s own calibration
+    sequence docstring): `first` is this direction's own first pulse this
+    run (may be backlash-contaminated -- the first commanded steps after
+    a direction reversal can consume mechanical gear slack instead of
+    turning the axis, see real diagnostic evidence in
+    tests/local_data/test_calibration_against_real_captures.py), `repeat`
+    is the immediately-following second pulse in the same direction --
+    the reliable, steady-state response a `CalibrationMatrix` should
+    trust. Opposite-direction responses are never assumed symmetric (this
+    issue's own core principle), so both directions get their own
+    independent `DirectionCharacterization`."""
+
+    first: AxisResponse
+    repeat: AxisResponse
+
+    @property
+    def steady_state(self) -> AxisResponse:
+        """The response to trust as this direction's normal per-command
+        rate -- always the repeated pulse, never the (possibly backlash-
+        contaminated) first one."""
+        return self.repeat
+
+    @property
+    def backlash_deficit_px(self) -> float:
+        """How much of `first`'s own commanded travel was consumed by
+        mechanical dead travel before real motion began, estimated as the
+        shortfall between the trusted steady-state magnitude and the
+        first pulse's own (same-duration) magnitude. Floored at 0.0 -- a
+        `first` reading that's not smaller than `repeat` means no
+        measurable backlash this run, not negative backlash."""
+        return max(0.0, self.repeat.magnitude_px - self.first.magnitude_px)
+
+
+def solve_screen_move(
+    matrix: CalibrationMatrix, *, target_dx_px: float, target_dy_px: float
+) -> list[tuple[MountAxis, AxisDirection, int]]:
+    """Issue #31's own per-camera screen-relative solver -- like
+    `compose_screen_move`, but direction-aware: a real mount's positive
+    and negative rates are no longer assumed equal (this issue's own core
+    principle), so `matrix` must carry all four `(axis, direction)`
+    entries rather than the single per-axis response
+    `compose_screen_move` itself takes.
+
+    Two-pass solve: the first pass uses both axes' POSITIVE-direction
+    responses purely to discover which direction each axis actually
+    needs for this target (the sign of the solved duration) --
+    `compose_screen_move` itself, reused unchanged, already does exactly
+    that solve. The second pass re-solves the same 2x2 system directly
+    (not via `compose_screen_move`, whose own sign-to-direction
+    convention assumes its two inputs both represent "the positive
+    direction" -- feeding it a real NEGATIVE-direction response would
+    misinterpret that response's own already-correctly-signed rate as
+    if it were a positive one) using each axis's *own* direction-specific
+    response (whichever pass 1's sign indicated); a real measured
+    response already carries the right sign for its own direction, so
+    this second solve's own result should come out non-negative if pass
+    1's direction guess holds. A sign flip between the two passes (a
+    real but rare edge case -- the direction-specific rate differing
+    enough from the reference one to flip which direction is actually
+    needed) is not chased further with a third iteration -- see this
+    issue's own "do not over-engineer" instruction; that axis's own step
+    is simply omitted, the same way `compose_screen_move` already omits
+    a step whose rounded duration is 0.
+
+    Raises `ValueError` if the direction-specific pair used in the second
+    pass is itself too close to parallel to invert reliably -- same
+    `is_degenerate` guard `compose_screen_move` uses, reused directly
+    here since the mixed-direction pair is a different pair than pass
+    1's own POSITIVE-only one and needs its own check.
+    """
+    axis1_positive = matrix.response_for(MountAxis.AXIS1, AxisDirection.POSITIVE)
+    axis2_positive = matrix.response_for(MountAxis.AXIS2, AxisDirection.POSITIVE)
+    provisional = compose_screen_move(
+        axis1_positive, axis2_positive, target_dx_px=target_dx_px, target_dy_px=target_dy_px
+    )
+
+    directions = dict.fromkeys((MountAxis.AXIS1, MountAxis.AXIS2), AxisDirection.POSITIVE)
+    for axis, direction, _duration_ms in provisional:
+        directions[axis] = direction
+
+    axis1 = matrix.response_for(MountAxis.AXIS1, directions[MountAxis.AXIS1])
+    axis2 = matrix.response_for(MountAxis.AXIS2, directions[MountAxis.AXIS2])
+    if axis1.duration_ms <= 0 or axis2.duration_ms <= 0:
+        raise ValueError("solve_screen_move: calibration responses need a positive duration_ms")
+    if is_degenerate(axis1, axis2):
+        raise ValueError(
+            "solve_screen_move: AXIS1 and AXIS2 responses are too close to parallel to "
+            "invert reliably -- recalibrate (one axis may not have moved anything real)"
+        )
+
+    rate1_dx = axis1.dx_px / axis1.duration_ms
+    rate1_dy = axis1.dy_px / axis1.duration_ms
+    rate2_dx = axis2.dx_px / axis2.duration_ms
+    rate2_dy = axis2.dy_px / axis2.duration_ms
+    determinant = rate1_dx * rate2_dy - rate2_dx * rate1_dy
+    t1_ms = (target_dx_px * rate2_dy - target_dy_px * rate2_dx) / determinant
+    t2_ms = (rate1_dx * target_dy_px - rate1_dy * target_dx_px) / determinant
+
+    steps: list[tuple[MountAxis, AxisDirection, int]] = []
+    for axis, direction, signed_ms in (
+        (MountAxis.AXIS1, directions[MountAxis.AXIS1], t1_ms),
+        (MountAxis.AXIS2, directions[MountAxis.AXIS2], t2_ms),
+    ):
+        duration_ms = round(signed_ms)
+        if duration_ms <= 0:
+            continue
+        steps.append((axis, direction, duration_ms))
+    return steps
+
+
 def response_from_positions(
     axis: MountAxis,
     direction: AxisDirection,

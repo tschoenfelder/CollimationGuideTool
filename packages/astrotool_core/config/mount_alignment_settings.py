@@ -120,6 +120,18 @@ _DEFAULT_STABILITY_SAMPLE_INTERVAL_S = 0.2
 #: A starting value, not yet live-verified -- see stability_tolerance_px's
 #: own docstring for the same caveat.
 _DEFAULT_STABILITY_TIMEOUT_S = 8.0
+#: Issue #31's own suggested frame-relative movement sizes for the
+#: per-camera screen-relative ←→↑↓ controls, once a valid response model
+#: exists ("Small ≈ 5% of this camera's frame, Medium ≈ 15%, Large ≈
+#: 30%") -- these are the issue's own suggested starting percentages, not
+#: yet tuned against a live rig, same caveat as every other real-
+#: hardware-facing constant in this module. Deliberately a fraction of
+#: *this camera's own* frame width (mirrors `nudge_target_fraction`'s own
+#: reasoning), not a fixed pixel count -- Main and Guide have very
+#: different resolutions.
+_DEFAULT_SCREEN_MOVE_SMALL_FRACTION = 0.05
+_DEFAULT_SCREEN_MOVE_MEDIUM_FRACTION = 0.15
+_DEFAULT_SCREEN_MOVE_LARGE_FRACTION = 0.30
 
 
 @dataclass(frozen=True)
@@ -155,7 +167,16 @@ class MountAlignmentSettings:
     each fresh sample in that window; `stability_timeout_s` bounds the
     whole wait so a genuinely wind-disturbed or never-settling session
     fails explicitly instead of hanging. See each constant's own
-    docstring for the real evidence behind its starting value."""
+    docstring for the real evidence behind its starting value.
+
+    Issue #31: `screen_move_small_fraction`/`_medium_fraction`/
+    `_large_fraction` are the frame-relative movement sizes a per-camera
+    screen-relative ←→↑↓ control offers once that camera has a valid,
+    non-degenerate 4-direction response model -- each is a fraction of
+    *that camera's own* frame width/height, mirroring
+    `nudge_target_fraction`'s own reasoning. `max_nudge_pulse_ms` (above)
+    doubles as these controls' own safety cap too -- no separate setting,
+    same clamp-not-refuse philosophy `_on_nudge_clicked` already uses."""
 
     pulse_ms: int = _DEFAULT_PULSE_MS
     rate_preset: str = _DEFAULT_RATE_PRESET
@@ -167,6 +188,9 @@ class MountAlignmentSettings:
     stability_sample_count: int = _DEFAULT_STABILITY_SAMPLE_COUNT
     stability_sample_interval_s: float = _DEFAULT_STABILITY_SAMPLE_INTERVAL_S
     stability_timeout_s: float = _DEFAULT_STABILITY_TIMEOUT_S
+    screen_move_small_fraction: float = _DEFAULT_SCREEN_MOVE_SMALL_FRACTION
+    screen_move_medium_fraction: float = _DEFAULT_SCREEN_MOVE_MEDIUM_FRACTION
+    screen_move_large_fraction: float = _DEFAULT_SCREEN_MOVE_LARGE_FRACTION
 
 
 def load_mount_alignment_settings(
@@ -245,6 +269,27 @@ def load_mount_alignment_settings(
     except (TypeError, ValueError):
         stability_timeout_s = defaults.stability_timeout_s
 
+    try:
+        screen_move_small_fraction = float(
+            table.get("screen_move_small_fraction", defaults.screen_move_small_fraction)
+        )
+    except (TypeError, ValueError):
+        screen_move_small_fraction = defaults.screen_move_small_fraction
+
+    try:
+        screen_move_medium_fraction = float(
+            table.get("screen_move_medium_fraction", defaults.screen_move_medium_fraction)
+        )
+    except (TypeError, ValueError):
+        screen_move_medium_fraction = defaults.screen_move_medium_fraction
+
+    try:
+        screen_move_large_fraction = float(
+            table.get("screen_move_large_fraction", defaults.screen_move_large_fraction)
+        )
+    except (TypeError, ValueError):
+        screen_move_large_fraction = defaults.screen_move_large_fraction
+
     return MountAlignmentSettings(
         pulse_ms=pulse_ms,
         rate_preset=rate_preset,
@@ -256,4 +301,7 @@ def load_mount_alignment_settings(
         stability_sample_count=stability_sample_count,
         stability_sample_interval_s=stability_sample_interval_s,
         stability_timeout_s=stability_timeout_s,
+        screen_move_small_fraction=screen_move_small_fraction,
+        screen_move_medium_fraction=screen_move_medium_fraction,
+        screen_move_large_fraction=screen_move_large_fraction,
     )

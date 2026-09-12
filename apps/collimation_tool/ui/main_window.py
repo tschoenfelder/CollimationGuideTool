@@ -460,6 +460,13 @@ class MainWindow(QMainWindow):
             # attempt (real incidents like 859f2520 had no way to show
             # this before this wiring).
             context["mount_test_move_stability"] = stability_evidence
+        backlash_evidence = self._test_move_panel.diagnostic_backlash_evidence()
+        if backlash_evidence:
+            # Issue #31 Phase C: per-camera, per-direction backlash
+            # characterization from the most recent Run Calibration
+            # attempt -- see diagnostic_backlash_evidence()'s own
+            # docstring.
+            context["mount_test_move_backlash"] = backlash_evidence
         if self._last_calibration_result is not None:
             # The calibration result behind whatever polygon the guide
             # panel is currently drawing — see _last_calibration_result's
