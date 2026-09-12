@@ -3604,6 +3604,55 @@ class TestMountTestMovePanel:
         assert set(context["mount_test_move"]["last_result"]) == {"left", "right"}
         window.close()
 
+    def test_diagnostic_context_omits_autofocus_before_any_run(self, qapp: object) -> None:
+        window = MainWindow(
+            _camera_with_sensor(200, 200), guide_camera=_camera_with_sensor(200, 200),
+            device_lister=lambda: [], focuser=FakeFocuser(),
+        )
+        assert "autofocus" not in window._diagnostic_context()
+        window.close()
+
+    def test_diagnostic_context_includes_autofocus_after_a_completed_run(
+        self, qapp: object
+    ) -> None:
+        window = MainWindow(
+            _camera_with_sensor(200, 200), guide_camera=_camera_with_sensor(200, 200),
+            device_lister=lambda: [], focuser=FakeFocuser(),
+        )
+
+        def always_fresh_star_frame(
+            reference_monotonic: float, timeout_s: float
+        ) -> FrameAcquisitionResult:
+            image = single_star_image(
+                (80, 80), x=40.0, y=40.0, peak=3000.0, sigma=2.0, background=100.0
+            )
+            return FrameAcquisitionResult(
+                status=FrameAcquisitionStatus.OK,
+                frame=DeliveredFrame(
+                    pixels=image, captured_at_monotonic=time.monotonic(), exposure_seconds=0.01
+                ),
+            )
+
+        window._focuser_panel._connect_button.setChecked(True)
+        window._focuser_panel._get_frame = lambda: None
+        window._focuser_panel._wait_for_frame = always_fresh_star_frame
+        try:
+            window._focuser_panel._on_auto_focus_clicked()
+            deadline = time.monotonic() + 10.0
+            while window._focuser_panel._autofocus_poll_timer.isActive():
+                assert time.monotonic() < deadline, "autofocus never completed"
+                time.sleep(0.01)
+                window._focuser_panel._poll_autofocus()
+
+            context = window._diagnostic_context()
+            assert "autofocus" in context
+            assert context["autofocus"]["mode"] == "star"
+            assert "status" in context["autofocus"]
+            assert "samples" in context["autofocus"]
+        finally:
+            window._focuser_panel._connect_button.setChecked(False)
+            window.close()
+
     def test_diagnostic_frames_capture_the_actual_before_after_pairs_used(
         self, qapp: object
     ) -> None:

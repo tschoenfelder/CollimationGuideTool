@@ -219,7 +219,15 @@ class MainWindow(QMainWindow):
         self._left_panel.connected_device_changed.connect(self._on_left_camera_changed)
         self._right_panel.connected_device_changed.connect(self._on_right_camera_changed)
 
-        self._focuser_panel = FocuserPanel(focuser if focuser is not None else NoFocuser())
+        # Issue #33: Auto Focus needs camera access -- wired to the Main
+        # panel only, same "focuser lives on the main optical train only"
+        # pairing as move_in_flight_changed below.
+        self._focuser_panel = FocuserPanel(
+            focuser if focuser is not None else NoFocuser(),
+            get_frame=self._left_panel.latest_mono_frame,
+            wait_for_frame=self._left_panel.wait_for_frame_after,
+            set_auto_exposure_paused=self._left_panel.set_auto_exposure_paused,
+        )
         # The focuser lives on the main optical train only (see
         # FocuserPanel's own docstring) -- pause just the Main camera's
         # analysis/display while it's moving, not the Guide panel.
@@ -539,6 +547,13 @@ class MainWindow(QMainWindow):
             # docstring. Without this, a "wrong position/rotation picked"
             # report has no record of what was actually picked at all.
             context["fov_calibration"] = self._last_calibration_result
+        autofocus_evidence = self._focuser_panel.diagnostic_autofocus_evidence()
+        if autofocus_evidence:
+            # Issue #33: the full focus curve/status/confidence from the
+            # most recent Auto Focus run -- same "empty dict when nothing
+            # to report" conditional-fold-in convention as the stability/
+            # backlash evidence above.
+            context["autofocus"] = autofocus_evidence
         return context
 
     def _save_camera_settings(self) -> None:

@@ -40,8 +40,11 @@ done.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from typing import Any
 
+import numpy as np
+from astrotool_core.acquisition.stable_frame_acquisition import FrameAcquisitionResult
 from astrotool_core.focus.port import FocuserPort
 from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import (
@@ -53,6 +56,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from collimation_tool.application.autofocus_controller import (
+    AutofocusController,
+    AutofocusMode,
+    AutofocusResult,
+)
+from collimation_tool.application.autofocus_search import AutofocusStatus
+from collimation_tool.ui.autofocus_runner import AutofocusRunner
+
 _POLL_INTERVAL_MS = 250
 _STEP_SIZES = (1, 5, 10, 50)
 _DEFAULT_STEP_SIZE = _STEP_SIZES[0]
@@ -62,6 +73,7 @@ _DEFAULT_STEP_SIZE = _STEP_SIZES[0]
 #: button forever if a future driver's move completes faster than this
 #: panel's poll interval can ever catch a Busy state.
 _MOVE_CONFIRMATION_TIMEOUT_S = 10.0
+_AUTOFOCUS_POLL_INTERVAL_MS = 200
 
 
 class FocuserPanel(QWidget):
@@ -76,7 +88,15 @@ class FocuserPanel(QWidget):
     #: started.
     move_in_flight_changed = Signal(bool)
 
-    def __init__(self, focuser: FocuserPort, *, title: str = "Focuser") -> None:
+    def __init__(
+        self,
+        focuser: FocuserPort,
+        *,
+        title: str = "Focuser",
+        get_frame: Callable[[], np.ndarray | None] | None = None,
+        wait_for_frame: Callable[[float, float], FrameAcquisitionResult] | None = None,
+        set_auto_exposure_paused: Callable[[bool], None] | None = None,
+    ) -> None:
         super().__init__()
         self._focuser = focuser
         self._connected = False
@@ -84,6 +104,17 @@ class FocuserPanel(QWidget):
         self._move_in_flight = False
         self._seen_busy_since_move = False
         self._move_issued_at: float | None = None
+
+        # Issue #33: Auto Focus needs camera access this panel otherwise
+        # has none of -- optional, injectable-default (None) so existing
+        # manual-jog-only construction/tests keep working unchanged when
+        # unsupplied (see _update_move_buttons_enabled's own gating).
+        self._get_frame = get_frame
+        self._wait_for_frame = wait_for_frame
+        self._set_auto_exposure_paused = set_auto_exposure_paused
+        self._autofocus_runner = AutofocusRunner()
+        self._autofocus_running = False
+        self._last_autofocus_result: AutofocusResult | None = None
 
         self._title_label = QLabel(f"<b>{title}</b>")
         self._connect_button = QPushButton("Connect")
@@ -116,6 +147,33 @@ class FocuserPanel(QWidget):
         move_row.addWidget(self._stop_button)
         move_row.addStretch(1)
 
+        # Issue #33: Auto Focus mode toggle + run/cancel + status -- same
+        # QButtonGroup convention MountTestMovePanel already established
+        # for its own Star/Terrestrial toggle. Star selected by default.
+        self._af_mode_group = QButtonGroup(self)
+        self._af_mode_group.setExclusive(True)
+        self._af_star_button = QPushButton("Star")
+        self._af_star_button.setCheckable(True)
+        self._af_star_button.setChecked(True)
+        self._af_mode_group.addButton(self._af_star_button)
+        self._af_terrestrial_button = QPushButton("Terrestrial")
+        self._af_terrestrial_button.setCheckable(True)
+        self._af_mode_group.addButton(self._af_terrestrial_button)
+
+        self._auto_focus_button = QPushButton("Auto Focus")
+        self._auto_focus_button.clicked.connect(self._on_auto_focus_clicked)
+        self._auto_focus_cancel_button = QPushButton("Cancel")
+        self._auto_focus_cancel_button.clicked.connect(self._on_auto_focus_cancel_clicked)
+        self._auto_focus_status_label = QLabel("")
+
+        autofocus_row = QHBoxLayout()
+        autofocus_row.addWidget(QLabel("Auto Focus"))
+        autofocus_row.addWidget(self._af_star_button)
+        autofocus_row.addWidget(self._af_terrestrial_button)
+        autofocus_row.addWidget(self._auto_focus_button)
+        autofocus_row.addWidget(self._auto_focus_cancel_button)
+        autofocus_row.addWidget(self._auto_focus_status_label, stretch=1)
+
         top_row = QHBoxLayout()
         top_row.addWidget(self._title_label)
         top_row.addWidget(self._connect_button)
@@ -125,11 +183,16 @@ class FocuserPanel(QWidget):
         layout.addLayout(top_row)
         layout.addLayout(step_row)
         layout.addLayout(move_row)
+        layout.addLayout(autofocus_row)
         self.setLayout(layout)
 
         self._timer = QTimer(self)
         self._timer.setInterval(_POLL_INTERVAL_MS)
         self._timer.timeout.connect(self._poll_status)
+
+        self._autofocus_poll_timer = QTimer(self)
+        self._autofocus_poll_timer.setInterval(_AUTOFOCUS_POLL_INTERVAL_MS)
+        self._autofocus_poll_timer.timeout.connect(self._poll_autofocus)
 
         self._update_move_buttons_enabled()
 
@@ -205,10 +268,70 @@ class FocuserPanel(QWidget):
         # firmware question, not something this click can respond to.
         if not self._connected:
             return
+        if self._autofocus_running:
+            self._autofocus_runner.cancel()
         self._focuser.stop()
         self._set_move_in_flight(False)
         self._seen_busy_since_move = False
         self._move_issued_at = None
+        self._update_move_buttons_enabled()
+
+    def _autofocus_available(self) -> bool:
+        return (
+            self._connected
+            and self._focuser.is_available
+            and not self._move_in_flight
+            and not self._autofocus_running
+            and self._get_frame is not None
+            and self._wait_for_frame is not None
+            and self._set_auto_exposure_paused is not None
+        )
+
+    def _on_auto_focus_clicked(self) -> None:
+        if not self._autofocus_available():
+            return
+        assert self._get_frame is not None
+        assert self._wait_for_frame is not None
+        assert self._set_auto_exposure_paused is not None
+        controller = AutofocusController(
+            self._focuser,
+            get_frame=self._get_frame,
+            wait_for_frame=self._wait_for_frame,
+            set_auto_exposure_paused=self._set_auto_exposure_paused,
+        )
+        mode = (
+            AutofocusMode.TERRESTRIAL
+            if self._af_terrestrial_button.isChecked()
+            else AutofocusMode.STAR
+        )
+        started = self._autofocus_runner.submit(controller, mode)
+        if not started:
+            return  # a run is already in flight
+        self._autofocus_running = True
+        self._auto_focus_status_label.setText("Auto focusing…")
+        self._update_move_buttons_enabled()
+        self._autofocus_poll_timer.start()
+
+    def _on_auto_focus_cancel_clicked(self) -> None:
+        self._autofocus_runner.cancel()
+
+    def _poll_autofocus(self) -> None:
+        outcome = self._autofocus_runner.take_latest()
+        if outcome is None:
+            return
+        self._autofocus_poll_timer.stop()
+        self._autofocus_running = False
+        result = outcome.result
+        self._last_autofocus_result = result
+        if result.status is AutofocusStatus.SUCCESS:
+            self._auto_focus_status_label.setText(
+                f"Auto focus: {result.mode.value} best {result.best_position} "
+                f"(confidence {result.confidence:.2f})"
+            )
+        else:
+            self._auto_focus_status_label.setText(
+                f"Auto focus: {result.status.value} ({result.mode.value})"
+            )
         self._update_move_buttons_enabled()
 
     def _poll_status(self) -> None:
@@ -241,6 +364,7 @@ class FocuserPanel(QWidget):
             and self._focuser.is_available
             and not self._focuser.is_moving()
             and not self._move_in_flight
+            and not self._autofocus_running
         )
         self._in_button.setEnabled(available)
         self._out_button.setEnabled(available)
@@ -248,6 +372,8 @@ class FocuserPanel(QWidget):
         # whole point is to still be clickable exactly when those are
         # stuck (real incident a4ffe048). Just needs a real connection.
         self._stop_button.setEnabled(self._connected and self._focuser.is_available)
+        self._auto_focus_button.setEnabled(self._autofocus_available())
+        self._auto_focus_cancel_button.setEnabled(self._autofocus_running)
 
     def diagnostic_context(self) -> dict[str, Any]:
         status = self._focuser.status()
@@ -256,6 +382,31 @@ class FocuserPanel(QWidget):
             "position": status.position,
             "max_position": status.max_position,
             "moving": status.moving,
+        }
+
+    def diagnostic_autofocus_evidence(self) -> dict[str, Any]:
+        """Issue #33's own UUID-diagnostics ask: the full focus curve/
+        status/confidence from the most recent Auto Focus run -- same
+        "empty dict when there's nothing to report" convention as
+        MountTestMovePanel's diagnostic_stability_evidence()/
+        diagnostic_backlash_evidence(), cached from the most recent run,
+        never cleared by a later one still in flight."""
+        if self._last_autofocus_result is None:
+            return {}
+        result = self._last_autofocus_result
+        return {
+            "status": result.status.value,
+            "mode": result.mode.value,
+            "start_position": result.start_position,
+            "best_position": result.best_position,
+            "search_min": result.search_min,
+            "search_max": result.search_max,
+            "confidence": result.confidence,
+            "final_value": result.final_value,
+            "samples": [
+                {"position": point.position, "value": point.value, "confidence": point.confidence}
+                for point in result.samples
+            ],
         }
 
     def stop(self) -> None:
@@ -269,6 +420,9 @@ class FocuserPanel(QWidget):
         exists for, see this module's own docstring's "Stop" section --
         just hit on quit instead of a click)."""
         self._timer.stop()
+        self._autofocus_poll_timer.stop()
+        if self._autofocus_running:
+            self._autofocus_runner.cancel()
         if self._connected:
             self._focuser.stop()
             self._focuser.disconnect()
