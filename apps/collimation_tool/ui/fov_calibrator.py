@@ -31,12 +31,18 @@ bare `approx_scale` float) calling convention that came with it.
 
 from __future__ import annotations
 
+import tempfile
 import threading
 from dataclasses import dataclass
+from pathlib import Path
 
 import numpy as np
+from astropy.io import fits
+from astrotool_core.frames.frame import Frame
+from astrotool_core.registration.astap_adapter import AstapSolver
 from astrotool_core.registration.optical_prior import OpticalPrior
 from astrotool_core.registration.result import CrossCameraRegistrationResult
+from astrotool_core.registration.star_field_registrar import StarFieldHints, StarFieldRegistrar
 from astrotool_core.registration.terrestrial_registrar import TerrestrialRegistrar
 
 #: Target size (pixels) for the guide frame's larger dimension after
@@ -121,6 +127,63 @@ class FovCalibrator:
             name="fov-calibrator",
         ).start()
         return True
+
+    def submit_star_field(
+        self,
+        main_mono: np.ndarray,
+        guide_mono: np.ndarray,
+        *,
+        prior_a: OpticalPrior,
+        prior_b: OpticalPrior,
+        solver: AstapSolver,
+        hints: StarFieldHints | None = None,
+    ) -> bool:
+        """Same "run at most one at a time, drop rather than queue"
+        contract as submit() -- shares its lock/_busy state, since both
+        are still just "the one calibration currently running", whichever
+        mode it was started in. ASTAP solves files on disk, not in-memory
+        arrays (see astap_adapter), so this writes both frames to real
+        temp FITS files first (via Frame.to_fits_bytes() -- the existing,
+        established way to serialize a bare pixel array to real FITS
+        bytes elsewhere in this codebase) and cleans them up once the
+        background run finishes, success or failure."""
+        with self._lock:
+            if self._busy:
+                return False
+            self._busy = True
+            self._progress = None
+        threading.Thread(
+            target=self._run_star_field,
+            args=(main_mono, guide_mono, prior_a, prior_b, solver, hints),
+            daemon=True,
+            name="fov-calibrator-star-field",
+        ).start()
+        return True
+
+    def _run_star_field(
+        self,
+        main_mono: np.ndarray,
+        guide_mono: np.ndarray,
+        prior_a: OpticalPrior,
+        prior_b: OpticalPrior,
+        solver: AstapSolver,
+        hints: StarFieldHints | None,
+    ) -> None:
+        registrar = StarFieldRegistrar(solver)
+        with tempfile.TemporaryDirectory(prefix="fov_calibrator_") as tmp_dir:
+            path_a = Path(tmp_dir) / "main.fits"
+            path_b = Path(tmp_dir) / "guide.fits"
+            path_a.write_bytes(
+                Frame(pixels=main_mono, header=fits.Header(), exposure_seconds=0.0).to_fits_bytes()
+            )
+            path_b.write_bytes(
+                Frame(pixels=guide_mono, header=fits.Header(), exposure_seconds=0.0).to_fits_bytes()
+            )
+            result = registrar.register(path_a, path_b, prior_a, prior_b, hints=hints)
+        with self._lock:
+            self._latest_outcome = FovCalibrationOutcome(result=result)
+            self._busy = False
+            self._progress = None
 
     def _on_progress(self, completed: int, total: int) -> None:
         with self._lock:

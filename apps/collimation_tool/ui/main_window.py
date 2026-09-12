@@ -129,12 +129,15 @@ from astrotool_core.mount.no_mount_park import NoMountPark
 from astrotool_core.mount.park_port import MountParkPort
 from astrotool_core.mount.port import MountPort
 from astrotool_core.optics import load_pixel_scale_arcsec
+from astrotool_core.registration.alignment import derive_alignment_guidance
+from astrotool_core.registration.astap_adapter import AstapCliSolver, AstapSolver
 from astrotool_core.registration.optical_prior import OpticalPrior
 from astrotool_core.registration.result import CrossCameraRegistrationResult
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
+    QButtonGroup,
     QCheckBox,
     QHBoxLayout,
     QLabel,
@@ -173,9 +176,17 @@ class MainWindow(QMainWindow):
         main_pixel_scale_arcsec: float | None = None,
         guide_pixel_scale_arcsec: float | None = None,
         camera_settings_path: Path | str | None = None,
+        astap_solver: AstapSolver | None = None,
     ) -> None:
         super().__init__()
         self.setWindowTitle("CollimationTool")
+
+        # Injectable-default pattern, same as camera/mount/focuser above --
+        # real AstapCliSolver() by default (gracefully reports
+        # ASTAP_UNAVAILABLE via is_available() if astap_cli isn't on
+        # PATH, no crash), a fake solver in tests. See
+        # FovCalibrator.submit_star_field.
+        self._astap_solver = astap_solver if astap_solver is not None else AstapCliSolver()
 
         # Master config, read once at startup — see module docstring's
         # "Guide-frame FOV overlay". None means "no overlay data available"
@@ -260,6 +271,25 @@ class MainWindow(QMainWindow):
         self._update_fov_overlay()
 
         self._fov_calibrator = FovCalibrator()
+        # Issue #29: two registration modes, same "run at most one at a
+        # time" FovCalibrator underneath either way -- Terrestrial (NCC)
+        # is the pre-existing, always-available mode and stays the
+        # default; Star-field (ASTAP) needs a real astap_cli install
+        # (gracefully reports ASTAP_UNAVAILABLE if missing, see
+        # self._astap_solver above).
+        self._registration_mode_group = QButtonGroup(self)
+        self._registration_mode_group.setExclusive(True)
+        self._terrestrial_mode_button = QPushButton("Terrestrial (NCC)")
+        self._terrestrial_mode_button.setCheckable(True)
+        self._terrestrial_mode_button.setChecked(True)  # default -- unchanged prior behavior
+        self._registration_mode_group.addButton(self._terrestrial_mode_button)
+        self._star_field_mode_button = QPushButton("Star-field (ASTAP)")
+        self._star_field_mode_button.setCheckable(True)
+        self._registration_mode_group.addButton(self._star_field_mode_button)
+        mode_row = QHBoxLayout()
+        mode_row.addWidget(self._terrestrial_mode_button)
+        mode_row.addWidget(self._star_field_mode_button)
+        mode_row.addStretch(1)
         self._calibrate_fov_button = QPushButton("Calibrate FOV")
         self._calibrate_fov_button.clicked.connect(self._on_calibrate_fov)
         # Off by default — the base action is still the one-shot
@@ -279,6 +309,17 @@ class MainWindow(QMainWindow):
         #: explains the *currently shown* overlay for diagnostics. None
         #: until the first successful calibration.
         self._last_calibration_result: CrossCameraRegistrationResult | None = None
+        #: The prior_b used for that same last confident result — needed
+        #: to convert its guidance's px magnitude to arcsec. Same
+        #: never-cleared-on-a-later-miss lifecycle as
+        #: _last_calibration_result, since it describes the same overlay.
+        self._last_prior_b: OpticalPrior | None = None
+        #: The prior_b of whichever calibration run is currently
+        #: in-flight -- see _last_prior_b's own docstring for why this
+        #: isn't promoted to _last_prior_b until that run actually
+        #: succeeds.
+        self._pending_prior_b: OpticalPrior | None = None
+        self._alignment_guidance_label = QLabel("")
 
         self._diagnostics = diagnostics or DiagnosticService(app_name="CollimationTool")
         self._diagnostics.set_context_provider(self._diagnostic_context)
@@ -304,9 +345,11 @@ class MainWindow(QMainWindow):
         diagnostics_row.addWidget(self._diagnostics_copy_button)
 
         calibration_row = QHBoxLayout()
+        calibration_row.addLayout(mode_row)
         calibration_row.addWidget(self._calibrate_fov_button)
         calibration_row.addWidget(self._auto_recalibrate_checkbox)
         calibration_row.addWidget(self._calibrate_fov_status_label, stretch=1)
+        calibration_row.addWidget(self._alignment_guidance_label, stretch=1)
 
         panels_row = QHBoxLayout()
         panels_row.addWidget(self._left_panel, stretch=1)
@@ -390,11 +433,22 @@ class MainWindow(QMainWindow):
             sensor_height_px=guide_caps.sensor_height_px,
             pixel_scale_arcsec=self._guide_pixel_scale_arcsec,
         )
-        started = self._fov_calibrator.submit(
-            main_mono, guide_mono, prior_a=prior_a, prior_b=prior_b
-        )
+        if self._star_field_mode_button.isChecked():
+            started = self._fov_calibrator.submit_star_field(
+                main_mono, guide_mono, prior_a=prior_a, prior_b=prior_b,
+                solver=self._astap_solver,
+            )
+        else:
+            started = self._fov_calibrator.submit(
+                main_mono, guide_mono, prior_a=prior_a, prior_b=prior_b
+            )
         if not started:
             return  # a calibration is already running
+        # Held until _poll_fov_calibration knows whether this run actually
+        # succeeded -- only promoted to _last_prior_b on a confident match,
+        # same update point as _last_calibration_result, so the two never
+        # describe two different runs.
+        self._pending_prior_b = prior_b
         self._calibrate_fov_button.setEnabled(False)
         self._calibrate_fov_status_label.setText("Calibrating…")
         self._calibrate_fov_poll_timer.start()
@@ -421,16 +475,28 @@ class MainWindow(QMainWindow):
         result = outcome.result
         if not result.ok:
             self._calibrate_fov_status_label.setText(
-                f"No confident match found ({result.status.value}) — keeping the previous overlay."
+                f"No confident {result.method.value} match found ({result.status.value}) — "
+                f"keeping the previous overlay."
             )
         else:
+            confidence_text = (
+                f", score {result.confidence:.2f}" if result.confidence is not None else ""
+            )
             self._calibrate_fov_status_label.setText(
-                f"Calibrated: rotation {result.rotation_deg:.1f}°, "
-                f"scale {result.scale:.4f}, score {result.confidence:.2f}"
+                f"Calibrated ({result.method.value}): rotation {result.rotation_deg:.1f}°, "
+                f"scale {result.scale:.4f}{confidence_text}"
             )
             assert result.polygon_a_in_b is not None  # guaranteed by .ok
             self._right_panel.set_fov_polygon(list(result.polygon_a_in_b))
             self._last_calibration_result = result
+            if self._pending_prior_b is not None:
+                self._last_prior_b = self._pending_prior_b
+                guidance = derive_alignment_guidance(result, self._last_prior_b)
+                if guidance is not None:
+                    magnitude_arcsec = guidance.magnitude_px * self._last_prior_b.pixel_scale_arcsec
+                    self._alignment_guidance_label.setText(
+                        f"{guidance.description} (~{magnitude_arcsec:.0f} arcsec)"
+                    )
 
         if self._auto_recalibrate_checkbox.isChecked():
             # Restart regardless of whether this run found a match —

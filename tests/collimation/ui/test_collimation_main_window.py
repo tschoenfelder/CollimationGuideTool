@@ -7,6 +7,7 @@ from typing import cast
 import numpy as np
 import pytest
 from astropy.io import fits
+from astropy.wcs import WCS
 from astrotool_core.acquisition.acquisition_state import AcquisitionState
 from astrotool_core.acquisition.auto_exposure import AutoExposureConfig
 from astrotool_core.acquisition.stable_frame_acquisition import (
@@ -27,7 +28,13 @@ from astrotool_core.frames.frame import Frame
 from astrotool_core.mount.axis_calibration import AxisResponse, CalibrationMatrix
 from astrotool_core.mount.park_port import MountParkPort, MountParkStatus
 from astrotool_core.mount.port import AxisDirection, CommandResult, MountAxis, MountPort
+from astrotool_core.registration.astap_adapter import (
+    AstapSolveHint,
+    AstapSolveResult,
+    AstapSolveStatus,
+)
 from astrotool_core.registration.optical_prior import OpticalPrior
+from astrotool_core.registration.result import CrossCameraRegistrationResult
 from astrotool_core.testing.fake_mount import FakeMountAdapter
 from astrotool_core.testing.fake_mount_park import FakeMountPark
 from astrotool_core.testing.fake_touptek import FakeTouptekCamera
@@ -1531,6 +1538,141 @@ class TestFovCalibration:
         assert len(window._right_panel._fov_polygon) == 4
         assert "calibrated" in window._calibrate_fov_status_label.text().lower()
 
+    def test_alignment_guidance_label_absent_before_any_successful_calibration(
+        self, qapp: object
+    ) -> None:
+        window = MainWindow(
+            _camera_with_sensor(200, 200),
+            guide_camera=_camera_with_sensor(200, 200),
+            device_lister=lambda: [],
+        )
+        assert window._alignment_guidance_label.text() == ""
+
+    def test_alignment_guidance_label_shows_direction_for_a_match_poking_past_guides_edge(
+        self, qapp: object
+    ) -> None:
+        # A genuine partial-overlap geometry (A's footprint pokes past B's
+        # own frame edge) is the only case derive_alignment_guidance
+        # reports a direction+magnitude for -- a fully-contained match
+        # (the common terrestrial happy path) always reports "no
+        # adjustment needed" instead (covered by the fully-contained test
+        # below). Hand-build that result and inject it the same way the
+        # real background thread would deliver a completed outcome, since
+        # constructing a genuine poking-past-the-edge match via a real
+        # search is exactly the scenario TerrestrialRegistrar's own tests
+        # (per this issue's own research) don't yet exercise either.
+        from astrotool_core.registration.result import RegistrationMethod, RegistrationStatus
+        from collimation_tool.ui.fov_calibrator import FovCalibrationOutcome
+
+        window = MainWindow(
+            _camera_with_sensor(200, 200),
+            guide_camera=_camera_with_sensor(200, 200),
+            device_lister=lambda: [],
+        )
+        prior_b = OpticalPrior(
+            name="guide", sensor_width_px=200, sensor_height_px=200, pixel_scale_arcsec=2.0
+        )
+        window._pending_prior_b = prior_b
+        # A's footprint centered well up-and-left of B's own (100, 100)
+        # center, and large enough to poke past B's top/left edges.
+        off_center_polygon = ((-20.0, -20.0), (80.0, -20.0), (80.0, 60.0), (-20.0, 60.0))
+        result = CrossCameraRegistrationResult(
+            status=RegistrationStatus.OK_OVERLAP,
+            method=RegistrationMethod.TERRESTRIAL,
+            rotation_deg=0.0,
+            scale=1.0,
+            confidence=0.9,
+            polygon_a_in_b=off_center_polygon,
+        )
+        assert result.ok
+        with window._fov_calibrator._lock:
+            window._fov_calibrator._latest_outcome = FovCalibrationOutcome(result=result)
+        window._poll_fov_calibration()
+
+        guidance_text = window._alignment_guidance_label.text().lower()
+        assert "up" in guidance_text and "left" in guidance_text
+        assert "arcsec" in guidance_text
+        assert window._last_prior_b is prior_b
+
+    def test_alignment_guidance_label_says_no_adjustment_needed_for_a_fully_contained_match(
+        self, qapp: object
+    ) -> None:
+        guide = _starfield(80, 80, n_stars=30, seed=11)
+        main_array = guide[20:60, 15:65].copy()
+        window = MainWindow(
+            ReplayCamera.from_arrays([main_array], cycle=True),
+            guide_camera=ReplayCamera.from_arrays([guide], cycle=True),
+            device_lister=lambda: [],
+            main_pixel_scale_arcsec=1.0,
+            guide_pixel_scale_arcsec=1.0,
+        )
+        window._left_panel._start_button.setChecked(True)
+        window._right_panel._start_button.setChecked(True)
+        try:
+            window._left_panel._poll_frame()
+            window._right_panel._poll_frame()
+        finally:
+            window._left_panel._start_button.setChecked(False)
+            window._right_panel._start_button.setChecked(False)
+
+        window._on_calibrate_fov()
+        deadline = time.monotonic() + 15.0
+        while window._calibrate_fov_poll_timer.isActive():
+            assert time.monotonic() < deadline, "calibration never completed"
+            time.sleep(0.02)
+            window._poll_fov_calibration()
+
+        guidance_text = window._alignment_guidance_label.text().lower()
+        assert "no adjustment needed" in guidance_text
+        assert window._last_prior_b is not None
+
+    def test_alignment_guidance_label_survives_a_later_failed_run(self, qapp: object) -> None:
+        guide = _starfield(80, 80, n_stars=30, seed=9)
+        main_array = guide[20:60, 15:65].copy()
+        window = MainWindow(
+            ReplayCamera.from_arrays([main_array], cycle=True),
+            guide_camera=ReplayCamera.from_arrays([guide], cycle=True),
+            device_lister=lambda: [],
+            main_pixel_scale_arcsec=1.0,
+            guide_pixel_scale_arcsec=1.0,
+        )
+        window._left_panel._start_button.setChecked(True)
+        window._right_panel._start_button.setChecked(True)
+        try:
+            window._left_panel._poll_frame()
+            window._right_panel._poll_frame()
+        finally:
+            window._left_panel._start_button.setChecked(False)
+            window._right_panel._start_button.setChecked(False)
+
+        window._on_calibrate_fov()
+        deadline = time.monotonic() + 15.0
+        while window._calibrate_fov_poll_timer.isActive():
+            assert time.monotonic() < deadline, "calibration never completed"
+            time.sleep(0.02)
+            window._poll_fov_calibration()
+
+        first_guidance_text = window._alignment_guidance_label.text()
+        assert first_guidance_text != ""
+
+        # Simulate a later failed run completing, the same way the real
+        # background thread delivers a "no confident match" outcome —
+        # _poll_fov_calibration only ever reads FovCalibrator.take_latest().
+        from astrotool_core.registration.result import RegistrationMethod, RegistrationStatus
+        from collimation_tool.ui.fov_calibrator import FovCalibrationOutcome
+
+        failed_result = CrossCameraRegistrationResult(
+            status=RegistrationStatus.NO_VALID_REGISTRATION,
+            method=RegistrationMethod.TERRESTRIAL,
+        )
+        assert not failed_result.ok
+        window._calibrate_fov_poll_timer.start()
+        with window._fov_calibrator._lock:
+            window._fov_calibrator._latest_outcome = FovCalibrationOutcome(result=failed_result)
+        window._poll_fov_calibration()
+
+        assert window._alignment_guidance_label.text() == first_guidance_text
+
     def test_status_shows_progress_while_calibration_is_running(self, qapp: object) -> None:
         """See the real bug: "Calibration started but working without any
         status on progress" — a static message for a ~2-minute search
@@ -1679,6 +1821,126 @@ class TestFovCalibration:
         window._right_panel.set_fov_polygon([(0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0)])
         window._update_fov_overlay()
         assert window._right_panel._fov_polygon is None
+
+
+def _make_wcs(
+    *, crval_deg: tuple[float, float], crpix: tuple[float, float], pixel_scale_deg: float
+) -> WCS:
+    wcs = WCS(naxis=2)
+    wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    wcs.wcs.crval = list(crval_deg)
+    wcs.wcs.crpix = list(crpix)
+    wcs.wcs.cd = [[-pixel_scale_deg, 0.0], [0.0, pixel_scale_deg]]
+    return wcs
+
+
+class _FakeAstapSolver:
+    """Mirrors test_star_field_registrar.py's own _FakeSolver convention
+    -- see that file for why every registration test here builds
+    synthetic WCS objects rather than touching a real ASTAP process."""
+
+    def __init__(self, results: dict[str, AstapSolveResult]) -> None:
+        self._results = results
+        self.calls: list[Path] = []
+
+    def is_available(self) -> bool:
+        return True
+
+    def solve(self, fits_path: Path, *, hint: AstapSolveHint | None = None) -> AstapSolveResult:
+        self.calls.append(fits_path)
+        return self._results[fits_path.name]
+
+
+class TestStarFieldMode:
+    """Issue #29: the "Star-field (ASTAP)" registration mode alongside
+    the pre-existing "Terrestrial (NCC)" one -- see FovCalibrator.
+    submit_star_field's own docstring for the temp-FITS-file plumbing
+    this exercises end to end."""
+
+    def test_terrestrial_mode_is_selected_by_default(self, qapp: object) -> None:
+        window = MainWindow(
+            _camera_with_sensor(200, 200),
+            guide_camera=_camera_with_sensor(200, 200),
+            device_lister=lambda: [],
+        )
+        assert window._terrestrial_mode_button.isChecked()
+        assert not window._star_field_mode_button.isChecked()
+
+    def test_star_field_mode_calibration_uses_the_injected_solver(self, qapp: object) -> None:
+        scale_deg = 0.0005
+        center = (150.0, 20.0)
+        wcs_a = _make_wcs(crval_deg=center, crpix=(20, 15), pixel_scale_deg=scale_deg)
+        wcs_b = _make_wcs(crval_deg=center, crpix=(100, 75), pixel_scale_deg=scale_deg)
+        solver = _FakeAstapSolver({
+            "main.fits": AstapSolveResult(AstapSolveStatus.SOLVED, wcs=wcs_a),
+            "guide.fits": AstapSolveResult(AstapSolveStatus.SOLVED, wcs=wcs_b),
+        })
+        window = MainWindow(
+            _camera_with_sensor(40, 30),
+            guide_camera=_camera_with_sensor(200, 150),
+            device_lister=lambda: [],
+            main_pixel_scale_arcsec=1.0,
+            guide_pixel_scale_arcsec=1.0,
+            astap_solver=solver,
+        )
+        window._left_panel._start_button.setChecked(True)
+        window._right_panel._start_button.setChecked(True)
+        try:
+            window._left_panel._poll_frame()
+            window._right_panel._poll_frame()
+        finally:
+            window._left_panel._start_button.setChecked(False)
+            window._right_panel._start_button.setChecked(False)
+
+        window._star_field_mode_button.setChecked(True)
+        window._on_calibrate_fov()
+
+        deadline = time.monotonic() + 15.0
+        while window._calibrate_fov_poll_timer.isActive():
+            assert time.monotonic() < deadline, "calibration never completed"
+            time.sleep(0.02)
+            window._poll_fov_calibration()
+
+        assert len(solver.calls) == 2
+        assert window._right_panel._fov_polygon is not None
+        assert "star_field" in window._calibrate_fov_status_label.text().lower()
+
+    def test_star_field_mode_reports_astap_unavailable_without_crashing(
+        self, qapp: object
+    ) -> None:
+        solver = _FakeAstapSolver({
+            "main.fits": AstapSolveResult(
+                AstapSolveStatus.ASTAP_UNAVAILABLE, message="astap_cli not found"
+            ),
+        })
+        window = MainWindow(
+            _camera_with_sensor(40, 30),
+            guide_camera=_camera_with_sensor(200, 150),
+            device_lister=lambda: [],
+            main_pixel_scale_arcsec=1.0,
+            guide_pixel_scale_arcsec=1.0,
+            astap_solver=solver,
+        )
+        window._left_panel._start_button.setChecked(True)
+        window._right_panel._start_button.setChecked(True)
+        try:
+            window._left_panel._poll_frame()
+            window._right_panel._poll_frame()
+        finally:
+            window._left_panel._start_button.setChecked(False)
+            window._right_panel._start_button.setChecked(False)
+
+        window._star_field_mode_button.setChecked(True)
+        window._on_calibrate_fov()
+
+        deadline = time.monotonic() + 15.0
+        while window._calibrate_fov_poll_timer.isActive():
+            assert time.monotonic() < deadline, "calibration never completed"
+            time.sleep(0.02)
+            window._poll_fov_calibration()
+
+        assert window._right_panel._fov_polygon is None
+        assert "astap_unavailable" in window._calibrate_fov_status_label.text().lower()
 
 
 class TestCameraSettingsPersistence:

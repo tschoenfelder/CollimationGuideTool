@@ -17,7 +17,7 @@ from astrotool_core.registration.astap_adapter import (
     AstapSolveResult,
     AstapSolveStatus,
 )
-from astrotool_core.registration.geometry import fully_contains, rect_polygon
+from astrotool_core.registration.geometry import fully_contains, polygon_area, rect_polygon
 from astrotool_core.registration.optical_prior import OpticalPrior
 from astrotool_core.registration.result import RegistrationMethod, RegistrationStatus
 from astrotool_core.registration.star_field_registrar import (
@@ -144,6 +144,44 @@ class TestGeometryFromWcs:
 
         assert result.scale is not None
         assert result.scale == pytest.approx(main_scale_deg / guide_scale_deg, rel=0.02)
+
+    def test_partial_overlap_pokes_past_guides_edge(self) -> None:
+        """Issue #29 #3 ("support partial overlap correctly"): a match
+        that is neither fully contained nor zero-overlap -- main's own
+        footprint center sits near guide's right edge, so its right side
+        pokes past while its left side is still within guide's frame."""
+        scale_deg = 0.0005
+        wcs_b = _make_wcs(
+            crval_deg=_CENTER, crpix=(_GUIDE.sensor_width_px / 2, _GUIDE.sensor_height_px / 2),
+            pixel_scale_deg=scale_deg,
+        )
+        # East-left convention (see _make_wcs): decreasing RA moves the
+        # projected footprint toward larger x in B's own pixel frame --
+        # offset chosen so A's projected center lands ~195px right of B's
+        # own center (200,150 of a 400x300 frame), with A's own half-width
+        # (20px) poking ~15px past B's x=400 edge while its left edge
+        # (~375px) stays inside.
+        offset_deg = 195.0 * scale_deg
+        wcs_a = _make_wcs(
+            crval_deg=(_CENTER[0] - offset_deg, _CENTER[1]),
+            crpix=(_MAIN.sensor_width_px / 2, _MAIN.sensor_height_px / 2),
+            pixel_scale_deg=scale_deg,
+        )
+
+        result = geometry_from_wcs(wcs_a, _MAIN, wcs_b, _GUIDE)
+
+        assert result.status is RegistrationStatus.OK_OVERLAP
+        assert result.ok
+        assert result.polygon_a_in_b is not None
+        guide_rect = rect_polygon(
+            _GUIDE.sensor_width_px, _GUIDE.sensor_height_px,
+            center=(_GUIDE.sensor_width_px / 2.0, _GUIDE.sensor_height_px / 2.0),
+        )
+        assert not fully_contains(guide_rect, result.polygon_a_in_b)
+        assert result.overlap_polygon
+        full_area = polygon_area(result.polygon_a_in_b)
+        overlap_area = polygon_area(result.overlap_polygon)
+        assert 0.0 < overlap_area < full_area
 
     def test_supports_oag_like_geometry_adjacent_but_never_overlapping(self) -> None:
         """Issue #29 #9: OAG registration is star-field-only, but the

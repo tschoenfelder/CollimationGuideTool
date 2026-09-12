@@ -1,8 +1,16 @@
 import time
 from collections.abc import Callable
+from pathlib import Path
 
 import numpy as np
+from astropy.wcs import WCS
+from astrotool_core.registration.astap_adapter import (
+    AstapSolveHint,
+    AstapSolveResult,
+    AstapSolveStatus,
+)
 from astrotool_core.registration.optical_prior import OpticalPrior
+from astrotool_core.registration.result import RegistrationStatus
 from collimation_tool.ui.fov_calibrator import FovCalibrator, _auto_search_downsample
 
 
@@ -144,6 +152,148 @@ class TestLatestProgress:
         assert _wait_for(lambda: not calibrator.is_busy)
 
         assert calibrator.latest_progress() is None
+
+
+def _make_wcs(
+    *, crval_deg: tuple[float, float], crpix: tuple[float, float], pixel_scale_deg: float
+) -> WCS:
+    wcs = WCS(naxis=2)
+    wcs.wcs.ctype = ["RA---TAN", "DEC--TAN"]
+    wcs.wcs.crval = list(crval_deg)
+    wcs.wcs.crpix = list(crpix)
+    wcs.wcs.cd = [[-pixel_scale_deg, 0.0], [0.0, pixel_scale_deg]]
+    return wcs
+
+
+class _FakeSolver:
+    """Mirrors test_star_field_registrar.py's own _FakeSolver convention
+    -- keyed by real fits_path.name so a temp file per call is fine."""
+
+    def __init__(self, results: dict[str, AstapSolveResult]) -> None:
+        self._results = results
+        self.calls: list[Path] = []
+
+    def is_available(self) -> bool:
+        return True
+
+    def solve(self, fits_path: Path, *, hint: AstapSolveHint | None = None) -> AstapSolveResult:
+        self.calls.append(fits_path)
+        assert fits_path.exists(), "solver was called before its temp FITS file was written"
+        return self._results[fits_path.name]
+
+
+class TestSubmitStarField:
+    def _priors_and_wcs(self) -> tuple[OpticalPrior, OpticalPrior, WCS, WCS]:
+        prior_a = OpticalPrior(name="main", sensor_width_px=40, sensor_height_px=30,
+                                pixel_scale_arcsec=1.0)
+        prior_b = OpticalPrior(name="guide", sensor_width_px=400, sensor_height_px=300,
+                                pixel_scale_arcsec=1.0)
+        scale_deg = 0.0005
+        center = (150.0, 20.0)
+        wcs_a = _make_wcs(
+            crval_deg=center, crpix=(prior_a.sensor_width_px / 2, prior_a.sensor_height_px / 2),
+            pixel_scale_deg=scale_deg,
+        )
+        wcs_b = _make_wcs(
+            crval_deg=center, crpix=(prior_b.sensor_width_px / 2, prior_b.sensor_height_px / 2),
+            pixel_scale_deg=scale_deg,
+        )
+        return prior_a, prior_b, wcs_a, wcs_b
+
+    def test_submit_star_field_then_take_latest_returns_a_completed_outcome(self) -> None:
+        prior_a, prior_b, wcs_a, wcs_b = self._priors_and_wcs()
+        main = np.zeros((30, 40), dtype=np.float32)
+        guide = np.zeros((300, 400), dtype=np.float32)
+        solver = _FakeSolver({
+            "main.fits": AstapSolveResult(AstapSolveStatus.SOLVED, wcs=wcs_a),
+            "guide.fits": AstapSolveResult(AstapSolveStatus.SOLVED, wcs=wcs_b),
+        })
+        calibrator = FovCalibrator()
+
+        started = calibrator.submit_star_field(
+            main, guide, prior_a=prior_a, prior_b=prior_b, solver=solver
+        )
+        assert started
+        assert _wait_for(lambda: not calibrator.is_busy)
+
+        outcome = calibrator.take_latest()
+        assert outcome is not None
+        assert outcome.result.ok
+        assert outcome.result.status is RegistrationStatus.OK_OVERLAP
+        assert len(solver.calls) == 2
+
+    def test_submit_star_field_while_busy_is_a_no_op(self) -> None:
+        prior_a, prior_b, wcs_a, wcs_b = self._priors_and_wcs()
+        main = np.zeros((30, 40), dtype=np.float32)
+        guide = np.zeros((300, 400), dtype=np.float32)
+        solver = _FakeSolver({
+            "main.fits": AstapSolveResult(AstapSolveStatus.SOLVED, wcs=wcs_a),
+            "guide.fits": AstapSolveResult(AstapSolveStatus.SOLVED, wcs=wcs_b),
+        })
+        calibrator = FovCalibrator()
+        calibrator._busy = True  # simulate an in-flight calibration
+
+        started = calibrator.submit_star_field(
+            main, guide, prior_a=prior_a, prior_b=prior_b, solver=solver
+        )
+        assert started is False
+        assert len(solver.calls) == 0
+
+    def test_astap_unavailable_is_reported_not_a_crash(self) -> None:
+        prior_a, prior_b, _wcs_a, wcs_b = self._priors_and_wcs()
+        main = np.zeros((30, 40), dtype=np.float32)
+        guide = np.zeros((300, 400), dtype=np.float32)
+        solver = _FakeSolver({
+            "main.fits": AstapSolveResult(
+                AstapSolveStatus.ASTAP_UNAVAILABLE, message="astap_cli not found"
+            ),
+            "guide.fits": AstapSolveResult(AstapSolveStatus.SOLVED, wcs=wcs_b),
+        })
+        calibrator = FovCalibrator()
+
+        calibrator.submit_star_field(main, guide, prior_a=prior_a, prior_b=prior_b, solver=solver)
+        assert _wait_for(lambda: not calibrator.is_busy)
+
+        outcome = calibrator.take_latest()
+        assert outcome is not None
+        assert not outcome.result.ok
+        assert outcome.result.status is RegistrationStatus.ASTAP_UNAVAILABLE
+
+    def test_temp_fits_files_do_not_leak_after_a_completed_run(self) -> None:
+        prior_a, prior_b, wcs_a, wcs_b = self._priors_and_wcs()
+        main = np.zeros((30, 40), dtype=np.float32)
+        guide = np.zeros((300, 400), dtype=np.float32)
+        solver = _FakeSolver({
+            "main.fits": AstapSolveResult(AstapSolveStatus.SOLVED, wcs=wcs_a),
+            "guide.fits": AstapSolveResult(AstapSolveStatus.SOLVED, wcs=wcs_b),
+        })
+        calibrator = FovCalibrator()
+
+        calibrator.submit_star_field(main, guide, prior_a=prior_a, prior_b=prior_b, solver=solver)
+        assert _wait_for(lambda: not calibrator.is_busy)
+
+        assert len(solver.calls) == 2
+        for path in solver.calls:
+            assert not path.exists(), f"temp FITS file {path} was not cleaned up"
+
+    def test_temp_fits_files_do_not_leak_after_a_failed_run(self) -> None:
+        prior_a, prior_b, _wcs_a, wcs_b = self._priors_and_wcs()
+        main = np.zeros((30, 40), dtype=np.float32)
+        guide = np.zeros((300, 400), dtype=np.float32)
+        solver = _FakeSolver({
+            "main.fits": AstapSolveResult(
+                AstapSolveStatus.ASTAP_UNAVAILABLE, message="astap_cli not found"
+            ),
+            "guide.fits": AstapSolveResult(AstapSolveStatus.SOLVED, wcs=wcs_b),
+        })
+        calibrator = FovCalibrator()
+
+        calibrator.submit_star_field(main, guide, prior_a=prior_a, prior_b=prior_b, solver=solver)
+        assert _wait_for(lambda: not calibrator.is_busy)
+
+        assert len(solver.calls) == 1  # B is never attempted once A's solve fails
+        for path in solver.calls:
+            assert not path.exists(), f"temp FITS file {path} was not cleaned up"
 
 
 class TestAutoSearchDownsample:

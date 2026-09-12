@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
-from astrotool_core.registration.geometry import polygon_centroid
+from astrotool_core.registration.geometry import polygon_area, polygon_centroid
 from astrotool_core.registration.optical_prior import OpticalPrior
 from astrotool_core.registration.result import (
     CrossCameraRegistrationResult,
@@ -120,6 +120,33 @@ class TestRotation:
 
         assert result.status is RegistrationStatus.OK_OVERLAP
         assert result.rotation_deg == pytest.approx(-150.0, abs=2.0)
+
+    def test_a_rotated_match_flush_against_the_edge_pokes_past_frame_bs_boundary(self) -> None:
+        """Issue #29 #3 ("support partial overlap correctly"): every other
+        happy-path test here crops `main` from well inside `guide`, so its
+        matched footprint always lands fully contained. Here `main` is a
+        rotated version of content flush against guide's own top-left
+        corner -- the axis-aligned window NCC searches over still fits
+        (it's a valid, in-bounds correlation position), but the *rotated*
+        polygon `register()` reports has a materially larger bounding
+        box than that axis-aligned window, so it genuinely pokes past
+        guide's own top/left edges even though a real match was found."""
+        guide = _starfield(200, 200, n_stars=120, seed=77)
+        corner = guide[0:60, 0:70].copy()  # flush against guide's own edge
+        main = _rotate_bilinear(corner, angle_deg=30.0, fill_value=float(corner.mean()))
+        prior_a, prior_b = _priors(1.0)
+
+        result = _registrar.register(
+            main, guide, prior_a, prior_b,
+            scale_steps=1, angle_step_deg=2.0, angle_range_deg=(-180, 180),
+        )
+
+        assert result.status is RegistrationStatus.OK_OVERLAP
+        assert result.polygon_a_in_b is not None
+        assert result.overlap_polygon
+        full_area = polygon_area(result.polygon_a_in_b)
+        overlap_area = polygon_area(result.overlap_polygon)
+        assert overlap_area < full_area  # genuinely clipped, not fully inside
 
 
 class TestScale:
