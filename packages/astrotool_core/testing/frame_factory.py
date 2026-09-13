@@ -91,6 +91,47 @@ def airy_pattern_image(
     return image
 
 
+def coma_pattern_image(
+    shape: tuple[int, int],
+    *,
+    x: float,
+    y: float,
+    peak: float,
+    core_sigma: float,
+    ring_radius_px: float,
+    ring_peak: float,
+    background: float = 100.0,
+    ring_sigma: float = 1.5,
+    asymmetry_direction_deg: float = 0.0,
+    asymmetry_strength: float = 0.0,
+) -> np.ndarray:
+    """Like `airy_pattern_image`, but the ring's own intensity is
+    azimuthally modulated by `1 + asymmetry_strength * cos(theta -
+    direction)` -- brighter toward `asymmetry_direction_deg`, dimmer on
+    the opposite side. A synthetic APPROXIMATION of coma/collimation-
+    error asymmetry for deterministic testing (issue #20), not
+    physically exact coma optics. `theta` uses the same `atan2(dy, dx)`
+    convention `astrotool_core.diffraction.symmetry_measurement` itself
+    uses, so an imposed direction here is directly comparable to a
+    measured one there. `asymmetry_strength=0.0` (default) reproduces a
+    plain symmetric ring, same as `airy_pattern_image`'s own."""
+    height, width = shape
+    image = np.full((height, width), background, dtype=np.float32)
+    yy, xx = np.indices((height, width), dtype=np.float32)
+    dx, dy = xx - x, yy - y
+    r2 = dx**2 + dy**2
+    image += peak * np.exp(-(r2 / (2.0 * core_sigma**2)))
+    if ring_peak > 0.0:
+        r = np.sqrt(r2)
+        theta = np.arctan2(dy, dx)
+        direction_rad = np.radians(asymmetry_direction_deg)
+        modulation = 1.0 + asymmetry_strength * np.cos(theta - direction_rad)
+        image += (
+            ring_peak * modulation * np.exp(-(((r - ring_radius_px) ** 2) / (2.0 * ring_sigma**2)))
+        )
+    return image
+
+
 def with_hot_pixels(
     image: np.ndarray,
     positions: list[tuple[int, int]],

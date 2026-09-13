@@ -16,12 +16,20 @@ from astrotool_core.diffraction.radial_profile import (
     RadialProfileResult,
     compute_radial_profile,
 )
+from astrotool_core.diffraction.symmetry_measurement import (
+    SymmetryMeasurementResult,
+    SymmetryStatus,
+    compute_symmetry_measurement,
+)
 
 __all__ = [
     "DiffractionReferenceResult",
     "OpticalConfig",
     "RadialProfile",
     "RadialProfileResult",
+    "SymmetryMeasurementResult",
+    "SymmetryStatus",
     "compute_diffraction_reference",
     "compute_radial_profile",
+    "compute_symmetry_measurement",
 ]
