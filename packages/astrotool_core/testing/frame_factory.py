@@ -59,6 +59,38 @@ def single_star_image(
     )
 
 
+def airy_pattern_image(
+    shape: tuple[int, int],
+    *,
+    x: float,
+    y: float,
+    peak: float,
+    core_sigma: float,
+    background: float = 100.0,
+    ring_radius_px: float | None = None,
+    ring_peak: float = 0.0,
+    ring_sigma: float = 1.5,
+) -> np.ndarray:
+    """Render a float32 mono image: a central Gaussian core plus an
+    optional Gaussian "ring" (a thin annulus of added intensity at
+    `ring_radius_px`) -- a synthetic APPROXIMATION of an Airy
+    diffraction pattern for deterministic testing (issue #18), not a
+    physically exact Airy/Bessel-function render (this project has no
+    scipy dependency). Built independently of Stage 4's own radial-
+    binning code (`astrotool_core.diffraction.radial_profile`) -- a
+    test-fixture concern, not the module under test. `ring_peak=0.0`
+    (default) reproduces a plain Gaussian PSF with no ring at all."""
+    height, width = shape
+    image = np.full((height, width), background, dtype=np.float32)
+    yy, xx = np.indices((height, width), dtype=np.float32)
+    r2 = (xx - x) ** 2 + (yy - y) ** 2
+    image += peak * np.exp(-(r2 / (2.0 * core_sigma**2)))
+    if ring_peak > 0.0 and ring_radius_px is not None:
+        r = np.sqrt(r2)
+        image += ring_peak * np.exp(-(((r - ring_radius_px) ** 2) / (2.0 * ring_sigma**2)))
+    return image
+
+
 def with_hot_pixels(
     image: np.ndarray,
     positions: list[tuple[int, int]],
