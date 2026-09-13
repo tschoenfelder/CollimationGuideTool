@@ -20,6 +20,7 @@ from astrotool_core.target.point_source import PointSource
 from astrotool_core.target.roi import Roi, compute_roi_bounds, crop_to_roi
 from astrotool_core.target.roi_selector import select_target
 from astrotool_core.target.roi_tracker import RoiTracker, TrackingResult, TrackingState
+from astrotool_core.target.stacking import RollingFrameBuffer, StackResult, score_frame_quality
 from astrotool_core.target.translation_offset import (
     TranslationOffset,
     max_unaliased_shift_px,
@@ -36,6 +37,8 @@ __all__ = [
     "PointSource",
     "Roi",
     "RoiTracker",
+    "RollingFrameBuffer",
+    "StackResult",
     "TrackingResult",
     "TrackingState",
     "TranslationOffset",
@@ -47,6 +50,7 @@ __all__ = [
     "measure_translation_offset_with_tier",
     "register_frames",
     "resolve_identity",
+    "score_frame_quality",
     "select_target",
     "shift_image",
 ]
