@@ -6,6 +6,11 @@ analysis -- deliberately not part of `astrotool_core.target`, whose own
 docstring scopes it to point-source detection and ROI tracking.
 """
 
+from astrotool_core.diffraction.optical_reference_model import (
+    DiffractionReferenceResult,
+    OpticalConfig,
+    compute_diffraction_reference,
+)
 from astrotool_core.diffraction.radial_profile import (
     RadialProfile,
     RadialProfileResult,
@@ -13,7 +18,10 @@ from astrotool_core.diffraction.radial_profile import (
 )
 
 __all__ = [
+    "DiffractionReferenceResult",
+    "OpticalConfig",
     "RadialProfile",
     "RadialProfileResult",
+    "compute_diffraction_reference",
     "compute_radial_profile",
 ]
