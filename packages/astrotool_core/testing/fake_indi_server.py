@@ -60,6 +60,9 @@ class FakeIndiServer:
         park_delay_s: float = 0.05,
         auto_track_on_after_unpark_delay_s: float | None = None,
         reject_focuser_moves: bool = False,
+        filter_wheel_available: bool = True,
+        filter_slot: int = 1,
+        filter_names: tuple[str, ...] | None = None,
     ) -> None:
         self._device_name = device_name
         self._focuser_available = focuser_available
@@ -67,6 +70,13 @@ class FakeIndiServer:
         self._max_position = max_position
         self._move_delay_s = move_delay_s
         self._mount_available = mount_available
+        #: Issue #34: libindi standard Filter Wheel Interface simulation --
+        #: read-only from this fake's own point of view (no incoming
+        #: FILTER_SLOT vector is handled, since IndiFilterWheelAdapter
+        #: never commands a move, only reads device-reported state).
+        self._filter_wheel_available = filter_wheel_available
+        self._filter_slot = filter_slot
+        self._filter_names = filter_names
         #: Simulates a driver-level focuser move rejection -- real libindi
         #: FocuserInterface semantics (verified against
         #: indifocuserinterface.cpp's source, see IndiFocuserAdapter's own
@@ -208,14 +218,34 @@ class FakeIndiServer:
         elif element.tag == "newNumberVector":
             self._handle_new_number_vector(element.attrs.get("name", ""), element.children)
 
+    def _def_text_vector(self, name: str, state: str, elements: dict[str, str]) -> None:
+        children = "".join(
+            f'<defText name="{xml_escape_attr(el)}">{val}</defText>'
+            for el, val in elements.items()
+        )
+        self._send(
+            f'<defTextVector device="{xml_escape_attr(self._device_name)}" '
+            f'name="{xml_escape_attr(name)}" state="{state}">{children}</defTextVector>'
+        )
+
     def _handle_get_properties(self) -> None:
         self._def_switch_vector(
             "CONNECTION", "Ok", {"CONNECT": self._connected, "DISCONNECT": not self._connected}
         )
-        if self._connected and self._focuser_available:
+        self._send_device_properties_if_connected()
+
+    def _send_device_properties_if_connected(self) -> None:
+        """Every per-device vector, gated on `self._connected` -- shared
+        by `_handle_get_properties` and the `CONNECTION` switch handler
+        below, which both need to (re-)announce the same set."""
+        if not self._connected:
+            return
+        if self._focuser_available:
             self._send_focuser_properties()
-        if self._connected and self._mount_available:
+        if self._mount_available:
             self._send_mount_properties()
+        if self._filter_wheel_available:
+            self._send_filter_wheel_properties()
 
     def _send_mount_properties(self) -> None:
         self._def_switch_vector(
@@ -248,16 +278,35 @@ class FakeIndiServer:
         )
         self._def_switch_vector("FOCUS_ABORT_MOTION", "Ok", {"ABORT": False})
 
+    def _send_filter_wheel_properties(self) -> None:
+        # FILTER_NAME sent BEFORE FILTER_SLOT deliberately -- connect()
+        # (IndiFilterWheelAdapter) waits only on FILTER_SLOT, so it must
+        # be the LAST vector sent here for that wait to also guarantee
+        # FILTER_NAME has already been parsed and stored by the time it
+        # unblocks -- same "wait on the last-sent vector" ordering the
+        # focuser's own ABS_FOCUS_POSITION/FOCUS_MAX pair already relies
+        # on. Sending FILTER_SLOT first (the original order) was a real,
+        # load-sensitive race: status() could read FILTER_NAME before
+        # the reader thread had parsed it (caught by a full-suite run,
+        # not an isolated one -- see this file's own git history).
+        if self._filter_names:
+            self._def_text_vector(
+                "FILTER_NAME",
+                "Ok",
+                {
+                    f"FILTER_SLOT_NAME_{index}": name
+                    for index, name in enumerate(self._filter_names, start=1)
+                },
+            )
+        self._def_number_vector("FILTER_SLOT", "Ok", {"FILTER_SLOT_VALUE": self._filter_slot})
+
     def _handle_new_switch_vector(self, name: str, elements: dict[str, str]) -> None:
         if name == "CONNECTION":
             self._connected = elements.get("CONNECT") == "On"
             self._send_switch_vector(
                 "CONNECTION", "Ok", {"CONNECT": self._connected, "DISCONNECT": not self._connected}
             )
-            if self._connected and self._focuser_available:
-                self._send_focuser_properties()
-            if self._connected and self._mount_available:
-                self._send_mount_properties()
+            self._send_device_properties_if_connected()
         elif name == "TELESCOPE_PARK":
             if elements.get("UNPARK") == "On":
                 self._set_parked(False)

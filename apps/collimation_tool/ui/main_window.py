@@ -63,6 +63,15 @@ docstring for why this is a deliberately separate, narrower port than
 deactivates tracking too, rather than trusting the mount's own
 post-unpark default.
 
+Filter wheels (issue #34): two `FilterWheelPanel`s (`main_filter_wheel`/
+`guide_filter_wheel` constructor params, each defaulting to
+`NoFilterWheel` — a `FilterWheelPort`, same injectable-default pattern
+as `camera`/`guide_camera`, not the focuser's Main-only pairing, since
+the issue explicitly requires "must not assume exactly one filter wheel
+globally"). Read-only status display only (current slot, configured
+filter name, moving state, an explicit unavailable/unknown reason) —
+no commanding, see `astrotool_core.filter_wheel.port`'s own docstring.
+
 Mount alignment: `MountTestMovePanel` (see its own docstring) is wired to
 both `CameraPanel`s' `set_auto_exposure_paused` (not `set_updates_paused` --
 it still needs fresh frames captured during a calibration/nudge, just with
@@ -121,6 +130,8 @@ from astrotool_core.config import (
     save_camera_settings,
 )
 from astrotool_core.diagnostics import DiagnosticService
+from astrotool_core.filter_wheel.no_filter_wheel import NoFilterWheel
+from astrotool_core.filter_wheel.port import FilterWheelPort
 from astrotool_core.focus.no_focuser import NoFocuser
 from astrotool_core.focus.port import FocuserPort
 from astrotool_core.frames.frame import Frame
@@ -149,6 +160,7 @@ from PySide6.QtWidgets import (
 )
 
 from collimation_tool.ui.camera_panel import CameraPanel, default_camera_factory
+from collimation_tool.ui.filter_wheel_panel import FilterWheelPanel
 from collimation_tool.ui.focuser_panel import FocuserPanel
 from collimation_tool.ui.fov_calibrator import FovCalibrator
 from collimation_tool.ui.fov_overlay import compute_fov_overlay_rect
@@ -167,6 +179,8 @@ class MainWindow(QMainWindow):
         *,
         guide_camera: CameraPort | None = None,
         focuser: FocuserPort | None = None,
+        main_filter_wheel: FilterWheelPort | None = None,
+        guide_filter_wheel: FilterWheelPort | None = None,
         mount: MountParkPort | None = None,
         pulse_mount: MountPort | None = None,
         device_lister: Callable[[], list[TouptekDeviceInfo]] = _list_touptek_devices,
@@ -232,6 +246,18 @@ class MainWindow(QMainWindow):
         # FocuserPanel's own docstring) -- pause just the Main camera's
         # analysis/display while it's moving, not the Guide panel.
         self._focuser_panel.move_in_flight_changed.connect(self._left_panel.set_updates_paused)
+
+        # Issue #34: unlike the focuser, an EFW is genuinely per optical
+        # train -- one panel each, mirroring camera/guide_camera's own
+        # pairing rather than the focuser's Main-only shape.
+        self._main_filter_wheel_panel = FilterWheelPanel(
+            main_filter_wheel if main_filter_wheel is not None else NoFilterWheel(),
+            title="Main Filter Wheel",
+        )
+        self._guide_filter_wheel_panel = FilterWheelPanel(
+            guide_filter_wheel if guide_filter_wheel is not None else NoFilterWheel(),
+            title="Guide Filter Wheel",
+        )
 
         # Resolved from the module-level DEFAULT_CONFIG_PATH at call time
         # (not bound as this parameter's own default value) so tests can
@@ -363,10 +389,15 @@ class MainWindow(QMainWindow):
         panels_row.addWidget(self._left_panel, stretch=1)
         panels_row.addWidget(self._right_panel, stretch=1)
 
+        filter_wheel_row = QHBoxLayout()
+        filter_wheel_row.addWidget(self._main_filter_wheel_panel, stretch=1)
+        filter_wheel_row.addWidget(self._guide_filter_wheel_panel, stretch=1)
+
         layout = QVBoxLayout()
         layout.addLayout(diagnostics_row)
         layout.addLayout(calibration_row)
         layout.addWidget(self._focuser_panel)
+        layout.addLayout(filter_wheel_row)
         layout.addWidget(self._mount_panel)
         layout.addWidget(self._test_move_panel)
         layout.addLayout(panels_row, stretch=1)
@@ -521,6 +552,8 @@ class MainWindow(QMainWindow):
             "left": self._left_panel.diagnostic_context(),
             "right": self._right_panel.diagnostic_context(),
             "focuser": self._focuser_panel.diagnostic_context(),
+            "main_filter_wheel": self._main_filter_wheel_panel.diagnostic_context(),
+            "guide_filter_wheel": self._guide_filter_wheel_panel.diagnostic_context(),
             "mount": self._mount_panel.diagnostic_context(),
             "mount_test_move": self._test_move_panel.diagnostic_context(),
         }
@@ -646,6 +679,8 @@ class MainWindow(QMainWindow):
         self._left_panel.stop()
         self._right_panel.stop()
         self._focuser_panel.stop()
+        self._main_filter_wheel_panel.stop()
+        self._guide_filter_wheel_panel.stop()
         self._mount_panel.stop()
         self._test_move_panel.stop()
         super().closeEvent(event)
