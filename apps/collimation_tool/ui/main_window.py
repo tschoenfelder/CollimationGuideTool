@@ -238,9 +238,11 @@ class MainWindow(QMainWindow):
         # pairing as move_in_flight_changed below.
         self._focuser_panel = FocuserPanel(
             focuser if focuser is not None else NoFocuser(),
+            title="Main Focuser",
             get_frame=self._left_panel.latest_mono_frame,
             wait_for_frame=self._left_panel.wait_for_frame_after,
             set_auto_exposure_paused=self._left_panel.set_auto_exposure_paused,
+            optical_train_label="Main",
         )
         # The focuser lives on the main optical train only (see
         # FocuserPanel's own docstring) -- pause just the Main camera's

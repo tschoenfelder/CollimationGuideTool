@@ -63,6 +63,15 @@ class AutofocusResult:
     samples: tuple[FocusCurvePoint, ...] = field(default_factory=tuple)
     confidence: float = 0.0
     final_value: float | None = None
+    #: Issue #35: which camera/optical-train/focuser this run actually
+    #: used. Defaulted to "unknown" (not required) so existing callers
+    #: are unaffected; this app has no independent per-train focuser
+    #: yet, so camera_label/optical_train/focuser_label are today always
+    #: the same single value, passed in by whichever panel owns this
+    #: controller -- not three independently-tracked identities.
+    camera_label: str = "unknown"
+    optical_train: str = "unknown"
+    focuser_label: str = "unknown"
 
 
 class AutofocusController:
@@ -84,11 +93,15 @@ class AutofocusController:
         envelope_steps: int = DEFAULT_ENVELOPE_STEPS,
         star_edge_margin_px: int = 16,
         terrestrial_tile_size_px: int = 64,
+        camera_label: str = "unknown",
+        focuser_label: str = "unknown",
     ) -> None:
         self._focuser = focuser
         self._get_frame = get_frame
         self._wait_for_frame = wait_for_frame
         self._set_auto_exposure_paused = set_auto_exposure_paused
+        self._camera_label = camera_label
+        self._focuser_label = focuser_label
         self._frame_timeout_s = frame_timeout_s
         self._terrestrial_sample_count = max(1, terrestrial_sample_count)
         self._star_edge_margin_px = star_edge_margin_px
@@ -131,6 +144,9 @@ class AutofocusController:
             samples=search_result.samples,
             confidence=confidence,
             final_value=search_result.final_value,
+            camera_label=self._camera_label,
+            optical_train=self._camera_label,
+            focuser_label=self._focuser_label,
         )
 
     def _build_measurer(self, mode: AutofocusMode) -> Callable[[], FocusSample | None]:

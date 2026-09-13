@@ -1,0 +1,133 @@
+{
+  "start_position": 14985,
+  "range_steps": 500,
+  "step": 50,
+  "samples": [
+    {
+      "position": 14485,
+      "sharpness": 24.166399035366595,
+      "confidence": 1.0,
+      "gradient_energy": 1459534.6427716676
+    },
+    {
+      "position": 14535,
+      "sharpness": 24.08621818473984,
+      "confidence": 1.0,
+      "gradient_energy": 1456148.7112768393
+    },
+    {
+      "position": 14585,
+      "sharpness": 24.06845099495337,
+      "confidence": 1.0,
+      "gradient_energy": 1458991.234889295
+    },
+    {
+      "position": 14635,
+      "sharpness": 24.04548848758097,
+      "confidence": 1.0,
+      "gradient_energy": 1462066.912603207
+    },
+    {
+      "position": 14685,
+      "sharpness": 24.040325141895824,
+      "confidence": 1.0,
+      "gradient_energy": 1465569.9874744639
+    },
+    {
+      "position": 14735,
+      "sharpness": 24.036678612918827,
+      "confidence": 1.0,
+      "gradient_energy": 1466840.7340165693
+    },
+    {
+      "position": 14785,
+      "sharpness": 24.034294654498044,
+      "confidence": 1.0,
+      "gradient_energy": 1486846.3452822405
+    },
+    {
+      "position": 14835,
+      "sharpness": 24.030966249810813,
+      "confidence": 1.0,
+      "gradient_energy": 1501146.0370414834
+    },
+    {
+      "position": 14885,
+      "sharpness": 24.02823104379275,
+      "confidence": 1.0,
+      "gradient_energy": 1524410.4818105847
+    },
+    {
+      "position": 14935,
+      "sharpness": 24.025753909422885,
+      "confidence": 1.0,
+      "gradient_energy": 1551758.6807012195
+    },
+    {
+      "position": 14985,
+      "sharpness": 24.02160200489039,
+      "confidence": 1.0,
+      "gradient_energy": 1608086.8395445636
+    },
+    {
+      "position": 15035,
+      "sharpness": 24.024840430211462,
+      "confidence": 1.0,
+      "gradient_energy": 1560100.5765041213
+    },
+    {
+      "position": 15085,
+      "sharpness": 24.02663763186671,
+      "confidence": 1.0,
+      "gradient_energy": 1510577.6617971708
+    },
+    {
+      "position": 15135,
+      "sharpness": 24.02548431867534,
+      "confidence": 1.0,
+      "gradient_energy": 1486909.857674719
+    },
+    {
+      "position": 15185,
+      "sharpness": 24.02613522393432,
+      "confidence": 1.0,
+      "gradient_energy": 1470715.7079710148
+    },
+    {
+      "position": 15235,
+      "sharpness": 24.02583659582706,
+      "confidence": 1.0,
+      "gradient_energy": 1437195.4194192986
+    },
+    {
+      "position": 15285,
+      "sharpness": 24.024734476123427,
+      "confidence": 1.0,
+      "gradient_energy": 1425200.8210820563
+    },
+    {
+      "position": 15335,
+      "sharpness": 24.025879261700158,
+      "confidence": 1.0,
+      "gradient_energy": 1417193.6607171074
+    },
+    {
+      "position": 15385,
+      "sharpness": 24.024446667903344,
+      "confidence": 1.0,
+      "gradient_energy": 1411740.5780640522
+    },
+    {
+      "position": 15435,
+      "sharpness": 24.02589134466013,
+      "confidence": 1.0,
+      "gradient_energy": 1410681.2759676247
+    },
+    {
+      "position": 15485,
+      "sharpness": 24.025178490154882,
+      "confidence": 1.0,
+      "gradient_energy": 1406662.693465965
+    }
+  ]
+}

@@ -5,16 +5,31 @@ sky, exposure differences), that must not simply maximize one whole-frame
 sharpness number if moving content can dominate it.
 
 Approach: split each frame into fixed-size tiles, score each tile's own
-Sobel-gradient ("Tenengrad") energy relative to its own variance (same
-"ratio to variance so raw contrast/brightness can't fake sharpness"
-convention `terrestrial_registrar._sharpness_ratio` already established in
-this codebase, applied here as a genuinely optimizable per-tile scalar
-rather than a pass/fail gate), reject low-texture tiles (a floor relative
-to the sharpest tile in the SAME frame, so this self-calibrates across
-scenes/exposures rather than needing one absolute magic constant), and --
-given 2+ same-position samples -- reject any tile whose own content
+Sobel-gradient ("Tenengrad") energy, reject low-texture tiles (a floor
+relative to the sharpest tile in the SAME frame, so this self-calibrates
+across scenes/exposures rather than needing one absolute magic constant),
+and -- given 2+ same-position samples -- reject any tile whose own content
 changed materially between them (wind-driven local scene change) before
 aggregating the remaining static, textured tiles via a robust median.
+
+Issue #35's real field failure (diagnostic UUID
+73a007b6-6c9b-41e2-a3e5-66a21ec71ffd, plus a live ±500-step rig sweep run
+as that issue's own follow-up): this previously divided each tile's
+Tenengrad energy by its own variance ("ratio to variance so raw contrast/
+brightness can't fake sharpness", mirroring `terrestrial_registrar.
+_sharpness_ratio`'s own convention). Real sweep data proved that
+normalization actively **inverts** the true focus signal for real scenes
+whose local variance is itself driven by genuine edge/texture content
+(as most real scenes are) rather than by exposure/gain alone: across a
+real 21-position sweep, the ratio was *minimized* almost exactly at the
+independently-verified true best focus and rose toward both edges, while
+raw (unnormalized) gradient energy peaked cleanly and unimodally right at
+that same true best focus. Since `AutofocusController` already freezes
+exposure/gain for the whole search (`set_auto_exposure_paused(True)`),
+the cross-sample exposure-invariance this normalization was meant to buy
+was never actually needed by this function's one real caller -- raw
+gradient energy is used directly now. See `datasets/regressions/35/` for
+the real frames and the full analysis.
 """
 
 from __future__ import annotations
@@ -43,9 +58,9 @@ _FULL_CONFIDENCE_TILE_COUNT = 3
 
 @dataclass(frozen=True)
 class TerrestrialFocusMeasurement:
-    """`sharpness` is the robust (median) Tenengrad/variance-ratio
-    aggregate across every usable (static, sufficiently textured) tile --
-    `None` if no tile cleared every rejection guard."""
+    """`sharpness` is the robust (median) Tenengrad-energy aggregate
+    across every usable (static, sufficiently textured) tile -- `None` if
+    no tile cleared every rejection guard."""
 
     sharpness: float | None
     confidence: float
@@ -70,18 +85,14 @@ def _sobel_gradients(tile: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     return gx, gy
 
 
-def _tenengrad_ratio(tile: np.ndarray) -> float:
-    """Sobel-gradient energy divided by the tile's own variance -- offset-
-    invariant by construction (a constant additive shift leaves every
-    gradient at 0) and scale-invariant (both the numerator and denominator
-    scale as the square of a multiplicative contrast factor), so exposure/
-    gain differences between samples don't fake or hide real sharpness."""
-    variance = float(tile.var())
-    if variance <= 0.0:
-        return 0.0
+def _tenengrad_energy(tile: np.ndarray) -> float:
+    """Mean squared Sobel-gradient magnitude -- offset-invariant by
+    construction (a constant additive shift leaves every gradient at 0).
+    Deliberately NOT normalized by the tile's own variance -- issue #35's
+    real evidence showed that normalization inverts the true focus signal
+    for real scenes (see this module's own docstring)."""
     gx, gy = _sobel_gradients(tile.astype(np.float64))
-    energy = float(np.mean(gx**2 + gy**2))
-    return energy / variance
+    return float(np.mean(gx**2 + gy**2))
 
 
 def _iter_tiles(
@@ -105,11 +116,11 @@ def measure_terrestrial_focus(
     reference = frames[0]
     tiles = _iter_tiles(reference.shape, tile_size_px)
 
-    ratios: list[float] = []
+    scores: list[float] = []
     rejected_moving = 0
     rejected_low_texture = 0
 
-    per_tile_ratios: list[tuple[tuple[slice, slice], float]] = []
+    per_tile_scores: list[tuple[tuple[slice, slice], float]] = []
     for rows, cols in tiles:
         ref_tile = reference[rows, cols]
         if len(frames) > 1:
@@ -125,44 +136,44 @@ def measure_terrestrial_focus(
             if moved:
                 rejected_moving += 1
                 continue
-        per_tile_ratios.append(((rows, cols), _tenengrad_ratio(ref_tile)))
+        per_tile_scores.append(((rows, cols), _tenengrad_energy(ref_tile)))
 
-    if not per_tile_ratios:
+    if not per_tile_scores:
         return TerrestrialFocusMeasurement(
             sharpness=None, confidence=0.0, usable_tile_count=0,
             rejected_moving_tile_count=rejected_moving,
             rejected_low_texture_tile_count=rejected_low_texture,
         )
 
-    max_ratio = max(ratio for _, ratio in per_tile_ratios)
-    if max_ratio <= 0.0:
+    max_score = max(score for _, score in per_tile_scores)
+    if max_score <= 0.0:
         # Not even the sharpest tile has any real gradient energy -- a
         # fully flat/textureless frame, not merely "some tiles are
-        # smoother than others" (the floor-relative-to-max-ratio check
+        # smoother than others" (the floor-relative-to-max-score check
         # below only makes sense once at least one tile has real signal).
         return TerrestrialFocusMeasurement(
             sharpness=None, confidence=0.0, usable_tile_count=0,
             rejected_moving_tile_count=rejected_moving,
-            rejected_low_texture_tile_count=rejected_low_texture + len(per_tile_ratios),
+            rejected_low_texture_tile_count=rejected_low_texture + len(per_tile_scores),
         )
-    texture_floor = max_ratio * _LOW_TEXTURE_RATIO
-    for _, ratio in per_tile_ratios:
-        if ratio < texture_floor:
+    texture_floor = max_score * _LOW_TEXTURE_RATIO
+    for _, score in per_tile_scores:
+        if score < texture_floor:
             rejected_low_texture += 1
         else:
-            ratios.append(ratio)
+            scores.append(score)
 
-    if not ratios:
+    if not scores:
         return TerrestrialFocusMeasurement(
             sharpness=None, confidence=0.0, usable_tile_count=0,
             rejected_moving_tile_count=rejected_moving,
             rejected_low_texture_tile_count=rejected_low_texture,
         )
 
-    sharpness = float(np.median(ratios))
-    confidence = min(1.0, len(ratios) / _FULL_CONFIDENCE_TILE_COUNT)
+    sharpness = float(np.median(scores))
+    confidence = min(1.0, len(scores) / _FULL_CONFIDENCE_TILE_COUNT)
     return TerrestrialFocusMeasurement(
-        sharpness=sharpness, confidence=confidence, usable_tile_count=len(ratios),
+        sharpness=sharpness, confidence=confidence, usable_tile_count=len(scores),
         rejected_moving_tile_count=rejected_moving,
         rejected_low_texture_tile_count=rejected_low_texture,
     )

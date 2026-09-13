@@ -1,0 +1,24 @@
+{
+  "issue": 35,
+  "diagnostic_uuids": [
+    "73a007b6-6c9b-41e2-a3e5-66a21ec71ffd"
+  ],
+  "git_commit_at_capture": "471d7e6",
+  "user_report": "Auto focus terrestrial fails again -- best focus is around 14985, the algorithm suggested 14460. A live ±500-step focuser-only sweep around the current position (14985) was requested and run to gather real evidence.",
+  "optical_setup": "Main optical train, ATR585M camera, OnStep focuser (LX200 OnStep), terrestrial scene, live rig sweep 2026-09-13",
+  "boundary": "measure_terrestrial_focus_ranks_sharper_higher",
+  "cases": [
+    {
+      "name": "true_focus_frame_ranks_sharper_than_far_edge_frame",
+      "inputs": {
+        "sharper": "frames/sweep_pos_14985.fits",
+        "blurrier": "frames/sweep_pos_15485.fits"
+      },
+      "expect": {
+        "sharper_ranks_higher": true
+      },
+      "tolerances": {},
+      "rationale": "Independently derived: the user visually/manually determined 14985 to be the true best focus position on the real rig -- this is the ground truth, not derived from any measurement in this codebase. A live ±500-step focuser sweep (scripts/terrestrial_focus_sweep.py) was run around that exact position and captured a real frame at 14985 and at the far edge of the sweep (15485, 500 steps away). Independently of measure_terrestrial_focus(), a plain whole-frame gradient-energy check (no tiling, no variance normalization -- a different, simpler technique, computed by hand during this investigation) showed a clean, unimodal peak exactly at 14985 (1,608,087) versus the lowest value in the entire 21-position sweep at 15485 (1,406,663) -- confirming 14985 is genuinely the sharper frame by an independent measure, not merely by the implementation's own output. Before the fix in this same commit, the production measure_terrestrial_focus() (Tenengrad energy divided by each tile's own variance) actually INVERTED this: its value was minimized almost exactly at 14985 (10.01, the lowest of the whole sweep) and rose toward both edges (up to 22.12) -- proving the pre-fix formula was actively anti-correlated with true focus for this real scene, not merely noisy. This case pins the post-fix (raw Tenengrad energy, no variance normalization) behavior against the real frames."
+    }
+  ]
+}

@@ -149,8 +149,27 @@ def _run_measure_translation_offset(
     }
 
 
+def _run_measure_terrestrial_focus_ranks_sharper_higher(
+    inputs: dict[str, np.ndarray], _expect: dict[str, Any]
+) -> dict[str, Any]:
+    from astrotool_core.focus.terrestrial_focus_metric import measure_terrestrial_focus
+
+    sharper = measure_terrestrial_focus([inputs["sharper"]])
+    blurrier = measure_terrestrial_focus([inputs["blurrier"]])
+    return {
+        "sharper_ranks_higher": (
+            sharper.sharpness is not None
+            and blurrier.sharpness is not None
+            and sharper.sharpness > blurrier.sharpness
+        ),
+    }
+
+
 BOUNDARIES: dict[str, RegressionBoundaryRunner] = {
     "measure_translation_offset": _run_measure_translation_offset,
+    "measure_terrestrial_focus_ranks_sharper_higher": (
+        _run_measure_terrestrial_focus_ranks_sharper_higher
+    ),
 }
 
 

@@ -1,0 +1,8 @@
+2026-09-13 12:04:44,645 INFO     astrotool_core.focus.indi_focuser_adapter: IndiFocuserAdapter: connected to 'LX200 OnStep' at position=14960, max=100000
+2026-09-13 12:04:46,248 INFO     astrotool_core.mount.indi_mount_park_adapter: IndiMountParkAdapter: connected to 'LX200 OnStep', parked=True, tracking=False
+2026-09-13 12:04:48,756 INFO     astrotool_core.mount.indi_mount_park_adapter: IndiMountParkAdapter.unpark(): unparking 'LX200 OnStep' and deactivating tracking
+2026-09-13 12:05:12,603 INFO     astrotool_core.focus.indi_focuser_adapter: IndiFocuserAdapter.move_absolute(): target=15210 (from position=14960)
+2026-09-13 12:05:19,455 INFO     astrotool_core.focus.indi_focuser_adapter: IndiFocuserAdapter.move_absolute(): target=15460 (from position=15210)
+2026-09-13 12:05:23,570 INFO     astrotool_core.focus.indi_focuser_adapter: IndiFocuserAdapter.move_absolute(): target=15710 (from position=15460)
+2026-09-13 12:05:30,030 INFO     astrotool_core.focus.indi_focuser_adapter: IndiFocuserAdapter.move_absolute(): target=15960 (from position=15710)
+2026-09-13 12:05:39,855 INFO     astrotool_core.focus.indi_focuser_adapter: IndiFocuserAdapter.move_absolute(): target=15710 (from position=15960)

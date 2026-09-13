@@ -1,0 +1,143 @@
+{
+  "uuid": "73a007b6-6c9b-41e2-a3e5-66a21ec71ffd",
+  "timestamp": "2026-09-13T10:13:54.413404+00:00",
+  "sequence": 0,
+  "app": "CollimationTool",
+  "version": "0.1.0",
+  "git_commit": "9f5a5e5e2fec",
+  "trigger": "manual",
+  "reason": "Manual capture from UI (no note given)",
+  "exception": null,
+  "context": {
+    "left": {
+      "camera_descriptor": {
+        "serial_number": "TP250816103905606F851B940A4AA0C",
+        "logical_name": "ATR585M",
+        "capabilities": {
+          "min_gain": 100,
+          "max_gain": 15000,
+          "min_exposure_ms": 0.1,
+          "max_exposure_ms": 3600000.0,
+          "supports_cooling": true,
+          "supports_hcg": true,
+          "supports_lcg": true,
+          "supports_hdr": true,
+          "supports_black_level": true,
+          "bit_depth": 16,
+          "pixel_size_um": 0.0,
+          "sensor_width_px": 3840,
+          "sensor_height_px": 2160
+        }
+      },
+      "exposure_ms": 5.501,
+      "gain": 100,
+      "streaming": true,
+      "auto_exposure_enabled": true,
+      "updates_paused": false,
+      "auto_exposure_paused": false,
+      "measurement_result": {
+        "measurement": null,
+        "reason": "clipped"
+      }
+    },
+    "right": {
+      "camera_descriptor": {
+        "serial_number": "TP251206125548080EAB05B2D44FC85",
+        "logical_name": "GPCMOS02000KPA",
+        "capabilities": {
+          "min_gain": 100,
+          "max_gain": 5000,
+          "min_exposure_ms": 0.105,
+          "max_exposure_ms": 1000000.0,
+          "supports_cooling": false,
+          "supports_hcg": true,
+          "supports_lcg": true,
+          "supports_hdr": false,
+          "supports_black_level": true,
+          "bit_depth": 12,
+          "pixel_size_um": 0.0,
+          "sensor_width_px": 1920,
+          "sensor_height_px": 1080
+        }
+      },
+      "exposure_ms": 1.433,
+      "gain": 100,
+      "streaming": true,
+      "auto_exposure_enabled": true,
+      "updates_paused": false,
+      "auto_exposure_paused": false,
+      "measurement_result": {
+        "measurement": null,
+        "reason": "no_signal"
+      }
+    },
+    "focuser": {
+      "available": true,
+      "position": 15710,
+      "max_position": 100000,
+      "moving": false
+    },
+    "mount": {
+      "available": true,
+      "parked": true,
+      "tracking": false
+    },
+    "mount_test_move": {
+      "target_mode": "star",
+      "calibration": {},
+      "last_result": null,
+      "last_failure_classes": {}
+    },
+    "mount_test_move_backlash": {
+      "left": {},
+      "right": {}
+    },
+    "autofocus": {
+      "status": "success",
+      "mode": "terrestrial",
+      "start_position": 14960,
+      "best_position": 15710,
+      "search_min": 13960,
+      "search_max": 15960,
+      "confidence": 1.0,
+      "final_value": 22.590860552332977,
+      "samples": [
+        {
+          "position": 14960,
+          "value": 7.6609714645598395,
+          "confidence": 1.0
+        },
+        {
+          "position": 15210,
+          "value": 13.550833880428403,
+          "confidence": 1.0
+        },
+        {
+          "position": 15460,
+          "value": 13.883472292801853,
+          "confidence": 1.0
+        },
+        {
+          "position": 15710,
+          "value": 21.699424965926962,
+          "confidence": 1.0
+        },
+        {
+          "position": 15960,
+          "value": 22.441811414385242,
+          "confidence": 1.0
+        },
+        {
+          "position": 15960,
+          "value": 22.334753861671196,
+          "confidence": 1.0
+        },
+        {
+          "position": 15710,
+          "value": 22.590860552332977,
+          "confidence": 1.0
+        }
+      ]
+    }
+  }
+}

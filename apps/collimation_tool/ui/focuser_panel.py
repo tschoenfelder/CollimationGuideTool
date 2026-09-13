@@ -96,10 +96,17 @@ class FocuserPanel(QWidget):
         get_frame: Callable[[], np.ndarray | None] | None = None,
         wait_for_frame: Callable[[float, float], FrameAcquisitionResult] | None = None,
         set_auto_exposure_paused: Callable[[bool], None] | None = None,
+        optical_train_label: str = "Main",
     ) -> None:
         super().__init__()
         self._focuser = focuser
         self._connected = False
+        # Issue #35: this panel is wired to exactly one optical train
+        # today (see module docstring) -- carried through into Auto
+        # Focus's own status text and diagnostic evidence so that fact
+        # is visible/recorded, not just implicit in how MainWindow
+        # happens to construct this panel.
+        self._optical_train_label = optical_train_label
         #: See module docstring's "One move at a time".
         self._move_in_flight = False
         self._seen_busy_since_move = False
@@ -298,6 +305,10 @@ class FocuserPanel(QWidget):
             get_frame=self._get_frame,
             wait_for_frame=self._wait_for_frame,
             set_auto_exposure_paused=self._set_auto_exposure_paused,
+            # Issue #35: same optical train for both -- this app has no
+            # independent per-train focuser yet (see module docstring).
+            camera_label=self._optical_train_label,
+            focuser_label=self._optical_train_label,
         )
         mode = (
             AutofocusMode.TERRESTRIAL
@@ -308,7 +319,7 @@ class FocuserPanel(QWidget):
         if not started:
             return  # a run is already in flight
         self._autofocus_running = True
-        self._auto_focus_status_label.setText("Auto focusing…")
+        self._auto_focus_status_label.setText(f"Auto focusing ({self._optical_train_label})…")
         self._update_move_buttons_enabled()
         self._autofocus_poll_timer.start()
 
@@ -325,12 +336,13 @@ class FocuserPanel(QWidget):
         self._last_autofocus_result = result
         if result.status is AutofocusStatus.SUCCESS:
             self._auto_focus_status_label.setText(
-                f"Auto focus: {result.mode.value} best {result.best_position} "
-                f"(confidence {result.confidence:.2f})"
+                f"Auto focus ({result.optical_train}): {result.mode.value} "
+                f"best {result.best_position} (confidence {result.confidence:.2f})"
             )
         else:
             self._auto_focus_status_label.setText(
-                f"Auto focus: {result.status.value} ({result.mode.value})"
+                f"Auto focus ({result.optical_train}): {result.status.value} "
+                f"({result.mode.value})"
             )
         self._update_move_buttons_enabled()
 
@@ -397,6 +409,13 @@ class FocuserPanel(QWidget):
         return {
             "status": result.status.value,
             "mode": result.mode.value,
+            # Issue #35: which camera/optical-train/focuser this run
+            # actually used -- previously entirely absent from
+            # diagnostics, the exact gap that made bundle
+            # 73a007b6-6c9b-41e2-a3e5-66a21ec71ffd hard to investigate.
+            "camera_label": result.camera_label,
+            "optical_train": result.optical_train,
+            "focuser_label": result.focuser_label,
             "start_position": result.start_position,
             "best_position": result.best_position,
             "search_min": result.search_min,

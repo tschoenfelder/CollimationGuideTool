@@ -208,6 +208,98 @@ class TestHardSafetyEnvelope:
         assert result.best_position in (1500, 3500)
 
 
+def _plateauing_near_boundary_climb() -> Callable[[], FocusSample]:
+    """Issue #35's own real-bundle shape: rises comfortably at first,
+    then the last two samples each fall under the 5% `_better()` margin
+    right at the search boundary -- neither is an actual decline (3.5 ->
+    3.6 -> 3.62 keeps rising, just too slowly to clear the margin).
+    Unlike `_monotonic_ramp` (whose own swings stay proportionally large
+    enough to clear 5% at every single step, so `best_position` always
+    lands exactly ON the boundary already), this reproduces the real
+    bundle's own gap: `best_position` ends up one coarse-step *behind*
+    the literal boundary. Keyed by call order, not position, so it's
+    independent of exactly which start position a test uses."""
+    values = iter([1.0, 2.0, 3.5, 3.6, 3.62, 3.55])
+
+    def measure() -> FocusSample:
+        return FocusSample(value=next(values), confidence=1.0)
+
+    return measure
+
+
+def _declining_at_boundary_climb() -> Callable[[], FocusSample]:
+    """A clean interior peak (at the 2nd hill-climb step) that merely
+    *grazes* the boundary afterward while genuinely declining -- must
+    NOT be mistaken for `_plateauing_near_boundary_climb`'s ambiguous
+    case."""
+    values = iter([1.0, 2.0, 5.0, 2.0, 1.8, 5.1])
+
+    def measure() -> FocusSample:
+        return FocusSample(value=next(values), confidence=1.0)
+
+    return measure
+
+
+class TestBoundarySafetyNet:
+    """Issue #35 Fix 1: the real diagnostic bundle (UUID
+    73a007b6-6c9b-41e2-a3e5-66a21ec71ffd) showed a curve that never
+    turned over before hitting the search boundary, yet the *existing*
+    boundary check (`best_position in (allowed_min, allowed_max)`)
+    missed it -- the 5%-margin bookkeeping had already left
+    `best_position` one coarse-step behind the literal boundary."""
+
+    def test_boundary_reached_while_still_rising_is_not_reported_success(self) -> None:
+        focuser = FakeFocuser()
+        searcher = BoundedFocusSearcher(
+            focuser, higher_is_better=True, coarse_step=250, fine_step=25,
+            envelope_steps=750, max_consecutive_no_improve=2,
+        )
+
+        result = searcher.search(_plateauing_near_boundary_climb())
+
+        assert result.status is AutofocusStatus.BEST_AT_SEARCH_LIMIT
+
+    def test_a_clean_interior_peak_that_merely_grazes_the_boundary_still_succeeds(
+        self,
+    ) -> None:
+        focuser = FakeFocuser()
+        searcher = BoundedFocusSearcher(
+            focuser, higher_is_better=True, coarse_step=250, fine_step=25,
+            envelope_steps=750, max_consecutive_no_improve=2,
+        )
+
+        result = searcher.search(_declining_at_boundary_climb())
+
+        assert result.status is AutofocusStatus.SUCCESS
+        assert result.best_position == 500
+
+
+class TestFinalValidation:
+    """Issue #35 Fix 2: a fresh post-move confirmation sample that turns
+    out decisively worse than the starting position's own measurement
+    must never be reported as SUCCESS (simulates e.g. backlash/hysteresis
+    making the real resting position worse than exploratory samples
+    suggested)."""
+
+    def test_final_confirmation_worse_than_start_is_reported_inconsistent(self) -> None:
+        values = iter([10.0, 12.0, 6.0, 5.0, 4.0])
+
+        def measure() -> FocusSample:
+            return FocusSample(value=next(values), confidence=1.0)
+
+        focuser = FakeFocuser()
+        searcher = BoundedFocusSearcher(
+            focuser, higher_is_better=True, coarse_step=250, fine_step=25,
+            max_consecutive_no_improve=2,
+        )
+
+        result = searcher.search(measure)
+
+        assert result.status is AutofocusStatus.INCONSISTENT_CURVE
+        assert focuser.get_position() == 0  # returned to the start position
+        assert result.final_value == 4.0
+
+
 class TestRejectionCancellationAndFrameLoss:
     def test_a_rejected_focuser_command_aborts_cleanly(self) -> None:
         focuser = _RejectingFocuser(reject_positions={250})

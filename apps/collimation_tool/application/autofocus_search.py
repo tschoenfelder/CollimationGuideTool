@@ -106,13 +106,20 @@ class _SearchAbort(Exception):
 class _Run:
     """Mutable state for one `search()` call -- passed to each phase
     method rather than closed over, so those phases are plain,
-    independently-readable methods instead of nested closures."""
+    independently-readable methods instead of nested closures.
+
+    `start_value` (issue #35) is the very first measurement, at
+    `start_position` -- set once, never mutated, distinct from
+    `best_value` (which does get overwritten as climbing improves) so a
+    final validation step can still compare against where the search
+    actually began."""
 
     start_position: int
     bounds: FocuserSearchBounds
     best_value: float
     best_position: int
     current_pos: int
+    start_value: float = 0.0
     samples: list[FocusCurvePoint] = field(default_factory=list)
 
 
@@ -181,6 +188,7 @@ class BoundedFocusSearcher:
         run = _Run(
             start_position=start_position, bounds=bounds, best_value=initial.value,
             best_position=start_position, current_pos=start_position,
+            start_value=initial.value,
         )
         self._record(run, start_position, initial)
 
@@ -199,12 +207,47 @@ class BoundedFocusSearcher:
             return self._finish_flat(run, measure)
 
         self._hill_climb(run, measure, direction, cancel_check)
+        # Issue #35 Fix 1: captured from hill-climb's own last sample,
+        # *before* _final_approach appends its own confirmation sample
+        # (which would otherwise overwrite run.samples[-1]) -- see this
+        # method's own "reached the boundary while still rising" check
+        # below for why the bookkept best_position alone isn't enough.
+        reached_boundary_while_rising = self._reached_boundary_while_rising(run)
         final_value = self._final_approach(run, measure, direction)
 
+        # Issue #35 Fix 2: a fresh, post-move confirmation sample that's
+        # decisively worse than where the search started (e.g. backlash/
+        # hysteresis making the real resting position worse than
+        # exploratory samples suggested) must never be reported as
+        # success -- return to the one position already proven good
+        # (start_position) instead.
+        if final_value is not None and self._better(run.start_value, final_value):
+            self._move_to(run, run.start_position)
+            return self._make_result(run, AutofocusStatus.INCONSISTENT_CURVE, final_value)
+
         status = AutofocusStatus.SUCCESS
-        if run.best_position in (run.bounds.allowed_min, run.bounds.allowed_max):
+        if (
+            run.best_position in (run.bounds.allowed_min, run.bounds.allowed_max)
+            or reached_boundary_while_rising
+        ):
             status = AutofocusStatus.BEST_AT_SEARCH_LIMIT
         return self._make_result(run, status, final_value)
+
+    def _reached_boundary_while_rising(self, run: _Run) -> bool:
+        """Issue #35: the real diagnostic bundle showed a curve that
+        never turned over before hitting the search boundary, yet
+        `best_position in (allowed_min, allowed_max)` alone missed it --
+        `_better()`'s 5% margin can leave `best_position` one coarse-step
+        *behind* the literal boundary even though the last sample taken
+        there was still (barely) rising, not declining. Checks hill-
+        climb's own last sample directly: at the boundary, and not
+        confirmed to have declined from the recorded best."""
+        if not run.samples:
+            return False
+        last = run.samples[-1]
+        at_boundary = last.position in (run.bounds.allowed_min, run.bounds.allowed_max)
+        declined = self._better(run.best_value, last.value)
+        return at_boundary and not declined
 
     def _finish_flat(self, run: _Run, measure: FocusMeasurer) -> BoundedSearchResult:
         # Neither probe direction improved on the starting position's own

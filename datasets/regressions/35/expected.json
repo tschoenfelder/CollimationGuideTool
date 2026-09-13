@@ -1,0 +1,35 @@
+{
+  "issue": 35,
+  "diagnostic_uuids": [
+    "73a007b6-6c9b-41e2-a3e5-66a21ec71ffd"
+  ],
+  "git_commit_at_capture": "9f5a5e5e2fec",
+  "user_report": "Terrestrial Auto Focus reported success (best_position=15710) but the focuser ended up visibly out of focus.",
+  "optical_setup": "Main optical train, ATR585M camera, OnStep focuser (LX200 OnStep), terrestrial scene",
+  "boundary": "autofocus_search_boundary_validation",
+  "cases": [
+    {
+      "name": "terrestrial_curve_never_turns_over_before_search_boundary",
+      "inputs": {
+        "recorded_curve": "provenance/incident.json"
+      },
+      "expect": {
+        "status": "best_at_search_limit",
+        "start_position": 14960,
+        "search_min": 13960,
+        "search_max": 15960,
+        "recorded_samples": [
+          [14960, 7.6609714645598395],
+          [15210, 13.550833880428403],
+          [15460, 13.883472292801853],
+          [15710, 21.699424965926962],
+          [15960, 22.441811414385242],
+          [15960, 22.334753861671196],
+          [15710, 22.590860552332977]
+        ]
+      },
+      "tolerances": {},
+      "rationale": "Independently derived by inspecting the recorded (position, value) sequence in provenance/incident.json, not by running the implementation: the metric rises monotonically from 7.66 at the start position (14960) all the way to 22.44/22.33 at the search boundary (15960 = start+1000, the configured envelope edge), with no sample anywhere showing a confirmed decline from the running best. A curve that never demonstrably turns over before hitting its own hard search boundary cannot be trusted as a genuine optimum -- by definition the correct report is BEST_AT_SEARCH_LIMIT, never SUCCESS. This case does not fit tests/regressions/_loader.py's generic frame-pair 'BOUNDARIES' driver (this is a decision-algorithm regression over a recorded scalar curve, not an image-analysis regression -- no per-position frames were preserved by the original capture). It is exercised instead by the bespoke tests/regressions/test_issue_35_autofocus_search_regression.py, which replays this exact recorded sequence through BoundedFocusSearcher via a scripted fake focuser/measurer and asserts the fixed status above."
+    }
+  ]
+}

@@ -127,6 +127,33 @@ class TestAutoFocusRun:
         finally:
             panel._connect_button.setChecked(False)
 
+    def test_optical_train_label_appears_in_status_text_and_diagnostics(
+        self, qapp: object
+    ) -> None:
+        # Issue #35: the running/completed status must visually identify
+        # which optical train Auto Focus applies to, and diagnostics must
+        # record it -- previously neither existed.
+        panel = FocuserPanel(
+            FakeFocuser(),
+            get_frame=lambda: _star_frame(),
+            wait_for_frame=_always_fresh_frame,
+            set_auto_exposure_paused=lambda paused: None,
+            optical_train_label="Guide",
+        )
+        panel._connect_button.setChecked(True)
+        try:
+            panel._on_auto_focus_clicked()
+            assert "Guide" in panel._auto_focus_status_label.text()
+            _run_autofocus_to_completion(panel)
+
+            assert "Guide" in panel._auto_focus_status_label.text()
+            evidence = panel.diagnostic_autofocus_evidence()
+            assert evidence["camera_label"] == "Guide"
+            assert evidence["optical_train"] == "Guide"
+            assert evidence["focuser_label"] == "Guide"
+        finally:
+            panel._connect_button.setChecked(False)
+
     def test_cancel_stops_a_run(self, qapp: object) -> None:
         panel = FocuserPanel(
             FakeFocuser(),

@@ -171,6 +171,41 @@ class TestAutofocusControllerStarMode:
         for reference_monotonic, _timeout_s in source.wait_calls:
             assert reference_monotonic <= time.monotonic()
 
+    def test_result_records_camera_and_focuser_identity(self) -> None:
+        # Issue #35: previously entirely absent from AutofocusResult.
+        focuser = FakeFocuser()
+        source = _FreshFrameSource(_single_star(sigma=2.0))
+        controller = AutofocusController(
+            focuser,
+            get_frame=source.get_frame,
+            wait_for_frame=source.wait_for_frame,
+            set_auto_exposure_paused=source.set_auto_exposure_paused,
+            coarse_step=100, fine_step=10,
+            camera_label="Main", focuser_label="Main",
+        )
+
+        result = controller.run(AutofocusMode.STAR)
+
+        assert result.camera_label == "Main"
+        assert result.optical_train == "Main"
+        assert result.focuser_label == "Main"
+
+    def test_identity_defaults_to_unknown_when_unsupplied(self) -> None:
+        focuser = FakeFocuser()
+        source = _FreshFrameSource(_single_star(sigma=2.0))
+        controller = AutofocusController(
+            focuser,
+            get_frame=source.get_frame,
+            wait_for_frame=source.wait_for_frame,
+            set_auto_exposure_paused=source.set_auto_exposure_paused,
+            coarse_step=100, fine_step=10,
+        )
+
+        result = controller.run(AutofocusMode.STAR)
+
+        assert result.camera_label == "unknown"
+        assert result.focuser_label == "unknown"
+
 
 class TestAutofocusControllerTerrestrialMode:
     def test_terrestrial_mode_samples_multiple_frames_per_position(self) -> None:
