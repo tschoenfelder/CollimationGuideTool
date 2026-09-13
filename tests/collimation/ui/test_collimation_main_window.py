@@ -22,6 +22,7 @@ from astrotool_core.camera.replay_camera import ReplayCamera
 from astrotool_core.camera.touptek_adapter import TouptekDeviceInfo
 from astrotool_core.config import MountAlignmentSettings, load_camera_settings
 from astrotool_core.diagnostics import DiagnosticService
+from astrotool_core.diffraction.optical_reference_model import OpticalConfig
 from astrotool_core.filter_wheel.fake_filter_wheel import FakeFilterWheel
 from astrotool_core.focus.fake_focuser import FakeFocuser
 from astrotool_core.focus.port import FocuserStatus
@@ -5177,4 +5178,42 @@ class TestScreenRelativeMove:
         self._drive_to_completion(panel)
 
         assert "Move failed" in panel._result_label.text()
-        panel.stop()
+
+
+class TestFineCollimationWiring:
+    """Issue #21: FineCollimationPanel wiring — full behavior (a real
+    end-to-end run, AC 7.1/7.2 rendering) is covered directly in
+    test_fine_collimation_panel.py/test_fine_collimation_controller.py
+    (see that module's own docstring on why panel-level logic is tested
+    directly rather than via a full MainWindow); this just confirms the
+    panel constructs with sensible defaults and is wired into
+    diagnostics/shutdown like every other panel."""
+
+    def test_panel_constructs_with_sensible_defaults(self, qapp: object) -> None:
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+
+        assert window._fine_collimation_panel._get_frame == window._left_panel.latest_mono_frame
+        assert window._fine_collimation_panel._optical_config == OpticalConfig()
+
+    def test_a_supplied_optical_config_is_passed_through(self, qapp: object) -> None:
+        config = OpticalConfig(focal_ratio=10.0, wavelength_nm=550.0, pixel_size_um=5.0)
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)), device_lister=lambda: [], optical_config=config
+        )
+
+        assert window._fine_collimation_panel._optical_config == config
+
+    def test_diagnostic_context_includes_fine_collimation_state(self, qapp: object) -> None:
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+
+        context = window._diagnostic_context()
+
+        assert "fine_collimation" in context
+        assert context["fine_collimation"]["running"] is False
+
+    def test_closing_the_window_stops_the_fine_collimation_panel(self, qapp: object) -> None:
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+
+        window.close()
+
+        assert not window._fine_collimation_panel._poll_timer.isActive()

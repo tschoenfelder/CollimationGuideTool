@@ -16,11 +16,24 @@ own aspect ratio (see `LiveViewLabel`) rather than sharing one pixel
 scale — there's no requirement that the two cameras even share a native
 resolution.
 
-Deliberately not wired for Stage 7: `CollimationRecenterPolicy` (SCT
-collimation screws are turned by hand; recentering the whole scope via
-the mount is a separate, not-yet-decided operator workflow) and the
+Deliberately not wired for docs/porting-notes.md's own "Stage 7" (UI
+port milestone, a different numbering scheme from the fine-collimation
+requirements doc's 12-stage pipeline below): `CollimationRecenterPolicy`
+(SCT collimation screws are turned by hand; recentering the whole scope
+via the mount is a separate, not-yet-decided operator workflow) and the
 Tri-Bahtinov fine-collimation pathway (deferred since Stage 5 — see
 docs/porting-notes.md).
+
+Fine collimation (issue #21, `resources/requirements/2026-08-31-fine-
+collimation-requirements.md`'s own Stage 7 — the maskless pipeline, NOT
+the Tri-Bahtinov pathway above): `FineCollimationPanel` wires Stages
+1-6 (#15-#20) together live against `_left_panel` (Main) only, same
+Main-train-only pairing as the focuser. `optical_config` (injectable,
+defaulting to a fully-unconfigured `OpticalConfig()` — no telescope
+parameters are sourced from config.toml yet, a separate later concern
+matching #19's own deferred scope) only ever *softens* the Stage 6
+symmetry measurement when absent (see #20's own soft-dependency design)
+— never blocks it.
 
 Diagnostics (issue #10): one "Capture diagnostics" action for the whole
 window (not duplicated per panel — capturing evidence is an app-level
@@ -130,6 +143,7 @@ from astrotool_core.config import (
     save_camera_settings,
 )
 from astrotool_core.diagnostics import DiagnosticService
+from astrotool_core.diffraction.optical_reference_model import OpticalConfig
 from astrotool_core.filter_wheel.no_filter_wheel import NoFilterWheel
 from astrotool_core.filter_wheel.port import FilterWheelPort
 from astrotool_core.focus.no_focuser import NoFocuser
@@ -161,6 +175,7 @@ from PySide6.QtWidgets import (
 
 from collimation_tool.ui.camera_panel import CameraPanel, default_camera_factory
 from collimation_tool.ui.filter_wheel_panel import FilterWheelPanel
+from collimation_tool.ui.fine_collimation_panel import FineCollimationPanel
 from collimation_tool.ui.focuser_panel import FocuserPanel
 from collimation_tool.ui.fov_calibrator import FovCalibrator
 from collimation_tool.ui.fov_overlay import compute_fov_overlay_rect
@@ -191,6 +206,7 @@ class MainWindow(QMainWindow):
         guide_pixel_scale_arcsec: float | None = None,
         camera_settings_path: Path | str | None = None,
         astap_solver: AstapSolver | None = None,
+        optical_config: OpticalConfig | None = None,
     ) -> None:
         super().__init__()
         self.setWindowTitle("CollimationTool")
@@ -248,6 +264,15 @@ class MainWindow(QMainWindow):
         # FocuserPanel's own docstring) -- pause just the Main camera's
         # analysis/display while it's moving, not the Guide panel.
         self._focuser_panel.move_in_flight_changed.connect(self._left_panel.set_updates_paused)
+
+        # Issue #21: wired to the Main optical train only, same pairing
+        # as the focuser above -- fine collimation analyzes the same
+        # focused star the Main camera tracks. optical_config defaults
+        # to a fully-unconfigured OpticalConfig() (see module docstring).
+        self._fine_collimation_panel = FineCollimationPanel(
+            get_frame=self._left_panel.latest_mono_frame,
+            optical_config=optical_config,
+        )
 
         # Issue #34: unlike the focuser, an EFW is genuinely per optical
         # train -- one panel each, mirroring camera/guide_camera's own
@@ -402,6 +427,7 @@ class MainWindow(QMainWindow):
         layout.addLayout(filter_wheel_row)
         layout.addWidget(self._mount_panel)
         layout.addWidget(self._test_move_panel)
+        layout.addWidget(self._fine_collimation_panel)
         layout.addLayout(panels_row, stretch=1)
 
         central = QWidget()
@@ -558,6 +584,7 @@ class MainWindow(QMainWindow):
             "guide_filter_wheel": self._guide_filter_wheel_panel.diagnostic_context(),
             "mount": self._mount_panel.diagnostic_context(),
             "mount_test_move": self._test_move_panel.diagnostic_context(),
+            "fine_collimation": self._fine_collimation_panel.diagnostic_context(),
         }
         stability_evidence = self._test_move_panel.diagnostic_stability_evidence()
         if stability_evidence:
@@ -685,4 +712,5 @@ class MainWindow(QMainWindow):
         self._guide_filter_wheel_panel.stop()
         self._mount_panel.stop()
         self._test_move_panel.stop()
+        self._fine_collimation_panel.stop()
         super().closeEvent(event)
