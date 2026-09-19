@@ -169,6 +169,7 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QMainWindow,
     QPushButton,
+    QScrollArea,
     QVBoxLayout,
     QWidget,
 )
@@ -432,7 +433,22 @@ class MainWindow(QMainWindow):
 
         central = QWidget()
         central.setLayout(layout)
-        self.setCentralWidget(central)
+
+        # Real incident: on a real (smaller/lower-resolution) screen, the
+        # stack of control panels above panels_row (diagnostics,
+        # calibration/registration mode, focuser, filter wheels, mount,
+        # mount test-move, fine collimation) can exceed the available
+        # screen height on its own -- with no scrolling, the camera live
+        # views (panels_row, the single most important thing to see while
+        # operating the telescope) were silently pushed below the visible
+        # screen area with no way to reach them. A QScrollArea guarantees
+        # every panel stays reachable regardless of screen size or how
+        # many more panels this window grows in the future, without
+        # changing the existing panel order/layout at all.
+        scroll_area = QScrollArea()
+        scroll_area.setWidgetResizable(True)
+        scroll_area.setWidget(central)
+        self.setCentralWidget(scroll_area)
         self.resize(1360, 700)
 
     def _on_left_camera_changed(self, device: object) -> None:
