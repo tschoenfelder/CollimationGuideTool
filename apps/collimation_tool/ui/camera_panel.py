@@ -399,7 +399,14 @@ class CameraPanel(QWidget):
             return
         self._camera = candidate
         self._connected_device = device
-        self._camera_status_label.setText(f"Camera: {device.display_name}")
+        # Issue #40: sourced from the RESPONSE (the adapter's own
+        # get_descriptor(), independently queried post-connect), never the
+        # REQUEST (device.display_name, the pre-connect combo selection) --
+        # otherwise a mismatch between what was selected and what actually
+        # got opened would never be visible here.
+        descriptor = candidate.get_descriptor()
+        serial_text = f" (S/N {descriptor.serial_number})" if descriptor.serial_number else ""
+        self._camera_status_label.setText(f"Camera: {descriptor.logical_name}{serial_text}")
         self._init_camera_controls()
         self.connected_device_changed.emit(device)
         self.settings_changed.emit()

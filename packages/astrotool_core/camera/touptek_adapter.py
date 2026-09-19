@@ -16,6 +16,7 @@ and ``tests/core/camera/test_touptek_adapter_characterization.py``.
 
 from __future__ import annotations
 
+import contextlib
 import ctypes
 import logging
 import threading
@@ -153,6 +154,16 @@ _sdk_lifecycle_lock = threading.RLock()
 # call; under Python 3.13 a second call raises "AttributeError: _fields_ is
 # final", and the next native SDK call after that segfaulted the process).
 _enum_devices_cache: list[Any] | None = None
+
+# Issue #40: a real-reported "selected G3M678M, connected GPCMOS02000"
+# device-identity mix-up. `camera_id` (the SDK's own opaque `.id`) is
+# already used for selection (see `_select_device`), but nothing
+# previously cross-checked that the ACTUALLY-opened handle's own
+# independently-queried `SerialNumber()` was consistent between
+# connects to the same id. Process-lifetime memory (like
+# `_enum_devices_cache` above), not per-adapter-instance, since a fresh
+# `TouptekCameraAdapter` is constructed on every Connect click.
+_known_serials: dict[str, str] = {}
 
 
 def _is_real_camera(device: Any) -> bool:  # noqa: ANN401 — untyped SDK device
@@ -302,6 +313,19 @@ class TouptekCameraAdapter(CameraPort):
             self._serial_number = cam.SerialNumber()
         except Exception:
             self._serial_number = ""
+        if self._serial_number:
+            remembered = _known_serials.get(self._device_id)
+            if remembered is not None and remembered != self._serial_number:
+                with contextlib.suppress(Exception):
+                    cam.Close()
+                self._cam = None
+                raise ConnectionError(
+                    f"TouptekCameraAdapter: device id {self._device_id!r} previously "
+                    f"reported serial {remembered!r}, now reports "
+                    f"{self._serial_number!r} -- refusing this connection (the "
+                    f"physical device behind this id may have changed)."
+                )
+            _known_serials[self._device_id] = self._serial_number
         try:
             self._width, self._height = cam.get_Size()
         except Exception:

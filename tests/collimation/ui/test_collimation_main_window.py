@@ -467,7 +467,10 @@ class TestCameraSelection:
     def test_connect_swaps_to_the_selected_touptek_camera_on_success(self, qapp: object) -> None:
         demo = _donut_camera((0.0, 0.0))
         devices = [TouptekDeviceInfo(index=0, camera_id="dev-1", display_name="ATR585M Guide")]
-        fake_touptek = FakeTouptekCamera()
+        # logical_name matches what the real device would report post-connect
+        # -- see issue #40: the status label is sourced from the response
+        # (get_descriptor()), not the pre-connect request.
+        fake_touptek = FakeTouptekCamera(logical_name="ATR585M Guide")
         window = MainWindow(
             demo,
             device_lister=lambda: devices,
@@ -478,6 +481,118 @@ class TestCameraSelection:
         panel._on_connect_camera()
         assert panel._camera is fake_touptek
         assert "ATR585M Guide" in panel._camera_status_label.text()
+
+    def test_status_label_reflects_the_actually_connected_devices_identity(
+        self, qapp: object
+    ) -> None:
+        """Issue #40: the status label must be sourced from the response
+        (the adapter's own get_descriptor(), independently queried post-
+        connect) not the request (the combo's pre-connect selection) --
+        otherwise a mismatch between what was selected and what actually
+        got opened would never be visible to the operator."""
+        demo = _donut_camera((0.0, 0.0))
+        devices = [TouptekDeviceInfo(index=0, camera_id="id-g3m678m", display_name="G3M678M")]
+        fake_touptek = FakeTouptekCamera(logical_name="G3M678M", serial_number="SN-12345")
+        window = MainWindow(
+            demo,
+            device_lister=lambda: devices,
+            camera_factory=lambda camera_id: fake_touptek,
+        )
+        panel = window._left_panel
+        panel._camera_combo.setCurrentIndex(1)
+        panel._on_connect_camera()
+        assert "G3M678M" in panel._camera_status_label.text()
+        assert "SN-12345" in panel._camera_status_label.text()
+
+    def test_selecting_g3m678m_connects_g3m678m_not_gpcmos(self, qapp: object) -> None:
+        devices = [
+            TouptekDeviceInfo(index=0, camera_id="id-g3m678m", display_name="G3M678M"),
+            TouptekDeviceInfo(index=1, camera_id="id-gpcmos", display_name="GPCMOS02000"),
+        ]
+        cameras = {
+            "id-g3m678m": FakeTouptekCamera(logical_name="G3M678M", serial_number="SN-A"),
+            "id-gpcmos": FakeTouptekCamera(logical_name="GPCMOS02000", serial_number="SN-B"),
+        }
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)),
+            device_lister=lambda: devices,
+            camera_factory=lambda camera_id: cameras[camera_id],
+        )
+        panel = window._left_panel
+        panel._camera_combo.setCurrentIndex(1)  # G3M678M
+        panel._on_connect_camera()
+        assert panel._camera is cameras["id-g3m678m"]
+        assert "GPCMOS02000" not in panel._camera_status_label.text()
+
+    def test_selecting_gpcmos_connects_gpcmos_not_g3m678m(self, qapp: object) -> None:
+        devices = [
+            TouptekDeviceInfo(index=0, camera_id="id-g3m678m", display_name="G3M678M"),
+            TouptekDeviceInfo(index=1, camera_id="id-gpcmos", display_name="GPCMOS02000"),
+        ]
+        cameras = {
+            "id-g3m678m": FakeTouptekCamera(logical_name="G3M678M", serial_number="SN-A"),
+            "id-gpcmos": FakeTouptekCamera(logical_name="GPCMOS02000", serial_number="SN-B"),
+        }
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)),
+            device_lister=lambda: devices,
+            camera_factory=lambda camera_id: cameras[camera_id],
+        )
+        panel = window._left_panel
+        panel._camera_combo.setCurrentIndex(2)  # GPCMOS02000
+        panel._on_connect_camera()
+        assert panel._camera is cameras["id-gpcmos"]
+        assert "G3M678M" not in panel._camera_status_label.text()
+
+    def test_changing_selection_before_connect_uses_the_new_selection(
+        self, qapp: object
+    ) -> None:
+        devices = [
+            TouptekDeviceInfo(index=0, camera_id="id-g3m678m", display_name="G3M678M"),
+            TouptekDeviceInfo(index=1, camera_id="id-gpcmos", display_name="GPCMOS02000"),
+        ]
+        cameras = {
+            "id-g3m678m": FakeTouptekCamera(logical_name="G3M678M", serial_number="SN-A"),
+            "id-gpcmos": FakeTouptekCamera(logical_name="GPCMOS02000", serial_number="SN-B"),
+        }
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)),
+            device_lister=lambda: devices,
+            camera_factory=lambda camera_id: cameras[camera_id],
+        )
+        panel = window._left_panel
+        panel._camera_combo.setCurrentIndex(1)  # initially G3M678M
+        panel._camera_combo.setCurrentIndex(2)  # changed to GPCMOS02000 before Connect
+        panel._on_connect_camera()
+        assert panel._camera is cameras["id-gpcmos"]
+
+    def test_main_and_guide_can_select_different_cameras_independently(
+        self, qapp: object
+    ) -> None:
+        devices = [
+            TouptekDeviceInfo(index=0, camera_id="id-g3m678m", display_name="G3M678M"),
+            TouptekDeviceInfo(index=1, camera_id="id-gpcmos", display_name="GPCMOS02000"),
+        ]
+        cameras = {
+            "id-g3m678m": FakeTouptekCamera(logical_name="G3M678M", serial_number="SN-A"),
+            "id-gpcmos": FakeTouptekCamera(logical_name="GPCMOS02000", serial_number="SN-B"),
+        }
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)),
+            device_lister=lambda: devices,
+            camera_factory=lambda camera_id: cameras[camera_id],
+        )
+        window._left_panel._camera_combo.setCurrentIndex(1)  # G3M678M on Main
+        window._left_panel._on_connect_camera()
+        # GPCMOS02000 was excluded from the right combo once left connected
+        # G3M678M (see TestTwoPanelExclusion) -- it's still index 1 there.
+        window._right_panel._camera_combo.setCurrentIndex(1)  # GPCMOS02000 on Guide
+        window._right_panel._on_connect_camera()
+
+        assert window._left_panel._camera is cameras["id-g3m678m"]
+        assert window._right_panel._camera is cameras["id-gpcmos"]
+        assert "G3M678M" in window._left_panel._camera_status_label.text()
+        assert "GPCMOS02000" in window._right_panel._camera_status_label.text()
 
     def test_connect_failure_shows_error_and_keeps_current_camera(self, qapp: object) -> None:
         demo = _donut_camera((0.0, 0.0))

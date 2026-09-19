@@ -65,7 +65,11 @@ class FakeTouptekCamera(CameraPort):
         return_bright: bool = False,
         dim_on_captures: frozenset[int] | None = None,
         capture_delay_s: float = 0.0,
+        logical_name: str = "FakeTouptekCamera",
+        serial_number: str = "",
     ) -> None:
+        self._logical_name = logical_name
+        self._serial_number = serial_number
         self._fail_connect = fail_connect
         self._fail_on_capture = fail_on_capture
         self._return_bright = return_bright
@@ -143,7 +147,7 @@ class FakeTouptekCamera(CameraPort):
 
     def get_descriptor(self) -> CameraDescriptor:
         return CameraDescriptor(
-            serial_number="",
-            logical_name="FakeTouptekCamera",
+            serial_number=self._serial_number,
+            logical_name=self._logical_name,
             capabilities=_FAKE_TOUPTEK_CAPABILITIES,
         )
