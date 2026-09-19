@@ -43,6 +43,46 @@ def _run_autofocus_to_completion(panel: FocuserPanel, *, timeout_s: float = 10.0
         panel._poll_autofocus()
 
 
+def _select_step(panel: FocuserPanel, step: int) -> None:
+    panel._step_group.button(step).setChecked(True)
+
+
+class TestManualStepSizes:
+    """Issue #38: 1/10/100/200 replaces the old 1/5/10/50 set."""
+
+    def test_the_panel_offers_exactly_the_four_intended_step_sizes(self, qapp: object) -> None:
+        panel = FocuserPanel(FakeFocuser())
+
+        ids = sorted(panel._step_group.id(button) for button in panel._step_group.buttons())
+
+        assert ids == [1, 10, 100, 200]
+
+    def test_the_1_step_option_is_selected_by_default(self, qapp: object) -> None:
+        panel = FocuserPanel(FakeFocuser())
+
+        assert panel._selected_step() == 1
+
+    def test_manual_inward_movement_uses_the_selected_increment(self, qapp: object) -> None:
+        focuser = FakeFocuser()
+        panel = FocuserPanel(focuser)
+        panel._connect_button.setChecked(True)
+        _select_step(panel, 100)
+
+        panel._on_move_in()
+
+        assert focuser.get_position() == -100
+
+    def test_manual_outward_movement_uses_the_selected_increment(self, qapp: object) -> None:
+        focuser = FakeFocuser()
+        panel = FocuserPanel(focuser)
+        panel._connect_button.setChecked(True)
+        _select_step(panel, 200)
+
+        panel._on_move_out()
+
+        assert focuser.get_position() == 200
+
+
 class TestAutoFocusButtonEnablement:
     def test_disabled_before_connecting(self, qapp: object) -> None:
         panel = FocuserPanel(

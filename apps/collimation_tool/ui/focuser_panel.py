@@ -65,7 +65,7 @@ from collimation_tool.application.autofocus_search import AutofocusStatus
 from collimation_tool.ui.autofocus_runner import AutofocusRunner
 
 _POLL_INTERVAL_MS = 250
-_STEP_SIZES = (1, 5, 10, 50)
+_STEP_SIZES = (1, 10, 100, 200)
 _DEFAULT_STEP_SIZE = _STEP_SIZES[0]
 #: Safety net for _move_in_flight — see module docstring's "One move at a
 #: time". Generous relative to this rig's real settle time (~1-2s, gated
