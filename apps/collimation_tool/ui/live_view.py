@@ -23,6 +23,12 @@ _OUTER_COLOR = QColor(80, 220, 255)
 _INNER_COLOR = QColor(255, 210, 60)
 _ERROR_COLOR = QColor(255, 90, 90)
 _FOV_COLOR = QColor(255, 255, 0)
+#: Issue #37: the artificial-star registration's own matched-point
+#: marker -- a true red, distinct from every other marker color in this
+#: file, since it identifies a specific source the registration
+#: associated with the Main-frame artificial star, not merely a
+#: brightest/arbitrary point.
+_MATCHED_POINT_COLOR = QColor(255, 0, 0)
 
 
 def _stretch_bounds(
@@ -119,6 +125,16 @@ def _draw_ring(painter: QPainter, ring: CircleEllipseFit, color: QColor) -> None
     painter.drawLine(cx, cy - cross, cx, cy + cross)
 
 
+def _draw_marker(painter: QPainter, point: tuple[float, float], color: QColor) -> None:
+    painter.setPen(QPen(color, 2))
+    cx, cy = int(point[0]), int(point[1])
+    radius = 8
+    painter.drawEllipse(cx - radius, cy - radius, radius * 2, radius * 2)
+    cross = 12
+    painter.drawLine(cx - cross, cy, cx + cross, cy)
+    painter.drawLine(cx, cy - cross, cx, cy + cross)
+
+
 class LiveViewLabel(QLabel):
     """Displays the latest mono frame, optionally with a donut measurement overlay.
 
@@ -145,6 +161,7 @@ class LiveViewLabel(QLabel):
         measurement: DonutMeasurement | None,
         fov_rect: FovOverlayRect | None = None,
         fov_polygon: list[tuple[float, float]] | None = None,
+        matched_point: tuple[float, float] | None = None,
     ) -> None:
         """Stretch and display *mono*. For a real (large) camera frame,
         prefer computing the stretch off the UI thread and calling
@@ -154,6 +171,7 @@ class LiveViewLabel(QLabel):
             measurement=measurement,
             fov_rect=fov_rect,
             fov_polygon=fov_polygon,
+            matched_point=matched_point,
         )
 
     def set_stretched_frame(
@@ -163,6 +181,7 @@ class LiveViewLabel(QLabel):
         measurement: DonutMeasurement | None,
         fov_rect: FovOverlayRect | None = None,
         fov_polygon: list[tuple[float, float]] | None = None,
+        matched_point: tuple[float, float] | None = None,
     ) -> None:
         """Display an already-stretched frame: *stretched* is either a 2D
         mono array (from `stretch_to_uint8`) or an (H, W, 3) RGB array
@@ -174,6 +193,12 @@ class LiveViewLabel(QLabel):
         *fov_rect* when both are given — a real calibrated (and possibly
         rotated) match is more trustworthy than the config-only centered
         placeholder rectangle.
+
+        *matched_point* (native pixel coords, issue #37): the source
+        the artificial-star registration associated with the Main-frame
+        artificial star -- drawn independently of `fov_polygon`/
+        `fov_rect`, since it identifies a specific point, not a
+        footprint.
         """
         if stretched.ndim == 3:
             height, width, _ = stretched.shape
@@ -189,7 +214,12 @@ class LiveViewLabel(QLabel):
             ).copy()
         pixmap = QPixmap.fromImage(image)
 
-        if measurement is not None or fov_rect is not None or fov_polygon is not None:
+        if (
+            measurement is not None
+            or fov_rect is not None
+            or fov_polygon is not None
+            or matched_point is not None
+        ):
             painter = QPainter(pixmap)
             try:
                 if measurement is not None:
@@ -222,6 +252,8 @@ class LiveViewLabel(QLabel):
                         int(fov_rect.width * width),
                         int(fov_rect.height * height),
                     )
+                if matched_point is not None:
+                    _draw_marker(painter, matched_point, _MATCHED_POINT_COLOR)
             finally:
                 painter.end()
 

@@ -10,7 +10,8 @@ from astrotool_core.registration.astap_adapter import (
     AstapSolveStatus,
 )
 from astrotool_core.registration.optical_prior import OpticalPrior
-from astrotool_core.registration.result import RegistrationStatus
+from astrotool_core.registration.result import RegistrationMethod, RegistrationStatus
+from astrotool_core.testing.frame_factory import single_star_image
 from collimation_tool.ui.fov_calibrator import FovCalibrator, _auto_search_downsample
 
 
@@ -294,6 +295,56 @@ class TestSubmitStarField:
         assert len(solver.calls) == 1  # B is never attempted once A's solve fails
         for path in solver.calls:
             assert not path.exists(), f"temp FITS file {path} was not cleaned up"
+
+
+class TestSubmitArtificialStar:
+    def _priors(self) -> tuple[OpticalPrior, OpticalPrior]:
+        prior_a = OpticalPrior(name="main", sensor_width_px=120, sensor_height_px=120,
+                                pixel_scale_arcsec=1.0)
+        prior_b = OpticalPrior(name="guide", sensor_width_px=400, sensor_height_px=400,
+                                pixel_scale_arcsec=1.0)
+        return prior_a, prior_b
+
+    def test_submit_artificial_star_then_take_latest_returns_a_completed_outcome(self) -> None:
+        prior_a, prior_b = self._priors()
+        main = single_star_image((120, 120), x=60.0, y=60.0, peak=5000.0, sigma=2.0)
+        guide = single_star_image((400, 400), x=220.0, y=190.0, peak=5000.0, sigma=2.0)
+        calibrator = FovCalibrator()
+
+        started = calibrator.submit_artificial_star(main, guide, prior_a=prior_a, prior_b=prior_b)
+        assert started
+        assert _wait_for(lambda: not calibrator.is_busy)
+
+        outcome = calibrator.take_latest()
+        assert outcome is not None
+        assert outcome.result.ok
+        assert outcome.result.method is RegistrationMethod.ARTIFICIAL_STAR
+        assert outcome.result.status is RegistrationStatus.OK_OVERLAP
+
+    def test_submit_artificial_star_while_busy_is_a_no_op(self) -> None:
+        prior_a, prior_b = self._priors()
+        main = single_star_image((120, 120), x=60.0, y=60.0, peak=5000.0, sigma=2.0)
+        guide = single_star_image((400, 400), x=220.0, y=190.0, peak=5000.0, sigma=2.0)
+        calibrator = FovCalibrator()
+        calibrator._busy = True  # simulate an in-flight calibration
+
+        started = calibrator.submit_artificial_star(main, guide, prior_a=prior_a, prior_b=prior_b)
+        assert started is False
+        assert calibrator.take_latest() is None
+
+    def test_no_usable_source_still_produces_an_outcome(self) -> None:
+        prior_a, prior_b = self._priors()
+        main = np.full((120, 120), 100.0)  # blank, no artificial star
+        guide = single_star_image((400, 400), x=220.0, y=190.0, peak=5000.0, sigma=2.0)
+        calibrator = FovCalibrator()
+
+        calibrator.submit_artificial_star(main, guide, prior_a=prior_a, prior_b=prior_b)
+        assert _wait_for(lambda: not calibrator.is_busy)
+
+        outcome = calibrator.take_latest()
+        assert outcome is not None
+        assert not outcome.result.ok
+        assert outcome.result.status is RegistrationStatus.INSUFFICIENT_STARS
 
 
 class TestAutoSearchDownsample:

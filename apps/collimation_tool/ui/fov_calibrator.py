@@ -39,6 +39,7 @@ from pathlib import Path
 import numpy as np
 from astropy.io import fits
 from astrotool_core.frames.frame import Frame
+from astrotool_core.registration.artificial_star_registrar import ArtificialStarRegistrar
 from astrotool_core.registration.astap_adapter import AstapSolver
 from astrotool_core.registration.optical_prior import OpticalPrior
 from astrotool_core.registration.result import CrossCameraRegistrationResult
@@ -180,6 +181,51 @@ class FovCalibrator:
                 Frame(pixels=guide_mono, header=fits.Header(), exposure_seconds=0.0).to_fits_bytes()
             )
             result = registrar.register(path_a, path_b, prior_a, prior_b, hints=hints)
+        with self._lock:
+            self._latest_outcome = FovCalibrationOutcome(result=result)
+            self._busy = False
+            self._progress = None
+
+    def submit_artificial_star(
+        self,
+        main_mono: np.ndarray,
+        guide_mono: np.ndarray,
+        *,
+        prior_a: OpticalPrior,
+        prior_b: OpticalPrior,
+        assumed_rotation_deg: float = 0.0,
+    ) -> bool:
+        """Same "run at most one at a time, drop rather than queue"
+        contract as submit() -- in-memory arrays, no external solver, no
+        temp files, same shape as submit()/_run() above (issue #37:
+        single-point-source registration is comparatively cheap -- no
+        rotation/scale grid search -- so this needs no downsample/
+        progress-callback plumbing)."""
+        with self._lock:
+            if self._busy:
+                return False
+            self._busy = True
+            self._progress = None
+        threading.Thread(
+            target=self._run_artificial_star,
+            args=(main_mono, guide_mono, prior_a, prior_b, assumed_rotation_deg),
+            daemon=True,
+            name="fov-calibrator-artificial-star",
+        ).start()
+        return True
+
+    def _run_artificial_star(
+        self,
+        main_mono: np.ndarray,
+        guide_mono: np.ndarray,
+        prior_a: OpticalPrior,
+        prior_b: OpticalPrior,
+        assumed_rotation_deg: float,
+    ) -> None:
+        registrar = ArtificialStarRegistrar()
+        result = registrar.register(
+            main_mono, guide_mono, prior_a, prior_b, assumed_rotation_deg=assumed_rotation_deg
+        )
         with self._lock:
             self._latest_outcome = FovCalibrationOutcome(result=result)
             self._busy = False

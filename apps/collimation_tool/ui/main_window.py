@@ -157,7 +157,7 @@ from astrotool_core.optics import load_pixel_scale_arcsec
 from astrotool_core.registration.alignment import derive_alignment_guidance
 from astrotool_core.registration.astap_adapter import AstapCliSolver, AstapSolver
 from astrotool_core.registration.optical_prior import OpticalPrior
-from astrotool_core.registration.result import CrossCameraRegistrationResult
+from astrotool_core.registration.result import CrossCameraRegistrationResult, RegistrationMethod
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
@@ -348,9 +348,16 @@ class MainWindow(QMainWindow):
         self._star_field_mode_button = QPushButton("Star-field (ASTAP)")
         self._star_field_mode_button.setCheckable(True)
         self._registration_mode_group.addButton(self._star_field_mode_button)
+        # Issue #37: a single isolated point source (e.g. a pinhole/fiber
+        # artificial star) -- no ASTAP, no rich terrestrial texture, just
+        # one shared point + each optical train's own configured priors.
+        self._artificial_star_mode_button = QPushButton("Artificial Star")
+        self._artificial_star_mode_button.setCheckable(True)
+        self._registration_mode_group.addButton(self._artificial_star_mode_button)
         mode_row = QHBoxLayout()
         mode_row.addWidget(self._terrestrial_mode_button)
         mode_row.addWidget(self._star_field_mode_button)
+        mode_row.addWidget(self._artificial_star_mode_button)
         mode_row.addStretch(1)
         self._calibrate_fov_button = QPushButton("Calibrate FOV")
         self._calibrate_fov_button.clicked.connect(self._on_calibrate_fov)
@@ -371,6 +378,13 @@ class MainWindow(QMainWindow):
         #: explains the *currently shown* overlay for diagnostics. None
         #: until the first successful calibration.
         self._last_calibration_result: CrossCameraRegistrationResult | None = None
+        #: Issue #37: the latest completed calibration attempt regardless
+        #: of outcome (unlike _last_calibration_result above, which only
+        #: ever holds a confident match) -- so a failed/ambiguous
+        #: artificial-star attempt still leaves a diagnostic trace. Every
+        #: mode gets this for free since _poll_fov_calibration is already
+        #: method-agnostic.
+        self._last_calibration_attempt: CrossCameraRegistrationResult | None = None
         #: The prior_b used for that same last confident result — needed
         #: to convert its guidance's px magnitude to arcsec. Same
         #: never-cleared-on-a-later-miss lifecycle as
@@ -484,6 +498,7 @@ class MainWindow(QMainWindow):
         # connected before — no longer meaningful once either side's
         # camera changes (different resolution/content entirely).
         self._right_panel.set_fov_polygon(None)
+        self._right_panel.set_matched_point(None)
 
     def _on_calibrate_fov(self) -> None:
         """Kick off a one-shot content-matching calibration — see module
@@ -521,6 +536,10 @@ class MainWindow(QMainWindow):
                 main_mono, guide_mono, prior_a=prior_a, prior_b=prior_b,
                 solver=self._astap_solver,
             )
+        elif self._artificial_star_mode_button.isChecked():
+            started = self._fov_calibrator.submit_artificial_star(
+                main_mono, guide_mono, prior_a=prior_a, prior_b=prior_b
+            )
         else:
             started = self._fov_calibrator.submit(
                 main_mono, guide_mono, prior_a=prior_a, prior_b=prior_b
@@ -556,6 +575,7 @@ class MainWindow(QMainWindow):
         self._calibrate_fov_poll_timer.stop()
         self._calibrate_fov_button.setEnabled(True)
         result = outcome.result
+        self._last_calibration_attempt = result
         if not result.ok:
             self._calibrate_fov_status_label.setText(
                 f"No confident {result.method.value} match found ({result.status.value}) — "
@@ -571,6 +591,8 @@ class MainWindow(QMainWindow):
             )
             assert result.polygon_a_in_b is not None  # guaranteed by .ok
             self._right_panel.set_fov_polygon(list(result.polygon_a_in_b))
+            if result.method is RegistrationMethod.ARTIFICIAL_STAR:
+                self._right_panel.set_matched_point(result.diagnostics.get("matched_point"))
             self._last_calibration_result = result
             if self._pending_prior_b is not None:
                 self._last_prior_b = self._pending_prior_b
@@ -625,6 +647,12 @@ class MainWindow(QMainWindow):
             # docstring. Without this, a "wrong position/rotation picked"
             # report has no record of what was actually picked at all.
             context["fov_calibration"] = self._last_calibration_result
+        if self._last_calibration_attempt is not None:
+            # Issue #37: every completed attempt, including a failed or
+            # ambiguous one -- see _last_calibration_attempt's own
+            # docstring for why this is separate from the success-only
+            # field above.
+            context["fov_calibration_last_attempt"] = self._last_calibration_attempt
         autofocus_evidence = self._focuser_panel.diagnostic_autofocus_evidence()
         if autofocus_evidence:
             # Issue #33: the full focus curve/status/confidence from the

@@ -1945,6 +1945,104 @@ class TestStarFieldMode:
         assert "astap_unavailable" in window._calibrate_fov_status_label.text().lower()
 
 
+class TestArtificialStarMode:
+    """Issue #37: the "Artificial Star" registration mode -- a single
+    isolated point source, no ASTAP, no rich terrestrial texture."""
+
+    def test_a_third_mode_button_is_present_and_selectable(self, qapp: object) -> None:
+        window = MainWindow(
+            _camera_with_sensor(200, 200),
+            guide_camera=_camera_with_sensor(200, 200),
+            device_lister=lambda: [],
+        )
+        assert not window._artificial_star_mode_button.isChecked()
+
+        window._artificial_star_mode_button.setChecked(True)
+
+        assert window._artificial_star_mode_button.isChecked()
+        assert not window._terrestrial_mode_button.isChecked()
+        assert not window._star_field_mode_button.isChecked()
+
+    def test_choosing_artificial_star_mode_drives_submit_artificial_star_and_marks_the_match(
+        self, qapp: object
+    ) -> None:
+        # ReplayCamera's own capabilities (sensor_width_px/height_px)
+        # default to a fixed size unrelated to the array's own shape --
+        # this registrar's own INSUFFICIENT_PRIOR gate cares about the
+        # configured sensor sizes, unlike Terrestrial/StarField, so the
+        # capabilities must be overridden to match the real arrays below
+        # (same pattern as _camera_with_sensor, plus real content).
+        main_array = single_star_image((120, 120), x=60.0, y=60.0, peak=5000.0, sigma=2.0)
+        guide_array = single_star_image((400, 400), x=220.0, y=190.0, peak=5000.0, sigma=2.0)
+        main_caps = CameraCapabilities(
+            min_gain=100, max_gain=15000, min_exposure_ms=0.1, max_exposure_ms=3_600_000.0,
+            supports_cooling=True, supports_hcg=True, supports_lcg=True, supports_hdr=True,
+            supports_black_level=True, bit_depth=16, pixel_size_um=0.0,
+            sensor_width_px=120, sensor_height_px=120,
+        )
+        guide_caps = CameraCapabilities(
+            min_gain=100, max_gain=15000, min_exposure_ms=0.1, max_exposure_ms=3_600_000.0,
+            supports_cooling=True, supports_hcg=True, supports_lcg=True, supports_hdr=True,
+            supports_black_level=True, bit_depth=16, pixel_size_um=0.0,
+            sensor_width_px=400, sensor_height_px=400,
+        )
+        window = MainWindow(
+            ReplayCamera.from_arrays([main_array], cycle=True, capabilities=main_caps),
+            guide_camera=ReplayCamera.from_arrays(
+                [guide_array], cycle=True, capabilities=guide_caps
+            ),
+            device_lister=lambda: [],
+            main_pixel_scale_arcsec=1.0,
+            guide_pixel_scale_arcsec=1.0,
+        )
+        window._left_panel._start_button.setChecked(True)
+        window._right_panel._start_button.setChecked(True)
+        try:
+            window._left_panel._poll_frame()
+            window._right_panel._poll_frame()
+        finally:
+            window._left_panel._start_button.setChecked(False)
+            window._right_panel._start_button.setChecked(False)
+
+        window._artificial_star_mode_button.setChecked(True)
+        window._on_calibrate_fov()
+
+        deadline = time.monotonic() + 15.0
+        while window._calibrate_fov_poll_timer.isActive():
+            assert time.monotonic() < deadline, "calibration never completed"
+            time.sleep(0.02)
+            window._poll_fov_calibration()
+
+        assert window._right_panel._fov_polygon is not None
+        assert "artificial_star" in window._calibrate_fov_status_label.text().lower()
+        assert window._right_panel._matched_point is not None
+        assert window._right_panel._matched_point == pytest.approx((220.0, 190.0), abs=1.0)
+
+    def test_a_failed_attempt_is_still_captured_for_diagnostics(self, qapp: object) -> None:
+        from astrotool_core.registration.result import RegistrationMethod, RegistrationStatus
+        from collimation_tool.ui.fov_calibrator import FovCalibrationOutcome
+
+        window = MainWindow(
+            _camera_with_sensor(200, 200),
+            guide_camera=_camera_with_sensor(200, 200),
+            device_lister=lambda: [],
+        )
+        result = CrossCameraRegistrationResult(
+            method=RegistrationMethod.ARTIFICIAL_STAR,
+            status=RegistrationStatus.AMBIGUOUS_MATCH,
+            diagnostics={"candidate_count_b": 2},
+        )
+        with window._fov_calibrator._lock:
+            window._fov_calibrator._latest_outcome = FovCalibrationOutcome(result=result)
+        window._poll_fov_calibration()
+
+        assert window._last_calibration_attempt is result
+        assert window._last_calibration_result is None  # never promoted -- not .ok
+        context = window._diagnostic_context()
+        assert context["fov_calibration_last_attempt"] is result
+        assert "fov_calibration" not in context
+
+
 class TestCameraSettingsPersistence:
     """"Add storing own settings for cameras connected as the default
     startup settings. Assumption is, that the hardware will not change

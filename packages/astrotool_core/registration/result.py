@@ -16,6 +16,7 @@ from astrotool_core.registration.geometry import Polygon
 class RegistrationMethod(Enum):
     STAR_FIELD = "star_field"
     TERRESTRIAL = "terrestrial"
+    ARTIFICIAL_STAR = "artificial_star"
 
 
 class RegistrationStatus(Enum):
@@ -48,6 +49,11 @@ class RegistrationStatus(Enum):
     SOLVE_FAILED_B = "solve_failed_b"
     INSUFFICIENT_STARS = "insufficient_stars"
     INVALID_SOLUTION = "invalid_solution"
+    #: Artificial-star only: the configured optical priors themselves
+    #: can't meaningfully constrain a single-point search (e.g. the
+    #: "smaller-FOV" frame isn't actually narrower than the "larger-FOV"
+    #: one) -- a fabricated-geometry risk, not a detection failure.
+    INSUFFICIENT_PRIOR = "insufficient_prior"
 
     @property
     def ok(self) -> bool:

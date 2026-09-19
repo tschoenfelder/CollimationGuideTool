@@ -179,6 +179,41 @@ class TestFovPolygonOverlay:
         )
 
 
+class TestMatchedPointMarker:
+    """Issue #37: the artificial-star registration's own matched-point
+    marker -- a true red crosshair+circle, independent of fov_rect/
+    fov_polygon (identifies one point, not a footprint)."""
+
+    def test_a_red_marker_is_drawn_at_the_matched_point(self, qapp: object) -> None:
+        label = LiveViewLabel()
+        label.set_frame(_frame(100, 100), measurement=None, matched_point=(50.0, 50.0))
+
+        assert label._base_pixmap is not None
+        image = label._base_pixmap.toImage()
+        # The marker's own crosshair passes directly through its center.
+        color = image.pixelColor(50, 50)
+        assert color.red() > 200
+        assert color.green() < 50
+        assert color.blue() < 50
+
+    def test_no_marker_drawn_when_matched_point_is_none(self, qapp: object) -> None:
+        label = LiveViewLabel()
+        label.set_frame(_frame(100, 100), measurement=None, matched_point=None)
+
+        assert label._base_pixmap is not None
+        image = label._base_pixmap.toImage()
+        color = image.pixelColor(50, 50)
+        assert not (color.red() > 200 and color.green() < 50 and color.blue() < 50)
+
+    def test_set_stretched_frame_also_accepts_a_matched_point(self, qapp: object) -> None:
+        label = LiveViewLabel()
+        label.resize(100, 100)
+        label.set_stretched_frame(
+            stretch_to_uint8(_frame(100, 100)), measurement=None, matched_point=(50.0, 50.0)
+        )
+        assert not label.pixmap().isNull()
+
+
 class TestAspectPreservingScale:
     """See the two-camera-panel feature request: a panel's live view must
     not stretch X and Y by different factors, even when its widget size

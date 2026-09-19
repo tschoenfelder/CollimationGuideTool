@@ -220,6 +220,12 @@ class CameraPanel(QWidget):
         #: measured, possibly-rotated match beats the config-only centered
         #: placeholder) when both are set.
         self._fov_polygon: list[tuple[float, float]] | None = None
+        #: Set by MainWindow via set_matched_point() once an issue #37
+        #: artificial-star "Calibrate FOV" run finds a confident match —
+        #: the source that registration actually associated with the
+        #: Main-frame artificial star, independent of _fov_polygon/
+        #: _fov_rect (a point, not a footprint).
+        self._matched_point: tuple[float, float] | None = None
 
         self._title_label = QLabel(f"<b>{title}</b>")
         self._live_view = LiveViewLabel()
@@ -471,6 +477,7 @@ class CameraPanel(QWidget):
                 measurement=outcome.result.measurement,
                 fov_rect=self._fov_rect,
                 fov_polygon=self._fov_polygon,
+                matched_point=self._matched_point,
             )
             self._recommendation_label.setText(
                 _format_recommendation(outcome.result, outcome.recommendation)
@@ -607,6 +614,12 @@ class CameraPanel(QWidget):
         `set_fov_overlay`'s docstring (this takes precedence when both
         are set). Takes effect on the next polled frame."""
         self._fov_polygon = corners
+
+    def set_matched_point(self, point: tuple[float, float] | None) -> None:
+        """Set (or clear, with None) the artificial-star registration's
+        matched-point marker this panel's live view draws — issue #37.
+        Takes effect on the next polled frame."""
+        self._matched_point = point
 
     def set_updates_paused(self, paused: bool) -> None:
         """Pause/resume this panel's poll loop without touching the camera
