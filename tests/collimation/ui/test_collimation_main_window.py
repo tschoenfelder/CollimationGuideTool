@@ -4007,11 +4007,18 @@ class TestMountTestMovePanel:
         window.close()
         assert not window._test_move_panel._connected
 
-    def test_target_defaults_to_star(self, qapp: object) -> None:
+    def test_target_follows_the_operating_mode_which_defaults_to_terrestrial(
+        self, qapp: object
+    ) -> None:
+        """Issue #44: the app-wide operating mode (default Terrestrial, tracking
+        required OFF) owns the Target toggle."""
         window = self._window(mount_park=FakeMountPark(), pulse_mount=FakeMountAdapter())
         panel = window._test_move_panel
+        assert panel._terrestrial_button.isChecked()
+        assert not panel._star_button.isChecked()
+        assert panel._target_mode() == "terrestrial"
+        window._operating_astronomical_button.click()
         assert panel._star_button.isChecked()
-        assert not panel._terrestrial_button.isChecked()
         assert panel._target_mode() == "star"
 
     def test_selecting_terrestrial_switches_the_mode(self, qapp: object) -> None:
@@ -4035,6 +4042,7 @@ class TestMountTestMovePanel:
             mount=FakeMountPark(start_parked=True),
             pulse_mount=pulse_mount,
         )
+        window._operating_astronomical_button.click()  # issue #44: star mode = astronomical
         self._connect_and_stream_cameras(window)
         window._mount_panel._connect_button.setChecked(True)
         window._test_move_panel._connect_button.setChecked(True)

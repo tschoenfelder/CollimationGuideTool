@@ -151,6 +151,7 @@ from astrotool_core.focus.port import FocuserPort
 from astrotool_core.frames.frame import Frame
 from astrotool_core.mount.no_mount import NoMountAdapter
 from astrotool_core.mount.no_mount_park import NoMountPark
+from astrotool_core.mount.operating_mode import OperatingMode, TrackingEnforcer
 from astrotool_core.mount.park_port import MountParkPort
 from astrotool_core.mount.port import MountPort
 from astrotool_core.optics import load_pixel_scale_arcsec
@@ -259,6 +260,12 @@ class MainWindow(QMainWindow):
         self._left_panel.connected_device_changed.connect(self._on_left_camera_changed)
         self._right_panel.connected_device_changed.connect(self._on_right_camera_changed)
 
+        # Issue #44: ONE mode-aware tracking policy for the whole app (default
+        # Terrestrial => mount tracking required OFF). Consumers ask it instead
+        # of each deciding tracking state themselves.
+        mount_park_port = mount if mount is not None else NoMountPark()
+        self._tracking_enforcer = TrackingEnforcer(mount_park_port, OperatingMode.TERRESTRIAL)
+
         # Issue #33: Auto Focus needs camera access -- wired to the Main
         # panel only, same "focuser lives on the main optical train only"
         # pairing as move_in_flight_changed below.
@@ -275,6 +282,7 @@ class MainWindow(QMainWindow):
                 get=self._left_panel.current_exposure_gain,
                 set=self._left_panel.apply_exposure_gain,
             ),
+            measurement_gate=self._measurement_gate,
         )
         # The focuser lives on the main optical train only (see
         # FocuserPanel's own docstring) -- pause just the Main camera's
@@ -293,6 +301,7 @@ class MainWindow(QMainWindow):
             get_frame=self._left_panel.latest_mono_frame,
             optical_config=optical_config,
             guide_reacquirer=self._reacquire_via_guide,
+            measurement_gate=self._measurement_gate,
         )
         self._fine_collimation_panel.target_mode_changed.connect(self._on_target_mode_changed)
 
@@ -324,8 +333,9 @@ class MainWindow(QMainWindow):
         # own docstring for why that panel drives this same MountParkPort
         # rather than owning a second, independently-connected copy of
         # the same park/unpark state.
-        mount_park_port = mount if mount is not None else NoMountPark()
-        self._mount_panel = MountParkPanel(mount_park_port)
+        self._mount_panel = MountParkPanel(
+            mount_park_port, tracking_enforcer=self._tracking_enforcer
+        )
         self._test_move_panel = MountTestMovePanel(
             self._pulse_mount,
             mount_park=mount_park_port,
@@ -338,6 +348,7 @@ class MainWindow(QMainWindow):
             get_right_exposure_gain=self._right_panel.current_exposure_gain,
             wait_for_left_frame=self._left_panel.wait_for_frame_after,
             wait_for_right_frame=self._right_panel.wait_for_frame_after,
+            tracking_enforcer=self._tracking_enforcer,
         )
 
         # Restore last session's connected camera + exposure/gain/
@@ -439,6 +450,33 @@ class MainWindow(QMainWindow):
         self._diagnostics_copy_button = QPushButton("Copy")
         self._diagnostics_copy_button.clicked.connect(self._on_copy_diagnostics_status)
 
+        # Issue #44: the single explicit operating-mode selector.
+        self._operating_terrestrial_button = QPushButton("Terrestrial")
+        self._operating_terrestrial_button.setCheckable(True)
+        self._operating_terrestrial_button.setChecked(True)
+        self._operating_astronomical_button = QPushButton("Astronomical")
+        self._operating_astronomical_button.setCheckable(True)
+        self._operating_mode_group = QButtonGroup(self)
+        self._operating_mode_group.addButton(self._operating_terrestrial_button)
+        self._operating_mode_group.addButton(self._operating_astronomical_button)
+        self._operating_status_label = QLabel("")
+        self._operating_terrestrial_button.toggled.connect(
+            lambda checked: checked and self._on_operating_mode_changed(
+                OperatingMode.TERRESTRIAL
+            )
+        )
+        self._operating_astronomical_button.toggled.connect(
+            lambda checked: checked and self._on_operating_mode_changed(
+                OperatingMode.ASTRONOMICAL
+            )
+        )
+        operating_row = QHBoxLayout()
+        operating_row.addWidget(QLabel("Operating mode"))
+        operating_row.addWidget(self._operating_terrestrial_button)
+        operating_row.addWidget(self._operating_astronomical_button)
+        operating_row.addWidget(self._operating_status_label, stretch=1)
+        self._apply_operating_mode_to_ui(OperatingMode.TERRESTRIAL)
+
         diagnostics_row = QHBoxLayout()
         diagnostics_row.addWidget(self._diagnostics_note, stretch=1)
         diagnostics_row.addWidget(self._capture_diagnostics_button)
@@ -500,6 +538,7 @@ class MainWindow(QMainWindow):
         main_splitter.setSizes([760, 500])
 
         layout = QVBoxLayout()
+        layout.addLayout(operating_row)
         layout.addLayout(diagnostics_row)
         layout.addWidget(main_splitter, stretch=1)
 
@@ -508,6 +547,41 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         self.setMinimumSize(1000, 560)
         self.resize(1280, 680)
+
+    def _on_operating_mode_changed(self, mode: OperatingMode) -> None:
+        """Issue #44: entering Terrestrial forces mount tracking OFF; entering
+        Astronomical never forces it. Mount Align's Target toggle and the
+        registration mode follow the operating mode."""
+        gate = self._tracking_enforcer.set_mode(mode)
+        self._apply_operating_mode_to_ui(mode)
+        self._update_operating_status(gate.reason if not gate.allowed else "")
+
+    def _apply_operating_mode_to_ui(self, mode: OperatingMode) -> None:
+        self._test_move_panel.set_target_mode(
+            "terrestrial" if mode is OperatingMode.TERRESTRIAL else "star"
+        )
+        if mode is OperatingMode.ASTRONOMICAL:
+            self._star_field_mode_button.setChecked(True)
+        elif self._star_field_mode_button.isChecked():
+            self._terrestrial_mode_button.setChecked(True)
+        self._update_operating_status("")
+
+    def _update_operating_status(self, blocked_reason: str) -> None:
+        mode = self._tracking_enforcer.mode
+        if mode is OperatingMode.TERRESTRIAL:
+            text = "Mount tracking required OFF"
+            if blocked_reason:
+                text = f"BLOCKED — {blocked_reason}"
+        else:
+            text = "Tracking follows the astronomical workflow"
+        self._operating_status_label.setText(text)
+
+    def _measurement_gate(self, context: str) -> str | None:
+        """Issue #44: a reason string when a measurement must not run
+        (terrestrial mode and tracking cannot be established OFF), else None."""
+        gate = self._tracking_enforcer.enforce(context)
+        self._update_operating_status(gate.reason if not gate.allowed else "")
+        return None if gate.allowed else gate.reason
 
     def _on_target_mode_changed(self, mode: object) -> None:
         """Mirror the fine-collimation panel's target mode (issue #39) onto
@@ -583,6 +657,10 @@ class MainWindow(QMainWindow):
         """Kick off a one-shot content-matching calibration — see module
         docstring's "Calibrate FOV". Runs on FovCalibrator's background
         thread; _poll_fov_calibration picks up the result."""
+        blocked = self._measurement_gate("fov_calibration")
+        if blocked:
+            self._calibrate_fov_status_label.setText(f"Calibration blocked — {blocked}")
+            return
         main_mono = self._left_panel.latest_mono_frame()
         guide_mono = self._right_panel.latest_mono_frame()
         if main_mono is None or guide_mono is None:
@@ -708,6 +786,8 @@ class MainWindow(QMainWindow):
             "guide_filter_wheel": self._guide_filter_wheel_panel.diagnostic_context(),
             "mount": self._mount_panel.diagnostic_context(),
             "mount_test_move": self._test_move_panel.diagnostic_context(),
+            "operating_mode": self._tracking_enforcer.mode.value,
+            "tracking_policy": self._tracking_enforcer.evidence(),
             "fine_collimation": self._fine_collimation_panel.diagnostic_context(),
             "target_mode": self._fine_collimation_panel.target_mode.value,
         }

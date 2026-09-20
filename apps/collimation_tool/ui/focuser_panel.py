@@ -120,8 +120,12 @@ class FocuserPanel(QWidget):
         set_auto_exposure_paused: Callable[[bool], None] | None = None,
         optical_train_label: str = "Main",
         exposure_control: ExposureControl | None = None,
+        measurement_gate: Callable[[str], str | None] | None = None,
     ) -> None:
         super().__init__()
+        #: Issue #44: returns a reason string when measurement is blocked
+        #: (terrestrial mode + mount tracking not OFF), else None.
+        self._measurement_gate = measurement_gate
         self._focuser = focuser
         #: Issue #33 (artificial star): lets Auto Focus lower exposure when
         #: the star saturates at focus (restored after every run).
@@ -333,6 +337,11 @@ class FocuserPanel(QWidget):
         assert self._get_frame is not None
         assert self._wait_for_frame is not None
         assert self._set_auto_exposure_paused is not None
+        if self._measurement_gate is not None:
+            blocked = self._measurement_gate("autofocus")
+            if blocked:
+                self._auto_focus_status_label.setText(f"Auto focus blocked — {blocked}")
+                return
         controller = AutofocusController(
             self._focuser,
             get_frame=self._get_frame,

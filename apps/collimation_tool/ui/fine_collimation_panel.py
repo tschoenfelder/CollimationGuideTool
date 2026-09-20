@@ -229,10 +229,13 @@ class FineCollimationPanel(QWidget):
         sample_count: int = _DEFAULT_SAMPLE_COUNT,
         title: str = "Fine Collimation",
         guide_reacquirer: GuideReacquirer | None = None,
+        measurement_gate: Callable[[str], str | None] | None = None,
     ) -> None:
         super().__init__()
         self._get_frame = get_frame
         self._guide_reacquirer = guide_reacquirer
+        #: Issue #44: returns a reason when measurement is blocked, else None.
+        self._measurement_gate = measurement_gate
         self._target_mode = CollimationTargetMode.NATURAL_STAR
         self._last_outcome: FineCollimationOutcome | None = None
         self._optical_config = optical_config if optical_config is not None else OpticalConfig()
@@ -280,6 +283,11 @@ class FineCollimationPanel(QWidget):
     def _on_run_clicked(self) -> None:
         if self._running:
             return
+        if self._measurement_gate is not None:
+            blocked = self._measurement_gate("fine_collimation")
+            if blocked:
+                self._status_label.setText(f"Fine collimation blocked — {blocked}")
+                return
         if self._get_frame() is None:
             self._status_label.setText("No frame available — start the Main camera stream first.")
             return

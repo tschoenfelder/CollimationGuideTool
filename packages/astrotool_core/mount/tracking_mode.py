@@ -12,6 +12,7 @@ all three cooperate during a calibration sequence.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass
 from enum import Enum
 
@@ -56,7 +57,11 @@ def _mode_of(tracking: bool) -> TrackingMode:
 
 
 def ensure_tracking_mode(
-    mount_park: MountParkPort, required: TrackingMode
+    mount_park: MountParkPort,
+    required: TrackingMode,
+    *,
+    settle_timeout_s: float = 0.0,
+    poll_interval_s: float = 0.05,
 ) -> TrackingVerificationResult:
     """Verifies `mount_park`'s current tracking state matches `required`,
     issuing `start_tracking()`/`stop_tracking()` and re-checking if not —
@@ -88,8 +93,14 @@ def ensure_tracking_mode(
     else:
         mount_park.stop_tracking()
 
-    repaired_status = mount_park.status()
-    repaired_mode = _mode_of(repaired_status.tracking)
+    repaired_mode = _mode_of(mount_park.status().tracking)
+    # Issue #44: a real (INDI) driver applies the command asynchronously, so
+    # the immediate re-read may still show the old state -- optionally poll
+    # (bounded) for the mount to confirm before declaring the repair failed.
+    deadline = time.monotonic() + settle_timeout_s
+    while repaired_mode is not required and time.monotonic() < deadline:
+        time.sleep(poll_interval_s)
+        repaired_mode = _mode_of(mount_park.status().tracking)
     if repaired_mode is required:
         return TrackingVerificationResult(TrackingVerificationStatus.REPAIRED, repaired_mode)
     return TrackingVerificationResult(TrackingVerificationStatus.REPAIR_FAILED, repaired_mode)

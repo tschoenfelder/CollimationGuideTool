@@ -268,6 +268,7 @@ from astrotool_core.mount import (
     response_from_positions,
     solve_screen_move,
 )
+from astrotool_core.mount.operating_mode import OperatingMode, TrackingEnforcer
 from astrotool_core.target.detector import detect_sources
 from astrotool_core.target.translation_offset import measure_translation_offset
 from PySide6.QtCore import QTimer
@@ -604,9 +605,13 @@ class MountTestMovePanel(QWidget):
         get_right_exposure_gain: Callable[[], tuple[float, int]] | None = None,
         wait_for_left_frame: StableFrameWaiter | None = None,
         wait_for_right_frame: StableFrameWaiter | None = None,
+        tracking_enforcer: TrackingEnforcer | None = None,
     ) -> None:
         super().__init__()
         self._mount = mount
+        #: Issue #44: the app-wide tracking policy. Terrestrial operating
+        #: mode requires tracking OFF regardless of this panel's own toggle.
+        self._tracking_enforcer = tracking_enforcer
         self._mount_park = mount_park
         self._get_left_frame = get_left_frame
         self._get_right_frame = get_right_frame
@@ -926,6 +931,11 @@ class MountTestMovePanel(QWidget):
     def _target_mode(self) -> TargetMode:
         return "terrestrial" if self._terrestrial_button.isChecked() else "star"
 
+    def set_target_mode(self, mode: TargetMode) -> None:
+        """Follow the app-wide operating mode (issue #44)."""
+        button = self._terrestrial_button if mode == "terrestrial" else self._star_button
+        button.setChecked(True)
+
     def _required_tracking_mode(self) -> TrackingMode:
         """Issue #30's "Tracking is not slewing": star calibration
         requires tracking ON (so it can measure real astronomical
@@ -934,6 +944,9 @@ class MountTestMovePanel(QWidget):
         whatever the calibration pulse itself produces) -- derived
         directly from this panel's own Target toggle, never a separate
         setting to keep in sync with it."""
+        enforcer = self._tracking_enforcer
+        if enforcer is not None and enforcer.mode is OperatingMode.TERRESTRIAL:
+            return TrackingMode.OFF  # policy wins over the panel's own toggle
         return TrackingMode.OFF if self._target_mode() == "terrestrial" else TrackingMode.ON
 
     def _verify_tracking_mode(self) -> str | None:
@@ -947,6 +960,17 @@ class MountTestMovePanel(QWidget):
         state shall be re-verified because the driver/mount may change
         state as a side effect."""
         required = self._required_tracking_mode()
+        enforcer = self._tracking_enforcer
+        if enforcer is not None and self._mount_park.status().available:
+            gate = enforcer.verify(required, "mount_align")
+            if gate.allowed:
+                return None
+            self._last_failure_classes["left"] = MeasurementFailureClass.TRACKING_STATE_INVALID
+            self._last_failure_classes["right"] = MeasurementFailureClass.TRACKING_STATE_INVALID
+            return (
+                f"mount tracking must be {required.value} for {self._target_mode()} "
+                f"calibration -- {gate.reason}"
+            )
         result = ensure_tracking_mode(self._mount_park, required)
         if result.ok:
             return None

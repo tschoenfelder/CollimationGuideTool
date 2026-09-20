@@ -7,8 +7,15 @@ from astrotool_core.mount.park_port import MountParkPort, MountParkStatus
 
 class FakeMountPark(MountParkPort):
     def __init__(
-        self, *, fail_connect: bool = False, available: bool = True, start_parked: bool = True
+        self,
+        *,
+        fail_connect: bool = False,
+        available: bool = True,
+        start_parked: bool = True,
+        refuse_stop_tracking: bool = False,
     ) -> None:
+        #: Issue #44: a mount/driver that ignores stop_tracking() (fail-closed tests).
+        self._refuse_stop_tracking = refuse_stop_tracking
         self._fail_connect = fail_connect
         self._available = available
         self._parked = start_parked
@@ -48,8 +55,19 @@ class FakeMountPark(MountParkPort):
 
     def stop_tracking(self) -> None:
         self.stop_tracking_count += 1
-        self._tracking = False
+        if not self._refuse_stop_tracking:
+            self._tracking = False
 
     def start_tracking(self) -> None:
         self.start_tracking_count += 1
         self._tracking = True
+
+    def simulate_driver_reenabled_tracking(self) -> None:
+        """Issue #44: the driver/mount turned tracking on as a side effect of a
+        slew/pulse (not via start_tracking(), so start_tracking_count is untouched)."""
+        self._tracking = True
+
+    def make_available(self, *, tracking: bool = False) -> None:
+        """Issue #44: the mount (re)connects, possibly already tracking."""
+        self._available = True
+        self._tracking = tracking

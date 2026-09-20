@@ -17,6 +17,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
+from astrotool_core.mount.operating_mode import OperatingMode, TrackingEnforcer
 from astrotool_core.mount.park_port import MountParkPort
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
@@ -29,9 +30,18 @@ _TRANSITION_CONFIRMATION_TIMEOUT_S = 30.0
 
 
 class MountParkPanel(QWidget):
-    def __init__(self, mount: MountParkPort, *, title: str = "Mount") -> None:
+    def __init__(
+        self,
+        mount: MountParkPort,
+        *,
+        title: str = "Mount",
+        tracking_enforcer: TrackingEnforcer | None = None,
+    ) -> None:
         super().__init__()
         self._mount = mount
+        #: Issue #44: terrestrial mode => tracking OFF, enforced on connect
+        #: and after unpark, and surfaced in the status line.
+        self._tracking_enforcer = tracking_enforcer
         self._connected = False
         #: See module docstring's "one action at a time".
         self._action_in_flight = False
@@ -85,6 +95,7 @@ class MountParkPanel(QWidget):
             self._connected = True
             self._action_in_flight = False
             self._pending_action = None
+            self._enforce_tracking("connect")
             self._connect_button.setText("Disconnect")
             self._timer.start()
             self._poll_status()
@@ -97,6 +108,20 @@ class MountParkPanel(QWidget):
             self._connect_button.setText("Connect")
             self._status_label.setText("Not connected.")
         self._update_buttons_enabled()
+
+    def _enforce_tracking(self, context: str) -> None:
+        if self._tracking_enforcer is not None:
+            self._tracking_enforcer.enforce(context)
+
+    def _policy_suffix(self, tracking: bool) -> str:
+        """Issue #44: make the terrestrial requirement visible -- and an
+        unexpected TRACKING ON impossible to miss."""
+        enforcer = self._tracking_enforcer
+        if enforcer is None or enforcer.mode is not OperatingMode.TERRESTRIAL:
+            return ""
+        if tracking:
+            return " — TRACKING ON, terrestrial measurement blocked"
+        return " — tracking OFF (required, terrestrial)"
 
     def _begin_action(self, action: str) -> None:
         # Disable synchronously, before issuing the action — see module
@@ -128,7 +153,7 @@ class MountParkPanel(QWidget):
         else:
             state = "Parked" if status.parked else "Unparked"
             tracking = "tracking" if status.tracking else "not tracking"
-            self._status_label.setText(f"{state}, {tracking}")
+            self._status_label.setText(f"{state}, {tracking}{self._policy_suffix(status.tracking)}")
         if self._action_in_flight:
             # "Busy" here means "not yet settled at the target state" --
             # still parked right after an unpark request, or vice versa.
@@ -137,8 +162,11 @@ class MountParkPanel(QWidget):
             if busy:
                 self._seen_busy_since_action = True
             elif self._seen_busy_since_action:
+                settled_action = self._pending_action
                 self._action_in_flight = False
                 self._pending_action = None
+                if settled_action == "unpark":
+                    self._enforce_tracking("unpark")
             elif (
                 self._action_issued_at is not None
                 and time.monotonic() - self._action_issued_at > _TRANSITION_CONFIRMATION_TIMEOUT_S
