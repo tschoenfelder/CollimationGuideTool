@@ -22,7 +22,7 @@ from enum import Enum
 
 import numpy as np
 
-from astrotool_core.target.translation_offset import measure_translation_offset
+from astrotool_core.target.translation_offset import measure_translation_offset_with_tier
 
 
 class StabilityStatus(Enum):
@@ -45,6 +45,14 @@ class StabilityCheckResult:
     status: StabilityStatus
     max_displacement_px: float | None
     samples_checked: int
+    #: Issue #43 evidence: the weakest correlation score across the checked pairs and
+    #: which estimator tier answered each pair. A confident zero-lag correlation of
+    #: FIXED structure (fixed-pattern noise, vignetting, a static scene the mount did
+    #: not move) reads 'stable / 0.0 px' exactly like a genuinely still image -- the
+    #: score and tier make the two distinguishable in a pulled bundle. The verdict
+    #: itself is unchanged.
+    min_score: float | None = None
+    tiers: tuple[str, ...] = ()
 
     @property
     def stable(self) -> bool:
@@ -71,14 +79,26 @@ def check_image_stability(
         return StabilityCheckResult(StabilityStatus.INSUFFICIENT_SAMPLES, None, len(frames))
 
     max_displacement = 0.0
+    scores: list[float] = []
+    tiers: list[str] = []
     for before, after in zip(frames, frames[1:], strict=False):
-        offset = measure_translation_offset(before, after)
+        offset, tier = measure_translation_offset_with_tier(before, after)
+        tiers.append(tier)
         if offset is None:
-            return StabilityCheckResult(StabilityStatus.INDETERMINATE, None, len(frames))
+            return StabilityCheckResult(
+                StabilityStatus.INDETERMINATE,
+                None,
+                len(frames),
+                min_score=min(scores) if scores else None,
+                tiers=tuple(tiers),
+            )
+        scores.append(offset.score)
         displacement = math.hypot(offset.dx_px, offset.dy_px)
         max_displacement = max(max_displacement, displacement)
 
     status = (
         StabilityStatus.STABLE if max_displacement <= tolerance_px else StabilityStatus.UNSTABLE
     )
-    return StabilityCheckResult(status, max_displacement, len(frames))
+    return StabilityCheckResult(
+        status, max_displacement, len(frames), min_score=min(scores), tiers=tuple(tiers)
+    )

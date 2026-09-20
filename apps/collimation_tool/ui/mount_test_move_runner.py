@@ -93,6 +93,12 @@ class MountPulseOutcome:
 
     pulsed: bool
     error: str | None = None
+    #: Issue #43 evidence (time.monotonic()): when the first pulse was commanded,
+    #: when the last pulse's motion-off was confirmed, and when the settle finished.
+    #: None when the sequence never got that far.
+    motion_started_at: float | None = None
+    motion_ended_at: float | None = None
+    settled_at: float | None = None
 
 
 def _wait_for_parked(mount_park: MountParkPort, *, want_parked: bool, timeout_s: float) -> bool:
@@ -130,6 +136,9 @@ class MountTestMoveRunner:
         self._lock = threading.Lock()
         self._busy = False
         self._latest_outcome: MountPulseOutcome | None = None
+        #: Issue #43: how many sequences were ever ACCEPTED -- lets a caller prove no
+        #: pulse was commanded since it took a (verified, at-rest) reference frame.
+        self.submit_count = 0
 
     def submit(
         self,
@@ -192,6 +201,7 @@ class MountTestMoveRunner:
             if self._busy:
                 return False
             self._busy = True
+            self.submit_count += 1
         threading.Thread(
             target=self._run,
             args=(mount_park, mount, steps, rate_preset, park_after, settle_ms),
@@ -211,6 +221,9 @@ class MountTestMoveRunner:
     ) -> None:
         pulsed = False
         error: str | None = None
+        motion_started_at: float | None = None
+        motion_ended_at: float | None = None
+        settled_at: float | None = None
         # Real live-hardware report: "You seem to enable tracking. That
         # should not happen. No wonder, that the frames look blury" --
         # unpark() used to be called unconditionally on *every* submit(),
@@ -261,6 +274,7 @@ class MountTestMoveRunner:
                 # only happens if the mount disconnects mid-run, and the
                 # caller treating "not fully pulsed" as "don't trust an
                 # after-measurement" is the safer default.
+                motion_started_at = time.monotonic()
                 for axis, direction, pulse_ms in steps:
                     result = _pulse_with_retry(mount, axis, direction, pulse_ms, rate_preset)
                     if not result.accepted:
@@ -271,8 +285,10 @@ class MountTestMoveRunner:
                         break
                 else:
                     pulsed = True
+                    motion_ended_at = time.monotonic()
                     if settle_ms > 0:
                         time.sleep(settle_ms / 1000.0)
+                    settled_at = time.monotonic()
         finally:
             if park_after:
                 # Always try to leave the mount parked again, even if the
@@ -284,7 +300,13 @@ class MountTestMoveRunner:
                     error = error or "mount did not confirm re-parked in time"
 
         with self._lock:
-            self._latest_outcome = MountPulseOutcome(pulsed=pulsed, error=error)
+            self._latest_outcome = MountPulseOutcome(
+                pulsed=pulsed,
+                error=error,
+                motion_started_at=motion_started_at,
+                motion_ended_at=motion_ended_at,
+                settled_at=settled_at,
+            )
             self._busy = False
 
     def take_latest(self) -> MountPulseOutcome | None:

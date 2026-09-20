@@ -160,6 +160,10 @@ def acquire_verified_frame(
     is_cancelled = cancelled or (lambda: False)
     deadline = now() + timeout_s
     samples: list[np.ndarray] = []
+    #: Issue #43 evidence: timing of every frame drawn (bounded by the window), so a
+    #: bundle can prove whether each accepted exposure started after the motion.
+    timings: list[dict[str, float]] = []
+    drawn = 0
     last_stability: StabilityCheckResult | None = None
     current_reference = reference_monotonic
     context_diagnostics = movement_context.as_dict() if movement_context is not None else {}
@@ -181,8 +185,20 @@ def acquire_verified_frame(
             )
         assert result.frame is not None
         samples.append(result.frame.pixels)
+        drawn += 1
+        timings.append(
+            {
+                "reference_monotonic": current_reference,
+                "captured_at_monotonic": result.frame.captured_at_monotonic,
+                "exposure_seconds": result.frame.exposure_seconds,
+                "exposure_start_monotonic": (
+                    result.frame.captured_at_monotonic - result.frame.exposure_seconds
+                ),
+            }
+        )
         if len(samples) > stability_sample_count:
             samples.pop(0)
+            timings.pop(0)
         if len(samples) == stability_sample_count:
             last_stability = check_image_stability(
                 samples, tolerance_px=stability_tolerance_px, min_samples=stability_sample_count
@@ -190,7 +206,11 @@ def acquire_verified_frame(
             if last_stability.stable:
                 return MotionAwareFrameResult(
                     MotionAwareStatus.OK, frame=samples[-1], stability=last_stability,
-                    diagnostics=context_diagnostics,
+                    diagnostics={
+                        **context_diagnostics,
+                        "frame_timings": list(timings),
+                        "frames_drawn": drawn,
+                    },
                 )
         sleep(stability_sample_interval_s)
         current_reference = now()
@@ -200,7 +220,15 @@ def acquire_verified_frame(
         if last_stability is None
         else MotionAwareStatus.IMAGE_NOT_STABLE
     )
-    return MotionAwareFrameResult(status, stability=last_stability, diagnostics=context_diagnostics)
+    return MotionAwareFrameResult(
+        status,
+        stability=last_stability,
+        diagnostics={
+            **context_diagnostics,
+            "frame_timings": list(timings),
+            "frames_drawn": drawn,
+        },
+    )
 
 
 def acquire_verified_frames(

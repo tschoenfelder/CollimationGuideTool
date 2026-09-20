@@ -94,6 +94,12 @@ def _textured_camera(seed: int) -> ReplayCamera:
     return ReplayCamera.from_arrays([array], cycle=True)
 
 
+def _textured_frame(shape: tuple[int, int]) -> np.ndarray:
+    """Issue #43: nudge captures are stability-verified now, and an all-zero frame has no
+    structure to verify (the estimator's zero-variance guard) -- fixed textured content."""
+    return np.random.default_rng(shape[0] * 1000 + shape[1]).normal(500.0, 80.0, size=shape)
+
+
 def _stepped_frame_pair(
     base: np.ndarray,
     shifts: list[tuple[tuple[int, int], tuple[int, int]]],
@@ -3132,6 +3138,33 @@ class TestMountTestMovePanel:
             pulse_mount=pulse_mount,
         )
 
+    def _make_scene_move(self, panel: MountTestMovePanel, *, px_per_ms: float = 0.03) -> None:
+        """Issue #43: a commanded move that produces NO image displacement is now an explicit
+        NO_MOTION_DETECTED outcome (never accepted as calibration evidence), so calibration-flow
+        tests that are about OTHER mechanics (settle values, diagnostics, abort/return) need a
+        scene that really moves with the mount: every camera shows the same textured content
+        rolled by the cumulative signed pulse durations (AXIS1 -> x, AXIS2 -> y)."""
+        mount = panel._mount
+        content = {
+            "left": np.random.default_rng(11).normal(500.0, 80.0, size=(120, 160)),
+            "right": np.random.default_rng(12).normal(500.0, 80.0, size=(90, 120)),
+        }
+
+        def frame(key: str) -> np.ndarray:
+            dx = dy = 0.0
+            for axis, direction, ms in mount.pulse_log:  # type: ignore[attr-defined]
+                signed = ms * px_per_ms * (1 if direction is AxisDirection.POSITIVE else -1)
+                if axis is MountAxis.AXIS1:
+                    dx += signed
+                else:
+                    dy += signed
+            return np.roll(np.roll(content[key], round(dy), axis=0), round(dx), axis=1)
+
+        panel._get_left_frame = lambda: frame("left")
+        panel._get_right_frame = lambda: frame("right")
+        panel._wait_for_left_frame = lambda _r, _t: _ok_result(frame("left"))
+        panel._wait_for_right_frame = lambda _r, _t: _ok_result(frame("right"))
+
     def _connect_and_stream_cameras(self, window: MainWindow) -> None:
         # ReplayCamera defaults to a 2000ms exposure -- harmless for tests
         # that only ever peek the latest cached frame, but
@@ -3498,15 +3531,25 @@ class TestMountTestMovePanel:
         get_frame_calls = 0
         wait_frame_calls = 0
 
+        def moved() -> np.ndarray:
+            # Issue #43: a commanded move must move the scene (a zero shift is an explicit
+            # NO_MOTION outcome now) -- shift with the cumulative signed pulse durations.
+            shift = sum(
+                ms if direction is AxisDirection.POSITIVE else -ms
+                for axis, direction, ms in pulse_mount.pulse_log
+                if axis is MountAxis.AXIS1
+            )
+            return np.roll(content, round(shift * 0.03), axis=1)
+
         def get_frame() -> np.ndarray:
             nonlocal get_frame_calls
             get_frame_calls += 1
-            return content
+            return moved()
 
         def wait_frame(_reference: float, _timeout: float) -> FrameAcquisitionResult:
             nonlocal wait_frame_calls
             wait_frame_calls += 1
-            return _ok_result(content)
+            return _ok_result(moved())
 
         panel._get_right_frame = get_frame
         panel._wait_for_right_frame = wait_frame
@@ -3535,6 +3578,7 @@ class TestMountTestMovePanel:
         window._mount_panel._connect_button.setChecked(True)
         window._test_move_panel._connect_button.setChecked(True)
         panel = window._test_move_panel
+        self._make_scene_move(panel)
 
         settle_values: list[int | None] = []
         real_submit = panel._runner.submit
@@ -3624,6 +3668,7 @@ class TestMountTestMovePanel:
         window._mount_panel._connect_button.setChecked(True)
         window._test_move_panel._connect_button.setChecked(True)
         panel = window._test_move_panel
+        self._make_scene_move(panel)
 
         # Issue #31 Phase C: 8 steps now (axis1+first, axis1+repeat,
         # axis1-first, axis1-repeat, axis2+first, ...), every one measured
@@ -3736,6 +3781,7 @@ class TestMountTestMovePanel:
         window._mount_panel._connect_button.setChecked(True)
         window._test_move_panel._connect_button.setChecked(True)
         panel = window._test_move_panel
+        self._make_scene_move(panel)
         import collimation_tool.ui.mount_test_move_runner as runner_module
 
         original_delay = runner_module._PULSE_REJECTION_RETRY_DELAY_S
@@ -3793,6 +3839,7 @@ class TestMountTestMovePanel:
         window._mount_panel._connect_button.setChecked(True)
         window._test_move_panel._connect_button.setChecked(True)
         panel = window._test_move_panel
+        self._make_scene_move(panel)
         assert not panel._stop_button.isEnabled()
 
         panel._run_calibration_button.click()
@@ -3924,6 +3971,7 @@ class TestMountTestMovePanel:
         window._mount_panel._connect_button.setChecked(True)
         window._test_move_panel._connect_button.setChecked(True)
         panel = window._test_move_panel
+        self._make_scene_move(panel)
 
         self._run_calibration_to_completion(panel, timeout_s=60.0)
 
@@ -3951,6 +3999,7 @@ class TestMountTestMovePanel:
         window._mount_panel._connect_button.setChecked(True)
         window._test_move_panel._connect_button.setChecked(True)
         panel = window._test_move_panel
+        self._make_scene_move(panel)
 
         self._run_calibration_to_completion(panel, timeout_s=60.0)
 
@@ -3985,6 +4034,7 @@ class TestMountTestMovePanel:
         window._mount_panel._connect_button.setChecked(True)
         window._test_move_panel._connect_button.setChecked(True)
         panel = window._test_move_panel
+        self._make_scene_move(panel)
 
         self._run_calibration_to_completion(panel, timeout_s=60.0)
 
@@ -4472,62 +4522,55 @@ class TestMountTestMovePanel:
         assert "Move failed" not in panel._result_label.text()
         window.close()
 
-    def test_nudge_pulses_the_mount_without_waiting_for_a_fresh_before_frame(
+    def test_nudge_before_is_a_verified_capture_never_the_latest_displayed_frame(
         self, qapp: object
     ) -> None:
-        """Real report: "decouple moving mount from taking frames and
-        analysing (which is blocking movement right now)". Once any pulse
-        has ever completed in this panel's lifetime, `_last_pulse_completed_at`
-        is set (see its own docstring) -- calibration's own "before"
-        capture correctly *wants* the freshness wait that gates on it
-        (real diagnostic 93ba361f), but a nudge used to be routed through
-        that same multi-second `acquire_settled_frames` wait, so
-        `self._runner.submit()` -- the actual mount pulse -- didn't even
-        get called until the wait finished. A nudge's own "before"
-        capture must always use the instant/no-wait path so the pulse
-        fires immediately, regardless of how long ago the mount last
-        moved."""
+        """Issue #43 (supersedes the earlier "decouple the pulse from the frame wait" shortcut):
+        DISPLAY frame != MEASUREMENT frame. A nudge's BEFORE used to be the instant latest cached
+        frame -- unverified, possibly stale or mid-motion, yet it became measurement evidence.
+        It must go through the stability-verified, exposure-start-aware wait (referenced to the
+        last pulse's completion) before the pulse fires."""
         wait_calls: list[float] = []
+        displayed_calls = 0
 
-        def slow_wait(reference: float, _timeout: float) -> FrameAcquisitionResult:
+        def wait(reference: float, _timeout: float) -> FrameAcquisitionResult:
             wait_calls.append(reference)
             return _ok_result(_NON_FLAT_FRAME)
+
+        def displayed() -> np.ndarray:
+            nonlocal displayed_calls
+            displayed_calls += 1
+            return np.zeros((10, 10), dtype=np.float32)
 
         pulse_mount = FakeMountAdapter()
         pulse_mount.connect()  # FakeMountAdapter rejects pulses until connected
         panel = MountTestMovePanel(
             pulse_mount,
             mount_park=FakeMountPark(start_parked=True),
-            get_left_frame=lambda: np.zeros((10, 10), dtype=np.float32),
-            get_right_frame=lambda: np.zeros((10, 10), dtype=np.float32),
-            wait_for_left_frame=slow_wait,
-            wait_for_right_frame=slow_wait,
+            get_left_frame=displayed,
+            get_right_frame=displayed,
+            wait_for_left_frame=wait,
+            wait_for_right_frame=wait,
         )
         panel._connected = True  # _poll() itself is a no-op otherwise
         panel._terrestrial_button.click()
-        # Simulate a pulse that already completed earlier in this panel's
-        # lifetime -- exactly the condition that used to gate a nudge's
-        # own "before" capture behind the slow freshness wait.
-        panel._last_pulse_completed_at = time.monotonic()
+        completed = time.monotonic()
+        panel._last_pulse_completed_at = completed
 
         panel._on_nudge_clicked("left", MountAxis.AXIS1, AxisDirection.POSITIVE)
 
-        # The decisive evidence: the "before" capture never went anywhere
-        # near the slow freshness-wait path at all -- proven independently
-        # of thread-scheduling timing, unlike trying to measure how long
-        # the call took.
-        assert wait_calls == []
+        # BEFORE went through the verified wait (3-sample window, both cameras), referenced to
+        # the previous pulse's completion (+ the frame-settle allowance), and the displayed
+        # frame was never consulted as measurement evidence.
+        assert len(wait_calls) >= 6
+        assert wait_calls[0] >= completed
+        assert displayed_calls == 0
         deadline = time.monotonic() + 5.0
         while panel._runner.is_busy:
             assert time.monotonic() < deadline, "nudge never completed"
             time.sleep(0.01)
         panel._poll()
-
-        assert pulse_mount.pulse_log == [
-            (MountAxis.AXIS1, AxisDirection.POSITIVE, panel._settings.pulse_ms)
-        ]
-        assert "Move failed" not in panel._result_label.text()
-        panel.stop()
+        assert pulse_mount.pulse_log  # ... and then the pulse fired
 
     def test_nudge_target_scales_with_this_cameras_own_frame_size(self, qapp: object) -> None:
         """Real request: nudges should move "half a window" for rough
@@ -4544,8 +4587,8 @@ class TestMountTestMovePanel:
         panel = MountTestMovePanel(
             pulse_mount,
             mount_park=FakeMountPark(start_parked=True),
-            get_left_frame=lambda: np.zeros((200, 400), dtype=np.float32),
-            get_right_frame=lambda: np.zeros((50, 100), dtype=np.float32),
+            get_left_frame=lambda: _textured_frame((200, 400)),
+            get_right_frame=lambda: _textured_frame((50, 100)),
         )
         panel._connect_button.setChecked(True)
         # Terrestrial mode -- these synthetic frames have no star for

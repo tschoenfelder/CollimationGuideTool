@@ -276,8 +276,9 @@ class TestBoundedOutcomes:
     def test_a_camera_that_stays_unmeasurable_even_at_the_cap_is_reported_not_faked(
         self, qapp: object
     ) -> None:
-        # The wide camera barely moves even at the 3 s cap (<10% of its frame).
-        rig = _PhysicsRig(FakeMountAdapter(), {"left": 3.0, "right": 300.0})
+        # The wide camera moves a little (~0.8% of its width for the Main-sized move) but even
+        # the 3 s cap only reaches ~5% of its frame (<10%): measurable, yet beyond the envelope.
+        rig = _PhysicsRig(FakeMountAdapter(), {"left": 3.0, "right": 60.0})
         panel = _panel(rig)
 
         _run(panel)

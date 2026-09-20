@@ -901,6 +901,10 @@ class MainWindow(QMainWindow):
             # attempt (real incidents like 859f2520 had no way to show
             # this before this wiring).
             context["mount_test_move_stability"] = stability_evidence
+        timeline = self._test_move_panel.diagnostic_capture_timeline()
+        if timeline:
+            # Issue #43: every capture's reference/pulse/frame timing + stability score/tier.
+            context["mount_test_move_timeline"] = timeline
         backlash_evidence = self._test_move_panel.diagnostic_backlash_evidence()
         if backlash_evidence:
             # Issue #31 Phase C: per-camera, per-direction backlash

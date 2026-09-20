@@ -160,10 +160,11 @@ this panel).
 
 Issue #27: this panel is the orchestrator across three deliberately
 independent layers -- (A) whether a captured frame is even valid to
-measure from (`astrotool_core.acquisition.stable_frame_acquisition`,
-composed here via `acquire_settled_frames` over this panel's own two named
-cameras in `_capture_both`), (B) the actual pixel-level displacement
-measurement (`measure_translation_offset`, called only from
+measure from (`astrotool_core.acquisition.stable_frame_acquisition` for the
+exposure-start freshness rule, composed here through
+`acquire_verified_frames` over this panel's own two named cameras in
+`_capture_both` -- NOT `acquire_settled_frames`, which nothing calls), (B) the
+actual pixel-level displacement measurement (`measure_translation_offset`, called only from
 `_build_response`, knows nothing about mount motion or timing), and (C)
 axis-response/calibration derivation (`astrotool_core.mount.axis_calibration`
 -- `response_from_positions`, `is_degenerate`, neither of which touch a
@@ -202,11 +203,18 @@ the minimum settle time configured (`frame_settle_ms`) is only ever a
 *lower bound*, never proof of stability on its own. A capture that never
 stabilizes before its deadline gets its own
 `MeasurementFailureClass.IMAGE_NOT_STABLE`, distinct from a frame never
-arriving at all (`CAPTURE_INVALID`). The sole deliberate exception is a
-nudge's own "before" capture (`verify_stability=False`), which keeps the
-existing instant/no-wait path so a manual nudge's mount pulse fires
-immediately rather than waiting on a multi-sample settle check -- see
-`_on_nudge_clicked`'s own docstring. Movement context
+arriving at all (`CAPTURE_INVALID`).
+
+Issue #43: DISPLAY frame != MEASUREMENT frame. There is no exception any
+more: a nudge's BEFORE is either the last stability-VERIFIED at-rest
+reference (`_reusable_reference`, valid only while the runner has accepted
+no sequence since and it is young) or a fresh verified capture -- never
+the latest displayed frame. A commanded move whose stable, confident
+measurement shows NO image displacement is reported explicitly
+(`MeasurementFailureClass.NO_MOTION_DETECTED`), never accepted as evidence.
+Every capture leaves a bounded timeline record (`diagnostic_capture_timeline`:
+reference, pulse start/end, each frame's captured_at/exposure/exposure start,
+stability score/tier) so a bundle can prove overlap or non-overlap. Movement context
 (`CommandedMovementContext`) and the stability evidence itself
 (`diagnostic_stability_evidence()`) are threaded through for a future
 adaptive-settle model this issue explicitly defers building, not
@@ -237,6 +245,7 @@ is a new, additional control, not a replacement.
 from __future__ import annotations
 
 import time
+from collections import deque
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
@@ -376,6 +385,11 @@ class MeasurementFailureClass(Enum):
     MOVE_EXCEEDS_ENVELOPE = "move_exceeds_envelope"
     #: Issue #46: the move overshoots even at the minimum useful duration.
     MOVE_TOO_LARGE = "move_too_large"
+    #: Issue #43: stable frames, a confident match -- but the image did not move at all
+    #: for a commanded move (the field bundle fe91004f: every response exactly (0, 0)).
+    #: Distinct from IMAGE_NOT_STABLE / CAPTURE_INVALID (bad frames) and from a degenerate
+    #: axis pair: the frames were fine, the mount produced no measurable image motion.
+    NO_MOTION_DETECTED = "no_motion_detected"
 
 
 def _frame_acquisition_result(frame: np.ndarray | None) -> FrameAcquisitionResult:
@@ -422,7 +436,30 @@ def _stability_evidence_dict(result: MotionAwareFrameResult) -> dict[str, Any]:
         evidence["stability_status"] = result.stability.status.value
         evidence["max_displacement_px"] = result.stability.max_displacement_px
         evidence["samples_checked"] = result.stability.samples_checked
+        evidence["min_score"] = result.stability.min_score
+        evidence["tiers"] = list(result.stability.tiers)
     return evidence
+
+
+#: Issue #43: a verified at-rest reference frame is reusable for the next nudge's BEFORE
+#: only while it is this young (drift/lighting) -- older ones are re-captured.
+_REFERENCE_MAX_AGE_S = 60.0
+#: Issue #43: a measured shift below this is 'the image did not move'.
+_NO_MOTION_MIN_PX = 1.0
+_NO_MOTION_WIDTH_FRACTION = 0.0025
+
+
+@dataclass(frozen=True)
+class _VerifiedReference:
+    """Issue #43: a stability-VERIFIED measurement taken while the mount was at rest, and the
+    runner's `submit_count` at that moment -- if no sequence was commanded since, it is still
+    valid evidence for the next move's BEFORE (the mount has not moved), so a nudge stays
+    responsive without ever using an unverified 'latest displayed frame'."""
+
+    taken_at: float
+    submit_count: int | None
+    mode: str
+    measurements: dict[str, Any]
 
 #: "star" measures a point-source centroid via detect_sources() (precise,
 #: but needs an actual star -- see incident 6fa2aa59: correctly refuses
@@ -718,6 +755,12 @@ class MountTestMovePanel(QWidget):
         #: status label (so it is cleared when the condition clears, but a real
         #: calibration/result/error text is never stomped).
         self._availability_message: str | None = None
+        #: Issue #43: bounded per-capture timeline (reference/pulse/frame timing + stability
+        #: evidence) so a pulled bundle can PROVE overlap or non-overlap for every capture,
+        #: not only the last one; and the verified at-rest reference for the next nudge.
+        self._capture_timeline: deque[dict[str, Any]] = deque(maxlen=48)
+        self._last_pulse_timing: dict[str, float | None] | None = None
+        self._verified_reference: _VerifiedReference | None = None
         #: Issue #46 sizing state for the CURRENT run (see _init_sizing).
         self._sizing_policy: SizingPolicy | None = None
         self._sizing_geometry: dict[str, CameraGeometry] = {}
@@ -1228,6 +1271,17 @@ class MountTestMovePanel(QWidget):
             self._last_diagnostic_stability = {
                 key: _stability_evidence_dict(result) for key, result in results.items()
             }
+            self._capture_timeline.append(
+                {
+                    "label": diagnostic_label or "",
+                    "verified": True,
+                    "reference_monotonic": base_reference + settle_s,
+                    "after_monotonic": after_monotonic,
+                    "frame_settle_s": settle_s,
+                    "pulse": dict(self._last_pulse_timing) if self._last_pulse_timing else None,
+                    "cameras": {k: dict(v) for k, v in self._last_diagnostic_stability.items()},
+                }
+            )
             left_frame = results["left"].frame
             right_frame = results["right"].frame
         if self._last_capture_failures:
@@ -1279,7 +1333,29 @@ class MountTestMovePanel(QWidget):
             for key in missing
         ):
             return None
-        return {key: measurement for key, measurement in raw.items() if measurement is not None}
+        captured = {key: measurement for key, measurement in raw.items() if measurement is not None}
+        if verify_stability and captured:
+            self._verified_reference = _VerifiedReference(
+                taken_at=time.monotonic(),
+                submit_count=getattr(self._runner, "submit_count", None),
+                mode=mode,
+                measurements=dict(captured),
+            )
+        return captured
+
+    def _reusable_reference(self, mode: TargetMode) -> dict[str, _Measurement] | None:
+        """Issue #43: the last stability-VERIFIED at-rest measurement, if the mount provably
+        has not been commanded since (no sequence accepted by the runner) and it is young
+        enough; else None -> the caller takes a fresh verified capture. Never an unverified
+        latest/displayed frame."""
+        reference = self._verified_reference
+        if reference is None or reference.submit_count is None or reference.mode != mode:
+            return None
+        if getattr(self._runner, "submit_count", None) != reference.submit_count:
+            return None
+        if time.monotonic() - reference.taken_at > _REFERENCE_MAX_AGE_S:
+            return None
+        return dict(reference.measurements)
 
     def _capture_failure_detail(self) -> str:
         """A short, status-specific note appended to a generic capture-
@@ -1498,12 +1574,18 @@ class MountTestMovePanel(QWidget):
         if correction is not None:
             correction_direction, correction_ms = correction
             self._awaiting_stranded_return = True
-            self._runner.submit(
+            # Issue #43/#46: never one pulse beyond the normal envelope -- the net left by
+            # several growth probes is returned as capped pulses run back-to-back.
+            cap = max(1, self._settings.max_calibration_pulse_ms)
+            chunks: list[int] = []
+            remaining = correction_ms
+            while remaining > 0:
+                chunks.append(min(remaining, cap))
+                remaining -= chunks[-1]
+            self._runner.submit_sequence(
                 self._mount_park,
                 self._mount,
-                axis,
-                correction_direction,
-                correction_ms,
+                [(axis, correction_direction, chunk) for chunk in chunks],
                 rate_preset=self._calibration_rate_preset,
                 park_after=False,
                 settle_ms=self._settings.settle_ms,
@@ -1599,6 +1681,37 @@ class MountTestMovePanel(QWidget):
                 axis=step.axis,
             )
             return
+        responses, newly_failed = self._measure_step_responses(step, pending, after, duration_ms)
+        if len(self._calibration_failed_cameras) >= 2:
+            self._abort_calibration(
+                "not enough structure to measure a displacement in either camera",
+                axis=step.axis,
+            )
+            return
+        if self._retry_probe_if_needed(step, duration_ms, responses):
+            return  # issue #46: probe discarded, resized, re-queued
+        for key, response in responses.items():
+            self._record_direction_response(key, step, response)
+        if newly_failed:
+            self._last_error = (
+                f"not enough structure to measure a displacement in: "
+                f"{', '.join(newly_failed)} -- excluded from this calibration"
+            )
+        elif responses:
+            self._last_error = None
+        self._last_responses = responses or self._last_responses
+        self._after_axis_group(step)
+        self._start_next_calibration_step()
+
+    def _measure_step_responses(
+        self,
+        step: _CalibrationStep,
+        pending: _PendingAction,
+        after: dict[str, _Measurement],
+        duration_ms: int,
+    ) -> tuple[dict[str, AxisResponse], list[str]]:
+        """Per-camera measurement of one calibration step (issue #43: a confident zero is
+        never accepted as evidence). Returns (responses, newly excluded cameras)."""
         responses: dict[str, AxisResponse] = {}
         newly_failed: list[str] = []
         for key in ("left", "right"):
@@ -1627,26 +1740,27 @@ class MountTestMovePanel(QWidget):
                 self._last_failure_classes[key] = MeasurementFailureClass.MATCH_FAILED
                 continue
             responses[key] = response
-        if len(self._calibration_failed_cameras) >= 2:
-            self._abort_calibration(
-                "not enough structure to measure a displacement in either camera",
-                axis=step.axis,
-            )
-            return
-        if self._retry_probe_if_needed(step, duration_ms, responses):
-            return  # issue #46: probe discarded, resized, re-queued
-        for key, response in responses.items():
-            self._record_direction_response(key, step, response)
-        if newly_failed:
-            self._last_error = (
-                f"not enough structure to measure a displacement in: "
-                f"{', '.join(newly_failed)} -- excluded from this calibration"
-            )
-        elif responses:
-            self._last_error = None
-        self._last_responses = responses or self._last_responses
-        self._after_axis_group(step)
-        self._start_next_calibration_step()
+        return responses, newly_failed
+
+    # ---- issue #43: 'the image did not move' is an explicit outcome -------------
+    def _is_no_motion(self, response: AxisResponse, measurement: _Measurement) -> bool:
+        floor = _NO_MOTION_MIN_PX
+        if isinstance(measurement, np.ndarray):
+            floor = max(floor, _NO_MOTION_WIDTH_FRACTION * measurement.shape[1])
+        return response.magnitude_px < floor
+
+    def _no_motion_text(self, duration_ms: int) -> str:
+        return (
+            f"stable frames and a confident match, but the image did not move for a commanded "
+            f"{duration_ms} ms move at preset {self._calibration_rate_preset} -- check that the "
+            "mount really moves (unparked, motion enabled, tracking off, slew rate)"
+        )
+
+    def _exclude_camera_no_motion(self, key: str, duration_ms: int) -> None:
+        self._calibration_failed_cameras.add(key)
+        self._last_failure_classes[key] = MeasurementFailureClass.NO_MOTION_DETECTED
+        self._sizing_bounded[key] = self._no_motion_text(duration_ms)
+        self._sizing_log.append({"event": "no_motion", "camera": key, "duration_ms": duration_ms})
 
     # ---- issue #46: calibration move sizing ------------------------------
     def _init_sizing(self) -> None:
@@ -1772,7 +1886,10 @@ class MountTestMovePanel(QWidget):
                 if decision.reason == "overshoot_at_minimum"
                 else MeasurementFailureClass.MOVE_EXCEEDS_ENVELOPE
             )
-            self._exclude_camera_bounded(seed_key, failure, decision.reason or "bounded")
+            if fraction < _NO_MOTION_WIDTH_FRACTION:
+                self._exclude_camera_no_motion(seed_key, duration_ms)
+            else:
+                self._exclude_camera_bounded(seed_key, failure, decision.reason or "bounded")
             responses.pop(seed_key, None)
         if step.axis is MountAxis.AXIS1:
             # RA and Dec share the mount's rate: start Dec from RA's accepted size.
@@ -1848,9 +1965,14 @@ class MountTestMovePanel(QWidget):
                 }
             )
             if decision.action is StepAction.BOUNDED:
-                self._exclude_camera_bounded(
-                    key, MeasurementFailureClass.MOVE_EXCEEDS_ENVELOPE, decision.reason or "bounded"
-                )
+                if fraction < _NO_MOTION_WIDTH_FRACTION:
+                    self._exclude_camera_no_motion(key, accepted_ms)
+                else:
+                    self._exclude_camera_bounded(
+                        key,
+                        MeasurementFailureClass.MOVE_EXCEEDS_ENVELOPE,
+                        decision.reason or "bounded",
+                    )
                 continue
             for direction_, role in (
                 (AxisDirection.POSITIVE, _CalibrationStepRole.FIRST),
@@ -1934,6 +2056,18 @@ class MountTestMovePanel(QWidget):
                     _degenerate_calibration_message(
                         key, axis1, axis2, self._calibration_partial[_OTHER_CAMERA[key]]
                     )
+                )
+                continue
+            if any(
+                characterization.steady_state.magnitude_px <= 0.0
+                for characterization in self._calibration_characterizations[key].values()
+            ):
+                # Issue #43: EVERY direction must have produced motion, not only the two
+                # POSITIVE ones is_degenerate() looks at.
+                self._last_failure_classes[key] = MeasurementFailureClass.NO_MOTION_DETECTED
+                lines.append(
+                    f"{_CAMERA_LABELS[key]}: at least one direction produced no image "
+                    "displacement -- check that the mount really moves in every direction."
                 )
                 continue
             # Issue #31 Phase C: every measured direction's own
@@ -2072,26 +2206,20 @@ class MountTestMovePanel(QWidget):
         # any early-exit path below) -- see the constructor's own
         # docstring and real incident ca728d27.
         self._pause_auto_exposure()
-        # Real request: "decouple moving mount from taking frames and
-        # analysing (which is blocking movement right now)" -- unlike a
-        # calibration step (a scripted sequence where the *previous*
-        # step's own return pulse just moved the mount moments earlier,
-        # so its "before" genuinely needs _last_pulse_completed_at's
-        # freshness wait -- real diagnostic 93ba361f), a nudge is a single
-        # user-initiated click with nothing else running concurrently.
-        # Routing it through that same multi-second acquire_settled_frames
-        # wait meant self._runner.submit() below -- the actual mount
-        # pulse -- didn't even get called until the wait finished, so the
-        # mount visibly didn't move for however long the wait took. A
-        # nudge's own "before" capture always uses the instant/no-wait
-        # path instead (`after_monotonic=None`), trading a small chance of
-        # a slightly stale "before" frame (only realistic for a very fast
-        # double-click, and only a measurement-confirmation concern --
-        # see _finish_nudge's own "don't block on failing to confirm"
-        # handling) for the mount pulse firing immediately.
-        before = self._capture_both(
-            mode, diagnostic_label="nudge_before", after_monotonic=None, verify_stability=False
-        )
+        # Issue #43: DISPLAY frame != MEASUREMENT frame. The nudge's BEFORE used to be the
+        # instant 'latest cached frame' (real request: decouple the mount pulse from the
+        # multi-second frame wait) -- unverified, possibly mid-motion or stale, yet it became
+        # measurement evidence. Now it is either (a) the last stability-VERIFIED at-rest
+        # reference, provably still valid because the runner has accepted no sequence since
+        # (so repeated nudges stay instant), or (b) a fresh verified capture (a single wait
+        # after any other movement / on the first nudge). Never the latest displayed frame.
+        before = self._reusable_reference(mode)
+        if before is None:
+            before = self._capture_both(
+                mode,
+                diagnostic_label="nudge_before",
+                after_monotonic=self._last_pulse_completed_at,
+            )
         if not before:
             self._resume_auto_exposure()
             self._last_error = self._capture_failure_message(
@@ -2183,6 +2311,9 @@ class MountTestMovePanel(QWidget):
             if response is None:
                 unconfirmed.append(key)
                 self._last_failure_classes[key] = MeasurementFailureClass.MATCH_FAILED
+            elif self._is_no_motion(response, pending.before[key]):
+                unconfirmed.append(key)  # Issue #43: not a confirmed displacement
+                self._last_failure_classes[key] = MeasurementFailureClass.NO_MOTION_DETECTED
             else:
                 responses[key] = response
         # Real request: the pulse itself already ran -- the mount is
@@ -2341,6 +2472,12 @@ class MountTestMovePanel(QWidget):
             # "after" capture actually runs only ever makes the freshness
             # check stricter, never looser.
             completed_at = time.monotonic()
+            self._last_pulse_timing = {
+                "motion_started_at": outcome.motion_started_at,
+                "motion_ended_at": outcome.motion_ended_at,
+                "settled_at": outcome.settled_at,
+                "completed_at": completed_at,
+            }
             pending = self._pending
             self._pending = None
             if pending is not None:
@@ -2482,6 +2619,12 @@ class MountTestMovePanel(QWidget):
         if current != message and (owned is None or current == owned or not current):
             self._result_label.setText(message)
             self._availability_message = message
+
+    def diagnostic_capture_timeline(self) -> list[dict[str, Any]]:
+        """Issue #43: the bounded per-capture timeline -- reference / pulse timing, each frame's
+        captured_at / exposure / computed exposure start, and the stability score/tier -- for
+        proving overlap or non-overlap after the fact."""
+        return [dict(entry) for entry in self._capture_timeline]
 
     def diagnostic_context(self) -> dict[str, Any]:
         context: dict[str, Any] = {"target_mode": self._target_mode()}
