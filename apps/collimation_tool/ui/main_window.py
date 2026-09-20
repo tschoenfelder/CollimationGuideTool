@@ -125,7 +125,7 @@ the run in flight finishes, not mid-search.
 
 from __future__ import annotations
 
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
 
@@ -144,8 +144,8 @@ from astrotool_core.config import (
 )
 from astrotool_core.diagnostics import DiagnosticService
 from astrotool_core.diffraction.optical_reference_model import OpticalConfig
-from astrotool_core.filter_wheel.no_filter_wheel import NoFilterWheel
 from astrotool_core.filter_wheel.port import FilterWheelPort
+from astrotool_core.filter_wheel.registry import FilterWheelAssignment
 from astrotool_core.focus.no_focuser import NoFocuser
 from astrotool_core.focus.port import FocuserPort
 from astrotool_core.frames.frame import Frame
@@ -208,6 +208,7 @@ class MainWindow(QMainWindow):
         focuser: FocuserPort | None = None,
         main_filter_wheel: FilterWheelPort | None = None,
         guide_filter_wheel: FilterWheelPort | None = None,
+        filter_wheels: Sequence[FilterWheelAssignment] | None = None,
         mount: MountParkPort | None = None,
         pulse_mount: MountPort | None = None,
         device_lister: Callable[[], list[TouptekDeviceInfo]] = _list_touptek_devices,
@@ -309,14 +310,33 @@ class MainWindow(QMainWindow):
         # Issue #34: unlike the focuser, an EFW is genuinely per optical
         # train -- one panel each, mirroring camera/guide_camera's own
         # pairing rather than the focuser's Main-only shape.
-        self._main_filter_wheel_panel = FilterWheelPanel(
-            main_filter_wheel if main_filter_wheel is not None else NoFilterWheel(),
-            title="Main Filter Wheel",
-        )
-        self._guide_filter_wheel_panel = FilterWheelPanel(
-            guide_filter_wheel if guide_filter_wheel is not None else NoFilterWheel(),
-            title="Guide Filter Wheel",
-        )
+        #
+        # Issue #41 corrects the ownership model: a wheel is a PHYSICAL device that
+        # any number of optical trains may share (Main + OAG share one, Guide has
+        # none) -- so there is exactly one panel/connection per physical wheel,
+        # built from `filter_wheels`. The legacy per-train kwargs still work (each
+        # non-None one becomes a single-train assignment).
+        if filter_wheels is not None:
+            assignments = list(filter_wheels)
+        else:
+            assignments = []
+            if main_filter_wheel is not None:
+                assignments.append(
+                    FilterWheelAssignment(
+                        "main", "Main Filter Wheel", ("Main",), main_filter_wheel
+                    )
+                )
+            if guide_filter_wheel is not None:
+                assignments.append(
+                    FilterWheelAssignment(
+                        "guide", "Guide Filter Wheel", ("Guide",), guide_filter_wheel
+                    )
+                )
+        self._filter_wheel_panels: list[FilterWheelPanel] = [
+            FilterWheelPanel(a.port, title=a.device_name, used_by=a.trains)
+            for a in assignments
+        ]
+        self._filter_wheel_ids: list[str] = [a.wheel_id for a in assignments]
 
         # Resolved from the module-level DEFAULT_CONFIG_PATH at call time
         # (not bound as this parameter's own default value) so tests can
@@ -502,8 +522,8 @@ class MainWindow(QMainWindow):
         focus_tab = QWidget()
         focus_layout = QVBoxLayout(focus_tab)
         focus_layout.addWidget(self._focuser_panel)
-        focus_layout.addWidget(self._main_filter_wheel_panel)
-        focus_layout.addWidget(self._guide_filter_wheel_panel)
+        for wheel_panel in self._filter_wheel_panels:
+            focus_layout.addWidget(wheel_panel)
         focus_layout.addStretch(1)
 
         mount_tab = QWidget()
@@ -570,6 +590,59 @@ class MainWindow(QMainWindow):
         if mode == "star":
             return None
         return 30.0 if self._artificial_star_mode_button.isChecked() else 10_000.0
+
+    def _panel_for_train(self, train: str) -> FilterWheelPanel | None:
+        for panel in self._filter_wheel_panels:
+            if any(t.lower() == train.lower() for t in panel.used_by):
+                return panel
+        return None
+
+    @property
+    def _main_filter_wheel_panel(self) -> FilterWheelPanel | None:
+        """The wheel used by the Main train (compatibility alias, issue #41)."""
+        return self._panel_for_train("Main")
+
+    @property
+    def _guide_filter_wheel_panel(self) -> FilterWheelPanel | None:
+        """The wheel used by the Guide train, or None when Guide has no wheel."""
+        return self._panel_for_train("Guide")
+
+    def _filter_wheel_diagnostics(self) -> dict[str, dict[str, Any]]:
+        """Issue #41: one entry per PHYSICAL wheel (never per train)."""
+        return {
+            wheel_id: {
+                **panel.diagnostic_context(),
+                "device": panel.title,
+                "used_by": list(panel.used_by),
+                "connected": panel.connected,
+            }
+            for wheel_id, panel in zip(
+                self._filter_wheel_ids, self._filter_wheel_panels, strict=True
+            )
+        }
+
+    def _per_train_filter_wheel_diagnostics(self) -> dict[str, dict[str, Any]]:
+        """`<train>_filter_wheel` keys: every train observes the SAME shared wheel
+        state; a train without a wheel says so explicitly. `main`/`guide` always
+        appear (existing bundle consumers)."""
+        trains = {"Main", "Guide"}
+        for wheel_panel in self._filter_wheel_panels:
+            trains.update(wheel_panel.used_by)
+        result: dict[str, dict[str, Any]] = {}
+        for train in sorted(trains):
+            panel = self._panel_for_train(train)
+            result[f"{train.lower()}_filter_wheel"] = (
+                panel.diagnostic_context()
+                if panel is not None
+                else {
+                    "available": False,
+                    "current_slot": None,
+                    "filter_name": None,
+                    "moving": False,
+                    "reason": "no filter wheel assigned to this optical train",
+                }
+            )
+        return result
 
     def _on_operating_toggled(self, checked: bool, mode: OperatingMode) -> None:
         if checked:
@@ -809,8 +882,8 @@ class MainWindow(QMainWindow):
             "left": self._left_panel.diagnostic_context(),
             "right": self._right_panel.diagnostic_context(),
             "focuser": self._focuser_panel.diagnostic_context(),
-            "main_filter_wheel": self._main_filter_wheel_panel.diagnostic_context(),
-            "guide_filter_wheel": self._guide_filter_wheel_panel.diagnostic_context(),
+            "filter_wheels": self._filter_wheel_diagnostics(),
+            **self._per_train_filter_wheel_diagnostics(),
             "mount": self._mount_panel.diagnostic_context(),
             "mount_test_move": self._test_move_panel.diagnostic_context(),
             "operating_mode": self._tracking_enforcer.mode.value,
@@ -946,8 +1019,8 @@ class MainWindow(QMainWindow):
         self._left_panel.stop()
         self._right_panel.stop()
         self._focuser_panel.stop()
-        self._main_filter_wheel_panel.stop()
-        self._guide_filter_wheel_panel.stop()
+        for wheel_panel in self._filter_wheel_panels:
+            wheel_panel.stop()  # one physical wheel, stopped once
         self._mount_panel.stop()
         self._test_move_panel.stop()
         self._fine_collimation_panel.stop()

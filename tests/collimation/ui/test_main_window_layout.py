@@ -5,6 +5,8 @@ from __future__ import annotations
 
 import pytest
 from astrotool_core.camera.replay_camera import ReplayCamera
+from astrotool_core.filter_wheel.fake_filter_wheel import FakeFilterWheel
+from astrotool_core.filter_wheel.registry import FilterWheelAssignment
 from astrotool_core.testing.frame_factory import single_star_image
 from collimation_tool.ui.main_window import MainWindow
 from PySide6.QtWidgets import QScrollArea, QSplitter, QTabWidget, QWidget
@@ -18,7 +20,13 @@ def _window() -> MainWindow:
     image = single_star_image(
         (240, 320), x=160.0, y=120.0, peak=3000.0, sigma=2.0, background=100.0
     )
-    return MainWindow(ReplayCamera.from_arrays([image], cycle=True), device_lister=lambda: [])
+    return MainWindow(
+        ReplayCamera.from_arrays([image], cycle=True),
+        device_lister=lambda: [],
+        filter_wheels=[
+            FilterWheelAssignment("efw1", "ToupTek EFW 1", ("Main", "OAG"), FakeFilterWheel())
+        ],
+    )
 
 
 def _ancestors(widget: QWidget) -> list[QWidget]:
@@ -33,8 +41,7 @@ def _ancestors(widget: QWidget) -> list[QWidget]:
 def _panels(window: MainWindow) -> dict[str, QWidget]:
     return {
         "focuser": window._focuser_panel,
-        "main_efw": window._main_filter_wheel_panel,
-        "guide_efw": window._guide_filter_wheel_panel,
+        "efw": window._filter_wheel_panels[0],
         "mount": window._mount_panel,
         "test_move": window._test_move_panel,
         "fine": window._fine_collimation_panel,
@@ -112,7 +119,7 @@ def test_switching_tabs_does_not_change_the_frame_size(shown: MainWindow, qapp: 
     assert len(sizes) == 1
 
 
-def test_focus_tab_groups_focuser_and_both_filter_wheels(shown: MainWindow) -> None:
+def test_focus_tab_groups_the_focuser_and_the_shared_filter_wheel(shown: MainWindow) -> None:
     tabs = shown.findChild(QTabWidget)
     assert tabs is not None
     focus_tab = next(
@@ -120,8 +127,8 @@ def test_focus_tab_groups_focuser_and_both_filter_wheels(shown: MainWindow) -> N
         for page in (tabs.widget(i) for i in range(tabs.count()))
         if page is not None and shown._focuser_panel in _children(page)
     )
-    assert shown._main_filter_wheel_panel in _children(focus_tab)
-    assert shown._guide_filter_wheel_panel in _children(focus_tab)
+    assert shown._filter_wheel_panels[0] in _children(focus_tab)
+    assert len(shown._filter_wheel_panels) == 1  # one physical wheel, one control
 
 
 def _children(widget: QWidget) -> list[QWidget]:

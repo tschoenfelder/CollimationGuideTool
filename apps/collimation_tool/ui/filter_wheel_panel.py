@@ -10,6 +10,7 @@ diagnostic_context() contribution (issue's own "Diagnostics" ask).
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from typing import Any
 
 from astrotool_core.filter_wheel.port import FilterWheelPort, FilterWheelState
@@ -33,9 +34,18 @@ def _status_text(status: FilterWheelState) -> str:
 
 
 class FilterWheelPanel(QWidget):
-    def __init__(self, filter_wheel: FilterWheelPort, *, title: str = "Filter Wheel") -> None:
+    def __init__(
+        self,
+        filter_wheel: FilterWheelPort,
+        *,
+        title: str = "Filter Wheel",
+        used_by: Sequence[str] = (),
+    ) -> None:
         super().__init__()
         self._filter_wheel = filter_wheel
+        #: Issue #41: the optical trains that share this ONE physical wheel.
+        self._used_by: tuple[str, ...] = tuple(used_by)
+        self._title = title
         self._connected = False
 
         self._title_label = QLabel(f"<b>{title}</b>")
@@ -43,6 +53,9 @@ class FilterWheelPanel(QWidget):
         self._connect_button.setCheckable(True)
         self._connect_button.toggled.connect(self._on_toggle_connect)
         self._status_label = QLabel("Filter: not connected")
+        self._used_by_label = QLabel(
+            f"Used by: {', '.join(self._used_by)}" if self._used_by else ""
+        )
 
         top_row = QHBoxLayout()
         top_row.addWidget(self._title_label)
@@ -51,6 +64,8 @@ class FilterWheelPanel(QWidget):
 
         layout = QVBoxLayout()
         layout.addLayout(top_row)
+        if self._used_by:
+            layout.addWidget(self._used_by_label)
         self.setLayout(layout)
 
         self._timer = QTimer(self)
@@ -61,7 +76,7 @@ class FilterWheelPanel(QWidget):
         if checked:
             try:
                 self._filter_wheel.connect()
-            except ConnectionError as exc:
+            except Exception as exc:  # noqa: BLE001 -- any failure must be shown, never swallowed
                 self._status_label.setText(f"Filter: connect failed — {exc}")
                 # blockSignals: resetting the button's checked state here
                 # must not re-enter this handler with checked=False, which
@@ -85,6 +100,18 @@ class FilterWheelPanel(QWidget):
         if not self._connected:
             return
         self._status_label.setText(_status_text(self._filter_wheel.status()))
+
+    @property
+    def title(self) -> str:
+        return self._title
+
+    @property
+    def used_by(self) -> tuple[str, ...]:
+        return self._used_by
+
+    @property
+    def connected(self) -> bool:
+        return self._connected
 
     def diagnostic_context(self) -> dict[str, Any]:
         status = self._filter_wheel.status()

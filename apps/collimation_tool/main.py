@@ -17,6 +17,11 @@ from types import TracebackType
 from astrotool_core.camera.port import CameraPort
 from astrotool_core.camera.replay_camera import ReplayCamera
 from astrotool_core.diagnostics import DiagnosticService, RecentLogHandler
+from astrotool_core.filter_wheel.registry import (
+    FilterWheelAssignment,
+    build_filter_wheels,
+    load_filter_wheel_layout,
+)
 from astrotool_core.focus.indi_focuser_adapter import IndiFocuserAdapter
 from astrotool_core.focus.port import FocuserPort
 from astrotool_core.mount.indi_mount_park_adapter import IndiMountParkAdapter
@@ -75,6 +80,15 @@ def _default_mount() -> MountParkPort:
     `NoMountPark()`) is a one-line change here; no other file needs to
     know."""
     return IndiMountParkAdapter()
+
+
+def _default_filter_wheels() -> list[FilterWheelAssignment]:
+    """The rig's physical filter wheel(s) and which optical trains use them
+    (issue #41): by default ONE wheel, `ToupTek EFW 1`, shared by Main and
+    OAG, none for Guide -- overridable in `~/.CollimationGuideTool/config.toml`
+    (see `astrotool_core.filter_wheel.registry`). This used to be missing
+    entirely, so every filter-wheel panel silently used `NoFilterWheel`."""
+    return build_filter_wheels(load_filter_wheel_layout())
 
 
 def _default_pulse_mount() -> MountPort:
@@ -146,6 +160,7 @@ def main() -> None:
         focuser=_default_focuser(),
         mount=_default_mount(),
         pulse_mount=_default_pulse_mount(),
+        filter_wheels=_default_filter_wheels(),
         diagnostics=diagnostics,
     )
     window.show()
