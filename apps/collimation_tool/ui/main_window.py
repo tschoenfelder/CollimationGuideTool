@@ -461,14 +461,10 @@ class MainWindow(QMainWindow):
         self._operating_mode_group.addButton(self._operating_astronomical_button)
         self._operating_status_label = QLabel("")
         self._operating_terrestrial_button.toggled.connect(
-            lambda checked: checked and self._on_operating_mode_changed(
-                OperatingMode.TERRESTRIAL
-            )
+            lambda checked: self._on_operating_toggled(checked, OperatingMode.TERRESTRIAL)
         )
         self._operating_astronomical_button.toggled.connect(
-            lambda checked: checked and self._on_operating_mode_changed(
-                OperatingMode.ASTRONOMICAL
-            )
+            lambda checked: self._on_operating_toggled(checked, OperatingMode.ASTRONOMICAL)
         )
         operating_row = QHBoxLayout()
         operating_row.addWidget(QLabel("Operating mode"))
@@ -547,6 +543,10 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         self.setMinimumSize(1000, 560)
         self.resize(1280, 680)
+
+    def _on_operating_toggled(self, checked: bool, mode: OperatingMode) -> None:
+        if checked:
+            self._on_operating_mode_changed(mode)
 
     def _on_operating_mode_changed(self, mode: OperatingMode) -> None:
         """Issue #44: entering Terrestrial forces mount tracking OFF; entering
