@@ -217,3 +217,124 @@ class TestAutoFocusRun:
             )
         finally:
             panel._connect_button.setChecked(False)
+
+
+def _saturated_frame_result(reference_monotonic: float, timeout_s: float) -> FrameAcquisitionResult:
+    pixels = single_star_image(
+        (80, 80), x=40.0, y=40.0, peak=70000.0, sigma=2.0, background=100.0
+    )
+    return FrameAcquisitionResult(
+        status=FrameAcquisitionStatus.OK,
+        frame=DeliveredFrame(
+            pixels=pixels, captured_at_monotonic=time.monotonic(), exposure_seconds=0.01
+        ),
+    )
+
+
+def _artificial_panel(**overrides: object) -> FocuserPanel:
+    kwargs: dict[str, object] = {
+        "get_frame": lambda: _star_frame(),
+        "wait_for_frame": _always_fresh_frame,
+        "set_auto_exposure_paused": lambda paused: None,
+    }
+    kwargs.update(overrides)
+    return FocuserPanel(FakeFocuser(), **kwargs)  # type: ignore[arg-type]
+
+
+class TestArtificialStarMode:
+    """Issue #33 (artificial star): a third, distinct autofocus mode."""
+
+    def test_the_artificial_star_button_exists_and_is_not_the_default(
+        self, qapp: object
+    ) -> None:
+        panel = _artificial_panel()
+
+        assert not panel._af_artificial_button.isChecked()
+        assert panel._af_star_button.isChecked()
+
+    def test_choosing_it_runs_autofocus_in_artificial_star_mode(self, qapp: object) -> None:
+        panel = _artificial_panel()
+        panel._connect_button.setChecked(True)
+        try:
+            panel._af_artificial_button.setChecked(True)
+            panel._on_auto_focus_clicked()
+            _run_autofocus_to_completion(panel)
+
+            result = panel._last_autofocus_result
+            assert result is not None
+            assert result.mode.value == "artificial_star"
+            assert "artificial star" in panel._auto_focus_status_label.text().lower()
+        finally:
+            panel._connect_button.setChecked(False)
+
+    def test_a_saturated_star_tells_the_user_to_lower_exposure(self, qapp: object) -> None:
+        panel = _artificial_panel(wait_for_frame=_saturated_frame_result)
+        panel._connect_button.setChecked(True)
+        try:
+            panel._af_artificial_button.setChecked(True)
+            panel._on_auto_focus_clicked()
+            _run_autofocus_to_completion(panel)
+
+            text = panel._auto_focus_status_label.text().lower()
+            assert "saturated" in text
+            assert "exposure" in text
+        finally:
+            panel._connect_button.setChecked(False)
+
+    def test_evidence_records_mode_target_reasons_and_exposure_attempts(
+        self, qapp: object
+    ) -> None:
+        panel = _artificial_panel()
+        panel._connect_button.setChecked(True)
+        try:
+            panel._af_artificial_button.setChecked(True)
+            panel._on_auto_focus_clicked()
+            _run_autofocus_to_completion(panel)
+
+            evidence = panel.diagnostic_autofocus_evidence()
+            assert evidence["mode"] == "artificial_star"
+            assert evidence["tracked_target"] is not None
+            assert "failure_reason" in evidence
+            assert "start_value" in evidence
+            assert "exposure_attempts" in evidence
+            assert all("valid" in sample for sample in evidence["samples"])
+        finally:
+            panel._connect_button.setChecked(False)
+
+    def test_select_artificial_star_mode_switches_the_toggle_both_ways(
+        self, qapp: object
+    ) -> None:
+        panel = _artificial_panel()
+
+        panel.select_artificial_star_mode(True)
+        assert panel._af_artificial_button.isChecked()
+
+        panel.select_artificial_star_mode(False)
+        assert panel._af_star_button.isChecked()
+        assert not panel._af_artificial_button.isChecked()
+
+    def test_deselecting_artificial_star_leaves_a_terrestrial_choice_alone(
+        self, qapp: object
+    ) -> None:
+        panel = _artificial_panel()
+        panel._af_terrestrial_button.setChecked(True)
+
+        panel.select_artificial_star_mode(False)
+
+        assert panel._af_terrestrial_button.isChecked()
+
+    def test_the_exposure_control_is_handed_to_the_controller(self, qapp: object) -> None:
+        from collimation_tool.application.autofocus_controller import ExposureControl
+
+        calls: list[tuple[float, int]] = []
+        control = ExposureControl(get=lambda: (100.0, 100), set=lambda ms, g: calls.append((ms, g)))
+        panel = _artificial_panel(exposure_control=control)
+        panel._connect_button.setChecked(True)
+        try:
+            panel._af_artificial_button.setChecked(True)
+            panel._on_auto_focus_clicked()
+            _run_autofocus_to_completion(panel)
+        finally:
+            panel._connect_button.setChecked(False)
+
+        assert panel._exposure_control is control

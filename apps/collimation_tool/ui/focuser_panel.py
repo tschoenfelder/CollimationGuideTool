@@ -60,6 +60,7 @@ from collimation_tool.application.autofocus_controller import (
     AutofocusController,
     AutofocusMode,
     AutofocusResult,
+    ExposureControl,
 )
 from collimation_tool.application.autofocus_search import AutofocusStatus
 from collimation_tool.ui.autofocus_runner import AutofocusRunner
@@ -74,6 +75,27 @@ _DEFAULT_STEP_SIZE = _STEP_SIZES[0]
 #: panel's poll interval can ever catch a Busy state.
 _MOVE_CONFIRMATION_TIMEOUT_S = 10.0
 _AUTOFOCUS_POLL_INTERVAL_MS = 200
+
+
+def _format_autofocus_status(result: AutofocusResult) -> str:
+    mode_text = result.mode.value.replace("_", " ")
+    prefix = f"Auto focus ({result.optical_train})"
+    if result.status is AutofocusStatus.SUCCESS:
+        return (
+            f"{prefix}: {mode_text} best {result.best_position} "
+            f"(confidence {result.confidence:.2f})"
+        )
+    if result.status is AutofocusStatus.ALREADY_FOCUSED:
+        return (
+            f"{prefix}: {mode_text} -- already focused at {result.best_position} "
+            f"(validated on a fresh frame)"
+        )
+    text = f"{prefix}: {result.status.value} ({mode_text})"
+    if result.failure_reason in ("saturated", "saturated_at_min_exposure"):
+        return f"{text} -- star saturated: lower exposure/gain and retry"
+    if result.failure_reason:
+        return f"{text} -- {result.failure_reason}"
+    return text
 
 
 class FocuserPanel(QWidget):
@@ -97,9 +119,13 @@ class FocuserPanel(QWidget):
         wait_for_frame: Callable[[float, float], FrameAcquisitionResult] | None = None,
         set_auto_exposure_paused: Callable[[bool], None] | None = None,
         optical_train_label: str = "Main",
+        exposure_control: ExposureControl | None = None,
     ) -> None:
         super().__init__()
         self._focuser = focuser
+        #: Issue #33 (artificial star): lets Auto Focus lower exposure when
+        #: the star saturates at focus (restored after every run).
+        self._exposure_control = exposure_control
         self._connected = False
         # Issue #35: this panel is wired to exactly one optical train
         # today (see module docstring) -- carried through into Auto
@@ -166,6 +192,12 @@ class FocuserPanel(QWidget):
         self._af_terrestrial_button = QPushButton("Terrestrial")
         self._af_terrestrial_button.setCheckable(True)
         self._af_mode_group.addButton(self._af_terrestrial_button)
+        # Issue #33 enhancement: ONE artificial star, star-specific metric,
+        # same target through the sweep -- distinct from natural-star and
+        # terrestrial-scene autofocus.
+        self._af_artificial_button = QPushButton("Artificial star")
+        self._af_artificial_button.setCheckable(True)
+        self._af_mode_group.addButton(self._af_artificial_button)
 
         self._auto_focus_button = QPushButton("Auto Focus")
         self._auto_focus_button.clicked.connect(self._on_auto_focus_clicked)
@@ -177,6 +209,7 @@ class FocuserPanel(QWidget):
         autofocus_row.addWidget(QLabel("Auto Focus"))
         autofocus_row.addWidget(self._af_star_button)
         autofocus_row.addWidget(self._af_terrestrial_button)
+        autofocus_row.addWidget(self._af_artificial_button)
         autofocus_row.addWidget(self._auto_focus_button)
         autofocus_row.addWidget(self._auto_focus_cancel_button)
         autofocus_row.addWidget(self._auto_focus_status_label, stretch=1)
@@ -305,16 +338,18 @@ class FocuserPanel(QWidget):
             get_frame=self._get_frame,
             wait_for_frame=self._wait_for_frame,
             set_auto_exposure_paused=self._set_auto_exposure_paused,
+            exposure_control=self._exposure_control,
             # Issue #35: same optical train for both -- this app has no
             # independent per-train focuser yet (see module docstring).
             camera_label=self._optical_train_label,
             focuser_label=self._optical_train_label,
         )
-        mode = (
-            AutofocusMode.TERRESTRIAL
-            if self._af_terrestrial_button.isChecked()
-            else AutofocusMode.STAR
-        )
+        if self._af_artificial_button.isChecked():
+            mode = AutofocusMode.ARTIFICIAL_STAR
+        elif self._af_terrestrial_button.isChecked():
+            mode = AutofocusMode.TERRESTRIAL
+        else:
+            mode = AutofocusMode.STAR
         started = self._autofocus_runner.submit(controller, mode)
         if not started:
             return  # a run is already in flight
@@ -334,17 +369,19 @@ class FocuserPanel(QWidget):
         self._autofocus_running = False
         result = outcome.result
         self._last_autofocus_result = result
-        if result.status is AutofocusStatus.SUCCESS:
-            self._auto_focus_status_label.setText(
-                f"Auto focus ({result.optical_train}): {result.mode.value} "
-                f"best {result.best_position} (confidence {result.confidence:.2f})"
-            )
-        else:
-            self._auto_focus_status_label.setText(
-                f"Auto focus ({result.optical_train}): {result.status.value} "
-                f"({result.mode.value})"
-            )
+        self._auto_focus_status_label.setText(_format_autofocus_status(result))
         self._update_move_buttons_enabled()
+
+    def select_artificial_star_mode(self, selected: bool) -> None:
+        """Select (or leave) the artificial-star autofocus mode -- called
+        by MainWindow when the collimation target mode changes (issue #39/#33:
+        the mode is inferred, not left for the user to work out). Leaving it
+        only ever falls back to natural-star mode when artificial-star was the
+        active choice; a terrestrial choice is left alone."""
+        if selected:
+            self._af_artificial_button.setChecked(True)
+        elif self._af_artificial_button.isChecked():
+            self._af_star_button.setChecked(True)
 
     def _poll_status(self) -> None:
         if not self._connected:
@@ -422,8 +459,20 @@ class FocuserPanel(QWidget):
             "search_max": result.search_max,
             "confidence": result.confidence,
             "final_value": result.final_value,
+            # Issue #33 (artificial star): why no result, the followed target,
+            # the start metric, and each exposure attempt.
+            "failure_reason": result.failure_reason,
+            "tracked_target": result.tracked_target,
+            "start_value": result.start_value,
+            "exposure_attempts": [list(a) for a in result.exposure_attempts],
             "samples": [
-                {"position": point.position, "value": point.value, "confidence": point.confidence}
+                {
+                    "position": point.position,
+                    "value": point.value,
+                    "confidence": point.confidence,
+                    "valid": point.valid,
+                    "reason": point.reason,
+                }
                 for point in result.samples
             ],
         }

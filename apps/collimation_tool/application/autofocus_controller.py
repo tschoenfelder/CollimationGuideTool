@@ -32,7 +32,7 @@ import numpy as np
 from astrotool_core.acquisition.stable_frame_acquisition import FrameAcquisitionResult
 from astrotool_core.focus.port import FocuserPort
 from astrotool_core.focus.search_bounds import DEFAULT_ENVELOPE_STEPS
-from astrotool_core.focus.star_focus_metric import measure_star_focus
+from astrotool_core.focus.star_focus_metric import StarTargetTracker, measure_star_focus
 from astrotool_core.focus.terrestrial_focus_metric import measure_terrestrial_focus
 
 from collimation_tool.application.autofocus_search import (
@@ -40,6 +40,7 @@ from collimation_tool.application.autofocus_search import (
     BoundedFocusSearcher,
     FocusCurvePoint,
     FocusSample,
+    InvalidSample,
 )
 
 GetFrame = Callable[[], "np.ndarray | None"]
@@ -50,6 +51,24 @@ SetAutoExposurePaused = Callable[[bool], None]
 class AutofocusMode(Enum):
     STAR = "star"
     TERRESTRIAL = "terrestrial"
+    #: Issue #33 enhancement: exactly ONE artificial star, star-specific
+    #: metric, same target through the sweep -- a first-class mode, not a
+    #: fallback to terrestrial whole-frame sharpness.
+    ARTIFICIAL_STAR = "artificial_star"
+
+
+@dataclass(frozen=True)
+class ExposureControl:
+    """How the controller may lower exposure when the artificial star
+    saturates at focus (issue #33): `get`/`set` read/apply the camera's
+    `(exposure_ms, gain)` (the setter must clamp to the camera's own
+    limits and be safe to call from the runner thread), `settle_s` lets
+    the new setting take effect before the next frame is requested."""
+
+    get: Callable[[], tuple[float, int]]
+    set: Callable[[float, int], None]
+    settle_s: float = 0.5
+    factor: float = 0.5
 
 
 @dataclass(frozen=True)
@@ -72,6 +91,14 @@ class AutofocusResult:
     camera_label: str = "unknown"
     optical_train: str = "unknown"
     focuser_label: str = "unknown"
+    #: Issue #33 (artificial star): why no result (`saturated`,
+    #: `multiple_candidates`, `donut_like`, `saturated_at_min_exposure`, ...),
+    #: the target the sweep followed, the metric at the start position, and
+    #: the `(exposure_ms, gain)` of each attempt.
+    failure_reason: str | None = None
+    tracked_target: tuple[float, float] | None = None
+    start_value: float | None = None
+    exposure_attempts: tuple[tuple[float, int], ...] = ()
 
 
 class AutofocusController:
@@ -95,7 +122,13 @@ class AutofocusController:
         terrestrial_tile_size_px: int = 64,
         camera_label: str = "unknown",
         focuser_label: str = "unknown",
+        exposure_control: ExposureControl | None = None,
+        max_exposure_attempts: int = 3,
+        tracker_max_shift_px: float = 40.0,
     ) -> None:
+        self._exposure_control = exposure_control
+        self._max_exposure_attempts = max_exposure_attempts
+        self._tracker_max_shift_px = tracker_max_shift_px
         self._focuser = focuser
         self._get_frame = get_frame
         self._wait_for_frame = wait_for_frame
@@ -118,24 +151,68 @@ class AutofocusController:
         self, mode: AutofocusMode, cancel_check: Callable[[], bool] | None = None
     ) -> AutofocusResult:
         self._set_auto_exposure_paused(True)
+        artificial = mode is AutofocusMode.ARTIFICIAL_STAR
+        control = self._exposure_control if artificial else None
+        original = control.get() if control is not None else None
+        attempts: list[tuple[float, int]] = [original] if original is not None else []
+        tracker = StarTargetTracker(max_shift_px=self._tracker_max_shift_px)
+        override: tuple[AutofocusStatus, str] | None = None
         try:
-            searcher = BoundedFocusSearcher(
-                self._focuser, higher_is_better=(mode is AutofocusMode.TERRESTRIAL),
-                coarse_step=self._coarse_step, fine_step=self._fine_step,
-                max_coarse_steps=self._max_coarse_steps,
-                max_consecutive_no_improve=self._max_consecutive_no_improve,
-                improvement_fraction=self._improvement_fraction,
-                final_approach_direction=self._final_approach_direction,
-                envelope_steps=self._envelope_steps,
-            )
-            measure = self._build_measurer(mode)
-            search_result = searcher.search(measure, cancel_check=cancel_check)
+            for attempt in range(self._max_exposure_attempts if control is not None else 1):
+                tracker = StarTargetTracker(max_shift_px=self._tracker_max_shift_px)
+                searcher = BoundedFocusSearcher(
+                    self._focuser, higher_is_better=(mode is AutofocusMode.TERRESTRIAL),
+                    coarse_step=self._coarse_step, fine_step=self._fine_step,
+                    max_coarse_steps=self._max_coarse_steps,
+                    max_consecutive_no_improve=self._max_consecutive_no_improve,
+                    improvement_fraction=self._improvement_fraction,
+                    final_approach_direction=self._final_approach_direction,
+                    envelope_steps=self._envelope_steps,
+                    allow_invalid_samples=artificial, require_improvement=artificial,
+                )
+                measure = self._build_measurer(mode, tracker)
+                search_result = searcher.search(measure, cancel_check=cancel_check)
+                saturated = any(
+                    point.reason == "saturated" for point in search_result.samples
+                )
+                if (
+                    control is None
+                    or not saturated
+                    or search_result.status is AutofocusStatus.CANCELLED
+                    or attempt + 1 >= self._max_exposure_attempts
+                ):
+                    break
+                # Saturated at (or on the way to) focus: lower the exposure,
+                # return to the original P0 (so the +-envelope is unchanged)
+                # and search again with the star's peak back below full scale.
+                exposure_ms, gain = control.get()
+                control.set(exposure_ms * control.factor, gain)
+                time.sleep(control.settle_s)
+                new_ms, new_gain = control.get()
+                if new_ms >= exposure_ms * 0.999:
+                    override = (AutofocusStatus.NO_USABLE_EVIDENCE, "saturated_at_min_exposure")
+                    break
+                attempts.append((new_ms, new_gain))
+                self._return_to(search_result.start_position)
         finally:
+            if control is not None and original is not None and control.get() != original:
+                control.set(*original)
             self._set_auto_exposure_paused(False)
 
-        confidence = search_result.samples[-1].confidence if search_result.samples else 0.0
+        valid = [point for point in search_result.samples if point.valid]
+        confidence = valid[-1].confidence if valid else 0.0
+        status = search_result.status
+        failure_reason = search_result.failure_reason
+        if override is not None:
+            status, failure_reason = override
+        elif (
+            artificial
+            and status is AutofocusStatus.NO_USABLE_EVIDENCE
+            and failure_reason is None
+        ):
+            failure_reason = "no_star"
         return AutofocusResult(
-            status=search_result.status,
+            status=status,
             mode=mode,
             start_position=search_result.start_position,
             best_position=search_result.best_position,
@@ -147,12 +224,43 @@ class AutofocusController:
             camera_label=self._camera_label,
             optical_train=self._camera_label,
             focuser_label=self._focuser_label,
+            failure_reason=failure_reason,
+            tracked_target=tracker.target if artificial else None,
+            start_value=search_result.start_value,
+            exposure_attempts=tuple(attempts),
         )
 
-    def _build_measurer(self, mode: AutofocusMode) -> Callable[[], FocusSample | None]:
+    def _return_to(self, position: int) -> None:
+        """Best-effort return to the original start position between
+        exposure attempts (same bounds as the search itself: it is P0)."""
+        self._focuser.move_absolute(position)
+        deadline = time.monotonic() + 10.0
+        while self._focuser.is_moving() and time.monotonic() < deadline:
+            time.sleep(0.05)
+
+    def _build_measurer(
+        self, mode: AutofocusMode, tracker: StarTargetTracker
+    ) -> Callable[[], FocusSample | InvalidSample | None]:
         if mode is AutofocusMode.STAR:
             return self._measure_star
+        if mode is AutofocusMode.ARTIFICIAL_STAR:
+            return lambda: self._measure_artificial_star(tracker)
         return self._measure_terrestrial
+
+    def _measure_artificial_star(
+        self, tracker: StarTargetTracker
+    ) -> FocusSample | InvalidSample | None:
+        frame = self._acquire_fresh_frame()
+        if frame is None:
+            return None  # frame acquisition failed -- still aborts the run
+        measurement = (
+            tracker.acquire(frame) if tracker.target is None else tracker.measure(frame)
+        )
+        if measurement.fwhm_px is None:
+            return InvalidSample(measurement.reason or "no_star")
+        # A single star is a usable but reduced-confidence measurement
+        # (issue #33: one suitable star => appropriately reduced confidence).
+        return FocusSample(value=measurement.fwhm_px, confidence=1.0 / 3.0)
 
     def _acquire_fresh_frame(self) -> np.ndarray | None:
         reference_monotonic = time.monotonic()

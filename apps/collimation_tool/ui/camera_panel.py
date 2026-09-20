@@ -154,6 +154,11 @@ class CameraPanel(QWidget):
     #: listener always re-reads current_settings() itself.
     settings_changed = Signal()
 
+    #: Issue #33 (artificial star): autofocus runs on a background thread
+    #: and must never touch this panel's spin boxes directly -- it emits
+    #: this instead (queued to the UI thread automatically).
+    _exposure_gain_requested = Signal(float, int)
+
     def __init__(
         self,
         camera: CameraPort,
@@ -168,6 +173,7 @@ class CameraPanel(QWidget):
         self._camera_factory = camera_factory
         self._excluded_camera_id: str | None = None
 
+        self._exposure_gain_requested.connect(self._apply_exposure_gain_on_ui_thread)
         self._demo_camera = camera
         self._camera = camera
         self._connected_device: TouptekDeviceInfo | None = None
@@ -626,6 +632,16 @@ class CameraPanel(QWidget):
         `set_fov_overlay`'s docstring (this takes precedence when both
         are set). Takes effect on the next polled frame."""
         self._fov_polygon = corners
+
+    def apply_exposure_gain(self, exposure_ms: float, gain: int) -> None:
+        """Thread-safe request to set exposure/gain (clamped to the camera's
+        own limits by the spin boxes) -- for autofocus lowering exposure when
+        the artificial star saturates. Applied on the UI thread."""
+        self._exposure_gain_requested.emit(exposure_ms, gain)
+
+    def _apply_exposure_gain_on_ui_thread(self, exposure_ms: float, gain: int) -> None:
+        self._exposure_spin.setValue(exposure_ms)
+        self._gain_spin.setValue(gain)
 
     def set_target_mode_label(self, label: str | None) -> None:
         """Set (or clear, with None) the collimation target-mode label

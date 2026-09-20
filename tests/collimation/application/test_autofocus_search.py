@@ -14,6 +14,7 @@ from collimation_tool.application.autofocus_search import (
     AutofocusStatus,
     BoundedFocusSearcher,
     FocusSample,
+    InvalidSample,
 )
 
 
@@ -423,3 +424,95 @@ class TestConsistentDirectionFinalApproach:
         # overshoot-and-return backlash-elimination pair).
         assert focuser.commanded_positions[-1] == 2000
         assert focuser.get_position() == 2000
+
+
+class TestInvalidSamplesForASingleArtificialStar:
+    """Issue #33 (artificial star): a star that is defocused into a donut,
+    saturated, or missing at one focus position is an INVALID sample --
+    recorded with its reason, never a run-aborting failure and never
+    replaced by another feature."""
+
+    @staticmethod
+    def _curve(
+        focuser: FakeFocuser, best: int, *, valid_within: int
+    ) -> Callable[[], FocusSample | InvalidSample]:
+        def measure() -> FocusSample | InvalidSample:
+            distance = abs(focuser.get_position() - best)
+            if distance > valid_within:
+                return InvalidSample("donut_like")
+            return FocusSample(value=1.0 + 0.01 * distance, confidence=1.0)
+
+        return measure
+
+    @staticmethod
+    def _searcher(focuser: FakeFocuser, **kwargs: object) -> BoundedFocusSearcher:
+        return BoundedFocusSearcher(
+            focuser, higher_is_better=False, coarse_step=250, fine_step=25,
+            allow_invalid_samples=True, **kwargs,  # type: ignore[arg-type]
+        )
+
+    def test_invalid_coarse_neighbours_do_not_abort_and_a_fine_retry_finds_the_optimum(
+        self,
+    ) -> None:
+        focuser = FakeFocuser()
+        focuser.move_absolute(520)
+        searcher = self._searcher(focuser)
+
+        result = searcher.search(self._curve(focuser, 500, valid_within=100))
+
+        assert result.status is AutofocusStatus.SUCCESS
+        assert result.best_position is not None
+        assert abs(result.best_position - 500) <= 25
+        assert any(not point.valid and point.reason == "donut_like" for point in result.samples)
+
+    def test_without_allow_invalid_samples_an_invalid_sample_still_aborts(self) -> None:
+        focuser = FakeFocuser()
+        focuser.move_absolute(520)
+        searcher = BoundedFocusSearcher(focuser, higher_is_better=False)
+
+        result = searcher.search(self._curve(focuser, 500, valid_within=100))
+
+        assert result.status is AutofocusStatus.FRAME_ACQUISITION_FAILED
+
+    def test_an_invalid_start_sample_reports_no_usable_evidence_with_the_reason(self) -> None:
+        focuser = FakeFocuser()
+        focuser.move_absolute(900)
+        searcher = self._searcher(focuser)
+
+        result = searcher.search(self._curve(focuser, 500, valid_within=100))
+
+        assert result.status is AutofocusStatus.NO_USABLE_EVIDENCE
+        assert result.failure_reason == "donut_like"
+
+    def test_a_start_that_is_already_the_optimum_is_already_focused(self) -> None:
+        focuser = FakeFocuser()
+        focuser.move_absolute(500)
+        searcher = self._searcher(focuser, require_improvement=True)
+
+        result = searcher.search(self._curve(focuser, 500, valid_within=100))
+
+        assert result.status is AutofocusStatus.ALREADY_FOCUSED
+        assert result.best_position == 500
+
+    def test_a_flat_start_is_still_plain_success_when_improvement_is_not_required(self) -> None:
+        focuser = FakeFocuser()
+        focuser.move_absolute(500)
+        searcher = self._searcher(focuser)
+
+        result = searcher.search(self._curve(focuser, 500, valid_within=100))
+
+        assert result.status is AutofocusStatus.SUCCESS
+
+    def test_a_final_validation_no_better_than_the_start_is_not_success(self) -> None:
+        focuser = FakeFocuser()
+        values = iter([1.0, 0.9, 0.95, 1.2, 1.0])  # start, probe, climb x2, fresh final
+
+        def scripted() -> FocusSample:
+            return FocusSample(value=next(values), confidence=1.0)
+
+        searcher = self._searcher(focuser, require_improvement=True)
+
+        result = searcher.search(scripted)
+
+        assert result.status is AutofocusStatus.INCONSISTENT_CURVE
+        assert focuser.get_position() == result.start_position  # back at the start

@@ -174,6 +174,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from collimation_tool.application.autofocus_controller import ExposureControl
 from collimation_tool.application.star_acquisition import (
     AcquisitionResult,
     AcquisitionStatus,
@@ -266,6 +267,12 @@ class MainWindow(QMainWindow):
             wait_for_frame=self._left_panel.wait_for_frame_after,
             set_auto_exposure_paused=self._left_panel.set_auto_exposure_paused,
             optical_train_label="Main",
+            # Issue #33 (artificial star): may lower Main's exposure/gain while
+            # autofocusing a saturating star; always restored after the run.
+            exposure_control=ExposureControl(
+                get=self._left_panel.current_exposure_gain,
+                set=self._left_panel.apply_exposure_gain,
+            ),
         )
         # The focuser lives on the main optical train only (see
         # FocuserPanel's own docstring) -- pause just the Main camera's
@@ -490,6 +497,10 @@ class MainWindow(QMainWindow):
         the rough-collimation view so both always say what they're using."""
         assert isinstance(mode, CollimationTargetMode)
         self._left_panel.set_target_mode_label(mode.label)
+        # Issue #33: autofocus infers its mode from the target mode.
+        self._focuser_panel.select_artificial_star_mode(
+            mode is CollimationTargetMode.ARTIFICIAL_STAR
+        )
 
     def _reacquire_via_guide(
         self, acquisition: FocusedStarAcquisition, cancel_check: Callable[[], bool] | None

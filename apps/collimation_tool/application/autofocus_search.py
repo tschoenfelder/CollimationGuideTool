@@ -55,6 +55,11 @@ class AutofocusStatus(Enum):
     BEST_AT_SEARCH_LIMIT = "best_at_search_limit"
     INCONSISTENT_CURVE = "inconsistent_curve"
     DEVICE_LIMIT_REACHED = "device_limit_reached"
+    #: Issue #33 (artificial star): the start position was already the
+    #: optimum -- a fresh validation frame matches the start within the
+    #: improvement margin. Explicitly NOT `SUCCESS` (no improvement was
+    #: made or claimed) and NOT a failure.
+    ALREADY_FOCUSED = "already_focused"
 
 
 @dataclass(frozen=True)
@@ -67,7 +72,17 @@ class FocusSample:
     confidence: float = 1.0
 
 
-FocusMeasurer = Callable[[], "FocusSample | None"]
+@dataclass(frozen=True)
+class InvalidSample:
+    """Issue #33 (artificial star): the target could not be measured at
+    this position (`saturated`, `donut_like`, `not_found_at_tracked_position`,
+    ...). With `allow_invalid_samples` the searcher records it and moves on;
+    it is never replaced by a measurement of some other feature."""
+
+    reason: str
+
+
+FocusMeasurer = Callable[[], "FocusSample | InvalidSample | None"]
 
 
 @dataclass(frozen=True)
@@ -75,6 +90,9 @@ class FocusCurvePoint:
     position: int
     value: float
     confidence: float
+    #: False for an `InvalidSample` (value is NaN, `reason` says why).
+    valid: bool = True
+    reason: str | None = None
 
 
 @dataclass(frozen=True)
@@ -86,6 +104,8 @@ class BoundedSearchResult:
     search_max: int | None
     samples: tuple[FocusCurvePoint, ...] = field(default_factory=tuple)
     final_value: float | None = None
+    start_value: float | None = None
+    failure_reason: str | None = None
 
 
 class _SearchAbort(Exception):
@@ -120,6 +140,7 @@ class _Run:
     best_position: int
     current_pos: int
     start_value: float = 0.0
+    step: int = 0
     samples: list[FocusCurvePoint] = field(default_factory=list)
 
 
@@ -145,7 +166,11 @@ class BoundedFocusSearcher:
         move_poll_interval_s: float = 0.05,
         sleep: Callable[[float], None] = time.sleep,
         now: Callable[[], float] = time.monotonic,
+        allow_invalid_samples: bool = False,
+        require_improvement: bool = False,
     ) -> None:
+        self._allow_invalid = allow_invalid_samples
+        self._require_improvement = require_improvement
         self._focuser = focuser
         self._higher_is_better = higher_is_better
         self._coarse_step = coarse_step
@@ -179,16 +204,23 @@ class BoundedFocusSearcher:
         )
 
         initial = measure()
-        if initial is None:
+        if not isinstance(initial, FocusSample):
+            reason = initial.reason if isinstance(initial, InvalidSample) else None
+            samples = (
+                (FocusCurvePoint(start_position, float("nan"), 0.0, False, reason),)
+                if reason is not None
+                else ()
+            )
             return BoundedSearchResult(
                 status=AutofocusStatus.NO_USABLE_EVIDENCE, start_position=start_position,
                 best_position=None, search_min=bounds.allowed_min, search_max=bounds.allowed_max,
+                samples=samples, failure_reason=reason,
             )
 
         run = _Run(
             start_position=start_position, bounds=bounds, best_value=initial.value,
             best_position=start_position, current_pos=start_position,
-            start_value=initial.value,
+            start_value=initial.value, step=self._coarse_step,
         )
         self._record(run, start_position, initial)
 
@@ -224,6 +256,15 @@ class BoundedFocusSearcher:
         if final_value is not None and self._better(run.start_value, final_value):
             self._move_to(run, run.start_position)
             return self._make_result(run, AutofocusStatus.INCONSISTENT_CURVE, final_value)
+        if self._require_improvement:
+            # Issue #33 (artificial star): success needs a fresh, validated
+            # frame that is genuinely better than where the run started.
+            if final_value is None:
+                self._move_to(run, run.start_position)
+                return self._make_result(run, AutofocusStatus.INSUFFICIENT_EVIDENCE, None)
+            if not self._better(final_value, run.start_value):
+                self._move_to(run, run.start_position)
+                return self._make_result(run, AutofocusStatus.INCONSISTENT_CURVE, final_value)
 
         status = AutofocusStatus.SUCCESS
         if (
@@ -256,26 +297,36 @@ class BoundedFocusSearcher:
         # far was genuinely valid, it just never beat the start.
         self._move_to(run, run.start_position)
         final_sample = measure()
-        final_value = final_sample.value if final_sample is not None else run.best_value
-        if final_sample is not None:
-            self._record(run, run.start_position, final_sample)
+        valid_final = final_sample if isinstance(final_sample, FocusSample) else None
+        final_value = valid_final.value if valid_final is not None else run.best_value
+        if valid_final is not None:
+            self._record(run, run.start_position, valid_final)
+        if self._require_improvement:
+            if valid_final is None:
+                return self._make_result(run, AutofocusStatus.INSUFFICIENT_EVIDENCE, None)
+            if self._better(run.start_value, final_value):
+                return self._make_result(run, AutofocusStatus.INCONSISTENT_CURVE, final_value)
+            return self._make_result(run, AutofocusStatus.ALREADY_FOCUSED, final_value)
         return self._make_result(run, AutofocusStatus.SUCCESS, final_value)
 
     def _probe(self, run: _Run, measure: FocusMeasurer) -> int:
         """Tests both directions once from the start; returns +1/-1 (that
-        direction improved) or 0 (neither did)."""
-        pos = self._move_to(run, run.start_position + self._coarse_step)
-        forward = self._measure_at(run, measure, pos)
-        if self._better(forward.value, run.best_value):
-            run.best_value, run.best_position, run.current_pos = forward.value, pos, pos
-            return 1
-
-        pos = self._move_to(run, run.start_position - self._coarse_step)
-        backward = self._measure_at(run, measure, pos)
-        run.current_pos = pos
-        if self._better(backward.value, run.best_value):
-            run.best_value, run.best_position = backward.value, pos
-            return -1
+        direction improved) or 0 (neither did). With `allow_invalid_samples`
+        (issue #33, artificial star) it also probes both sides at the fine
+        step before giving up: the sharp zone can be narrower than the
+        coarse step, and a valid-but-worse coarse neighbour (or an invalid
+        donut one) says nothing about the start's own vicinity."""
+        steps = [self._coarse_step]
+        if self._allow_invalid and self._fine_step < self._coarse_step:
+            steps.append(self._fine_step)
+        for step in steps:
+            for sign in (1, -1):
+                pos = self._move_to(run, run.start_position + sign * step)
+                run.current_pos = pos
+                sample = self._measure_at(run, measure, pos)
+                if sample is not None and self._better(sample.value, run.best_value):
+                    run.best_value, run.best_position, run.step = sample.value, pos, step
+                    return sign
         return 0
 
     def _hill_climb(
@@ -287,12 +338,10 @@ class BoundedFocusSearcher:
             if cancel_check is not None and cancel_check():
                 raise _SearchAbort(AutofocusStatus.CANCELLED, run.best_position)
 
-            run.current_pos = self._move_to(
-                run, run.current_pos + direction * self._coarse_step
-            )
+            run.current_pos = self._move_to(run, run.current_pos + direction * run.step)
             sample = self._measure_at(run, measure, run.current_pos)
 
-            if self._better(sample.value, run.best_value):
+            if sample is not None and self._better(sample.value, run.best_value):
                 run.best_value, run.best_position = sample.value, run.current_pos
                 consecutive_no_improve = 0
             else:
@@ -313,7 +362,9 @@ class BoundedFocusSearcher:
             self._move_to(run, run.best_position)
 
         final_sample = measure()
-        if final_sample is None:
+        if not isinstance(final_sample, FocusSample):
+            if isinstance(final_sample, InvalidSample):
+                self._record_invalid(run, run.best_position, final_sample)
             return None
         self._record(run, run.best_position, final_sample)
         return final_sample.value
@@ -326,6 +377,11 @@ class BoundedFocusSearcher:
     def _record(self, run: _Run, position: int, sample: FocusSample) -> None:
         run.samples.append(
             FocusCurvePoint(position=position, value=sample.value, confidence=sample.confidence)
+        )
+
+    def _record_invalid(self, run: _Run, position: int, sample: InvalidSample) -> None:
+        run.samples.append(
+            FocusCurvePoint(position, float("nan"), 0.0, valid=False, reason=sample.reason)
         )
 
     def _move_to(self, run: _Run, target: int) -> int:
@@ -349,8 +405,18 @@ class BoundedFocusSearcher:
         with contextlib.suppress(_SearchAbort):
             self._move_to(run, position)
 
-    def _measure_at(self, run: _Run, measure: FocusMeasurer, position: int) -> FocusSample:
+    def _measure_at(
+        self, run: _Run, measure: FocusMeasurer, position: int
+    ) -> FocusSample | None:
+        """A valid sample, or `None` for a recorded `InvalidSample` (only
+        when `allow_invalid_samples`; otherwise an unmeasurable sample
+        aborts the run as before)."""
         sample = measure()
+        if isinstance(sample, InvalidSample):
+            if not self._allow_invalid:
+                raise _SearchAbort(AutofocusStatus.FRAME_ACQUISITION_FAILED, run.best_position)
+            self._record_invalid(run, position, sample)
+            return None
         if sample is None:
             raise _SearchAbort(AutofocusStatus.FRAME_ACQUISITION_FAILED, run.best_position)
         self._record(run, position, sample)
@@ -368,4 +434,5 @@ class BoundedFocusSearcher:
             status=status, start_position=run.start_position, best_position=run.best_position,
             search_min=run.bounds.allowed_min, search_max=run.bounds.allowed_max,
             samples=tuple(run.samples), final_value=final_value,
+            start_value=run.start_value,
         )

@@ -5507,3 +5507,46 @@ class TestArtificialStarTargetMode:
 
         assert result.status is AcquisitionStatus.LOST
         assert result.failure_reason == "no_guide_calibration"
+
+
+class TestArtificialStarAutofocusWiring:
+    """Issue #33 (artificial star): autofocus infers its mode from the #39
+    target mode and may lower Main's exposure through a thread-safe request."""
+
+    def test_selecting_the_artificial_star_target_selects_artificial_star_autofocus(
+        self, qapp: object
+    ) -> None:
+        from collimation_tool.domain.target_mode import CollimationTargetMode
+
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+        assert window._focuser_panel._af_star_button.isChecked()
+
+        window._fine_collimation_panel.set_target_mode(CollimationTargetMode.ARTIFICIAL_STAR)
+        assert window._focuser_panel._af_artificial_button.isChecked()
+
+        window._fine_collimation_panel.set_target_mode(CollimationTargetMode.NATURAL_STAR)
+        assert window._focuser_panel._af_star_button.isChecked()
+
+    def test_the_focuser_panel_gets_an_exposure_control_bound_to_the_main_camera(
+        self, qapp: object
+    ) -> None:
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+
+        control = window._focuser_panel._exposure_control
+
+        assert control is not None
+        window._left_panel.apply_exposure_gain(50.0, 120)
+        exposure_ms, gain = control.get()
+        assert exposure_ms == window._left_panel._exposure_spin.value()
+        assert gain == window._left_panel._gain_spin.value()
+
+    def test_apply_exposure_gain_sets_the_spin_boxes_within_camera_limits(
+        self, qapp: object
+    ) -> None:
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+        panel = window._left_panel
+        low = panel._exposure_spin.minimum()
+
+        panel.apply_exposure_gain(low / 10.0, 100)  # below the camera's floor
+
+        assert panel._exposure_spin.value() == low  # clamped, not below the limit
