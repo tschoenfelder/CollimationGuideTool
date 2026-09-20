@@ -278,21 +278,35 @@ class CameraPanel(QWidget):
         camera_row.addWidget(QLabel("Camera"))
         camera_row.addWidget(self._camera_combo)
         camera_row.addWidget(self._connect_button)
-        camera_row.addWidget(self._camera_status_label)
         camera_row.addStretch(1)
 
+        # Issue #36: the panel must stay narrow enough for two of them to sit
+        # side by side on a 1280x720 desktop -- long text wraps and the camera
+        # combo shrinks to its contents' minimum instead of forcing width.
+        self._camera_combo.setSizeAdjustPolicy(
+            QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
+        )
+        self._camera_combo.setMinimumContentsLength(14)
+        self._camera_status_label.setWordWrap(True)
+        self._recommendation_label.setWordWrap(True)
+
+        stream_row = QHBoxLayout()
+        stream_row.addWidget(self._start_button)
+        stream_row.addWidget(self._auto_exposure_checkbox)
+        stream_row.addStretch(1)
+
         controls = QHBoxLayout()
-        controls.addWidget(self._start_button)
         controls.addWidget(QLabel("Exposure"))
         controls.addWidget(self._exposure_spin)
         controls.addWidget(QLabel("Gain"))
         controls.addWidget(self._gain_spin)
-        controls.addWidget(self._auto_exposure_checkbox)
         controls.addStretch(1)
 
         layout = QVBoxLayout()
         layout.addWidget(self._title_label)
         layout.addLayout(camera_row)
+        layout.addWidget(self._camera_status_label)
+        layout.addLayout(stream_row)
         layout.addLayout(controls)
         layout.addWidget(self._live_view, stretch=1)
         layout.addWidget(self._recommendation_label)

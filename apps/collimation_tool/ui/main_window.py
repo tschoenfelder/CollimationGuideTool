@@ -158,7 +158,7 @@ from astrotool_core.registration.alignment import derive_alignment_guidance
 from astrotool_core.registration.astap_adapter import AstapCliSolver, AstapSolver
 from astrotool_core.registration.optical_prior import OpticalPrior
 from astrotool_core.registration.result import CrossCameraRegistrationResult, RegistrationMethod
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -170,6 +170,8 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QPushButton,
     QScrollArea,
+    QSplitter,
+    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -286,17 +288,13 @@ class MainWindow(QMainWindow):
         # Held as an attribute (not inlined below) since fine collimation's
         # guide-assisted reacquisition (issue #39) pulses the SAME mount
         # connection the test-move panel drives.
-        self._pulse_mount: MountPort = (
-            pulse_mount if pulse_mount is not None else NoMountAdapter()
-        )
+        self._pulse_mount: MountPort = pulse_mount if pulse_mount is not None else NoMountAdapter()
         self._fine_collimation_panel = FineCollimationPanel(
             get_frame=self._left_panel.latest_mono_frame,
             optical_config=optical_config,
             guide_reacquirer=self._reacquire_via_guide,
         )
-        self._fine_collimation_panel.target_mode_changed.connect(
-            self._on_target_mode_changed
-        )
+        self._fine_collimation_panel.target_mode_changed.connect(self._on_target_mode_changed)
 
         # Issue #34: unlike the focuser, an EFW is genuinely per optical
         # train -- one panel each, mirroring camera/guide_camera's own
@@ -454,43 +452,62 @@ class MainWindow(QMainWindow):
         calibration_row.addWidget(self._calibrate_fov_status_label, stretch=1)
         calibration_row.addWidget(self._alignment_guidance_label, stretch=1)
 
-        panels_row = QHBoxLayout()
-        panels_row.addWidget(self._left_panel, stretch=1)
-        panels_row.addWidget(self._right_panel, stretch=1)
+        # Issue #36: frames (Main/Guide) get the left, resizable, expanding
+        # region; every secondary control lives in a tab on the right, each
+        # tab in its own scroll area so a tall tab scrolls intentionally
+        # instead of pushing the frames off screen.
+        frames_splitter = QSplitter(Qt.Orientation.Horizontal)
+        frames_splitter.setChildrenCollapsible(False)
+        frames_splitter.addWidget(self._left_panel)
+        frames_splitter.addWidget(self._right_panel)
 
-        filter_wheel_row = QHBoxLayout()
-        filter_wheel_row.addWidget(self._main_filter_wheel_panel, stretch=1)
-        filter_wheel_row.addWidget(self._guide_filter_wheel_panel, stretch=1)
+        focus_tab = QWidget()
+        focus_layout = QVBoxLayout(focus_tab)
+        focus_layout.addWidget(self._focuser_panel)
+        focus_layout.addWidget(self._main_filter_wheel_panel)
+        focus_layout.addWidget(self._guide_filter_wheel_panel)
+        focus_layout.addStretch(1)
+
+        mount_tab = QWidget()
+        mount_layout = QVBoxLayout(mount_tab)
+        mount_layout.addLayout(calibration_row)
+        mount_layout.addWidget(self._mount_panel)
+        mount_layout.addWidget(self._test_move_panel)
+        mount_layout.addStretch(1)
+
+        collimation_tab = QWidget()
+        collimation_layout = QVBoxLayout(collimation_tab)
+        collimation_layout.addWidget(self._fine_collimation_panel)
+        collimation_layout.addStretch(1)
+
+        tabs = QTabWidget()
+        for title, tab in (
+            ("Focus && Filters", focus_tab),
+            ("Mount && Alignment", mount_tab),
+            ("Collimation", collimation_tab),
+        ):
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setWidget(tab)
+            tabs.addTab(scroll, title.replace("&&", "&"))
+
+        main_splitter = QSplitter(Qt.Orientation.Horizontal)
+        main_splitter.setChildrenCollapsible(False)
+        main_splitter.addWidget(frames_splitter)
+        main_splitter.addWidget(tabs)
+        main_splitter.setStretchFactor(0, 3)
+        main_splitter.setStretchFactor(1, 2)
+        main_splitter.setSizes([760, 500])
 
         layout = QVBoxLayout()
         layout.addLayout(diagnostics_row)
-        layout.addLayout(calibration_row)
-        layout.addWidget(self._focuser_panel)
-        layout.addLayout(filter_wheel_row)
-        layout.addWidget(self._mount_panel)
-        layout.addWidget(self._test_move_panel)
-        layout.addWidget(self._fine_collimation_panel)
-        layout.addLayout(panels_row, stretch=1)
+        layout.addWidget(main_splitter, stretch=1)
 
         central = QWidget()
         central.setLayout(layout)
-
-        # Real incident: on a real (smaller/lower-resolution) screen, the
-        # stack of control panels above panels_row (diagnostics,
-        # calibration/registration mode, focuser, filter wheels, mount,
-        # mount test-move, fine collimation) can exceed the available
-        # screen height on its own -- with no scrolling, the camera live
-        # views (panels_row, the single most important thing to see while
-        # operating the telescope) were silently pushed below the visible
-        # screen area with no way to reach them. A QScrollArea guarantees
-        # every panel stays reachable regardless of screen size or how
-        # many more panels this window grows in the future, without
-        # changing the existing panel order/layout at all.
-        scroll_area = QScrollArea()
-        scroll_area.setWidgetResizable(True)
-        scroll_area.setWidget(central)
-        self.setCentralWidget(scroll_area)
-        self.resize(1360, 700)
+        self.setCentralWidget(central)
+        self.setMinimumSize(1000, 560)
+        self.resize(1280, 680)
 
     def _on_target_mode_changed(self, mode: object) -> None:
         """Mirror the fine-collimation panel's target mode (issue #39) onto
@@ -517,9 +534,7 @@ class MainWindow(QMainWindow):
             return AcquisitionResult(AcquisitionStatus.LOST, None, None, "no_registration")
         calibration = self._test_move_panel.calibration_for("right")
         if calibration is None:
-            return AcquisitionResult(
-                AcquisitionStatus.LOST, None, None, "no_guide_calibration"
-            )
+            return AcquisitionResult(AcquisitionStatus.LOST, None, None, "no_guide_calibration")
         return acquisition.attempt_guide_reacquisition(
             self._right_panel.latest_mono_frame,
             mount=self._pulse_mount,
@@ -586,18 +601,23 @@ class MainWindow(QMainWindow):
         main_caps = self._left_panel.camera_descriptor().capabilities
         guide_caps = self._right_panel.camera_descriptor().capabilities
         prior_a = OpticalPrior(
-            name="main", sensor_width_px=main_caps.sensor_width_px,
+            name="main",
+            sensor_width_px=main_caps.sensor_width_px,
             sensor_height_px=main_caps.sensor_height_px,
             pixel_scale_arcsec=self._main_pixel_scale_arcsec,
         )
         prior_b = OpticalPrior(
-            name="guide", sensor_width_px=guide_caps.sensor_width_px,
+            name="guide",
+            sensor_width_px=guide_caps.sensor_width_px,
             sensor_height_px=guide_caps.sensor_height_px,
             pixel_scale_arcsec=self._guide_pixel_scale_arcsec,
         )
         if self._star_field_mode_button.isChecked():
             started = self._fov_calibrator.submit_star_field(
-                main_mono, guide_mono, prior_a=prior_a, prior_b=prior_b,
+                main_mono,
+                guide_mono,
+                prior_a=prior_a,
+                prior_b=prior_b,
                 solver=self._astap_solver,
             )
         elif self._artificial_star_mode_button.isChecked():
