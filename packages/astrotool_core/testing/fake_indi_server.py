@@ -147,7 +147,16 @@ class FakeIndiServer:
                 conn, _addr = self._listener.accept()
             except OSError:
                 return  # listener closed
-            self._conn = conn
+            # stop() may have run between accept() returning and here; it
+            # would then have seen _conn=None and never closed this socket, so
+            # the client would never observe EOF (a real CI flake in
+            # TestConnectionLoss). Publishing _conn under the same lock stop()
+            # takes makes exactly one side responsible for closing it.
+            with self._write_lock:
+                if self._stop.is_set():
+                    conn.close()
+                    return
+                self._conn = conn
             parser = IncrementalIndiParser(self._on_client_element)
             try:
                 while not self._stop.is_set():
