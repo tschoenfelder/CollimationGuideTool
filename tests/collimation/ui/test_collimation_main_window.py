@@ -2448,8 +2448,8 @@ class TestFocuserPanel:
             main_filter_wheel=FakeFilterWheel(slot=3, filter_name="OIII"),
             guide_filter_wheel=FakeFilterWheel(slot=1, filter_name="Luminance"),
         )
-        window._main_filter_wheel_panel._connect_button.setChecked(True)
-        window._guide_filter_wheel_panel._connect_button.setChecked(True)
+        window._filter_wheel_panels[0]._connect_button.setChecked(True)
+        window._filter_wheel_panels[1]._connect_button.setChecked(True)
         context = window._diagnostic_context()
         assert context["main_filter_wheel"]["current_slot"] == 3
         assert context["guide_filter_wheel"]["current_slot"] == 1
@@ -2471,11 +2471,11 @@ class TestFocuserPanel:
             main_filter_wheel=FakeFilterWheel(),
             guide_filter_wheel=FakeFilterWheel(),
         )
-        window._main_filter_wheel_panel._connect_button.setChecked(True)
-        window._guide_filter_wheel_panel._connect_button.setChecked(True)
+        window._filter_wheel_panels[0]._connect_button.setChecked(True)
+        window._filter_wheel_panels[1]._connect_button.setChecked(True)
         window.close()
-        assert not window._main_filter_wheel_panel._connected
-        assert not window._guide_filter_wheel_panel._connected
+        assert not window._filter_wheel_panels[0]._connected
+        assert not window._filter_wheel_panels[1]._connected
 
 
 class TestFocuserOneMoveAtATime:
