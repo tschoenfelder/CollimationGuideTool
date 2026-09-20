@@ -244,10 +244,13 @@ is a new, additional control, not a replacement.
 
 from __future__ import annotations
 
+import logging
+import threading
 import time
+import traceback
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Literal
 
@@ -474,6 +477,8 @@ TargetMode = Literal["star", "terrestrial"]
 #: against later.
 _Measurement = tuple[float, float] | np.ndarray
 
+_log = logging.getLogger(__name__)
+
 _POLL_INTERVAL_MS = 250
 
 _CAMERA_LABELS = {"left": "Main", "right": "Guide"}
@@ -630,6 +635,52 @@ class MountInterfaceState:
 
 
 @dataclass(frozen=True)
+class _CaptureRequest:
+    """Everything a both-camera capture needs, read on the GUI thread up front (widget reads
+    such as exposure/gain and the fresh-frame budget must not happen on a worker thread)."""
+
+    mode: TargetMode
+    label: str | None
+    after_monotonic: float | None
+    verify_stability: bool
+    timeout_s: float
+    required_tracking: TrackingMode
+    movement_context: CommandedMovementContext | None
+    left_state: tuple[float, int] | None
+    right_state: tuple[float, int] | None
+
+
+@dataclass
+class _CaptureResult:
+    """The pure outcome of `_capture_blocking` -- applied to the panel on the GUI thread."""
+
+    request: _CaptureRequest
+    tracking_error: str | None = None
+    results: dict[str, MotionAwareFrameResult] | None = None
+    instant_failures: dict[str, MotionAwareFrameResult] = field(default_factory=dict)
+    left_frame: np.ndarray | None = None
+    right_frame: np.ndarray | None = None
+    base_reference: float = 0.0
+    settle_s: float = 0.0
+    raw: dict[str, _Measurement | None] = field(default_factory=dict)
+
+
+@dataclass
+class _CaptureJob:
+    """One capture running on a worker thread (issue #49)."""
+
+    generation: int
+    label: str
+    request: _CaptureRequest
+    then: Callable[[dict[str, _Measurement] | None], None]
+    started_at: float
+    cancel: threading.Event = field(default_factory=threading.Event)
+    done: threading.Event = field(default_factory=threading.Event)
+    result: _CaptureResult | None = None
+    error: BaseException | None = None
+
+
+@dataclass(frozen=True)
 class _NudgeMove:
     """What a nudge click resolved to, carried across the (possibly asynchronous) BEFORE
     capture into the pulse submission."""
@@ -702,9 +753,15 @@ class MountTestMovePanel(QWidget):
         tracking_enforcer: TrackingEnforcer | None = None,
         camera_geometry: Callable[[], list[CameraGeometry]] | None = None,
         calibration_distance_m: Callable[[str], float | None] | None = None,
+        threaded_captures: bool = False,
     ) -> None:
         super().__init__()
         self._mount = mount
+        #: Issue #49: True runs every stability-verified capture (a wait that can take tens of
+        #: seconds with long exposures) on a worker thread and continues on the GUI thread from
+        #: the poll timer -- the event loop never blocks. False (default) runs the same request
+        #: inline, which keeps synchronous callers and tests unchanged.
+        self._threaded_captures = threaded_captures
         #: Issue #46: per-camera sensor size + plate scale, for sizing calibration
         #: moves to ~25% of the frame. None (or unknown optics) => the legacy
         #: fixed `pulse_ms`/`rate_preset` calibration, unchanged.
@@ -773,6 +830,12 @@ class MountTestMovePanel(QWidget):
         self._capture_timeline: deque[dict[str, Any]] = deque(maxlen=48)
         self._last_pulse_timing: dict[str, float | None] | None = None
         self._verified_reference: _VerifiedReference | None = None
+        #: Issue #49: the capture currently running on a worker thread (threaded mode), the
+        #: generation counter that lets Stop discard a stale result, and the recovery evidence.
+        self._capture_job: _CaptureJob | None = None
+        self._capture_generation = 0
+        self._last_internal_error: str | None = None
+        self._last_cleanup_ok: bool | None = None
         #: Issue #46 sizing state for the CURRENT run (see _init_sizing).
         self._sizing_policy: SizingPolicy | None = None
         self._sizing_geometry: dict[str, CameraGeometry] = {}
@@ -1072,38 +1135,42 @@ class MountTestMovePanel(QWidget):
             return TrackingMode.OFF  # policy wins over the panel's own toggle
         return TrackingMode.OFF if self._target_mode() == "terrestrial" else TrackingMode.ON
 
-    def _verify_tracking_mode(self) -> str | None:
-        """Verifies (and, if needed, repairs) the mount's tracking state
-        against `_required_tracking_mode()` -- returns `None` if OK, or a
-        human-readable failure message otherwise. Called from
-        `_capture_both` itself (see that method's own docstring), so it
-        runs before every BEFORE capture and is re-checked before every
-        AFTER capture too, right after whatever commanded movement just
-        finished -- issue #30: "After each commanded slew/pulse, tracking
-        state shall be re-verified because the driver/mount may change
-        state as a side effect."""
-        required = self._required_tracking_mode()
+    def _tracking_failure_message(self, required: TrackingMode, mode: TargetMode) -> str | None:
+        """Verifies (and, if needed, repairs) the mount's tracking state against `required` --
+        None if OK, else a human-readable failure message. Side-effect free with respect to the
+        panel (issue #49: it runs on the capture worker thread); callers that record failure
+        classes do so themselves (`_verify_tracking_mode`, `_apply_capture`)."""
         enforcer = self._tracking_enforcer
         if enforcer is not None and self._mount_park.status().available:
             gate = enforcer.verify(required, "mount_align")
             if gate.allowed:
                 return None
-            self._last_failure_classes["left"] = MeasurementFailureClass.TRACKING_STATE_INVALID
-            self._last_failure_classes["right"] = MeasurementFailureClass.TRACKING_STATE_INVALID
             return (
-                f"mount tracking must be {required.value} for {self._target_mode()} "
+                f"mount tracking must be {required.value} for {mode} "
                 f"calibration -- {gate.reason}"
             )
         result = ensure_tracking_mode(self._mount_park, required)
         if result.ok:
             return None
-        self._last_failure_classes["left"] = MeasurementFailureClass.TRACKING_STATE_INVALID
-        self._last_failure_classes["right"] = MeasurementFailureClass.TRACKING_STATE_INVALID
         observed = result.observed_mode.value if result.observed_mode is not None else "unavailable"
         return (
-            f"mount tracking must be {required.value} for {self._target_mode()} calibration "
+            f"mount tracking must be {required.value} for {mode} calibration "
             f"(currently {observed}, {result.status.value})"
         )
+
+    def _verify_tracking_mode(self) -> str | None:
+        """Verifies (and, if needed, repairs) the mount's tracking state against
+        `_required_tracking_mode()` -- returns `None` if OK, or a human-readable failure message
+        otherwise. Runs before every BEFORE capture and again before every AFTER capture (issue
+        #30: "After each commanded slew/pulse, tracking state shall be re-verified because the
+        driver/mount may change state as a side effect")."""
+        message = self._tracking_failure_message(
+            self._required_tracking_mode(), self._target_mode()
+        )
+        if message is not None:
+            self._last_failure_classes["left"] = MeasurementFailureClass.TRACKING_STATE_INVALID
+            self._last_failure_classes["right"] = MeasurementFailureClass.TRACKING_STATE_INVALID
+        return message
 
     def _capture(self, mode: TargetMode, frame: np.ndarray | None) -> _Measurement | None:
         """One camera's "before"/"after" measurement in the given mode --
@@ -1224,11 +1291,8 @@ class MountTestMovePanel(QWidget):
         `stability_sample_count`-frame sliding window must measure within
         `stability_tolerance_px` of itself before a frame is trusted, not
         just the first one whose own exposure happens to postdate the
-        reference. The sole exception is a nudge's own "before" capture
-        (`verify_stability=False`, set by its one caller,
-        `_on_nudge_clicked`), which keeps the original instant/no-wait
-        read -- see that method's own docstring for why. Either way, this
-        method stashes per-camera failure detail in
+        reference. (`verify_stability=False`, the instant/no-wait read, has no
+        production caller left -- issue #43.) This method stashes per-camera failure detail in
         `self._last_capture_failures` for `_capture_failure_detail()`,
         and (only for the verified path) stability evidence in
         `self._last_diagnostic_stability` for
@@ -1241,112 +1305,141 @@ class MountTestMovePanel(QWidget):
         and "re-verified after commanded movement" with one check, since
         this method IS the thing every before/after capture goes
         through."""
-        self._last_capture_failures = {}
-        self._last_diagnostic_stability = {}
-        self._last_tracking_error = self._verify_tracking_mode()
-        if self._last_tracking_error is not None:
-            return None
-        if not verify_stability:
-            left_frame = self._get_left_frame()
-            right_frame = self._get_right_frame()
-            if left_frame is None:
-                self._last_capture_failures["left"] = _capture_invalid_result(
-                    FrameAcquisitionStatus.CAMERA_UNAVAILABLE
-                )
-            if right_frame is None:
-                self._last_capture_failures["right"] = _capture_invalid_result(
-                    FrameAcquisitionStatus.CAMERA_UNAVAILABLE
-                )
+        request = self._snapshot_capture_request(
+            mode, diagnostic_label, after_monotonic, verify_stability
+        )
+        return self._apply_capture(self._capture_blocking(request))
+
+    # ---- issue #49: the capture split into worker-safe and GUI-thread halves ------------
+    def _snapshot_capture_request(
+        self,
+        mode: TargetMode,
+        label: str | None,
+        after_monotonic: float | None,
+        verify_stability: bool,
+    ) -> _CaptureRequest:
+        """GUI thread: every widget/GUI-state read the capture needs."""
+        return _CaptureRequest(
+            mode=mode,
+            label=label,
+            after_monotonic=after_monotonic,
+            verify_stability=verify_stability,
+            timeout_s=self._verified_capture_timeout_s(),
+            required_tracking=self._required_tracking_mode(),
+            movement_context=self._last_movement_context,
+            left_state=self._get_left_exposure_gain(),
+            right_state=self._get_right_exposure_gain(),
+        )
+
+    def _capture_blocking(
+        self, request: _CaptureRequest, cancelled: Callable[[], bool] | None = None
+    ) -> _CaptureResult:
+        """The slow part -- tracking verification and the stability-verified frame waits. Touches
+        no widget and mutates no panel state, so it is safe on a worker thread."""
+        result = _CaptureResult(request)
+        result.tracking_error = self._tracking_failure_message(
+            request.required_tracking, request.mode
+        )
+        if result.tracking_error is not None:
+            return result
+        if not request.verify_stability:
+            result.left_frame = self._get_left_frame()
+            result.right_frame = self._get_right_frame()
+            for key, frame in (("left", result.left_frame), ("right", result.right_frame)):
+                if frame is None:
+                    result.instant_failures[key] = _capture_invalid_result(
+                        FrameAcquisitionStatus.CAMERA_UNAVAILABLE
+                    )
         else:
-            # The minimum-settle offset only applies when there's an
-            # actual prior pulse to settle from -- "prove stability
-            # starting right now" for the first-step (`after_monotonic`
-            # is None) case doesn't need it.
-            base_reference = (
-                after_monotonic if after_monotonic is not None else time.monotonic()
-            )
-            settle_s = (
-                self._settings.frame_settle_ms / 1000.0 if after_monotonic is not None else 0.0
-            )
-            results = acquire_verified_frames(
+            # The minimum-settle offset only applies when there's an actual prior pulse to settle
+            # from -- "prove stability starting right now" for the first step (`after_monotonic`
+            # is None) doesn't need it.
+            after = request.after_monotonic
+            result.base_reference = after if after is not None else time.monotonic()
+            result.settle_s = self._settings.frame_settle_ms / 1000.0 if after is not None else 0.0
+            result.results = acquire_verified_frames(
                 {"left": self._wait_for_left_frame, "right": self._wait_for_right_frame},
-                reference_monotonic=base_reference + settle_s,
-                timeout_s=self._verified_capture_timeout_s(),
+                reference_monotonic=result.base_reference + result.settle_s,
+                timeout_s=request.timeout_s,
                 stability_tolerance_px=self._settings.stability_tolerance_px,
                 stability_sample_count=self._settings.stability_sample_count,
                 stability_sample_interval_s=self._settings.stability_sample_interval_s,
-                movement_context=self._last_movement_context,
+                movement_context=request.movement_context,
+                cancelled=cancelled,
             )
+            result.left_frame = result.results["left"].frame
+            result.right_frame = result.results["right"].frame
+        result.raw = {
+            "left": self._capture(request.mode, result.left_frame),
+            "right": self._capture(request.mode, result.right_frame),
+        }
+        return result
+
+    def _apply_capture(self, result: _CaptureResult) -> dict[str, _Measurement] | None:
+        """GUI thread: the bookkeeping the capture leaves behind (failure classes, stability
+        evidence, timeline, diagnostic frames, verified reference) and the returned measurements."""
+        request = result.request
+        mode = request.mode
+        label = request.label
+        self._last_capture_failures = {}
+        self._last_diagnostic_stability = {}
+        self._last_tracking_error = result.tracking_error
+        if result.tracking_error is not None:
+            self._last_failure_classes["left"] = MeasurementFailureClass.TRACKING_STATE_INVALID
+            self._last_failure_classes["right"] = MeasurementFailureClass.TRACKING_STATE_INVALID
+            return None
+        if result.results is None:
+            self._last_capture_failures = dict(result.instant_failures)
+        else:
             self._last_capture_failures = {
-                key: result for key, result in results.items() if not result.ok
+                key: r for key, r in result.results.items() if not r.ok
             }
             self._last_diagnostic_stability = {
-                key: _stability_evidence_dict(result) for key, result in results.items()
+                key: _stability_evidence_dict(r) for key, r in result.results.items()
             }
             self._capture_timeline.append(
                 {
-                    "label": diagnostic_label or "",
+                    "label": label or "",
                     "verified": True,
-                    "reference_monotonic": base_reference + settle_s,
-                    "after_monotonic": after_monotonic,
-                    "frame_settle_s": settle_s,
+                    "reference_monotonic": result.base_reference + result.settle_s,
+                    "after_monotonic": request.after_monotonic,
+                    "frame_settle_s": result.settle_s,
                     "pulse": dict(self._last_pulse_timing) if self._last_pulse_timing else None,
                     "cameras": {k: dict(v) for k, v in self._last_diagnostic_stability.items()},
                 }
             )
-            left_frame = results["left"].frame
-            right_frame = results["right"].frame
-        if self._last_capture_failures:
-            for key, result in self._last_capture_failures.items():
-                self._last_failure_classes[key] = (
-                    MeasurementFailureClass.CAPTURE_INVALID
-                    if result.status is MotionAwareStatus.CAPTURE_INVALID
-                    else MeasurementFailureClass.IMAGE_NOT_STABLE
-                )
-        if diagnostic_label is not None:
-            if left_frame is not None:
-                self._last_diagnostic_frames[f"{diagnostic_label}_left"] = left_frame
-                left_state = self._get_left_exposure_gain()
-                if left_state is not None:
-                    self._last_diagnostic_camera_state[f"{diagnostic_label}_left"] = left_state
-            if right_frame is not None:
-                self._last_diagnostic_frames[f"{diagnostic_label}_right"] = right_frame
-                right_state = self._get_right_exposure_gain()
-                if right_state is not None:
-                    self._last_diagnostic_camera_state[f"{diagnostic_label}_right"] = right_state
-        raw = {
-            "left": self._capture(mode, left_frame),
-            "right": self._capture(mode, right_frame),
-        }
-        missing = [key for key, measurement in raw.items() if measurement is None]
-        # Issue #30: a camera whose own STABILITY check failed (a frame
-        # *was* captured, just couldn't be verified stable --
-        # IMAGE_NOT_STABLE/SETTLE_TIMEOUT/CANCELLED) is simply absent
-        # from the returned dict, not a reason to null out a camera that
-        # succeeded -- mirrors the per-camera tolerance
-        # `_finish_calibration_step`/`_finish_nudge` already apply one
-        # layer up, at the *measurement* step (real diagnostic
-        # d14c3a9b): a featureless/unstable camera's own stability check
-        # hits the same zero-variance guard `measure_translation_offset`
-        # already tolerates there. Any OTHER reason a camera ends up
-        # missing here -- no frame captured at all (CAPTURE_INVALID, a
-        # more fundamental streaming/connection problem), or a valid,
-        # stable frame this mode's own reduction still couldn't use
-        # (e.g. star mode's "no star detected") -- still aborts the
-        # whole capture, unchanged from before issue #30 (see
-        # _finish_calibration_step's own docstring: "a camera with
-        # literally no frame at all is a more fundamental ... problem").
-        # Every caller checks `if not result:` (covers both `None` here,
-        # and this dict coming back empty because *every* camera
-        # failed), never `is None` alone.
+        for key, failure in self._last_capture_failures.items():
+            self._last_failure_classes[key] = (
+                MeasurementFailureClass.CAPTURE_INVALID
+                if failure.status is MotionAwareStatus.CAPTURE_INVALID
+                else MeasurementFailureClass.IMAGE_NOT_STABLE
+            )
+        if label is not None:
+            for key, frame, state in (
+                ("left", result.left_frame, request.left_state),
+                ("right", result.right_frame, request.right_state),
+            ):
+                if frame is not None:
+                    self._last_diagnostic_frames[f"{label}_{key}"] = frame
+                    if state is not None:
+                        self._last_diagnostic_camera_state[f"{label}_{key}"] = state
+        missing = [key for key, measurement in result.raw.items() if measurement is None]
+        # Issue #30: a camera whose own STABILITY check failed (a frame *was* captured, just
+        # couldn't be verified stable -- IMAGE_NOT_STABLE/SETTLE_TIMEOUT/CANCELLED) is simply
+        # absent from the returned dict, not a reason to null out a camera that succeeded --
+        # mirrors the per-camera tolerance the measurement steps apply one layer up (real
+        # diagnostic d14c3a9b). Any OTHER reason a camera ends up missing -- no frame captured at
+        # all (CAPTURE_INVALID), or a valid, stable frame this mode's own reduction still couldn't
+        # use (e.g. star mode's "no star detected") -- aborts the whole capture. Every caller
+        # checks `if not result:` (covers both `None` and an empty dict), never `is None` alone.
         if missing and any(
             key not in self._last_capture_failures
             or self._last_capture_failures[key].status is MotionAwareStatus.CAPTURE_INVALID
             for key in missing
         ):
             return None
-        captured = {key: measurement for key, measurement in raw.items() if measurement is not None}
-        if verify_stability and captured:
+        captured = {k: m for k, m in result.raw.items() if m is not None}
+        if request.verify_stability and captured:
             self._verified_reference = _VerifiedReference(
                 taken_at=time.monotonic(),
                 submit_count=getattr(self._runner, "submit_count", None),
@@ -1379,9 +1472,116 @@ class MountTestMovePanel(QWidget):
     ) -> None:
         """Run one both-camera verified capture and hand its result to `then` (issue #49).
 
-        Every capture site is written as request + continuation so WHERE the wait runs is one
-        decision made here; today the capture runs inline and `then` is called immediately."""
-        then(self._capture_both(mode, diagnostic_label=label, after_monotonic=after_monotonic))
+        Inline (default): the capture runs here and `then` is called at once. Threaded: the
+        capture runs on a worker thread; `_poll` (the panel's QTimer, on the GUI thread) applies
+        its result and calls `then` -- the event loop is never blocked by a frame wait, the
+        panel shows live progress, and Stop can abandon the job at any time."""
+        if not self._threaded_captures:
+            then(self._capture_both(mode, diagnostic_label=label, after_monotonic=after_monotonic))
+            return
+        request = self._snapshot_capture_request(mode, label, after_monotonic, True)
+        self._capture_generation += 1
+        job = _CaptureJob(self._capture_generation, label, request, then, time.monotonic())
+        self._capture_job = job
+        self._show_capture_progress(job)
+        threading.Thread(
+            target=self._run_capture_job, args=(job,), daemon=True, name="mount-align-capture"
+        ).start()
+        self._update_buttons_enabled()
+
+    def _run_capture_job(self, job: _CaptureJob) -> None:
+        try:
+            job.result = self._capture_blocking(job.request, job.cancel.is_set)
+        except BaseException as exc:  # noqa: BLE001 -- reported on the GUI thread by _poll
+            job.error = exc
+        finally:
+            job.done.set()
+
+    def _show_capture_progress(self, job: _CaptureJob) -> None:
+        elapsed = time.monotonic() - job.started_at
+        what = job.label.replace("_", " ")
+        self._result_label.setText(
+            f"Capturing {what} -- waiting for fresh, stable frames from both cameras "
+            f"({elapsed:.1f} s of up to {job.request.timeout_s:.0f} s)…"
+        )
+
+    def _poll_capture_job(self, job: _CaptureJob) -> None:
+        """GUI thread: progress while the worker runs; on completion apply + continue."""
+        if not job.done.is_set():
+            self._show_capture_progress(job)
+            return
+        self._capture_job = None
+        if job.error is not None:
+            _log.error("Mount Align capture worker failed", exc_info=job.error)
+            self._fail_safe(f"capture failed: {job.error!r}", job.error)
+            return
+        assert job.result is not None
+        job.then(self._apply_capture(job.result))
+
+    # ---- issue #49: one recovery path for every failure ----------------------------------
+    def is_idle(self) -> bool:
+        """True when nothing is in flight: no capture, no mount sequence, no pending step."""
+        return (
+            self._capture_job is None
+            and not self._runner.is_busy
+            and not self._calibration_queue
+            and self._pending is None
+            and not self._awaiting_stranded_return
+        )
+
+    def _cancel_activity(self) -> None:
+        """Drop whatever this panel has in flight (queue, pending step, capture job) and let go
+        of the cameras' auto-exposure -- the shared reset behind Stop and `_fail_safe`."""
+        self._calibration_queue = []
+        self._pending = None
+        self._awaiting_stranded_return = False
+        job = self._capture_job
+        if job is not None:
+            job.cancel.set()  # the abandoned worker only READS frames; its result is discarded
+            self._capture_job = None
+        self._capture_generation += 1
+        self._resume_auto_exposure()
+
+    def _fail_safe(self, reason: str, exc: BaseException | None = None) -> None:
+        """Terminal failure of the panel's own machinery (an unexpected exception): reset to an
+        idle, retryable state, keep the evidence, show the reason, re-enable controls."""
+        self._last_cleanup_ok = False
+        try:
+            self._cancel_activity()
+            self._last_error = reason
+            self._last_internal_error = (
+                f"{reason}\n{''.join(traceback.format_exception(exc))}" if exc else reason
+            )
+            self._result_label.setText(f"Failed: {reason}")
+            self._update_buttons_enabled()
+            self._last_cleanup_ok = True
+        except Exception:  # noqa: BLE001 -- cleanup must never raise into the event loop
+            _log.exception("Mount Align fail-safe cleanup itself failed")
+
+    def diagnostic_activity(self) -> dict[str, Any]:
+        """Issue #49: what the panel is doing right now, for a bundle taken during an apparent
+        freeze -- distinguishes a blocked loop from a long capture from a dead worker."""
+        job = self._capture_job
+        if job is not None:
+            state = "capturing"
+        elif self._runner.is_busy:
+            state = "moving"
+        elif self._calibration_queue or self._pending is not None:
+            state = "calibrating"
+        else:
+            state = "idle"
+        return {
+            "state": state,
+            "threaded_captures": self._threaded_captures,
+            "capture_in_flight": job is not None,
+            "capture_label": job.label if job is not None else None,
+            "capture_elapsed_s": (time.monotonic() - job.started_at) if job is not None else 0.0,
+            "runner_busy": self._runner.is_busy,
+            "poll_timer_active": self._timer.isActive(),
+            "calibration_queue_len": len(self._calibration_queue),
+            "last_cleanup_ok": self._last_cleanup_ok,
+            "last_internal_error": self._last_internal_error,
+        }
 
     def _capture_failure_detail(self) -> str:
         """A short, status-specific note appended to a generic capture-
@@ -1469,6 +1669,13 @@ class MountTestMovePanel(QWidget):
         self._set_right_auto_exposure_paused(False)
 
     def _on_run_calibration_clicked(self) -> None:
+        try:
+            self._begin_calibration()
+        except Exception as exc:
+            self._fail_safe(f"could not start calibration: {exc}", exc)
+            raise
+
+    def _begin_calibration(self) -> None:
         self._calibration_queue = list(_CALIBRATION_STEPS)
         self._calibration_partial = {"left": {}, "right": {}}
         self._pending_first_response = {"left": {}, "right": {}}
@@ -2159,6 +2366,13 @@ class MountTestMovePanel(QWidget):
         return self._calibration.get(camera_key)
 
     def _on_nudge_clicked(self, camera_key: str, axis: MountAxis, direction: AxisDirection) -> None:
+        try:
+            self._begin_nudge(camera_key, axis, direction)
+        except Exception as exc:
+            self._fail_safe(f"could not start the move: {exc}", exc)
+            raise
+
+    def _begin_nudge(self, camera_key: str, axis: MountAxis, direction: AxisDirection) -> None:
         axis_label = _AXIS_LABELS[axis]
         matrix = self._calibration.get(camera_key)
         if matrix is None:
@@ -2533,9 +2747,33 @@ class MountTestMovePanel(QWidget):
         abort = getattr(self._mount, "abort", None)
         if callable(abort):
             abort()
+        # Issue #49: Stop ends the whole calibration/nudge, not just the current pulse: nothing
+        # queued or in flight may carry on afterwards, and the panel is retryable at once.
+        in_flight = self._capture_job is not None
+        if self._calibration_queue or self._pending is not None or in_flight:
+            net = {a.name: ms for a, ms in self._axis_net_pulse_ms.items() if ms}
+            self._cancel_activity()
+            note = f" (mount may be off its start position: net commanded ms {net})" if net else ""
+            self._last_error = "stopped by the user"
+            self._result_label.setText(f"Stopped by the user{note}.")
+            self._update_buttons_enabled()
 
     def _poll(self) -> None:
         if not self._connected:
+            return
+        try:
+            self._poll_inner()
+        except Exception as exc:
+            # Issue #49: an unexpected exception in ANY continuation must not strand the panel
+            # busy; reset first, then re-raise so the app's excepthook still records an incident.
+            self._fail_safe(f"internal error: {exc}", exc)
+            raise
+
+    def _poll_inner(self) -> None:
+        job = self._capture_job
+        if job is not None:
+            self._poll_capture_job(job)
+            self._update_buttons_enabled()
             return
         outcome = self._runner.take_latest()
         if outcome is not None:
@@ -2638,7 +2876,7 @@ class MountTestMovePanel(QWidget):
 
     def _update_buttons_enabled(self) -> None:
         interface = self.interface_state()
-        busy = self._runner.is_busy
+        busy = self._runner.is_busy or self._capture_job is not None
         ready = interface.available and not busy
         self._run_calibration_button.setEnabled(ready)
         self._stop_button.setEnabled(self._connected and busy)
@@ -2702,6 +2940,7 @@ class MountTestMovePanel(QWidget):
 
     def diagnostic_context(self) -> dict[str, Any]:
         context: dict[str, Any] = {"target_mode": self._target_mode()}
+        context["activity"] = self.diagnostic_activity()
         interface = self.interface_state()
         context["mount_interface"] = {
             "available": interface.available,
@@ -2774,6 +3013,10 @@ class MountTestMovePanel(QWidget):
     def stop(self) -> None:
         """Stop polling and disconnect. Safe to call whether or not connected."""
         self._timer.stop()
+        job = self._capture_job
+        if job is not None:
+            job.cancel.set()
+            self._capture_job = None
         if self._connected:
             self._mount.disconnect()
             self._connected = False

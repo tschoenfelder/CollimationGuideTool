@@ -209,6 +209,7 @@ class MainWindow(QMainWindow):
         main_filter_wheel: FilterWheelPort | None = None,
         guide_filter_wheel: FilterWheelPort | None = None,
         filter_wheels: Sequence[FilterWheelAssignment] | None = None,
+        threaded_captures: bool = False,
         mount: MountParkPort | None = None,
         pulse_mount: MountPort | None = None,
         device_lister: Callable[[], list[TouptekDeviceInfo]] = _list_touptek_devices,
@@ -373,6 +374,9 @@ class MainWindow(QMainWindow):
             # Issue #46: calibration moves are sized to ~25% of each frame.
             camera_geometry=self._calibration_geometry,
             calibration_distance_m=self._calibration_distance_m,
+            # Issue #49: stability-verified frame waits run off the GUI thread when enabled
+            # (the real app); False keeps the synchronous behaviour existing callers rely on.
+            threaded_captures=threaded_captures,
         )
 
         # Restore last session's connected camera + exposure/gain/

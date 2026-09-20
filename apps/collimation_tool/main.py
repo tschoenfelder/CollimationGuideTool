@@ -161,6 +161,7 @@ def main() -> None:
         mount=_default_mount(),
         pulse_mount=_default_pulse_mount(),
         filter_wheels=_default_filter_wheels(),
+        threaded_captures=True,  # issue #49: never block the GUI thread on a frame wait
         diagnostics=diagnostics,
     )
     window.show()
