@@ -629,6 +629,18 @@ class MountInterfaceState:
     detail: str
 
 
+@dataclass(frozen=True)
+class _NudgeMove:
+    """What a nudge click resolved to, carried across the (possibly asynchronous) BEFORE
+    capture into the pulse submission."""
+
+    camera_key: str
+    axis: MountAxis
+    direction: AxisDirection
+    duration_ms: int
+    clamped: bool
+
+
 @dataclass
 class _PendingAction:
     """State carried from a submit call to the matching `_poll()` completion
@@ -1357,6 +1369,20 @@ class MountTestMovePanel(QWidget):
             return None
         return dict(reference.measurements)
 
+    def _request_capture(
+        self,
+        mode: TargetMode,
+        *,
+        label: str,
+        after_monotonic: float | None,
+        then: Callable[[dict[str, _Measurement] | None], None],
+    ) -> None:
+        """Run one both-camera verified capture and hand its result to `then` (issue #49).
+
+        Every capture site is written as request + continuation so WHERE the wait runs is one
+        decision made here; today the capture runs inline and `then` is called immediately."""
+        then(self._capture_both(mode, diagnostic_label=label, after_monotonic=after_monotonic))
+
     def _capture_failure_detail(self) -> str:
         """A short, status-specific note appended to a generic capture-
         failure message -- e.g. `" (Main: every frame's own exposure
@@ -1485,18 +1511,38 @@ class MountTestMovePanel(QWidget):
         # since the *previous* step's own pulse just moved the mount.
         # See _last_pulse_completed_at's own docstring.
         if step.role is _CalibrationStepRole.RETURN:
-            before: dict[str, _Measurement] = {}  # unmeasured corrective pulse
-        else:
-            captured = self._capture_both(
-                mode, diagnostic_label=label, after_monotonic=self._last_pulse_completed_at
+            # unmeasured corrective pulse: nothing to capture first
+            self._submit_calibration_step(step, mode, duration_ms, {})
+            return
+        self._request_capture(
+            mode,
+            label=label,
+            after_monotonic=self._last_pulse_completed_at,
+            then=lambda captured: self._after_before_capture(step, mode, duration_ms, captured),
+        )
+
+    def _after_before_capture(
+        self,
+        step: _CalibrationStep,
+        mode: TargetMode,
+        duration_ms: int,
+        captured: dict[str, _Measurement] | None,
+    ) -> None:
+        if not captured:
+            self._abort_calibration(
+                self._capture_failure_message(f"{self._missing_label(mode)} before pulsing"),
+                axis=step.axis,
             )
-            if not captured:
-                self._abort_calibration(
-                    self._capture_failure_message(f"{self._missing_label(mode)} before pulsing"),
-                    axis=step.axis,
-                )
-                return
-            before = captured
+            return
+        self._submit_calibration_step(step, mode, duration_ms, captured)
+
+    def _submit_calibration_step(
+        self,
+        step: _CalibrationStep,
+        mode: TargetMode,
+        duration_ms: int,
+        before: dict[str, _Measurement],
+    ) -> None:
         started = self._runner.submit(
             self._mount_park,
             self._mount,
@@ -1670,9 +1716,20 @@ class MountTestMovePanel(QWidget):
             self._start_next_calibration_step()  # unmeasured: no AFTER capture
             return
         label = f"{step.axis.name.lower()}_{step.direction.name.lower()}_{step.role.value}_after"
-        after = self._capture_both(
-            pending.mode, diagnostic_label=label, after_monotonic=completed_at
+        self._request_capture(
+            pending.mode,
+            label=label,
+            after_monotonic=completed_at,
+            then=lambda after: self._after_after_capture(step, pending, duration_ms, after),
         )
+
+    def _after_after_capture(
+        self,
+        step: _CalibrationStep,
+        pending: _PendingAction,
+        duration_ms: int,
+        after: dict[str, _Measurement] | None,
+    ) -> None:
         if not after:
             self._abort_calibration(
                 self._capture_failure_message(
@@ -2103,7 +2160,6 @@ class MountTestMovePanel(QWidget):
 
     def _on_nudge_clicked(self, camera_key: str, axis: MountAxis, direction: AxisDirection) -> None:
         axis_label = _AXIS_LABELS[axis]
-        direction_label = "+" if direction is AxisDirection.POSITIVE else "-"
         matrix = self._calibration.get(camera_key)
         if matrix is None:
             # Real request: RA+/RA-/Dec+/Dec- must move the mount directly
@@ -2213,13 +2269,21 @@ class MountTestMovePanel(QWidget):
         # reference, provably still valid because the runner has accepted no sequence since
         # (so repeated nudges stay instant), or (b) a fresh verified capture (a single wait
         # after any other movement / on the first nudge). Never the latest displayed frame.
-        before = self._reusable_reference(mode)
-        if before is None:
-            before = self._capture_both(
-                mode,
-                diagnostic_label="nudge_before",
-                after_monotonic=self._last_pulse_completed_at,
-            )
+        move = _NudgeMove(camera_key, axis, direction, duration_ms, clamped)
+        reference = self._reusable_reference(mode)
+        if reference is not None:
+            self._after_nudge_before_capture(move, mode, reference)
+            return
+        self._request_capture(
+            mode,
+            label="nudge_before",
+            after_monotonic=self._last_pulse_completed_at,
+            then=lambda before: self._after_nudge_before_capture(move, mode, before),
+        )
+
+    def _after_nudge_before_capture(
+        self, move: _NudgeMove, mode: TargetMode, before: dict[str, _Measurement] | None
+    ) -> None:
         if not before:
             self._resume_auto_exposure()
             self._last_error = self._capture_failure_message(
@@ -2228,7 +2292,7 @@ class MountTestMovePanel(QWidget):
             self._result_label.setText(f"Move failed: {self._last_error}")
             return
         started = self._runner.submit(
-            self._mount_park, self._mount, axis, direction, duration_ms,
+            self._mount_park, self._mount, move.axis, move.direction, move.duration_ms,
             rate_preset=self._settings.rate_preset, park_after=False,
             settle_ms=self._settings.settle_ms,
         )
@@ -2239,18 +2303,20 @@ class MountTestMovePanel(QWidget):
             kind="nudge",
             before=before,
             mode=mode,
-            duration_ms=duration_ms,
-            clamped=clamped,
-            axis=axis,
-            direction=direction,
+            duration_ms=move.duration_ms,
+            clamped=move.clamped,
+            axis=move.axis,
+            direction=move.direction,
         )
         suffix = (
             f" (safety-capped at {self._settings.max_nudge_pulse_ms}ms -- click again to continue)"
-            if clamped
+            if move.clamped
             else ""
         )
+        axis_label = _AXIS_LABELS[move.axis]
+        direction_label = "+" if move.direction is AxisDirection.POSITIVE else "-"
         self._result_label.setText(
-            f"Moving {_CAMERA_LABELS[camera_key]} {axis_label} {direction_label}…{suffix}"
+            f"Moving {_CAMERA_LABELS[move.camera_key]} {axis_label} {direction_label}…{suffix}"
         )
         self._update_buttons_enabled()
 
@@ -2278,10 +2344,18 @@ class MountTestMovePanel(QWidget):
             direction=pending.direction.name,
             minimum_settle_ms=self._settings.frame_settle_ms,
         )
-        after = self._capture_both(
-            pending.mode, diagnostic_label="nudge_after", after_monotonic=completed_at
+        self._request_capture(
+            pending.mode,
+            label="nudge_after",
+            after_monotonic=completed_at,
+            then=lambda after: self._after_nudge_after_capture(pending, after),
         )
+
+    def _after_nudge_after_capture(
+        self, pending: _PendingAction, after: dict[str, _Measurement] | None
+    ) -> None:
         self._resume_auto_exposure()
+        assert pending.axis is not None and pending.direction is not None
         if not after:
             self._last_error = self._capture_failure_message(
                 f"{self._missing_label(pending.mode)} after the move"
