@@ -3,7 +3,6 @@ in tabs, everything fits the minimum supported desktop (1280x720)."""
 
 from __future__ import annotations
 
-import numpy as np
 import pytest
 from astrotool_core.camera.replay_camera import ReplayCamera
 from astrotool_core.testing.frame_factory import single_star_image
@@ -19,7 +18,7 @@ def _window() -> MainWindow:
     image = single_star_image(
         (240, 320), x=160.0, y=120.0, peak=3000.0, sigma=2.0, background=100.0
     )
-    return MainWindow(ReplayCamera([np.asarray(image)]), device_lister=lambda: [])
+    return MainWindow(ReplayCamera.from_arrays([image], cycle=True), device_lister=lambda: [])
 
 
 def _ancestors(widget: QWidget) -> list[QWidget]:
@@ -117,9 +116,9 @@ def test_focus_tab_groups_focuser_and_both_filter_wheels(shown: MainWindow) -> N
     tabs = shown.findChild(QTabWidget)
     assert tabs is not None
     focus_tab = next(
-        tabs.widget(i)
-        for i in range(tabs.count())
-        if shown._focuser_panel in _children(tabs.widget(i))
+        page
+        for page in (tabs.widget(i) for i in range(tabs.count()))
+        if page is not None and shown._focuser_panel in _children(page)
     )
     assert shown._main_filter_wheel_panel in _children(focus_tab)
     assert shown._guide_filter_wheel_panel in _children(focus_tab)
