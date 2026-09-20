@@ -195,6 +195,9 @@ class CameraPanel(QWidget):
         self._last_result: DonutAnalysisResult | None = None
         self._last_recommendation: CollimationRecommendation | None = None
         self._recent_frames: deque[Frame] = deque(maxlen=_RECENT_FRAMES_KEPT)
+        #: Highest mailbox sequence already appended to `_recent_frames` (issue #49: two
+        #: readers -- the live-view poll and capture waits -- must not double-append).
+        self._recent_high_sequence = 0
         self._auto_exposure_config = auto_exposure_config or AutoExposureConfig()
         #: The (metric, gain) pair from this panel's own previous
         #: correction -- threaded through explicitly since
@@ -394,6 +397,7 @@ class CameraPanel(QWidget):
             self._stream = StreamController(self._camera, name="collimation")
             self._stream.start_stream(self._exposure_spin.value() / 1000.0, cadence_s=0.2)
             self._last_sequence = 0
+            self._recent_high_sequence = 0
             self._last_stream_error = None
             self._start_button.setText("Stop stream")
             if not self._updates_paused:
@@ -483,6 +487,7 @@ class CameraPanel(QWidget):
         self._last_result = None
         self._last_recommendation = None
         self._last_sequence = 0
+        self._recent_high_sequence = 0
         self._last_stream_error = None
         self._auto_exposure_previous_metric = None
         self._auto_exposure_previous_gain = None
@@ -611,7 +616,7 @@ class CameraPanel(QWidget):
         )
         if mailbox_frame is not None:
             self._last_sequence = mailbox_frame.sequence
-            self._recent_frames.append(mailbox_frame.frame)
+            self._remember_frame(mailbox_frame)
 
             if self._auto_exposure_checkbox.isChecked() and not self._auto_exposure_paused:
                 self._apply_auto_exposure(mailbox_frame.frame)
@@ -902,44 +907,45 @@ class CameraPanel(QWidget):
         not currently streaming -- instead of the bare `None` this used to
         collapse every one of those causes into).
 
-        Deliberately blocks the Qt main thread (like `_poll_frame`'s own
-        non-blocking `wait_latest(timeout_s=0.0)` peek, just with a real
-        timeout instead of 0) rather than the background capture thread
-        -- MountTestMoveRunner's own pulse+settle wait already blocks a
-        background thread for far longer than this ever should in the
-        common case (a fresh frame is normally available within one
-        capture cycle), and the caller (MountTestMovePanel) is already in
-        an equivalent "Calibrating…"/"Moving…" modal-feeling state for
-        that whole bracket regardless.
+        Issue #49: safe to call from a WORKER thread (that is how Mount Align's
+        captures now wait -- a stable-frame window can take tens of seconds with
+        long exposures, and used to freeze the UI because this ran on the GUI
+        thread). It reads the mailbox's non-destructive ring of recent frames with a
+        cursor local to this call, so it neither steals frames from the live view's
+        destructive `wait_latest` consumer nor touches any widget/GUI state; frames
+        older than `reference_monotonic` are simply rejected by the freshness rule.
         """
+        cursor = 0  # walk the ring from its oldest remembered frame
+
+        def next_frame(timeout_s: float) -> DeliveredFrame | None:
+            nonlocal cursor
+            stream = self._stream
+            if stream is None:
+                return None
+            mailbox_frame = stream.mailbox.wait_next_after(cursor, timeout_s=timeout_s)
+            if mailbox_frame is None:
+                return None
+            cursor = mailbox_frame.sequence
+            self._remember_frame(mailbox_frame)
+            return DeliveredFrame(
+                pixels=self._frame_to_mono(mailbox_frame.frame),
+                captured_at_monotonic=mailbox_frame.captured_at_monotonic,
+                exposure_seconds=mailbox_frame.frame.exposure_seconds,
+            )
+
         return acquire_stable_frame(
-            self._next_mailbox_frame,
+            next_frame,
             is_available=lambda: self._stream is not None,
             reference_monotonic=reference_monotonic,
             timeout_s=timeout_s,
         )
 
-    def _next_mailbox_frame(self, timeout_s: float) -> DeliveredFrame | None:
-        """`wait_for_frame_after`'s own `next_frame` primitive for
-        `acquire_stable_frame` -- side effects this panel needs for
-        *every* frame it observes (advancing `_last_sequence`, appending
-        to `_recent_frames` so `latest_mono_frame()` and friends stay
-        current) happen here regardless of whether `acquire_stable_frame`
-        ultimately accepts this particular frame or keeps waiting for the
-        next one."""
-        assert self._stream is not None
-        mailbox_frame: MailboxFrame | None = self._stream.mailbox.wait_latest(
-            after_sequence=self._last_sequence, timeout_s=timeout_s
-        )
-        if mailbox_frame is None:
-            return None
-        self._last_sequence = mailbox_frame.sequence
-        self._recent_frames.append(mailbox_frame.frame)
-        return DeliveredFrame(
-            pixels=self._frame_to_mono(mailbox_frame.frame),
-            captured_at_monotonic=mailbox_frame.captured_at_monotonic,
-            exposure_seconds=mailbox_frame.frame.exposure_seconds,
-        )
+    def _remember_frame(self, mailbox_frame: MailboxFrame) -> None:
+        """Append a frame to `_recent_frames` once, whichever path (live-view poll or a
+        capture wait on a worker thread) sees it first."""
+        if mailbox_frame.sequence > self._recent_high_sequence:
+            self._recent_high_sequence = mailbox_frame.sequence
+            self._recent_frames.append(mailbox_frame.frame)
 
     def stop(self) -> None:
         """Stop streaming/polling and release the camera hardware. Safe to
