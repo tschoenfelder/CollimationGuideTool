@@ -2,10 +2,10 @@ import time
 from collections.abc import Callable
 
 from astrotool_core.mount.park_port import MountParkPort, MountParkStatus
-from astrotool_core.mount.port import AxisDirection, MountAxis
+from astrotool_core.mount.port import AxisDirection, CommandResult, MountAxis
 from astrotool_core.testing.fake_mount import FakeMountAdapter
 from astrotool_core.testing.fake_mount_park import FakeMountPark
-from collimation_tool.ui.mount_test_move_runner import MountTestMoveRunner
+from collimation_tool.ui.mount_test_move_runner import MountPulseOutcome, MountTestMoveRunner
 
 
 def _wait_for(predicate: Callable[[], bool], *, timeout_s: float = 5.0) -> bool:
@@ -434,3 +434,123 @@ class TestMountTestMoveRunner:
         assert outcome.error is not None
         assert "rejected" in outcome.error
         assert mount.pulse_log == []  # never actually accepted
+
+
+class _RaisingPark(FakeMountPark):
+    """Issue #49: any exception in the worker (a driver/network error) used to kill the
+    thread WITHOUT clearing `_busy` -- the runner then stayed busy forever and the whole
+    Mount Align panel looked frozen with its buttons disabled."""
+
+    def __init__(self, *, on: str) -> None:
+        super().__init__(start_parked=(on == "unpark"))
+        self._on = on
+
+    def unpark(self) -> None:
+        if self._on == "unpark":
+            raise ConnectionError("indiserver went away during unpark")
+        super().unpark()
+
+    def stop_tracking(self) -> None:
+        if self._on == "stop_tracking":
+            raise OSError("socket closed during stop_tracking")
+        super().stop_tracking()
+
+    def park(self) -> None:
+        if self._on == "park":
+            raise RuntimeError("park blew up")
+        super().park()
+
+
+class _RaisingMount(FakeMountAdapter):
+    def pulse_axis(
+        self,
+        axis: MountAxis,
+        direction: AxisDirection,
+        duration_ms: int,
+        *,
+        rate_preset: str | None = None,
+    ) -> CommandResult:
+        raise RuntimeError("driver crashed mid-pulse")
+
+
+class TestWorkerCrashesNeverStrandTheRunner:
+    def _finished_outcome(self, runner: MountTestMoveRunner) -> MountPulseOutcome:
+        assert _wait_for(lambda: not runner.is_busy), "runner stayed busy after a worker crash"
+        outcome = runner.take_latest()
+        assert outcome is not None, "a crash must still publish an outcome"
+        return outcome
+
+    def test_an_exception_in_unpark_is_reported_and_clears_busy(self) -> None:
+        runner = MountTestMoveRunner()
+        mount = FakeMountAdapter()
+        mount.connect()
+
+        assert runner.submit(
+            _RaisingPark(on="unpark"), mount, MountAxis.AXIS1, AxisDirection.POSITIVE, 10,
+            park_after=False,
+        )
+        outcome = self._finished_outcome(runner)
+
+        assert outcome.pulsed is False
+        assert outcome.error is not None and "worker crashed" in outcome.error
+        assert "unpark" in outcome.error
+
+    def test_an_exception_in_stop_tracking_is_reported_and_clears_busy(self) -> None:
+        runner = MountTestMoveRunner()
+        mount = FakeMountAdapter()
+        mount.connect()
+        park = _RaisingPark(on="stop_tracking")
+        park.unpark()  # already unparked -> the lighter stop_tracking() branch runs
+
+        assert runner.submit(
+            park, mount, MountAxis.AXIS1, AxisDirection.POSITIVE, 10, park_after=False
+        )
+        outcome = self._finished_outcome(runner)
+
+        assert outcome.pulsed is False
+        assert outcome.error is not None and "worker crashed" in outcome.error
+
+    def test_an_exception_in_the_pulse_is_reported_and_clears_busy(self) -> None:
+        runner = MountTestMoveRunner()
+        park = FakeMountPark(start_parked=False)
+
+        assert runner.submit(
+            park, _RaisingMount(), MountAxis.AXIS1, AxisDirection.POSITIVE, 10, park_after=False
+        )
+        outcome = self._finished_outcome(runner)
+
+        assert outcome.pulsed is False
+        assert outcome.error is not None and "driver crashed mid-pulse" in outcome.error
+
+    def test_an_exception_while_reparking_is_reported_and_clears_busy(self) -> None:
+        runner = MountTestMoveRunner()
+        mount = FakeMountAdapter()
+        mount.connect()
+        park = _RaisingPark(on="park")
+        park.unpark()
+
+        assert runner.submit(
+            park, mount, MountAxis.AXIS1, AxisDirection.POSITIVE, 10, park_after=True
+        )
+        outcome = self._finished_outcome(runner)
+
+        assert outcome.error is not None and "park blew up" in outcome.error
+
+    def test_the_runner_is_usable_again_after_a_crash(self) -> None:
+        runner = MountTestMoveRunner()
+        mount = FakeMountAdapter()
+        mount.connect()
+        assert runner.submit(
+            _RaisingPark(on="unpark"), mount, MountAxis.AXIS1, AxisDirection.POSITIVE, 10,
+            park_after=False,
+        )
+        self._finished_outcome(runner)
+
+        assert runner.submit(
+            FakeMountPark(start_parked=False), mount, MountAxis.AXIS1, AxisDirection.POSITIVE, 10,
+            park_after=False,
+        )
+        outcome = self._finished_outcome(runner)
+
+        assert outcome.pulsed is True and outcome.error is None
+        assert mount.pulse_log  # the second submit really pulsed

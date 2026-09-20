@@ -59,6 +59,7 @@ strand the mount unparked in that mode.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from dataclasses import dataclass
@@ -129,6 +130,9 @@ def _pulse_with_retry(
         result = mount.pulse_axis(axis, direction, pulse_ms, rate_preset=rate_preset)
         attempt += 1
     return result
+
+
+_log = logging.getLogger(__name__)
 
 
 class MountTestMoveRunner:
@@ -219,6 +223,30 @@ class MountTestMoveRunner:
         park_after: bool,
         settle_ms: int,
     ) -> None:
+        """Worker entry point. Issue #49: whatever happens inside the sequence -- a driver or
+        network exception at ANY step -- an outcome is ALWAYS published and `_busy` ALWAYS
+        cleared. A worker that died without doing so left the runner busy forever (buttons
+        disabled, the Mount Align panel looking frozen)."""
+        try:
+            outcome = self._run_sequence(
+                mount_park, mount, steps, rate_preset, park_after, settle_ms
+            )
+        except Exception as exc:  # noqa: BLE001 -- see the docstring: nothing may strand busy
+            _log.exception("mount test-move worker crashed")
+            outcome = MountPulseOutcome(pulsed=False, error=f"worker crashed: {exc!r}")
+        with self._lock:
+            self._latest_outcome = outcome
+            self._busy = False
+
+    def _run_sequence(
+        self,
+        mount_park: MountParkPort,
+        mount: MountPort,
+        steps: list[PulseStep],
+        rate_preset: str | None,
+        park_after: bool,
+        settle_ms: int,
+    ) -> MountPulseOutcome:
         pulsed = False
         error: str | None = None
         motion_started_at: float | None = None
@@ -299,15 +327,13 @@ class MountTestMoveRunner:
                 ):
                     error = error or "mount did not confirm re-parked in time"
 
-        with self._lock:
-            self._latest_outcome = MountPulseOutcome(
-                pulsed=pulsed,
-                error=error,
-                motion_started_at=motion_started_at,
-                motion_ended_at=motion_ended_at,
-                settled_at=settled_at,
-            )
-            self._busy = False
+        return MountPulseOutcome(
+            pulsed=pulsed,
+            error=error,
+            motion_started_at=motion_started_at,
+            motion_ended_at=motion_ended_at,
+            settled_at=settled_at,
+        )
 
     def take_latest(self) -> MountPulseOutcome | None:
         """Return and clear the latest completed outcome, if any — None
