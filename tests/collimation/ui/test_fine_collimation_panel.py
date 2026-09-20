@@ -7,6 +7,8 @@ these are pure rendering-logic tests."""
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from astrotool_core.diffraction.optical_reference_model import (
     OpticalConfig,
     compute_diffraction_reference,
@@ -22,6 +24,7 @@ from collimation_tool.application.fine_collimation_controller import (
     FineCollimationOutcome,
     FineCollimationResult,
 )
+from collimation_tool.domain.target_mode import CollimationTargetMode
 from collimation_tool.ui.fine_collimation_panel import FineCollimationPanel
 
 _SHAPE = (120, 120)
@@ -191,3 +194,68 @@ class TestRunButtonNoFrameAvailable:
 
         assert not panel._runner.is_busy
         assert "frame" in panel._status_label.text().lower()
+
+
+class TestArtificialStarHonesty:
+    """Issue #39: an artificial star is at a finite distance -- the fine
+    collimation verdict must never read as a final 'collimated' result."""
+
+    @staticmethod
+    def _artificial(outcome: FineCollimationOutcome) -> FineCollimationOutcome:
+        assert outcome.result is not None
+        return replace(
+            outcome,
+            result=replace(outcome.result, target_mode=CollimationTargetMode.ARTIFICIAL_STAR),
+        )
+
+    def test_a_symmetric_artificial_star_result_is_never_shown_as_collimated(
+        self, qapp: object
+    ) -> None:
+        panel = _make_panel()
+
+        panel.show_outcome(self._artificial(_valid_fine_collimated_outcome()))
+
+        assert panel.is_collimated_style_active is False
+        text = panel._status_label.text().lower()
+        assert "artificial star" in text
+        assert "finite-distance" in text
+        assert panel._star_view.has_image is True  # measurement still shown
+
+    def test_the_same_result_for_a_natural_star_is_still_collimated(self, qapp: object) -> None:
+        panel = _make_panel()
+
+        panel.show_outcome(_valid_fine_collimated_outcome())
+
+        assert panel.is_collimated_style_active is True
+
+    def test_failures_and_low_confidence_name_the_artificial_star_mode(
+        self, qapp: object
+    ) -> None:
+        panel = _make_panel()
+        panel.set_target_mode(CollimationTargetMode.ARTIFICIAL_STAR)
+
+        panel.show_outcome(
+            FineCollimationOutcome(status="failed", result=None, reason="target_not_found_guide")
+        )
+
+        assert "artificial star" in panel._status_label.text().lower()
+        assert "target_not_found_guide" in panel._status_label.text()
+
+    def test_set_target_mode_syncs_the_selector_and_diagnostics(self, qapp: object) -> None:
+        panel = _make_panel()
+
+        panel.set_target_mode(CollimationTargetMode.ARTIFICIAL_STAR)
+
+        assert panel.target_mode is CollimationTargetMode.ARTIFICIAL_STAR
+        assert panel._target_mode_combo.currentData() is CollimationTargetMode.ARTIFICIAL_STAR
+        assert panel.diagnostic_context()["target_mode"] == "artificial_star"
+
+    def test_diagnostics_retain_the_last_outcome(self, qapp: object) -> None:
+        panel = _make_panel()
+        panel.show_outcome(self._artificial(_valid_fine_collimated_outcome()))
+
+        context = panel.diagnostic_context()
+
+        assert context["last_status"] == "success"
+        assert context["last_symmetry_status"] == "fine_collimated"
+        assert context["last_target_mode"] == "artificial_star"

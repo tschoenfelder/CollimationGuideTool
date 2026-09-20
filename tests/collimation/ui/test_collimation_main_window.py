@@ -5430,3 +5430,80 @@ class TestFineCollimationWiring:
         window.close()
 
         assert not window._fine_collimation_panel._poll_timer.isActive()
+
+
+class TestArtificialStarTargetMode:
+    """Issue #39: an explicit natural/artificial target mode, visible in
+    both rough and fine collimation, plus guide-assisted reacquisition
+    that fails explicitly (never silently) when its inputs are missing."""
+
+    def test_selecting_artificial_star_labels_the_rough_panel_and_diagnostics(
+        self, qapp: object
+    ) -> None:
+        from collimation_tool.domain.target_mode import CollimationTargetMode
+
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+        assert window._diagnostic_context()["target_mode"] == "natural_star"
+
+        window._fine_collimation_panel.set_target_mode(CollimationTargetMode.ARTIFICIAL_STAR)
+
+        assert window._left_panel._target_mode_label == "Artificial star"
+        assert window._diagnostic_context()["target_mode"] == "artificial_star"
+
+    def test_the_rough_recommendation_text_names_the_target_mode(self, qapp: object) -> None:
+        from collimation_tool.domain.target_mode import CollimationTargetMode
+
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+        window._fine_collimation_panel.set_target_mode(CollimationTargetMode.ARTIFICIAL_STAR)
+        panel = window._left_panel
+        panel._start_button.setChecked(True)
+        text = ""
+        try:
+            panel._poll_frame()
+            deadline = time.monotonic() + 10.0
+            while time.monotonic() < deadline and "Artificial star" not in text:
+                time.sleep(0.02)
+                panel._poll_frame()
+                text = panel._recommendation_label.text()
+        finally:
+            panel._start_button.setChecked(False)
+
+        assert "Artificial star" in text
+
+    def test_reacquisition_without_a_registration_fails_explicitly(self, qapp: object) -> None:
+        from collimation_tool.application.star_acquisition import (
+            AcquisitionStatus,
+            FocusedStarAcquisition,
+        )
+
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+
+        result = window._reacquire_via_guide(FocusedStarAcquisition(roi_size=(16, 12)), None)
+
+        assert result.status is AcquisitionStatus.LOST
+        assert result.failure_reason == "no_registration"
+
+    def test_reacquisition_without_a_guide_calibration_fails_explicitly(
+        self, qapp: object
+    ) -> None:
+        from astrotool_core.registration.result import RegistrationMethod, RegistrationStatus
+        from collimation_tool.application.star_acquisition import (
+            AcquisitionStatus,
+            FocusedStarAcquisition,
+        )
+
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
+        window._last_prior_a = OpticalPrior(
+            name="main", sensor_width_px=100, sensor_height_px=80, pixel_scale_arcsec=1.0
+        )
+        window._last_calibration_result = CrossCameraRegistrationResult(
+            method=RegistrationMethod.ARTIFICIAL_STAR, status=RegistrationStatus.OK_OVERLAP,
+            rotation_deg=0.0, scale=1.0,
+            polygon_a_in_b=((0.0, 0.0), (100.0, 0.0), (100.0, 80.0), (0.0, 80.0)),
+            confidence=1.0,
+        )
+
+        result = window._reacquire_via_guide(FocusedStarAcquisition(roi_size=(16, 12)), None)
+
+        assert result.status is AcquisitionStatus.LOST
+        assert result.failure_reason == "no_guide_calibration"

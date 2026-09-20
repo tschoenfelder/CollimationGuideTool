@@ -16,8 +16,14 @@ from astrotool_core.testing.frame_factory import airy_pattern_image
 from collimation_tool.application.fine_collimation_controller import (
     FineCollimationController,
     GetFrame,
+    GuideReacquirer,
 )
-from collimation_tool.application.star_acquisition import FocusedStarAcquisition
+from collimation_tool.application.star_acquisition import (
+    AcquisitionResult,
+    AcquisitionStatus,
+    FocusedStarAcquisition,
+)
+from collimation_tool.domain.target_mode import CollimationTargetMode
 
 _SHAPE = (140, 140)
 _STAR_X, _STAR_Y = 70.0, 70.0
@@ -121,3 +127,98 @@ class TestBoundedFailureModes:
         assert outcome.status == "failed"
         assert outcome.reason == "cancelled"
         assert calls["n"] <= 6
+
+
+class TestGuideAssistedReacquisition:
+    """Issue #39: a star lost from Main mid-collection is recovered via the
+    guide camera (an injected reacquirer) and the run resumes with the SAME
+    tracked target -- never a fresh selection."""
+
+    @staticmethod
+    def _controller(
+        reacquirer: GuideReacquirer | None,
+        *,
+        tail: np.ndarray | None = None,
+        seed: int = 11,
+    ) -> FineCollimationController:
+        rng = np.random.default_rng(seed)
+        iterator = iter([_star_frame(rng), _blank_frame(), _blank_frame()])
+        return FineCollimationController(
+            FocusedStarAcquisition(roi_size=_ROI_SIZE, max_full_frame_search_attempts=2),
+            get_frame=lambda: next(iterator, tail if tail is not None else _star_frame(rng)),
+            optical_config=OpticalConfig(),
+            sample_count=4,
+            target_mode=CollimationTargetMode.ARTIFICIAL_STAR,
+            guide_reacquirer=reacquirer,
+        )
+
+    @staticmethod
+    def _found_in_guide(
+        acquisition: FocusedStarAcquisition, cancel_check: object
+    ) -> AcquisitionResult:
+        return AcquisitionResult(AcquisitionStatus.SEARCHING_GUIDE, None, (70.0, 70.0), None)
+
+    def test_a_successful_reacquisition_resumes_and_completes_the_run(self) -> None:
+        calls: list[int] = []
+
+        def reacquirer(acq: FocusedStarAcquisition, cancel: object) -> AcquisitionResult:
+            calls.append(1)
+            return self._found_in_guide(acq, cancel)
+
+        outcome = self._controller(reacquirer).run()
+
+        assert calls == [1]
+        assert outcome.status == "success"
+        assert outcome.result is not None
+        assert outcome.result.target_mode is CollimationTargetMode.ARTIFICIAL_STAR
+        assert "reacquired_via_guide" in outcome.reacquisition_log
+
+    def test_a_failed_reacquisition_reports_its_own_reason_not_a_generic_loss(self) -> None:
+        def reacquirer(acq: FocusedStarAcquisition, cancel: object) -> AcquisitionResult:
+            return AcquisitionResult(AcquisitionStatus.LOST, None, None, "target_not_found_guide")
+
+        outcome = self._controller(reacquirer).run()
+
+        assert outcome.status == "failed"
+        assert outcome.reason == "target_not_found_guide"
+        assert "guide_reacquisition_attempted" in outcome.reacquisition_log
+
+    def test_an_ambiguous_return_to_main_never_silently_switches_target(self) -> None:
+        def star(x: float) -> np.ndarray:
+            return airy_pattern_image(
+                _SHAPE, x=x, y=70.0, peak=5000.0, core_sigma=2.0, background=100.0,
+                ring_radius_px=12.0, ring_peak=1200.0, ring_sigma=1.5,
+            )
+
+        two_stars = star(45.0) + star(95.0) - 100.0
+
+        outcome = self._controller(self._found_in_guide, tail=two_stars).run()
+
+        assert outcome.status == "failed"
+        assert outcome.reason == "target_ambiguous"
+
+    def test_without_a_reacquirer_a_lost_star_is_still_a_clean_star_lost(self) -> None:
+        outcome = self._controller(None).run()
+
+        assert outcome.status == "failed"
+        assert outcome.reason == "star_lost"
+
+    def test_the_first_selection_failing_never_triggers_guide_reacquisition(self) -> None:
+        calls: list[int] = []
+
+        def reacquirer(acq: FocusedStarAcquisition, cancel: object) -> AcquisitionResult:
+            calls.append(1)
+            return self._found_in_guide(acq, cancel)
+
+        controller = FineCollimationController(
+            FocusedStarAcquisition(roi_size=_ROI_SIZE),
+            get_frame=_blank_frame,
+            optical_config=OpticalConfig(),
+            sample_count=4,
+            guide_reacquirer=reacquirer,
+        )
+
+        outcome = controller.run()
+
+        assert outcome.reason == "star_lost"
+        assert calls == []

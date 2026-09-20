@@ -226,6 +226,10 @@ class CameraPanel(QWidget):
         #: Main-frame artificial star, independent of _fov_polygon/
         #: _fov_rect (a point, not a footprint).
         self._matched_point: tuple[float, float] | None = None
+        #: Issue #39: the collimation target mode's label (e.g.
+        #: "Artificial star"), prefixed onto the rough recommendation text
+        #: so the operator never has to infer what a measurement used.
+        self._target_mode_label: str | None = None
 
         self._title_label = QLabel(f"<b>{title}</b>")
         self._live_view = LiveViewLabel()
@@ -486,9 +490,10 @@ class CameraPanel(QWidget):
                 fov_polygon=self._fov_polygon,
                 matched_point=self._matched_point,
             )
-            self._recommendation_label.setText(
-                _format_recommendation(outcome.result, outcome.recommendation)
-            )
+            text = _format_recommendation(outcome.result, outcome.recommendation)
+            if self._target_mode_label:
+                text = f"[{self._target_mode_label}] {text}"
+            self._recommendation_label.setText(text)
 
     def _handle_stream_error(self, error: Exception) -> None:
         """The background capture thread has died permanently (see
@@ -621,6 +626,12 @@ class CameraPanel(QWidget):
         `set_fov_overlay`'s docstring (this takes precedence when both
         are set). Takes effect on the next polled frame."""
         self._fov_polygon = corners
+
+    def set_target_mode_label(self, label: str | None) -> None:
+        """Set (or clear, with None) the collimation target-mode label
+        shown with this panel's rough recommendation -- issue #39. Takes
+        effect on the next analyzed frame."""
+        self._target_mode_label = label
 
     def set_matched_point(self, point: tuple[float, float] | None) -> None:
         """Set (or clear, with None) the artificial-star registration's

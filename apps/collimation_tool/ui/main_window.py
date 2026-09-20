@@ -174,6 +174,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from collimation_tool.application.star_acquisition import (
+    AcquisitionResult,
+    AcquisitionStatus,
+    FocusedStarAcquisition,
+)
+from collimation_tool.domain.target_mode import CollimationTargetMode
 from collimation_tool.ui.camera_panel import CameraPanel, default_camera_factory
 from collimation_tool.ui.filter_wheel_panel import FilterWheelPanel
 from collimation_tool.ui.fine_collimation_panel import FineCollimationPanel
@@ -270,9 +276,19 @@ class MainWindow(QMainWindow):
         # as the focuser above -- fine collimation analyzes the same
         # focused star the Main camera tracks. optical_config defaults
         # to a fully-unconfigured OpticalConfig() (see module docstring).
+        # Held as an attribute (not inlined below) since fine collimation's
+        # guide-assisted reacquisition (issue #39) pulses the SAME mount
+        # connection the test-move panel drives.
+        self._pulse_mount: MountPort = (
+            pulse_mount if pulse_mount is not None else NoMountAdapter()
+        )
         self._fine_collimation_panel = FineCollimationPanel(
             get_frame=self._left_panel.latest_mono_frame,
             optical_config=optical_config,
+            guide_reacquirer=self._reacquire_via_guide,
+        )
+        self._fine_collimation_panel.target_mode_changed.connect(
+            self._on_target_mode_changed
         )
 
         # Issue #34: unlike the focuser, an EFW is genuinely per optical
@@ -306,7 +322,7 @@ class MainWindow(QMainWindow):
         mount_park_port = mount if mount is not None else NoMountPark()
         self._mount_panel = MountParkPanel(mount_park_port)
         self._test_move_panel = MountTestMovePanel(
-            pulse_mount if pulse_mount is not None else NoMountAdapter(),
+            self._pulse_mount,
             mount_park=mount_park_port,
             get_left_frame=self._left_panel.latest_mono_frame,
             get_right_frame=self._right_panel.latest_mono_frame,
@@ -390,6 +406,10 @@ class MainWindow(QMainWindow):
         #: never-cleared-on-a-later-miss lifecycle as
         #: _last_calibration_result, since it describes the same overlay.
         self._last_prior_b: OpticalPrior | None = None
+        #: Main's prior for that same result -- needed by guide-assisted
+        #: reacquisition (issue #39) to project the Main-frame star into Guide.
+        self._last_prior_a: OpticalPrior | None = None
+        self._pending_prior_a: OpticalPrior | None = None
         #: The prior_b of whichever calibration run is currently
         #: in-flight -- see _last_prior_b's own docstring for why this
         #: isn't promoted to _last_prior_b until that run actually
@@ -464,6 +484,39 @@ class MainWindow(QMainWindow):
         scroll_area.setWidget(central)
         self.setCentralWidget(scroll_area)
         self.resize(1360, 700)
+
+    def _on_target_mode_changed(self, mode: object) -> None:
+        """Mirror the fine-collimation panel's target mode (issue #39) onto
+        the rough-collimation view so both always say what they're using."""
+        assert isinstance(mode, CollimationTargetMode)
+        self._left_panel.set_target_mode_label(mode.label)
+
+    def _reacquire_via_guide(
+        self, acquisition: FocusedStarAcquisition, cancel_check: Callable[[], bool] | None
+    ) -> AcquisitionResult:
+        """Guide-assisted recovery of a star lost from Main (issue #39),
+        built from whatever #37/#29 registration and mount-test-move
+        calibration currently exist. Every missing input is an EXPLICIT
+        failure reason, never a silent no-op. The mount is only ever
+        driven through `attempt_guide_reacquisition`'s own bounded,
+        confidence-gated, cancellable `CollimationRecenterPolicy`."""
+        registration = self._last_calibration_result
+        prior_a = self._last_prior_a
+        if registration is None or prior_a is None:
+            return AcquisitionResult(AcquisitionStatus.LOST, None, None, "no_registration")
+        calibration = self._test_move_panel.calibration_for("right")
+        if calibration is None:
+            return AcquisitionResult(
+                AcquisitionStatus.LOST, None, None, "no_guide_calibration"
+            )
+        return acquisition.attempt_guide_reacquisition(
+            self._right_panel.latest_mono_frame,
+            mount=self._pulse_mount,
+            guide_calibration=calibration,
+            registration=registration,
+            prior_main=prior_a,
+            cancel_check=cancel_check,
+        )
 
     def _on_left_camera_changed(self, device: object) -> None:
         excluded = device.camera_id if isinstance(device, TouptekDeviceInfo) else None
@@ -551,6 +604,7 @@ class MainWindow(QMainWindow):
         # same update point as _last_calibration_result, so the two never
         # describe two different runs.
         self._pending_prior_b = prior_b
+        self._pending_prior_a = prior_a
         self._calibrate_fov_button.setEnabled(False)
         self._calibrate_fov_status_label.setText("Calibrating…")
         self._calibrate_fov_poll_timer.start()
@@ -596,6 +650,7 @@ class MainWindow(QMainWindow):
             self._last_calibration_result = result
             if self._pending_prior_b is not None:
                 self._last_prior_b = self._pending_prior_b
+                self._last_prior_a = self._pending_prior_a
                 guidance = derive_alignment_guidance(result, self._last_prior_b)
                 if guidance is not None:
                     magnitude_arcsec = guidance.magnitude_px * self._last_prior_b.pixel_scale_arcsec
@@ -623,6 +678,7 @@ class MainWindow(QMainWindow):
             "mount": self._mount_panel.diagnostic_context(),
             "mount_test_move": self._test_move_panel.diagnostic_context(),
             "fine_collimation": self._fine_collimation_panel.diagnostic_context(),
+            "target_mode": self._fine_collimation_panel.target_mode.value,
         }
         stability_evidence = self._test_move_panel.diagnostic_stability_evidence()
         if stability_evidence:

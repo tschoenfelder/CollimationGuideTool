@@ -1626,6 +1626,12 @@ class MountTestMovePanel(QWidget):
         self._result_label.setText("\n".join(lines))
         self._resume_auto_exposure()
 
+    def calibration_for(self, camera_key: str) -> CalibrationMatrix | None:
+        """The camera's full 4-direction calibration matrix ("left"=Main,
+        "right"=Guide), or None if none exists -- issue #39: guide-assisted
+        reacquisition needs Guide's, and must fail explicitly without it."""
+        return self._calibration.get(camera_key)
+
     def _on_nudge_clicked(self, camera_key: str, axis: MountAxis, direction: AxisDirection) -> None:
         axis_label = _AXIS_LABELS[axis]
         direction_label = "+" if direction is AxisDirection.POSITIVE else "-"

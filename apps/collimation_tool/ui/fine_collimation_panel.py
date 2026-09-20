@@ -31,15 +31,24 @@ from collections.abc import Callable
 import numpy as np
 from astrotool_core.diffraction.optical_reference_model import OpticalConfig
 from astrotool_core.diffraction.symmetry_measurement import SymmetryStatus
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap, QResizeEvent
-from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QComboBox,
+    QHBoxLayout,
+    QLabel,
+    QPushButton,
+    QVBoxLayout,
+    QWidget,
+)
 
 from collimation_tool.application.fine_collimation_controller import (
     FineCollimationController,
     FineCollimationOutcome,
+    GuideReacquirer,
 )
 from collimation_tool.application.star_acquisition import FocusedStarAcquisition
+from collimation_tool.domain.target_mode import CollimationTargetMode
 from collimation_tool.ui.fine_collimation_runner import FineCollimationRunner
 from collimation_tool.ui.live_view import stretch_to_uint8
 
@@ -207,6 +216,10 @@ class RadialProfilePlotWidget(QWidget):
 
 
 class FineCollimationPanel(QWidget):
+    #: Fires (with the new `CollimationTargetMode`) whenever the target
+    #: mode changes -- MainWindow mirrors it onto the rough-collimation view.
+    target_mode_changed = Signal(object)
+
     def __init__(
         self,
         *,
@@ -215,9 +228,13 @@ class FineCollimationPanel(QWidget):
         roi_size: tuple[int, int] = _DEFAULT_ROI_SIZE,
         sample_count: int = _DEFAULT_SAMPLE_COUNT,
         title: str = "Fine Collimation",
+        guide_reacquirer: GuideReacquirer | None = None,
     ) -> None:
         super().__init__()
         self._get_frame = get_frame
+        self._guide_reacquirer = guide_reacquirer
+        self._target_mode = CollimationTargetMode.NATURAL_STAR
+        self._last_outcome: FineCollimationOutcome | None = None
         self._optical_config = optical_config if optical_config is not None else OpticalConfig()
         self._roi_size = roi_size
         self._sample_count = sample_count
@@ -232,9 +249,14 @@ class FineCollimationPanel(QWidget):
         self._cancel_button.clicked.connect(self._on_cancel_clicked)
         self._cancel_button.setEnabled(False)
         self._status_label = QLabel("Not yet measured.")
+        self._target_mode_combo = QComboBox()
+        for mode in CollimationTargetMode:
+            self._target_mode_combo.addItem(mode.label, mode)
+        self._target_mode_combo.currentIndexChanged.connect(self._on_target_mode_selected)
 
         top_row = QHBoxLayout()
         top_row.addWidget(self._title_label)
+        top_row.addWidget(self._target_mode_combo)
         top_row.addWidget(self._run_button)
         top_row.addWidget(self._cancel_button)
         top_row.addWidget(self._status_label, stretch=1)
@@ -266,6 +288,8 @@ class FineCollimationPanel(QWidget):
             get_frame=self._get_frame,
             optical_config=self._optical_config,
             sample_count=self._sample_count,
+            target_mode=self._target_mode,
+            guide_reacquirer=self._guide_reacquirer,
         )
         started = self._runner.submit(controller)
         if not started:
@@ -293,10 +317,12 @@ class FineCollimationPanel(QWidget):
         """Render one completed run's outcome. Public -- called by
         `_poll_run` when driven live, and directly by tests to exercise
         the rendering logic without the runner/threading."""
+        self._last_outcome = outcome
         if outcome.status == "failed" or outcome.result is None:
             self._set_style(_WARNING_STYLE, collimated=False)
-            self._status_label.setText(f"FINE COLLIMATION: failed — {outcome.reason}")
+            self._status_label.setText(f"{self._prefix()}: failed — {outcome.reason}")
             return
+        prefix = self._prefix(outcome.result.target_mode)
 
         result = outcome.result
         profile_result = result.profile_result
@@ -328,37 +354,83 @@ class FineCollimationPanel(QWidget):
         if not profile_result.sufficient_sampling:
             self._set_style(_WARNING_STYLE, collimated=False)
             self._status_label.setText(
-                f"FINE COLLIMATION: insufficient sampling — {profile_result.reason}"
+                f"{prefix}: insufficient sampling — {profile_result.reason}"
             )
         elif symmetry_result.status is SymmetryStatus.INVALID:
             self._set_style(_WARNING_STYLE, collimated=False)
-            self._status_label.setText(f"FINE COLLIMATION: invalid — {symmetry_result.reason}")
+            self._status_label.setText(f"{prefix}: invalid — {symmetry_result.reason}")
         elif symmetry_result.status is SymmetryStatus.LOW_CONFIDENCE:
             self._set_style(_WARNING_STYLE, collimated=False)
             self._status_label.setText(
-                "FINE COLLIMATION: low confidence "
+                f"{prefix}: low confidence "
                 f"({symmetry_result.confidence:.0%}) — not actionable"
+            )
+        elif (
+            symmetry_result.status is SymmetryStatus.FINE_COLLIMATED
+            and outcome.result.target_mode.finite_distance
+        ):
+            # Issue #39: a finite-distance source is not what the fine-
+            # collimation optical model assumes -- never a final verdict.
+            self._set_style(_WARNING_STYLE, collimated=False)
+            self._status_label.setText(
+                f"{prefix}: symmetric pattern (confidence {symmetry_result.confidence:.0%}) "
+                "— finite-distance optics not validated, not a final collimation verdict"
             )
         elif symmetry_result.status is SymmetryStatus.FINE_COLLIMATED:
             self._set_style(_COLLIMATED_STYLE, collimated=collimated)
             self._status_label.setText(
-                f"FINE COLLIMATION: collimated (confidence {symmetry_result.confidence:.0%})"
+                f"{prefix}: collimated (confidence {symmetry_result.confidence:.0%})"
             )
         else:  # ASYMMETRIC
             self._set_style(_WARNING_STYLE, collimated=False)
             direction_text = f"{direction:.0f}°" if direction is not None else "unknown"
             magnitude_text = f"{magnitude:.2f}" if magnitude is not None else "unknown"
             self._status_label.setText(
-                f"FINE COLLIMATION: asymmetric — error {magnitude_text} @ {direction_text} "
+                f"{prefix}: asymmetric — error {magnitude_text} @ {direction_text} "
                 f"(confidence {symmetry_result.confidence:.0%})"
             )
+
+    @property
+    def target_mode(self) -> CollimationTargetMode:
+        return self._target_mode
+
+    def set_target_mode(self, mode: CollimationTargetMode) -> None:
+        index = self._target_mode_combo.findData(mode)
+        if index >= 0 and index != self._target_mode_combo.currentIndex():
+            self._target_mode_combo.setCurrentIndex(index)  # -> _on_target_mode_selected
+
+    def _on_target_mode_selected(self) -> None:
+        mode = self._target_mode_combo.currentData()
+        if isinstance(mode, CollimationTargetMode) and mode is not self._target_mode:
+            self._target_mode = mode
+            self.target_mode_changed.emit(mode)
+
+    def _prefix(self, mode: CollimationTargetMode | None = None) -> str:
+        mode = mode if mode is not None else self._target_mode
+        if mode is CollimationTargetMode.ARTIFICIAL_STAR:
+            return "FINE COLLIMATION (artificial star)"
+        return "FINE COLLIMATION"
 
     def _set_style(self, style: str, *, collimated: bool) -> None:
         self.is_collimated_style_active = collimated
         self._status_label.setStyleSheet(style)
 
     def diagnostic_context(self) -> dict[str, object]:
-        return {"running": self._running, "collimated": self.is_collimated_style_active}
+        context: dict[str, object] = {
+            "running": self._running,
+            "collimated": self.is_collimated_style_active,
+            "target_mode": self._target_mode.value,
+        }
+        outcome = self._last_outcome
+        if outcome is not None:
+            context["last_status"] = outcome.status
+            context["last_reason"] = outcome.reason
+            context["last_reacquisition_log"] = list(outcome.reacquisition_log)
+            if outcome.result is not None:
+                context["last_target_mode"] = outcome.result.target_mode.value
+                context["last_symmetry_status"] = outcome.result.symmetry_result.status.value
+                context["last_confidence"] = outcome.result.symmetry_result.confidence
+        return context
 
     def stop(self) -> None:
         self._poll_timer.stop()
