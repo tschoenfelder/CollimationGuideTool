@@ -575,6 +575,23 @@ _CALIBRATION_STEPS: tuple[_CalibrationStep, ...] = (
 )
 
 
+@dataclass(frozen=True)
+class MountInterfaceState:
+    """Issue #42: the ONE answer to "can Mount Align use the mount right now?".
+
+    Run Calibration, the nudge pad, the screen-move pad and the status text all
+    read this -- never separate checks (they used to disagree: the status text
+    was only ever SET, so a stale 'not available' message sat beside an enabled
+    Run Calibration, field bundle 6dbe7d2c).
+
+    `code`: ok | not_connected | park_interface_unavailable |
+    pulse_interface_unavailable."""
+
+    available: bool
+    code: str
+    detail: str
+
+
 @dataclass
 class _PendingAction:
     """State carried from a submit call to the matching `_poll()` completion
@@ -697,6 +714,10 @@ class MountTestMovePanel(QWidget):
         self._connected = False
         self._pending: _PendingAction | None = None
         self._calibration_queue: list[_CalibrationStep] = []
+        #: Issue #42: the exact availability message currently owned by the
+        #: status label (so it is cleared when the condition clears, but a real
+        #: calibration/result/error text is never stomped).
+        self._availability_message: str | None = None
         #: Issue #46 sizing state for the CURRENT run (see _init_sizing).
         self._sizing_policy: SizingPolicy | None = None
         self._sizing_geometry: dict[str, CameraGeometry] = {}
@@ -2383,10 +2404,31 @@ class MountTestMovePanel(QWidget):
             axis, direction, pulse_ms, (0.0, 0.0), (offset.dx_px, offset.dy_px)
         )
 
+    def interface_state(self) -> MountInterfaceState:
+        """Issue #42: derived fresh from the live adapters every call, from the
+        SAME two interfaces calibration actually needs: the park/unpark side
+        (unpark + tracking control -- shared with the Mount panel) and the
+        directional pulse side (the pulses themselves)."""
+        if not self._connected:
+            return MountInterfaceState(False, "not_connected", "Mount Align is not connected.")
+        if not self._mount_park.status().available:
+            return MountInterfaceState(
+                False,
+                "park_interface_unavailable",
+                "the mount park/unpark interface is not available (connect the Mount panel)",
+            )
+        if not self._mount.status().connected:
+            return MountInterfaceState(
+                False,
+                "pulse_interface_unavailable",
+                "the mount motion (pulse) interface is not connected",
+            )
+        return MountInterfaceState(True, "ok", "mount interface available")
+
     def _update_buttons_enabled(self) -> None:
-        park_status = self._mount_park.status()
+        interface = self.interface_state()
         busy = self._runner.is_busy
-        ready = self._connected and park_status.available and not busy
+        ready = interface.available and not busy
         self._run_calibration_button.setEnabled(ready)
         self._stop_button.setEnabled(self._connected and busy)
         # Real request: RA+/RA-/Dec+/Dec- must be usable to move the mount
@@ -2420,12 +2462,40 @@ class MountTestMovePanel(QWidget):
         # than leaving them silently unresponsive -- see module docstring's
         # incident note. Never stomps a "Calibrating…"/"Moving…"/result/
         # error message that's still relevant.
-        if busy or ready or not self._connected:
+        self._sync_availability_message(interface, busy=busy)
+
+    def _sync_availability_message(self, interface: MountInterfaceState, *, busy: bool) -> None:
+        """The status text is owned by `interface_state()`: shown while the mount
+        interface is unavailable, CLEARED as soon as it is available (or Mount Align
+        disconnects) -- and only ever replaces/clears its own previous message, never a
+        "Calibrating...", result or error text."""
+        owned = self._availability_message
+        if interface.available or interface.code == "not_connected":
+            if owned is not None and self._result_label.text() == owned:
+                self._result_label.setText("")
+            self._availability_message = None
             return
-        self._result_label.setText("Mount interface not available.")
+        if busy:
+            return
+        message = f"Mount interface not available: {interface.detail}."
+        current = self._result_label.text()
+        if current != message and (owned is None or current == owned or not current):
+            self._result_label.setText(message)
+            self._availability_message = message
 
     def diagnostic_context(self) -> dict[str, Any]:
         context: dict[str, Any] = {"target_mode": self._target_mode()}
+        interface = self.interface_state()
+        context["mount_interface"] = {
+            "available": interface.available,
+            "code": interface.code,
+            "detail": interface.detail,
+            "connected": self._connected,
+            "park_available": self._mount_park.status().available,
+            "pulse_connected": self._mount.status().connected,
+            "park_adapter": type(self._mount_park).__name__,
+            "pulse_adapter": type(self._mount).__name__,
+        }
         if self._sizing_log:
             context["calibration_sizing"] = list(self._sizing_log)
         # Deliberately sourced from _calibration_partial (every axis
