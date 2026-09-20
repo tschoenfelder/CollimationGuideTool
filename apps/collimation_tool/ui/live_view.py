@@ -154,6 +154,13 @@ class LiveViewLabel(QLabel):
         self.setText("No frame yet")
         self._base_pixmap: QPixmap | None = None
 
+    def clear_frame(self) -> None:
+        """Drop the displayed image (e.g. after a camera switch, so nothing
+        from the previous camera stays on screen)."""
+        self._base_pixmap = None
+        self.clear()
+        self.setText("No frame yet")
+
     def set_frame(
         self,
         mono: np.ndarray,

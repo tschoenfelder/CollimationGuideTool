@@ -167,3 +167,52 @@ class TestReconnectDriftDetection:
         b._open_device(tc)  # a different id/serial pair -- not a drift
 
         assert b.get_descriptor().serial_number == "SN-B"
+
+
+class _HRESULTException(Exception):
+    """Stand-in for toupcam.HRESULTException (carries the raw HRESULT as `hr`)."""
+
+    def __init__(self, hr: int) -> None:
+        super().__init__(str(hr))
+        self.hr = hr
+
+
+class _BusyCam(_FakeCam):
+    def __init__(self, serial: str) -> None:
+        super().__init__(serial)
+        self.closed = False
+
+    def StartPullModeWithCallback(self, callback: Any, ctx: Any) -> None:  # noqa: ANN401
+        raise _HRESULTException(-2147024726)  # 0x800700AA ERROR_BUSY
+
+    def Close(self) -> None:
+        self.closed = True
+
+
+class TestFailureAfterOpenReleasesTheHandle:
+    """Issue #45 (real incident e10dd9ff): a connect that failed after Open()
+    leaked the SDK handle, so the next connect to that camera was BUSY."""
+
+    def test_a_failure_after_open_closes_the_handle_and_reports_busy(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _fresh_state(monkeypatch)
+        busy = _BusyCam("SN-A")
+        tc = _two_device_module()
+        tc.Toupcam.Open = lambda device_id: busy  # type: ignore[method-assign]
+        adapter = TouptekCameraAdapter(camera_id=_DEVICE_A.id)
+
+        with pytest.raises(ConnectionError, match="busy"):
+            adapter._open_device(tc)
+
+        assert busy.closed is True
+        assert adapter._cam is None
+
+    def test_device_id_reports_the_device_actually_opened(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _fresh_state(monkeypatch)
+        adapter = TouptekCameraAdapter(camera_id=_DEVICE_B.id)
+        adapter._open_device(_two_device_module())
+
+        assert adapter.device_id == _DEVICE_B.id

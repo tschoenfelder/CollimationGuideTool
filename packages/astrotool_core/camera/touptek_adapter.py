@@ -179,6 +179,28 @@ def _is_real_camera(device: Any) -> bool:  # noqa: ANN401 — untyped SDK device
     return bool(device.model.preview) or bool(device.model.still)
 
 
+_HRESULT_BUSY = 0x800700AA  # ERROR_BUSY: the device already has an open handle
+
+
+def _describe_sdk_error(name: str, exc: Exception) -> str:
+    """Human-readable text for an SDK failure while opening a camera (issue
+    #45). The SDK raises HRESULTException(hr); 0x800700AA means the device is
+    already open (e.g. by another panel or a handle that was never released)."""
+    raw = getattr(exc, "hr", None)
+    if raw is None:
+        try:
+            raw = int(str(exc))
+        except ValueError:
+            raw = None
+    if isinstance(raw, int) and (raw & 0xFFFFFFFF) == _HRESULT_BUSY:
+        return (
+            f"TouptekCameraAdapter({name}): device busy (0x800700AA) -- it is already "
+            "open elsewhere (another panel or an unreleased handle)"
+        )
+    code = f" (0x{raw & 0xFFFFFFFF:08X})" if isinstance(raw, int) else ""
+    return f"TouptekCameraAdapter({name}): SDK error while opening{code}: {exc}"
+
+
 def _enum_devices(tc: Any) -> list[Any]:  # noqa: ANN401 — untyped SDK module
     """Return ToupTek device enumeration, calling EnumV2() at most once per
     process, filtered to actual cameras (see ``_is_real_camera``). Callers
@@ -332,9 +354,28 @@ class TouptekCameraAdapter(CameraPort):
             self._width = int(device.model.res[0].width)
             self._height = int(device.model.res[0].height)
 
-        self._basic_configure()
-        self._prepare_capture_mode()
-        self._sdk_bit_depth = self._query_bit_depth_from_sdk()
+        try:
+            self._basic_configure()
+            self._prepare_capture_mode()
+            self._sdk_bit_depth = self._query_bit_depth_from_sdk()
+        except Exception as exc:
+            # Issue #45: a half-opened device must never keep its SDK handle --
+            # the SDK allows one handle per device, so a leaked one makes the
+            # next connect to this camera fail ERROR_BUSY (0x800700AA).
+            self._abandon_handle()
+            raise ConnectionError(_describe_sdk_error(self._logical_name, exc)) from exc
+
+    @property
+    def device_id(self) -> str:
+        """SDK id of the device actually opened (empty before connect)."""
+        return self._device_id
+
+    def _abandon_handle(self) -> None:
+        cam, self._cam = self._cam, None
+        self._tc = None
+        if cam is not None:
+            with contextlib.suppress(Exception):
+                cam.Close()
 
     def disconnect(self) -> None:
         if self._cam is not None:  # pragma: no cover
@@ -479,9 +520,7 @@ class TouptekCameraAdapter(CameraPort):
             supports_hdr=bool(self._model_flag & _FLAG_CGHDR),
             supports_black_level=bool(self._model_flag & _FLAG_BLACKLEVEL),
             bit_depth=(
-                self._effective_bit_depth(max(0, self._pixel_shift))
-                if self._bit_depth > 8
-                else 8
+                self._effective_bit_depth(max(0, self._pixel_shift)) if self._bit_depth > 8 else 8
             ),
             pixel_size_um=0.0,
             sensor_width_px=self._width,
@@ -546,8 +585,7 @@ class TouptekCameraAdapter(CameraPort):
             _raw_fourcc, sdk_bit_depth = self._cam.get_RawFormat()
         except Exception as exc:
             _log.warning(
-                "TouptekCameraAdapter(%s): get_RawFormat() failed while determining "
-                "bit depth: %s",
+                "TouptekCameraAdapter(%s): get_RawFormat() failed while determining bit depth: %s",
                 self._logical_name,
                 exc,
             )

@@ -177,6 +177,9 @@ class CameraPanel(QWidget):
         self._demo_camera = camera
         self._camera = camera
         self._connected_device: TouptekDeviceInfo | None = None
+        #: Issue #45: evidence of the last camera switch (requested / previous /
+        #: actual identity, result, error) for the diagnostic bundle.
+        self._switch_evidence: dict[str, Any] = {}
         self._stream: StreamController | None = None
         self._last_sequence = 0
         #: Set by _handle_stream_error() when the background capture
@@ -404,25 +407,46 @@ class CameraPanel(QWidget):
             self._recommendation_label.setText("Stream stopped.")
 
     def _on_connect_camera(self) -> None:
+        """Switch this panel to the camera selected in the combo (issue #45).
+
+        Lifecycle: release the OLD camera first (the SDK allows one open
+        handle per device -- dropping the adapter without disconnect() left
+        the handle open, so re-opening a swapped-out camera failed BUSY, real
+        incident e10dd9ff), then open and identity-check the new one. On ANY
+        failure the previous camera is restored (or, if that is impossible,
+        the demo camera) and the combo/status re-synced to what is really
+        active -- never the new name on a stale device."""
         device = self._camera_combo.currentData()
+        previous_camera = self._camera
+        previous_device = self._connected_device
+        requested_id = device.camera_id if isinstance(device, TouptekDeviceInfo) else None
+        previous_id = previous_device.camera_id if previous_device else None
+        release_error = self._release_camera(previous_camera)
+
         if device is None:
-            self._camera = self._demo_camera
-            self._connected_device = None
+            self._activate_camera(self._demo_camera, None)
             self._camera_status_label.setText(f"Camera: {DEMO_CAMERA_LABEL}")
-            self._init_camera_controls()
+            self._record_switch(requested_id, previous_id, "ok", release_error)
             self.connected_device_changed.emit(None)
             self.settings_changed.emit()
             return
 
         assert isinstance(device, TouptekDeviceInfo)
-        candidate = self._camera_factory(device.camera_id)
+        candidate: CameraPort | None = None
         try:
+            candidate = self._camera_factory(device.camera_id)
             candidate.connect()
-        except ConnectionError as exc:
-            self._camera_status_label.setText(f"Camera: connect failed — {exc}")
+            actual_id = getattr(candidate, "device_id", None)
+            if actual_id and actual_id != device.camera_id:
+                raise ConnectionError(
+                    f"opened device {actual_id!r} instead of the requested {device.camera_id!r}"
+                )
+        except Exception as exc:  # noqa: BLE001 -- any SDK error must not escape as an incident
+            if candidate is not None:
+                self._release_camera(candidate)
+            self._handle_failed_switch(exc, previous_camera, previous_device, requested_id)
             return
-        self._camera = candidate
-        self._connected_device = device
+        self._activate_camera(candidate, device)
         # Issue #40: sourced from the RESPONSE (the adapter's own
         # get_descriptor(), independently queried post-connect), never the
         # REQUEST (device.display_name, the pre-connect combo selection) --
@@ -431,9 +455,108 @@ class CameraPanel(QWidget):
         descriptor = candidate.get_descriptor()
         serial_text = f" (S/N {descriptor.serial_number})" if descriptor.serial_number else ""
         self._camera_status_label.setText(f"Camera: {descriptor.logical_name}{serial_text}")
-        self._init_camera_controls()
+        self._record_switch(requested_id, previous_id, "ok", release_error)
         self.connected_device_changed.emit(device)
         self.settings_changed.emit()
+
+    @staticmethod
+    def _release_camera(camera: CameraPort) -> str | None:
+        """Close a camera's SDK handle; returns the error text if that failed."""
+        try:
+            camera.disconnect()
+        except Exception as exc:  # noqa: BLE001
+            _log.warning("camera disconnect failed: %s", exc)
+            return str(exc)
+        return None
+
+    def _activate_camera(self, camera: CameraPort, device: TouptekDeviceInfo | None) -> None:
+        self._camera = camera
+        self._connected_device = device
+        self._reset_stale_state()
+        self._init_camera_controls()
+
+    def _reset_stale_state(self) -> None:
+        """Nothing captured from the previous camera may survive a switch:
+        it would otherwise be shown, analysed with the NEW camera's Bayer
+        info, and fed to FOV calibration/autofocus/diagnostics."""
+        self._recent_frames.clear()
+        self._last_result = None
+        self._last_recommendation = None
+        self._last_sequence = 0
+        self._last_stream_error = None
+        self._auto_exposure_previous_metric = None
+        self._auto_exposure_previous_gain = None
+        self._analyzer.take_latest()
+        self._live_view.clear_frame()
+        self._recommendation_label.setText("Start the stream to begin.")
+
+    def _handle_failed_switch(
+        self,
+        exc: Exception,
+        previous_camera: CameraPort,
+        previous_device: TouptekDeviceInfo | None,
+        requested_id: str | None,
+    ) -> None:
+        previous_id = previous_device.camera_id if previous_device else None
+        text = f"Camera: connect failed — {exc}"
+        restored = True
+        if previous_device is not None:
+            try:
+                previous_camera.connect()
+            except Exception as restore_exc:  # noqa: BLE001
+                restored = False
+                text += (
+                    f" (previous camera could not be re-opened: {restore_exc}; using demo camera)"
+                )
+        if not restored:
+            self._camera = self._demo_camera
+            self._connected_device = None
+            self._reset_stale_state()
+            self._init_camera_controls()
+            self.connected_device_changed.emit(None)
+            self.settings_changed.emit()
+        elif previous_device is not None:
+            descriptor = previous_camera.get_descriptor()
+            text += f" (still using {descriptor.logical_name})"
+        self._camera_status_label.setText(text)
+        self._sync_combo_to(self._connected_device.camera_id if self._connected_device else None)
+        self._record_switch(requested_id, previous_id, "failed", str(exc))
+
+    def _sync_combo_to(self, camera_id: str | None) -> None:
+        """Point the combo at the actually-active camera without triggering
+        selection-change side effects."""
+        self._camera_combo.blockSignals(True)
+        try:
+            index = 0
+            if camera_id is not None:
+                for i in range(1, self._camera_combo.count()):
+                    item = self._camera_combo.itemData(i)
+                    if isinstance(item, TouptekDeviceInfo) and item.camera_id == camera_id:
+                        index = i
+                        break
+            self._camera_combo.setCurrentIndex(index)
+        finally:
+            self._camera_combo.blockSignals(False)
+
+    def _record_switch(
+        self,
+        requested_id: str | None,
+        previous_id: str | None,
+        result: str,
+        error: str | None,
+    ) -> None:
+        descriptor = self._camera.get_descriptor()
+        self._switch_evidence = {
+            "requested_camera_id": requested_id,
+            "previous_camera_id": previous_id,
+            "actual_camera_id": (
+                self._connected_device.camera_id if self._connected_device else None
+            ),
+            "actual_serial": descriptor.serial_number,
+            "actual_name": descriptor.logical_name,
+            "last_result": result,
+            "last_error": error,
+        }
 
     def refresh_camera_list(self, excluded_camera_id: str | None) -> None:
         """Rebuild the combo excluding a device connected on another panel.
@@ -595,6 +718,7 @@ class CameraPanel(QWidget):
             "auto_exposure_enabled": self._auto_exposure_checkbox.isChecked(),
             "updates_paused": self._updates_paused,
             "auto_exposure_paused": self._auto_exposure_paused,
+            "camera_switch": dict(self._switch_evidence),
         }
         if self._last_stream_error is not None:
             context["stream_error"] = self._last_stream_error
