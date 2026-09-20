@@ -47,6 +47,37 @@ lint/type-check in one step.
 A `CORE-*` change additionally requires the full `tests/contracts` and
 `tests/integration` suites to pass.
 
+## Proof of solution is the team's responsibility
+
+Do not treat field testing by the user as the primary way to prove that a fix works.
+
+For a reported defect, especially one that is intermittent, timing-sensitive, hardware-dependent, or hard to reproduce manually, the implementation work must include enough automated or deterministic verification to demonstrate that the specific failure mode is fixed before asking the user to try it again.
+
+The expected workflow is:
+
+```
+reproduce or characterize the failure
+-> write a failing regression test or deterministic simulation
+-> implement the fix
+-> prove the regression now passes
+-> run the relevant broader test gates
+-> only then ask for field confirmation where real hardware is still required
+```
+
+Field confirmation is valuable, but it is the final validation layer, not a substitute for engineering proof.
+
+For hardware-facing code, use fake-INDI/integration fixtures, deterministic timing/state simulations, captured diagnostics, and real regression datasets where possible. Tests should verify observable requirements such as command sequence, bounded timing, state transitions, failure recovery, and UI responsiveness — not merely that a function was called.
+
+When a bug cannot be fully reproduced in CI because the real hardware behavior is unavailable, the team must still:
+
+- identify the smallest behavior that can be reproduced deterministically;
+- encode that behavior as a permanent regression test;
+- add instrumentation that proves the remaining hardware-specific assumptions in one field run;
+- document exactly what is still unproven and why;
+- avoid pushing repeated speculative fixes that require the user to act as the test harness.
+
+A fix is not considered complete merely because the code looks plausible or the generic suite is green. The issue's specific acceptance criteria must have explicit verification evidence.
+
 ## Before pushing a release
 
 `tests/acceptance` is a synchronous, below-UI regression suite (deterministic
