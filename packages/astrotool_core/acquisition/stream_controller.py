@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections import deque
 from dataclasses import dataclass
 
 from astrotool_core.acquisition.acquisition_state import AcquisitionState
@@ -31,23 +32,36 @@ class MailboxFrame:
     dropped_before: int = 0
 
 
+#: How many recent frames the mailbox remembers for non-destructive readers.
+_RING_LENGTH = 8
+
+
 class FrameMailbox:
     """Single-slot latest-frame mailbox.
 
     Callers that produce frames faster than the consumer can read them see
     intermediate frames silently dropped. ``dropped_count`` counts total drops.
+
+    Issue #49: ``wait_latest`` is DESTRUCTIVE (it pops the pending frame), so it
+    has exactly one consumer -- the live view. Anything else that needs fresh
+    frames (a calibration capture waiting for a stable window, which can take
+    tens of seconds with long exposures) reads the small ring of recent frames
+    through ``wait_next_after`` instead: non-destructive and ordered, safe on a
+    worker thread, and it can never starve the live view (or vice versa).
     """
 
     def __init__(self) -> None:
         self._cond = threading.Condition()
         self._pending: MailboxFrame | None = None
         self._dropped = 0
+        self._ring: deque[MailboxFrame] = deque(maxlen=_RING_LENGTH)
 
     def put(self, frame: Frame, *, sequence: int, captured_at: float) -> None:
         with self._cond:
             if self._pending is not None:
                 self._dropped += 1
             self._pending = MailboxFrame(sequence, captured_at, frame, self._dropped)
+            self._ring.append(self._pending)
             self._cond.notify_all()
 
     def wait_latest(
@@ -60,6 +74,22 @@ class FrameMailbox:
                     frame = self._pending
                     self._pending = None
                     return frame
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                self._cond.wait(timeout=remaining)
+
+    def wait_next_after(self, sequence: int, *, timeout_s: float) -> MailboxFrame | None:
+        """The OLDEST remembered frame newer than `sequence`, without consuming it
+        (see the class docstring); blocks up to `timeout_s` for one to arrive.
+        Frames come back in order, so a caller walking `sequence` forward sees
+        every frame the ring still holds, exactly once."""
+        deadline = time.monotonic() + timeout_s
+        with self._cond:
+            while True:
+                for candidate in self._ring:
+                    if candidate.sequence > sequence:
+                        return candidate
                 remaining = deadline - time.monotonic()
                 if remaining <= 0:
                     return None
