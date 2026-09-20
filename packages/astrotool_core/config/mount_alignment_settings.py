@@ -20,8 +20,10 @@ here either.
 from __future__ import annotations
 
 import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 DEFAULT_CONFIG_PATH = Path.home() / ".CollimationGuideTool" / "config.toml"
 
@@ -32,6 +34,13 @@ DEFAULT_CONFIG_PATH = Path.home() / ".CollimationGuideTool" / "config.toml"
 #: adapter's default for any other caller.
 _DEFAULT_RATE_PRESET = "7"
 _DEFAULT_PULSE_MS = 1000
+#: Issue #46: calibration moves are sized to ~25% of the frame (not a fixed
+#: pulse) at OnStep preset "6" (20x sidereal), capped at 3 s and never
+#: shorter than ~0.2 s -- see astrotool_core.mount.movement_sizing.
+_DEFAULT_CALIBRATION_RATE_PRESET = "6"
+_DEFAULT_CALIBRATION_TARGET_FRACTION = 0.25
+_DEFAULT_MAX_CALIBRATION_PULSE_MS = 3000
+_DEFAULT_MIN_CALIBRATION_PULSE_MS = 200
 #: Real request: nudges should move a large, decisive distance for rough
 #: alignment ("the buttons should move half a window in the direction
 #: specified"), not a small fixed pixel count -- a future "slow down
@@ -191,6 +200,24 @@ class MountAlignmentSettings:
     screen_move_small_fraction: float = _DEFAULT_SCREEN_MOVE_SMALL_FRACTION
     screen_move_medium_fraction: float = _DEFAULT_SCREEN_MOVE_MEDIUM_FRACTION
     screen_move_large_fraction: float = _DEFAULT_SCREEN_MOVE_LARGE_FRACTION
+    #: Issue #46: adaptive calibration move sizing (only active when camera
+    #: optics are known; otherwise `pulse_ms`/`rate_preset` apply unchanged).
+    calibration_rate_preset: str = _DEFAULT_CALIBRATION_RATE_PRESET
+    calibration_target_fraction: float = _DEFAULT_CALIBRATION_TARGET_FRACTION
+    max_calibration_pulse_ms: int = _DEFAULT_MAX_CALIBRATION_PULSE_MS
+    min_calibration_pulse_ms: int = _DEFAULT_MIN_CALIBRATION_PULSE_MS
+
+
+def _read[T](table: dict[str, Any], key: str, default: T, convert: Callable[[Any], T]) -> T:
+    """One `[mount_alignment]` value, converted; the default for a missing or
+    malformed entry (same contract as every other field below)."""
+    value = table.get(key)
+    if value is None:
+        return default
+    try:
+        return convert(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def load_mount_alignment_settings(
@@ -304,4 +331,16 @@ def load_mount_alignment_settings(
         screen_move_small_fraction=screen_move_small_fraction,
         screen_move_medium_fraction=screen_move_medium_fraction,
         screen_move_large_fraction=screen_move_large_fraction,
+        calibration_rate_preset=_read(
+            table, "calibration_rate_preset", defaults.calibration_rate_preset, str
+        ),
+        calibration_target_fraction=_read(
+            table, "calibration_target_fraction", defaults.calibration_target_fraction, float
+        ),
+        max_calibration_pulse_ms=_read(
+            table, "max_calibration_pulse_ms", defaults.max_calibration_pulse_ms, int
+        ),
+        min_calibration_pulse_ms=_read(
+            table, "min_calibration_pulse_ms", defaults.min_calibration_pulse_ms, int
+        ),
     )

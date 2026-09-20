@@ -257,3 +257,45 @@ def test_survives_a_sibling_cameras_table_in_the_same_file(tmp_path: Path) -> No
         encoding="utf-8",
     )
     assert load_mount_alignment_settings(path).pulse_ms == 500
+
+
+class TestCalibrationSizingSettings:
+    """Issue #46: calibration move sizing is configurable but defaults to the
+    finalized policy (preset 6 = 20x, 25% target, 3 s cap, 0.2 s floor)."""
+
+    def test_defaults_follow_the_issue_policy(self) -> None:
+        settings = MountAlignmentSettings()
+
+        assert settings.calibration_rate_preset == "6"
+        assert settings.calibration_target_fraction == 0.25
+        assert settings.max_calibration_pulse_ms == 3000
+        assert settings.min_calibration_pulse_ms == 200
+
+    def test_reads_overrides(self, tmp_path: Path) -> None:
+        path = tmp_path / "config.toml"
+        path.write_text(
+            "[mount_alignment]\ncalibration_rate_preset = \"7\"\n"
+            "calibration_target_fraction = 0.3\nmax_calibration_pulse_ms = 2500\n"
+            "min_calibration_pulse_ms = 150\n",
+            encoding="utf-8",
+        )
+
+        settings = load_mount_alignment_settings(path)
+
+        assert settings.calibration_rate_preset == "7"
+        assert settings.calibration_target_fraction == 0.3
+        assert settings.max_calibration_pulse_ms == 2500
+        assert settings.min_calibration_pulse_ms == 150
+
+    def test_malformed_values_fall_back_to_defaults(self, tmp_path: Path) -> None:
+        path = tmp_path / "config.toml"
+        path.write_text(
+            "[mount_alignment]\ncalibration_target_fraction = \"lots\"\n"
+            "max_calibration_pulse_ms = \"long\"\n",
+            encoding="utf-8",
+        )
+
+        settings = load_mount_alignment_settings(path)
+
+        assert settings.calibration_target_fraction == 0.25
+        assert settings.max_calibration_pulse_ms == 3000

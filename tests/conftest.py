@@ -57,6 +57,20 @@ def _isolate_camera_settings_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatc
     monkeypatch.setattr(_main_window_module, "DEFAULT_CONFIG_PATH", tmp_path / "config.toml")
 
 
+@pytest.fixture(autouse=True)
+def _isolate_pixel_scale_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
+    """MainWindow reads each optical train's plate scale from the real
+    ``~/.SmartTScope/config.toml`` unless a test passes one explicitly. Without
+    this, a developer/Pi machine that HAS that file would silently switch
+    mount calibration (issue #46) from the fixed pulse to sized moves in every
+    bare `MainWindow(...)` test. Tests that need a scale pass it explicitly."""
+    try:
+        import collimation_tool.ui.main_window as _main_window_module
+    except ImportError:
+        return
+    monkeypatch.setattr(_main_window_module, "load_pixel_scale_arcsec", lambda _train: None)
+
+
 @pytest.fixture(scope="session")
 def qapp() -> Iterator[object]:
     from PySide6.QtWidgets import QApplication

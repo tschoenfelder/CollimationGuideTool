@@ -268,6 +268,16 @@ from astrotool_core.mount import (
     response_from_positions,
     solve_screen_move,
 )
+from astrotool_core.mount.movement_sizing import (
+    CameraGeometry,
+    SizingPolicy,
+    SizingStatus,
+    StepAction,
+    decide_next,
+    measured_fraction,
+    plan_first_move,
+    plan_followup,
+)
 from astrotool_core.mount.operating_mode import OperatingMode, TrackingEnforcer
 from astrotool_core.target.detector import detect_sources
 from astrotool_core.target.translation_offset import measure_translation_offset
@@ -359,6 +369,13 @@ class MeasurementFailureClass(Enum):
     #: wind/vibration kept the image moving, not a streaming/connection
     #: problem).
     IMAGE_NOT_STABLE = "image_not_stable"
+    #: Issue #46: even the longest allowed calibration move (the normal 3 s
+    #: envelope at the configured rate) shifts this camera's image by less
+    #: than a measurable fraction of its frame -- reported explicitly rather
+    #: than silently extending the move or accepting a tiny displacement.
+    MOVE_EXCEEDS_ENVELOPE = "move_exceeds_envelope"
+    #: Issue #46: the move overshoots even at the minimum useful duration.
+    MOVE_TOO_LARGE = "move_too_large"
 
 
 def _frame_acquisition_result(frame: np.ndarray | None) -> FrameAcquisitionResult:
@@ -506,6 +523,10 @@ class _CalibrationStepRole(Enum):
 
     FIRST = "first"
     REPEAT = "repeat"
+    #: Issue #46: an UNMEASURED corrective pulse that undoes the net
+    #: displacement left by discarded adaptive-resizing probes, so a
+    #: sized run still ends with the mount where it started.
+    RETURN = "return"
 
 
 @dataclass(frozen=True)
@@ -520,6 +541,13 @@ class _CalibrationStep:
     axis: MountAxis
     direction: AxisDirection
     role: _CalibrationStepRole
+    #: Issue #46: an explicit duration for this step (a wide-camera follow-up
+    #: or a RETURN pulse); None = the axis's current sized duration.
+    duration_ms: int | None = None
+    #: Issue #46: measure ONLY this camera ('left'/'right') for this step
+    #: (a wide-camera follow-up must not disturb the narrow camera's
+    #: already-good result). None = every camera.
+    only_camera: str | None = None
 
 
 #: Issue #31 Phase C's own suggested backlash-revealing sequence, per
@@ -606,9 +634,16 @@ class MountTestMovePanel(QWidget):
         wait_for_left_frame: StableFrameWaiter | None = None,
         wait_for_right_frame: StableFrameWaiter | None = None,
         tracking_enforcer: TrackingEnforcer | None = None,
+        camera_geometry: Callable[[], list[CameraGeometry]] | None = None,
+        calibration_distance_m: Callable[[str], float | None] | None = None,
     ) -> None:
         super().__init__()
         self._mount = mount
+        #: Issue #46: per-camera sensor size + plate scale, for sizing calibration
+        #: moves to ~25% of the frame. None (or unknown optics) => the legacy
+        #: fixed `pulse_ms`/`rate_preset` calibration, unchanged.
+        self._camera_geometry = camera_geometry
+        self._calibration_distance_m = calibration_distance_m
         #: Issue #44: the app-wide tracking policy. Terrestrial operating
         #: mode requires tracking OFF regardless of this panel's own toggle.
         self._tracking_enforcer = tracking_enforcer
@@ -662,6 +697,14 @@ class MountTestMovePanel(QWidget):
         self._connected = False
         self._pending: _PendingAction | None = None
         self._calibration_queue: list[_CalibrationStep] = []
+        #: Issue #46 sizing state for the CURRENT run (see _init_sizing).
+        self._sizing_policy: SizingPolicy | None = None
+        self._sizing_geometry: dict[str, CameraGeometry] = {}
+        self._axis_duration_ms: dict[MountAxis, int] = {}
+        self._axis_attempt: dict[MountAxis, int] = {MountAxis.AXIS1: 1, MountAxis.AXIS2: 1}
+        self._calibration_rate_preset: str = ''
+        self._sizing_bounded: dict[str, str] = {}
+        self._sizing_log: list[dict[str, Any]] = []
         self._calibration_partial: dict[str, dict[MountAxis, AxisResponse]] = {
             "left": {}, "right": {},
         }
@@ -800,7 +843,11 @@ class MountTestMovePanel(QWidget):
         calibration_row = QHBoxLayout()
         calibration_row.addWidget(
             QLabel(
-                f"Calibration ({self._settings.pulse_ms}ms, "
+                f"Calibration (~{int(self._settings.calibration_target_fraction * 100)}% of frame, "
+                f"preset {self._settings.calibration_rate_preset}; "
+                f"fallback {self._settings.pulse_ms}ms @ preset {self._settings.rate_preset})"
+                if self._camera_geometry is not None
+                else f"Calibration ({self._settings.pulse_ms}ms, "
                 f"rate preset {self._settings.rate_preset})"
             )
         )
@@ -1306,6 +1353,7 @@ class MountTestMovePanel(QWidget):
         self._axis_net_pulse_ms = {MountAxis.AXIS1: 0, MountAxis.AXIS2: 0}
         self._calibration_failed_cameras = set()
         self._last_failure_classes = {}
+        self._init_sizing()
         # Real diagnostic 93ba361f: reset so this run's own very first
         # "before" capture uses "now" as its own stability-check reference
         # (see _last_pulse_completed_at's own docstring) -- nothing has
@@ -1329,6 +1377,7 @@ class MountTestMovePanel(QWidget):
             return
         step = self._calibration_queue[0]
         mode = self._target_mode()
+        duration_ms = self._step_duration_ms(step)
         label = (
             f"{step.axis.name.lower()}_{step.direction.name.lower()}_{step.role.value}_before"
         )
@@ -1338,23 +1387,26 @@ class MountTestMovePanel(QWidget):
         # gets the same freshness wait its own "after" already has,
         # since the *previous* step's own pulse just moved the mount.
         # See _last_pulse_completed_at's own docstring.
-        captured = self._capture_both(
-            mode, diagnostic_label=label, after_monotonic=self._last_pulse_completed_at
-        )
-        if not captured:
-            self._abort_calibration(
-                self._capture_failure_message(f"{self._missing_label(mode)} before pulsing"),
-                axis=step.axis,
+        if step.role is _CalibrationStepRole.RETURN:
+            before: dict[str, _Measurement] = {}  # unmeasured corrective pulse
+        else:
+            captured = self._capture_both(
+                mode, diagnostic_label=label, after_monotonic=self._last_pulse_completed_at
             )
-            return
-        before = captured
+            if not captured:
+                self._abort_calibration(
+                    self._capture_failure_message(f"{self._missing_label(mode)} before pulsing"),
+                    axis=step.axis,
+                )
+                return
+            before = captured
         started = self._runner.submit(
             self._mount_park,
             self._mount,
             step.axis,
             step.direction,
-            self._settings.pulse_ms,
-            rate_preset=self._settings.rate_preset,
+            duration_ms,
+            rate_preset=self._calibration_rate_preset,
             park_after=False,
             settle_ms=self._settings.settle_ms,
         )
@@ -1364,10 +1416,16 @@ class MountTestMovePanel(QWidget):
             )
             return
         self._calibration_queue.pop(0)
-        self._pending = _PendingAction(kind="calibration", before=before, mode=mode, step=step)
-        self._result_label.setText(
-            f"Calibrating {step.axis.name} ({step.direction.name.lower()}, {step.role.value})…"
+        self._pending = _PendingAction(
+            kind="calibration", before=before, mode=mode, step=step, duration_ms=duration_ms
         )
+        if step.role is _CalibrationStepRole.RETURN:
+            self._result_label.setText("Returning the mount to its start position…")
+        else:
+            self._result_label.setText(
+                f"Calibrating {step.axis.name} ({step.direction.name.lower()}, "
+                f"{step.role.value}, {duration_ms} ms)…"
+            )
         self._update_buttons_enabled()
 
     def _abort_calibration(self, message: str, *, axis: MountAxis) -> None:
@@ -1425,7 +1483,7 @@ class MountTestMovePanel(QWidget):
                 axis,
                 correction_direction,
                 correction_ms,
-                rate_preset=self._settings.rate_preset,
+                rate_preset=self._calibration_rate_preset,
                 park_after=False,
                 settle_ms=self._settings.settle_ms,
             )
@@ -1477,10 +1535,9 @@ class MountTestMovePanel(QWidget):
         # net commanded displacement so _abort_calibration can correct it
         # if this run gets aborted before the axis's own 4-step group
         # completes (which always cancels this back to exactly 0).
+        duration_ms = pending.duration_ms
         self._axis_net_pulse_ms[step.axis] += (
-            self._settings.pulse_ms
-            if step.direction is AxisDirection.POSITIVE
-            else -self._settings.pulse_ms
+            duration_ms if step.direction is AxisDirection.POSITIVE else -duration_ms
         )
         # Real diagnostic 93ba361f: recorded for every completed pulse --
         # see _last_pulse_completed_at's own docstring -- so the *next*
@@ -1490,8 +1547,8 @@ class MountTestMovePanel(QWidget):
         self._last_pulse_completed_at = completed_at
         self._last_movement_context = CommandedMovementContext(
             movement_type=pending.kind,
-            duration_ms=self._settings.pulse_ms,
-            rate_preset=self._settings.rate_preset,
+            duration_ms=duration_ms,
+            rate_preset=self._calibration_rate_preset,
             axis=step.axis.name,
             direction=step.direction.name,
             minimum_settle_ms=self._settings.frame_settle_ms,
@@ -1505,6 +1562,9 @@ class MountTestMovePanel(QWidget):
         tracking_error = self._verify_tracking_mode()
         if tracking_error is not None:
             self._abort_calibration(tracking_error, axis=step.axis)
+            return
+        if step.role is _CalibrationStepRole.RETURN:
+            self._start_next_calibration_step()  # unmeasured: no AFTER capture
             return
         label = f"{step.axis.name.lower()}_{step.direction.name.lower()}_{step.role.value}_after"
         after = self._capture_both(
@@ -1523,6 +1583,8 @@ class MountTestMovePanel(QWidget):
         for key in ("left", "right"):
             if key in self._calibration_failed_cameras:
                 continue  # already excluded -- no point re-measuring it
+            if step.only_camera is not None and key != step.only_camera:
+                continue  # issue #46: a follow-up measures ONLY the wide camera
             if key not in pending.before or key not in after:
                 # Issue #30: this camera's own before or after capture
                 # never produced a usable frame at all (see
@@ -1535,7 +1597,7 @@ class MountTestMovePanel(QWidget):
                 self._calibration_failed_cameras.add(key)
                 continue
             response = self._build_response(
-                pending.mode, step.axis, step.direction, self._settings.pulse_ms,
+                pending.mode, step.axis, step.direction, duration_ms,
                 pending.before[key], after[key],
             )
             if response is None:
@@ -1544,13 +1606,16 @@ class MountTestMovePanel(QWidget):
                 self._last_failure_classes[key] = MeasurementFailureClass.MATCH_FAILED
                 continue
             responses[key] = response
-            self._record_direction_response(key, step, response)
         if len(self._calibration_failed_cameras) >= 2:
             self._abort_calibration(
                 "not enough structure to measure a displacement in either camera",
                 axis=step.axis,
             )
             return
+        if self._retry_probe_if_needed(step, duration_ms, responses):
+            return  # issue #46: probe discarded, resized, re-queued
+        for key, response in responses.items():
+            self._record_direction_response(key, step, response)
         if newly_failed:
             self._last_error = (
                 f"not enough structure to measure a displacement in: "
@@ -1559,7 +1624,229 @@ class MountTestMovePanel(QWidget):
         elif responses:
             self._last_error = None
         self._last_responses = responses or self._last_responses
+        self._after_axis_group(step)
         self._start_next_calibration_step()
+
+    # ---- issue #46: calibration move sizing ------------------------------
+    def _init_sizing(self) -> None:
+        """Decide (per run) whether moves are sized from the cameras' optics.
+
+        Sizing is active only with a geometry provider AND at least one camera
+        with a known plate scale; otherwise the legacy fixed `pulse_ms` /
+        `rate_preset` calibration runs unchanged. The seed is only a seed --
+        `_retry_probe_if_needed` closes the loop on MEASURED pixels."""
+        settings = self._settings
+        self._sizing_policy = None
+        self._sizing_geometry = {}
+        self._sizing_bounded = {}
+        self._sizing_log = []
+        self._calibration_rate_preset = settings.rate_preset
+        self._axis_duration_ms = {
+            MountAxis.AXIS1: settings.pulse_ms,
+            MountAxis.AXIS2: settings.pulse_ms,
+        }
+        self._axis_attempt = {MountAxis.AXIS1: 1, MountAxis.AXIS2: 1}
+        if self._camera_geometry is None:
+            return
+        cameras = self._camera_geometry()
+        policy = SizingPolicy(
+            rate_preset=settings.calibration_rate_preset,
+            target_fraction=settings.calibration_target_fraction,
+            max_duration_ms=settings.max_calibration_pulse_ms,
+            min_duration_ms=settings.min_calibration_pulse_ms,
+        )
+        mode = self._target_mode()
+        distance_m: float | None
+        if self._calibration_distance_m is not None:
+            distance_m = self._calibration_distance_m(mode)
+        else:
+            distance_m = 10_000.0 if mode == "terrestrial" else None
+        plan = plan_first_move(
+            cameras, policy, distance_m=distance_m, fallback_ms=settings.pulse_ms
+        )
+        if plan.status is SizingStatus.NO_OPTICS:
+            return
+        self._sizing_policy = policy
+        self._sizing_geometry = {camera.key: camera for camera in cameras}
+        self._calibration_rate_preset = policy.rate_preset
+        self._axis_duration_ms = {
+            MountAxis.AXIS1: plan.duration_ms,
+            MountAxis.AXIS2: plan.duration_ms,
+        }
+        self._sizing_log.append(
+            {
+                "event": "seed",
+                "duration_ms": plan.duration_ms,
+                "seed_camera": plan.seed_camera,
+                "status": plan.status.value,
+                "rate_preset": policy.rate_preset,
+                "distance_m": distance_m,
+            }
+        )
+
+    def _step_duration_ms(self, step: _CalibrationStep) -> int:
+        if step.duration_ms is not None:
+            return step.duration_ms
+        return self._axis_duration_ms[step.axis]
+
+    def _is_probe(self, step: _CalibrationStep) -> bool:
+        """The axis's first POSITIVE/FIRST move sizes the whole axis."""
+        return (
+            self._sizing_policy is not None
+            and step.only_camera is None
+            and step.duration_ms is None
+            and step.direction is AxisDirection.POSITIVE
+            and step.role is _CalibrationStepRole.FIRST
+        )
+
+    def _smallest_fov_key(self, keys: list[str]) -> str | None:
+        sized = []
+        for key in keys:
+            geometry = self._sizing_geometry.get(key)
+            fov = geometry.fov_arcsec() if geometry is not None else None
+            if fov is not None:
+                sized.append((fov[0], key))
+        return min(sized)[1] if sized else None
+
+    def _retry_probe_if_needed(
+        self, step: _CalibrationStep, duration_ms: int, responses: dict[str, AxisResponse]
+    ) -> bool:
+        """Adaptive resizing on the MEASURED displacement of the smallest-FOV
+        camera. True = the probe was too small/large: it is discarded (no
+        response recorded), the axis duration rescaled and the same step
+        re-queued (bounded by `SizingPolicy.max_attempts`)."""
+        policy = self._sizing_policy
+        if policy is None or not self._is_probe(step):
+            return False
+        seed_key = self._smallest_fov_key(list(responses))
+        if seed_key is None:
+            return False
+        response = responses[seed_key]
+        geometry = self._sizing_geometry[seed_key]
+        fraction = measured_fraction(geometry, response.dx_px, response.dy_px)
+        attempt = self._axis_attempt[step.axis]
+        decision = decide_next(duration_ms, fraction, policy, attempt=attempt)
+        self._sizing_log.append(
+            {
+                "event": "probe",
+                "axis": step.axis.name,
+                "camera": seed_key,
+                "duration_ms": duration_ms,
+                "measured_fraction": round(fraction, 4),
+                "attempt": attempt,
+                "action": decision.action.value,
+                "next_duration_ms": decision.duration_ms,
+                "reason": decision.reason,
+            }
+        )
+        if decision.action is StepAction.RETRY:
+            self._axis_duration_ms[step.axis] = decision.duration_ms
+            self._axis_attempt[step.axis] = attempt + 1
+            self._calibration_queue.insert(0, step)
+            self._start_next_calibration_step()
+            return True
+        if decision.action is StepAction.BOUNDED:
+            failure = (
+                MeasurementFailureClass.MOVE_TOO_LARGE
+                if decision.reason == "overshoot_at_minimum"
+                else MeasurementFailureClass.MOVE_EXCEEDS_ENVELOPE
+            )
+            self._exclude_camera_bounded(seed_key, failure, decision.reason or "bounded")
+            responses.pop(seed_key, None)
+        if step.axis is MountAxis.AXIS1:
+            # RA and Dec share the mount's rate: start Dec from RA's accepted size.
+            self._axis_duration_ms[MountAxis.AXIS2] = self._axis_duration_ms[MountAxis.AXIS1]
+        return False
+
+    def _exclude_camera_bounded(
+        self, key: str, failure: MeasurementFailureClass, reason: str
+    ) -> None:
+        self._calibration_failed_cameras.add(key)
+        self._last_failure_classes[key] = failure
+        cap_s = self._settings.max_calibration_pulse_ms / 1000.0
+        if failure is MeasurementFailureClass.MOVE_EXCEEDS_ENVELOPE:
+            text = (
+                f"even the longest normal calibration move ({cap_s:g} s at preset "
+                f"{self._calibration_rate_preset}) shifts this camera by less than "
+                "a measurable part of its frame (exceeds the calibration envelope) -- "
+                "choose a faster calibration_rate_preset or an alternative policy"
+            )
+        else:
+            text = (
+                "the shortest useful calibration move already overshoots this camera's "
+                "frame -- choose a slower calibration_rate_preset"
+            )
+        self._sizing_bounded[key] = text
+        self._sizing_log.append({"event": "bounded", "camera": key, "reason": reason})
+
+    def _after_axis_group(self, step: _CalibrationStep) -> None:
+        """After an axis's last step (issue #46): undo the net displacement left
+        by discarded probes with capped, unmeasured RETURN pulses, and queue a
+        larger follow-up for any camera that saw too little of its frame --
+        measured for that camera only, so narrow-camera results survive."""
+        policy = self._sizing_policy
+        if (
+            policy is None
+            or step.only_camera is not None
+            or step.direction is not AxisDirection.NEGATIVE
+            or step.role is not _CalibrationStepRole.REPEAT
+        ):
+            return
+        axis = step.axis
+        inserts: list[_CalibrationStep] = []
+        net = self._axis_net_pulse_ms[axis]
+        direction = AxisDirection.NEGATIVE if net > 0 else AxisDirection.POSITIVE
+        remaining = abs(net)
+        while remaining > 0:
+            chunk = min(remaining, policy.max_duration_ms)
+            inserts.append(
+                _CalibrationStep(axis, direction, _CalibrationStepRole.RETURN, duration_ms=chunk)
+            )
+            remaining -= chunk
+        accepted_ms = self._axis_duration_ms[axis]
+        for key in ("left", "right"):
+            if key in self._calibration_failed_cameras:
+                continue
+            response = self._calibration_partial[key].get(axis)
+            geometry = self._sizing_geometry.get(key)
+            if response is None or geometry is None:
+                continue
+            fraction = measured_fraction(geometry, response.dx_px, response.dy_px)
+            decision = plan_followup(accepted_ms, fraction, policy)
+            if decision.action is StepAction.ACCEPT:
+                continue
+            self._sizing_log.append(
+                {
+                    "event": "followup",
+                    "axis": axis.name,
+                    "camera": key,
+                    "measured_fraction": round(fraction, 4),
+                    "action": decision.action.value,
+                    "duration_ms": decision.duration_ms,
+                    "reason": decision.reason,
+                }
+            )
+            if decision.action is StepAction.BOUNDED:
+                self._exclude_camera_bounded(
+                    key, MeasurementFailureClass.MOVE_EXCEEDS_ENVELOPE, decision.reason or "bounded"
+                )
+                continue
+            for direction_, role in (
+                (AxisDirection.POSITIVE, _CalibrationStepRole.FIRST),
+                (AxisDirection.POSITIVE, _CalibrationStepRole.REPEAT),
+                (AxisDirection.NEGATIVE, _CalibrationStepRole.FIRST),
+                (AxisDirection.NEGATIVE, _CalibrationStepRole.REPEAT),
+            ):
+                inserts.append(
+                    _CalibrationStep(
+                        axis,
+                        direction_,
+                        role,
+                        duration_ms=decision.duration_ms,
+                        only_camera=key,
+                    )
+                )
+        self._calibration_queue[0:0] = inserts
 
     def _record_direction_response(
         self, camera_key: str, step: _CalibrationStep, response: AxisResponse
@@ -1602,6 +1889,9 @@ class MountTestMovePanel(QWidget):
         self._calibration = {}
         lines: list[str] = []
         for key in ("left", "right"):
+            if key in self._sizing_bounded:
+                lines.append(f"{_CAMERA_LABELS[key]}: {self._sizing_bounded[key]}.")
+                continue
             if key in self._calibration_failed_cameras:
                 # See _finish_calibration_step()'s own docstring (real
                 # report d14c3a9b) -- this camera's own measurement
@@ -2136,6 +2426,8 @@ class MountTestMovePanel(QWidget):
 
     def diagnostic_context(self) -> dict[str, Any]:
         context: dict[str, Any] = {"target_mode": self._target_mode()}
+        if self._sizing_log:
+            context["calibration_sizing"] = list(self._sizing_log)
         # Deliberately sourced from _calibration_partial (every axis
         # response actually measured), not self._calibration (only the
         # non-degenerate matrices -- see is_degenerate() and

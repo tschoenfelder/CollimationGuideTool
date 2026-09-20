@@ -149,6 +149,7 @@ from astrotool_core.filter_wheel.port import FilterWheelPort
 from astrotool_core.focus.no_focuser import NoFocuser
 from astrotool_core.focus.port import FocuserPort
 from astrotool_core.frames.frame import Frame
+from astrotool_core.mount.movement_sizing import CameraGeometry
 from astrotool_core.mount.no_mount import NoMountAdapter
 from astrotool_core.mount.no_mount_park import NoMountPark
 from astrotool_core.mount.operating_mode import OperatingMode, TrackingEnforcer
@@ -349,6 +350,9 @@ class MainWindow(QMainWindow):
             wait_for_left_frame=self._left_panel.wait_for_frame_after,
             wait_for_right_frame=self._right_panel.wait_for_frame_after,
             tracking_enforcer=self._tracking_enforcer,
+            # Issue #46: calibration moves are sized to ~25% of each frame.
+            camera_geometry=self._calibration_geometry,
+            calibration_distance_m=self._calibration_distance_m,
         )
 
         # Restore last session's connected camera + exposure/gain/
@@ -543,6 +547,29 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         self.setMinimumSize(1000, 560)
         self.resize(1280, 680)
+
+    def _calibration_geometry(self) -> list[CameraGeometry]:
+        """Issue #46: sensor size + plate scale per participating camera (the
+        scale is None when the optics are not configured -> that camera cannot
+        seed a sized move, and with none known calibration keeps the fixed pulse)."""
+        geometry: list[CameraGeometry] = []
+        for key, panel, scale in (
+            ("left", self._left_panel, self._main_pixel_scale_arcsec),
+            ("right", self._right_panel, self._guide_pixel_scale_arcsec),
+        ):
+            caps = panel.camera_descriptor().capabilities
+            geometry.append(
+                CameraGeometry(key, caps.sensor_width_px, caps.sensor_height_px, scale or None)
+            )
+        return geometry
+
+    def _calibration_distance_m(self, mode: str) -> float | None:
+        """Issue #46: nominal target distance, only a first-move seed (measured
+        pixels stay authoritative): stars = infinity, terrestrial ~10 km, an
+        artificial star ~30 m."""
+        if mode == "star":
+            return None
+        return 30.0 if self._artificial_star_mode_button.isChecked() else 10_000.0
 
     def _on_operating_toggled(self, checked: bool, mode: OperatingMode) -> None:
         if checked:
