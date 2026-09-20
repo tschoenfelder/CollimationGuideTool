@@ -149,8 +149,9 @@ class _Spy:
         self.seen: list[np.ndarray] = []
         self.panel_calls = 0
         from astrotool_core.acquisition import image_stability
+        from astrotool_core.target.translation_offset import measure_translation_offset_with_tier
 
-        real_tier = image_stability.measure_translation_offset_with_tier
+        real_tier = measure_translation_offset_with_tier
 
         def spy_tier(before: np.ndarray, after: np.ndarray, **kw: Any) -> Any:  # noqa: ANN401
             self.seen.extend([before, after])
@@ -339,7 +340,7 @@ class TestNudgeBeforeIsVerified:
         _drive(panel)  # its verified AFTER is now the at-rest reference
 
         assert panel._reusable_reference("terrestrial") is not None  # nothing commanded since
-        assert panel._runner.submit(  # type: ignore[attr-defined]
+        assert panel._runner.submit(
             panel._mount_park, panel._mount, MountAxis.AXIS1, AxisDirection.POSITIVE, 50
         )
         _drive(panel)
