@@ -57,9 +57,8 @@ connected camera changes (its sensor resolution is the other input).
 Focuser: `FocuserPanel` (`focuser` constructor param, defaulting to
 `NoFocuser` — a `FocuserPort`, same injectable-default pattern as
 `camera`/`guide_camera`) gives manual in/out jog control (1/10/100/200 steps)
-over the main optical train's OnStep focuser, connected via a real
-indiserver — see `astrotool_core.focus.indi_focuser_adapter`'s docstring
-for why this one, unlike `mount/indi_adapter.py`, genuinely speaks INDI.
+over the main optical train's OnStep focuser, reached only through
+OnStepAdapter (`astrotool_core.onstep.OnStepFocuserAdapter`).
 Since the focuser sits in the main train only, `_left_panel` (Main) pauses
 its own poll loop for the duration of every jog (`FocuserPanel.
 move_in_flight_changed` -> `CameraPanel.set_updates_paused`) so live
@@ -68,9 +67,8 @@ analysis/display never runs on a frame captured mid-move; `_right_panel`
 
 Mount: `MountParkPanel` (`mount` constructor param, defaulting to
 `NoMountPark`) gives park/unpark-only control over the OnStep mount, over
-the same real indiserver connection as the focuser (a separate
-`IndiClient` socket to the same device) — see
-`astrotool_core.mount.indi_mount_park_adapter` and `MountParkPort`'s own
+the same single OnStepAdapter connection as the focuser — see
+`astrotool_core.onstep.OnStepMountParkAdapter` and `MountParkPort`'s own
 docstring for why this is a deliberately separate, narrower port than
 `MountPort` (which is guiding-pulse-only). Unparking always immediately
 deactivates tracking too, rather than trusting the mount's own

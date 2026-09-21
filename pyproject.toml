@@ -93,10 +93,7 @@ name = "adapters never import a UI toolkit"
 type = "forbidden"
 source_modules = [
   "astrotool_core.camera.touptek_adapter",
-  "astrotool_core.mount.indi_adapter",
-  "astrotool_core.focus.indi_focuser_adapter",
-  "astrotool_core.mount.indi_mount_park_adapter",
-  "astrotool_core.mount.indi_mount_pulse_adapter",
+  "astrotool_core.onstep",
   "astrotool_core.indi.client",
 ]
 forbidden_modules = ["PySide6"]
@@ -106,3 +103,13 @@ name = "roi_tracker never touches the mount"
 type = "forbidden"
 source_modules = ["astrotool_core.target.roi_tracker"]
 forbidden_modules = ["astrotool_core.mount"]
+
+[[tool.importlinter.contracts]]
+name = "OnStepAdapter is the only route to the OnStep controller (AGENTS.md)"
+type = "forbidden"
+source_modules = ["astrotool_core", "collimation_tool", "guide_tool"]
+forbidden_modules = ["onstep_adapter", "serial"]
+ignore_imports = [
+  "astrotool_core.onstep.* -> onstep_adapter",
+  "astrotool_core.testing.fake_onstep_client -> onstep_adapter",
+]

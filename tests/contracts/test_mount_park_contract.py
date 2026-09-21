@@ -1,33 +1,26 @@
 """Shared MountParkPort contract — every park adapter must satisfy this.
 
-no_mount_park_factory / fake_mount_park_factory / indi_mount_park_factory
-(against a real, in-process FakeIndiServer) all run hardware-free.
-indi_real_mount_park_factory is real-hardware and skipif-guarded,
-mirroring test_mount_contract.py's indi_mount_factory/
-ASTROTOOL_ONSTEP_PORT pattern — set ASTROTOOL_INDI_MOUNT_HOST (and
-optionally ASTROTOOL_INDI_MOUNT_PORT/ASTROTOOL_INDI_MOUNT_DEVICE) to
-exercise it against a real indiserver.
+no_mount_park_factory / fake_mount_park_factory / onstep_mount_park_factory
+(the OnStepAdapter shim over a FakeOnStepClient) run hardware-free;
+onstep_real_mount_park_factory is skipif-guarded on ASTROTOOL_ONSTEP_PORT.
 """
 
 from __future__ import annotations
 
 import os
 import time
-import weakref
 from collections.abc import Callable
 
 import pytest
-from astrotool_core.mount.indi_mount_park_adapter import IndiMountParkAdapter
 from astrotool_core.mount.no_mount_park import NoMountPark
 from astrotool_core.mount.park_port import MountParkPort
-from astrotool_core.testing.fake_indi_server import FakeIndiServer
+from astrotool_core.onstep import OnStepConnection, OnStepMountParkAdapter
 from astrotool_core.testing.fake_mount_park import FakeMountPark
+from astrotool_core.testing.fake_onstep_client import make_fake_onstep_connection
 
 MountParkFactory = Callable[[], MountParkPort]
 
-_INDI_MOUNT_HOST = os.environ.get("ASTROTOOL_INDI_MOUNT_HOST")
-_INDI_MOUNT_PORT = int(os.environ.get("ASTROTOOL_INDI_MOUNT_PORT", "7624"))
-_INDI_MOUNT_DEVICE = os.environ.get("ASTROTOOL_INDI_MOUNT_DEVICE", "LX200 OnStep")
+_ONSTEP_PORT = os.environ.get("ASTROTOOL_ONSTEP_PORT")
 
 
 def no_mount_park_factory() -> MountParkPort:
@@ -38,28 +31,22 @@ def fake_mount_park_factory() -> MountParkPort:
     return FakeMountPark()
 
 
-def indi_mount_park_factory() -> MountParkPort:
-    # FakeIndiServer's lifetime is tied to the adapter's via weakref.finalize
-    # — see test_focuser_contract.py's indi_focuser_factory for why.
-    fake = FakeIndiServer()
-    fake.start()
-    adapter = IndiMountParkAdapter(fake.host, fake.port, connect_timeout_s=2.0)
-    weakref.finalize(adapter, fake.stop)
-    return adapter
+def onstep_mount_park_factory() -> MountParkPort:
+    return OnStepMountParkAdapter(make_fake_onstep_connection())
 
 
-def indi_real_mount_park_factory() -> MountParkPort:
-    assert _INDI_MOUNT_HOST is not None
-    return IndiMountParkAdapter(_INDI_MOUNT_HOST, _INDI_MOUNT_PORT, _INDI_MOUNT_DEVICE)
+def onstep_real_mount_park_factory() -> MountParkPort:
+    assert _ONSTEP_PORT is not None
+    return OnStepMountParkAdapter(OnStepConnection(_ONSTEP_PORT))
 
 
-MOUNT_PARK_FACTORIES = [no_mount_park_factory, fake_mount_park_factory, indi_mount_park_factory]
+MOUNT_PARK_FACTORIES = [no_mount_park_factory, fake_mount_park_factory, onstep_mount_park_factory]
 REAL_MOUNT_PARK_FACTORIES = [
     pytest.param(
-        indi_real_mount_park_factory,
+        onstep_real_mount_park_factory,
         marks=pytest.mark.skipif(
-            _INDI_MOUNT_HOST is None,
-            reason="ASTROTOOL_INDI_MOUNT_HOST not set — no real indiserver available",
+            _ONSTEP_PORT is None,
+            reason="ASTROTOOL_ONSTEP_PORT not set — no OnStep controller available",
         ),
     ),
 ]
@@ -142,7 +129,7 @@ def test_no_mount_park_is_never_available() -> None:
 
 
 @pytest.mark.parametrize("mount_park_factory", REAL_MOUNT_PARK_FACTORIES)
-def test_real_indi_mount_park_connects_and_is_available(
+def test_real_onstep_mount_park_connects_and_is_available(
     mount_park_factory: MountParkFactory,
 ) -> None:
     mount = mount_park_factory()

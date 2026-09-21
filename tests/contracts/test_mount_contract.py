@@ -1,25 +1,22 @@
 """Shared MountPort contract — every mount adapter must satisfy this.
 
-no_mount_factory / fake_mount_factory / indi_pulse_mount_factory (real
-INDI, against a real in-process FakeIndiServer) run hardware-free.
-indi_mount_factory (native OnStep serial via onstep-adapter) is
-real-hardware and skipif-guarded — no OnStep mount/serial port is present
-in this Windows dev environment (set ASTROTOOL_ONSTEP_PORT to exercise it
-against real hardware).
+no_mount_factory / fake_mount_factory / onstep_pulse_mount_factory (the
+OnStepAdapter shim over a FakeOnStepClient) run hardware-free.
+onstep_real_mount_factory is real-hardware and skipif-guarded — no OnStep
+serial port is present in this Windows dev environment (set
+ASTROTOOL_ONSTEP_PORT to exercise it against real hardware).
 """
 
 from __future__ import annotations
 
 import os
-import weakref
 from collections.abc import Callable
 
 import pytest
 from astrotool_core.mount import AxisDirection, MountAxis, MountPort, NoMountAdapter
-from astrotool_core.mount.indi_adapter import IndiMountAdapter
-from astrotool_core.mount.indi_mount_pulse_adapter import IndiMountPulseAdapter
-from astrotool_core.testing.fake_indi_server import FakeIndiServer
+from astrotool_core.onstep import OnStepConnection, OnStepMountPulseAdapter
 from astrotool_core.testing.fake_mount import FakeMountAdapter
+from astrotool_core.testing.fake_onstep_client import make_fake_onstep_connection
 
 MountFactory = Callable[[], MountPort]
 
@@ -34,25 +31,19 @@ def fake_mount_factory() -> MountPort:
     return FakeMountAdapter()
 
 
-def indi_pulse_mount_factory() -> MountPort:
-    # See test_focuser_contract.py's indi_focuser_factory for why the
-    # FakeIndiServer's lifetime is tied to the adapter via weakref.finalize.
-    fake = FakeIndiServer()
-    fake.start()
-    adapter = IndiMountPulseAdapter(fake.host, fake.port, connect_timeout_s=2.0)
-    weakref.finalize(adapter, fake.stop)
-    return adapter
+def onstep_pulse_mount_factory() -> MountPort:
+    return OnStepMountPulseAdapter(make_fake_onstep_connection())
 
 
-def indi_mount_factory() -> MountPort:
+def onstep_real_mount_factory() -> MountPort:
     assert _ONSTEP_PORT is not None
-    return IndiMountAdapter(_ONSTEP_PORT)
+    return OnStepMountPulseAdapter(OnStepConnection(_ONSTEP_PORT))
 
 
-MOUNT_FACTORIES = [no_mount_factory, fake_mount_factory, indi_pulse_mount_factory]
+MOUNT_FACTORIES = [no_mount_factory, fake_mount_factory, onstep_pulse_mount_factory]
 REAL_MOUNT_FACTORIES = [
     pytest.param(
-        indi_mount_factory,
+        onstep_real_mount_factory,
         marks=pytest.mark.skipif(
             _ONSTEP_PORT is None, reason="ASTROTOOL_ONSTEP_PORT not set — no OnStep mount available"
         ),
@@ -100,7 +91,7 @@ def test_pulse_axis_accepts_an_explicit_rate_preset(mount_factory: MountFactory)
     """rate_preset is optional on every MountPort implementation -- calling
     with an explicit value must not raise or change whether the pulse is
     accepted, regardless of whether the adapter actually does anything with
-    it (only IndiMountPulseAdapter does; see its own module docstring)."""
+    it (OnStepMountPulseAdapter passes it on to OnStepAdapter)."""
     mount = mount_factory()
     mount.connect()
     try:
@@ -127,7 +118,7 @@ def test_fake_mount_connect_failure_raises_connection_error() -> None:
 
 
 @pytest.mark.parametrize("mount_factory", REAL_MOUNT_FACTORIES)
-def test_real_indi_mount_capabilities_and_status(mount_factory: MountFactory) -> None:
+def test_real_onstep_mount_capabilities_and_status(mount_factory: MountFactory) -> None:
     mount = mount_factory()
     mount.connect()
     try:

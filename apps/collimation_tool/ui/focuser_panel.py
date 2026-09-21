@@ -1,22 +1,21 @@
 """FocuserPanel — manual jog control for the main optical train's OnStep
-focuser, connected via a real indiserver (see
-`astrotool_core.focus.indi_focuser_adapter.IndiFocuserAdapter`).
+focuser, reached only through OnStepAdapter (see
+`astrotool_core.onstep.OnStepFocuserAdapter`).
 
 Mirrors `CameraPanel`'s conventions (a `QTimer` poll loop reading cheap
 status rather than driving anything expensive inline, a
 `diagnostic_context()` contribution) but is simpler: one fixed focuser,
-no device picker, no streaming — "Connect" opens the INDI connection,
+no device picker, no streaming — "Connect" opens the shared OnStep connection,
 after which "In"/"Out" buttons jog the focuser by a selectable step size.
 
-Sign convention (see `IndiFocuserAdapter`'s own docstring, since it's
-otherwise adapter-arbitrary): positive `move()` steps are outward.
+Sign convention (OnStepAdapter's convention): positive `move()` steps are outward.
 
 Stop (real incident a4ffe048): "no way to stop" -- a move whose Busy->Ok
 transition the driver never confirmed left In/Out permanently disabled
 (gated on both `_move_in_flight` and the driver's own possibly-stuck
 `is_moving()`), with no recovery besides restarting the app. `stop()` is
-a real `FocuserPort` ABC method (`IndiFocuserAdapter.stop()` sends
-`FOCUS_ABORT_MOTION`) that was simply never wired to a button here.
+a real `FocuserPort` ABC method (`OnStepFocuserAdapter.stop()` calls OnStepAdapter's
+focuser stop) that was simply never wired to a button here.
 Always enabled once connected, regardless of the (possibly wrong)
 in-flight/moving state -- that's the whole point of an abort control.
 

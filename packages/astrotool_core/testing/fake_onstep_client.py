@@ -13,16 +13,20 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import cast
 
 from onstep_adapter import (
     AxisMotionResult,
     FocuserMoveResult,
     FocuserStatus,
+    OnStepClient,
     OnStepSafetyError,
     SafetySeverity,
     SafetyViolation,
 )
 from onstep_adapter.ports.mount import MountState
+
+from astrotool_core.onstep.connection import OnStepConnection
 
 
 def _blocked(reason: str, command: str) -> OnStepSafetyError:
@@ -246,3 +250,13 @@ class FakeOnStepClient:
 
     def close(self) -> None:
         self.closed = True
+
+
+def make_fake_onstep_connection(port: str = "/dev/ttyFAKE") -> OnStepConnection:
+    """An `OnStepConnection` whose client is a `FakeOnStepClient`, for adapter
+    and contract tests that need the shims but no hardware."""
+
+    def factory(port: str, **kwargs: float) -> OnStepClient:
+        return cast(OnStepClient, FakeOnStepClient(port, **kwargs))  # type: ignore[arg-type]
+
+    return OnStepConnection(port, client_factory=factory)

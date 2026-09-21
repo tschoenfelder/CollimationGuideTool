@@ -22,12 +22,16 @@ from astrotool_core.filter_wheel.registry import (
     build_filter_wheels,
     load_filter_wheel_layout,
 )
-from astrotool_core.focus.indi_focuser_adapter import IndiFocuserAdapter
 from astrotool_core.focus.port import FocuserPort
-from astrotool_core.mount.indi_mount_park_adapter import IndiMountParkAdapter
-from astrotool_core.mount.indi_mount_pulse_adapter import IndiMountPulseAdapter
 from astrotool_core.mount.park_port import MountParkPort
 from astrotool_core.mount.port import MountPort
+from astrotool_core.onstep import (
+    OnStepConnection,
+    OnStepFocuserAdapter,
+    OnStepMountParkAdapter,
+    OnStepMountPulseAdapter,
+    load_onstep_settings,
+)
 from astrotool_core.testing.frame_factory import donut_image
 from PySide6.QtWidgets import QApplication
 
@@ -63,23 +67,24 @@ def _default_camera() -> CameraPort:
     return ReplayCamera.from_arrays(arrays, cycle=True)
 
 
-def _default_focuser() -> FocuserPort:
-    """The main optical train's OnStep focuser, over a real indiserver
-    this app never starts itself — see `IndiFocuserAdapter`'s docstring.
-    Expected to already be running locally (`indiserver -v
-    indi_lx200_OnStep`) on the Pi this app runs on. Swapping this out
-    (e.g. for `NoFocuser()`) is a one-line change here; no other file
-    needs to know."""
-    return IndiFocuserAdapter()
+def _default_onstep_connection() -> OnStepConnection:
+    """The ONE OnStep connection this app has: OnStepAdapter's `OnStepClient`
+    on the configured serial port (`[onstep] serial_port` in
+    ~/.CollimationGuideTool/config.toml or `ONSTEP_PORT`). The focuser, the
+    park/unpark control and the Mount Align pulses all share it; nothing
+    here may reach the OnStep controller any other way (AGENTS.md)."""
+    settings = load_onstep_settings()
+    return OnStepConnection(settings.serial_port, baud_rate=settings.baud_rate)
 
 
-def _default_mount() -> MountParkPort:
-    """The OnStep mount, park/unpark only — over the same real indiserver
-    as the focuser (see `IndiMountParkAdapter`'s docstring), a separate
-    connection to the same device. Swapping this out (e.g. for
-    `NoMountPark()`) is a one-line change here; no other file needs to
-    know."""
-    return IndiMountParkAdapter()
+def _default_focuser(connection: OnStepConnection) -> FocuserPort:
+    """The main optical train's OnStep focuser, via OnStepAdapter."""
+    return OnStepFocuserAdapter(connection)
+
+
+def _default_mount(connection: OnStepConnection) -> MountParkPort:
+    """The OnStep mount's park/unpark/tracking control, via OnStepAdapter."""
+    return OnStepMountParkAdapter(connection)
 
 
 def _default_filter_wheels() -> list[FilterWheelAssignment]:
@@ -91,14 +96,10 @@ def _default_filter_wheels() -> list[FilterWheelAssignment]:
     return build_filter_wheels(load_filter_wheel_layout())
 
 
-def _default_pulse_mount() -> MountPort:
-    """The OnStep mount's directional-motion side, for the "Test Move"
-    axis-calibration panel only — a separate real-INDI connection from
-    `_default_mount()`'s park/unpark one, same device (see
-    `IndiMountPulseAdapter`'s docstring). Swapping this out (e.g. for
-    `NoMountAdapter()`) is a one-line change here; no other file needs to
-    know."""
-    return IndiMountPulseAdapter()
+def _default_pulse_mount(connection: OnStepConnection) -> MountPort:
+    """The OnStep mount's bounded directional motion for the Mount Align
+    panel, via OnStepAdapter's timed-move API."""
+    return OnStepMountPulseAdapter(connection)
 
 
 def _install_excepthook(diagnostics: DiagnosticService) -> None:
@@ -154,12 +155,13 @@ def main() -> None:
     # Two independent ReplayCamera instances — the guide panel's demo
     # camera can't be the same object as the main panel's (see
     # CameraPanel's docstring: each panel owns its own StreamController).
+    onstep = _default_onstep_connection()
     window = MainWindow(
         _default_camera(),
         guide_camera=_default_camera(),
-        focuser=_default_focuser(),
-        mount=_default_mount(),
-        pulse_mount=_default_pulse_mount(),
+        focuser=_default_focuser(onstep),
+        mount=_default_mount(onstep),
+        pulse_mount=_default_pulse_mount(onstep),
         filter_wheels=_default_filter_wheels(),
         threaded_captures=True,  # issue #49: never block the GUI thread on a frame wait
         diagnostics=diagnostics,

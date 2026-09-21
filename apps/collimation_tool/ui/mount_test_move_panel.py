@@ -38,13 +38,9 @@ own rotation, submitted as one `MountTestMoveRunner.submit_sequence()`
 call. Movement size is frame-relative (Small/Medium/Large,
 `MovementSize`), not a raw duration -- see `_screen_move_fraction()`.
 
-Own `MountPort` connection, separate from `MountParkPanel`'s `MountParkPort`
-connection to the same device (same pattern as
-`IndiFocuserAdapter`/`IndiMountParkAdapter` already being two independent
-`IndiClient` sockets to one INDI device) — see
-`astrotool_core.mount.indi_mount_pulse_adapter`'s docstring for the real
-INDI properties this drives (`TELESCOPE_SLEW_RATE`, `TELESCOPE_MOTION_NS`/
-`_WE`).
+Its own `MountPort`, which shares the single OnStepAdapter connection with
+`MountParkPanel`'s `MountParkPort` (see `astrotool_core.onstep`): motion goes
+through OnStepAdapter's bounded timed-move API, never raw INDI.
 
 Also takes the *same* `MountParkPort` object `MountParkPanel` uses
 (`mount_park` constructor param — deliberately the shared instance, not
@@ -111,7 +107,7 @@ response out of.
 
 Real hardware motion with no way to interrupt it once started is a real
 safety gap (incident 9551627f) — the "Stop" button, wired to
-`IndiMountPulseAdapter.abort()` (`TELESCOPE_ABORT_MOTION`) via duck-typing
+`OnStepMountPulseAdapter.abort()` (cooperative cancel + OnStep stop) via duck-typing
 (`getattr`, not a `MountPort` Protocol method — that Protocol is the
 architecture doc's literal contract, not something to extend unilaterally
 for one adapter's extra capability), still applies to every pulse this

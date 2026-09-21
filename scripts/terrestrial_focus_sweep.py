@@ -8,9 +8,10 @@ structurally cannot touch the mount. Always attempts to return the
 focuser to its starting position when done, even on a partial failure.
 
 The camera side (`TouptekCameraAdapter`) talks to the vendor SDK
-directly over USB, so this must run on the machine the camera is
-physically attached to (the Pi) -- the focuser side alone would work
-remotely over TCP to indiserver, but the camera side would not.
+directly over USB, and the focuser goes through OnStepAdapter on the
+OnStep serial port, so this must run on the machine both are attached to
+(the Pi). Do not run it while the CollimationTool is open: only one process
+may own the OnStep serial port.
 
 Usage (run on the Pi, where the camera is attached):
     python scripts/terrestrial_focus_sweep.py --out-dir ~/sweep_output
@@ -27,11 +28,10 @@ from pathlib import Path
 import numpy as np
 from astropy.io import fits
 from astrotool_core.camera.touptek_adapter import TouptekCameraAdapter
-from astrotool_core.focus.indi_focuser_adapter import IndiFocuserAdapter
+from astrotool_core.focus.port import FocuserPort
 from astrotool_core.focus.terrestrial_focus_metric import measure_terrestrial_focus
+from astrotool_core.onstep import OnStepConnection, OnStepFocuserAdapter, load_onstep_settings
 
-_DEFAULT_HOST = "localhost"
-_DEFAULT_PORT = 7624
 _DEFAULT_RANGE_STEPS = 500
 _DEFAULT_STEP = 50
 _DEFAULT_EXPOSURE_MS = 5.501
@@ -63,7 +63,7 @@ def _gradient_energy(image: np.ndarray) -> float:
     return float(np.mean(gx[:-1, :] ** 2) + np.mean(gy[:, :-1] ** 2))
 
 
-def _wait_for_settle(focuser: IndiFocuserAdapter) -> None:
+def _wait_for_settle(focuser: FocuserPort) -> None:
     deadline = time.monotonic() + _MOVE_SETTLE_TIMEOUT_S
     while focuser.is_moving() and time.monotonic() < deadline:
         time.sleep(0.05)
@@ -72,8 +72,7 @@ def _wait_for_settle(focuser: IndiFocuserAdapter) -> None:
 
 def run_sweep(
     *,
-    host: str,
-    port: int,
+    serial_port: str,
     camera_name: str,
     center: int | None,
     range_steps: int,
@@ -85,7 +84,7 @@ def run_sweep(
 ) -> list[SweepSample]:
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    focuser = IndiFocuserAdapter(host, port, connect_timeout_s=10.0)
+    focuser = OnStepFocuserAdapter(OnStepConnection(serial_port))
     focuser.connect()
     if not focuser.is_available:
         raise RuntimeError("focuser connected but not available -- no hardware detected")
@@ -157,8 +156,11 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument("--host", default=_DEFAULT_HOST)
-    parser.add_argument("--port", type=int, default=_DEFAULT_PORT)
+    parser.add_argument(
+        "--serial-port",
+        default=load_onstep_settings().serial_port,
+        help="OnStep serial port (opened by OnStepAdapter; default: config/ONSTEP_PORT)",
+    )
     parser.add_argument("--camera-name", default="ATR585M")
     parser.add_argument(
         "--center", type=int, default=None, help="defaults to the focuser's current live position"
@@ -175,8 +177,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     run_sweep(
-        host=args.host,
-        port=args.port,
+        serial_port=args.serial_port,
         camera_name=args.camera_name,
         center=args.center,
         range_steps=args.range_steps,

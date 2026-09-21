@@ -146,6 +146,25 @@ loader (mount settings, other session state) is still planned but not
 yet implemented — see `PLAN.md` — and can add its own tables to this
 same file alongside `[cameras.*]` without conflict.
 
+#### OnStep connection (mount + focuser)
+
+The tool reaches the OnStep controller **only through OnStepAdapter**
+(>= 0.3.5), which owns the serial port exclusively -- the focuser, the
+park/unpark control and Mount Align's motion all share that one connection.
+The port comes from `ONSTEP_PORT` (environment) or the `[onstep]` table:
+
+```toml
+[onstep]
+serial_port = "/dev/ttyACM0"   # default
+baud_rate = 9600               # default
+```
+
+Because only one process may own that serial port, `indi_lx200_OnStep` must
+**not** be running for the OnStep controller (unrelated INDI devices --
+cameras, filter wheel -- keep using indiserver), and SmartTScope must not be
+running at the same time. After upgrading OnStepAdapter, update the Pi's
+venv: `.venv/bin/pip install <release wheel URL from pyproject.toml>`.
+
 ### Diagnostics
 
 Both apps write local diagnostic bundles to

@@ -1,30 +1,24 @@
 """Shared FocuserPort contract — every focuser adapter must satisfy this.
 
-no_focuser_factory / fake_focuser_factory / indi_focuser_factory (against
-a real, in-process FakeIndiServer — see astrotool_core.testing) all run
-hardware-free. indi_real_focuser_factory is real-hardware and
-skipif-guarded, mirroring tests/contracts/test_mount_contract.py's
-indi_mount_factory/ASTROTOOL_ONSTEP_PORT pattern — set
-ASTROTOOL_INDI_FOCUSER_HOST (and optionally ASTROTOOL_INDI_FOCUSER_PORT/
-ASTROTOOL_INDI_FOCUSER_DEVICE) to exercise it against a real indiserver.
+no_focuser_factory / fake_focuser_factory / onstep_focuser_factory (the
+OnStepAdapter shim over a FakeOnStepClient) all run hardware-free.
+onstep_real_focuser_factory is real-hardware and skipif-guarded: set
+ASTROTOOL_ONSTEP_PORT to exercise it against a real controller.
 """
 
 from __future__ import annotations
 
 import os
-import weakref
 from collections.abc import Callable
 
 import pytest
 from astrotool_core.focus import FakeFocuser, FocuserPort, NoFocuser
-from astrotool_core.focus.indi_focuser_adapter import IndiFocuserAdapter
-from astrotool_core.testing.fake_indi_server import FakeIndiServer
+from astrotool_core.onstep import OnStepConnection, OnStepFocuserAdapter
+from astrotool_core.testing.fake_onstep_client import make_fake_onstep_connection
 
 FocuserFactory = Callable[[], FocuserPort]
 
-_INDI_FOCUSER_HOST = os.environ.get("ASTROTOOL_INDI_FOCUSER_HOST")
-_INDI_FOCUSER_PORT = int(os.environ.get("ASTROTOOL_INDI_FOCUSER_PORT", "7624"))
-_INDI_FOCUSER_DEVICE = os.environ.get("ASTROTOOL_INDI_FOCUSER_DEVICE", "LX200 OnStep")
+_ONSTEP_PORT = os.environ.get("ASTROTOOL_ONSTEP_PORT")
 
 
 def no_focuser_factory() -> FocuserPort:
@@ -35,31 +29,22 @@ def fake_focuser_factory() -> FocuserPort:
     return FakeFocuser()
 
 
-def indi_focuser_factory() -> FocuserPort:
-    # FakeIndiServer's lifetime is tied to the adapter's via weakref.finalize
-    # (rather than threading it through every test's try/finally) since the
-    # factory signature here is a plain `Callable[[], FocuserPort]` with no
-    # separate teardown hook, matching the shape every other factory in this
-    # file already has.
-    fake = FakeIndiServer()
-    fake.start()
-    adapter = IndiFocuserAdapter(fake.host, fake.port, connect_timeout_s=2.0)
-    weakref.finalize(adapter, fake.stop)
-    return adapter
+def onstep_focuser_factory() -> FocuserPort:
+    return OnStepFocuserAdapter(make_fake_onstep_connection())
 
 
-def indi_real_focuser_factory() -> FocuserPort:
-    assert _INDI_FOCUSER_HOST is not None
-    return IndiFocuserAdapter(_INDI_FOCUSER_HOST, _INDI_FOCUSER_PORT, _INDI_FOCUSER_DEVICE)
+def onstep_real_focuser_factory() -> FocuserPort:
+    assert _ONSTEP_PORT is not None
+    return OnStepFocuserAdapter(OnStepConnection(_ONSTEP_PORT))
 
 
-FOCUSER_FACTORIES = [no_focuser_factory, fake_focuser_factory, indi_focuser_factory]
+FOCUSER_FACTORIES = [no_focuser_factory, fake_focuser_factory, onstep_focuser_factory]
 REAL_FOCUSER_FACTORIES = [
     pytest.param(
-        indi_real_focuser_factory,
+        onstep_real_focuser_factory,
         marks=pytest.mark.skipif(
-            _INDI_FOCUSER_HOST is None,
-            reason="ASTROTOOL_INDI_FOCUSER_HOST not set — no real indiserver available",
+            _ONSTEP_PORT is None,
+            reason="ASTROTOOL_ONSTEP_PORT not set — no OnStep controller available",
         ),
     ),
 ]

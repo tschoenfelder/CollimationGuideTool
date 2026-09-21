@@ -1,6 +1,6 @@
 """MountParkPanel — park/unpark-only control for the OnStep mount,
-connected via a real indiserver (see
-`astrotool_core.mount.indi_mount_park_adapter.IndiMountParkAdapter`).
+reached only through OnStepAdapter (see
+`astrotool_core.onstep.OnStepMountParkAdapter`).
 
 Mirrors `FocuserPanel`'s conventions (a `QTimer` poll loop,
 `diagnostic_context()`, and the same "one action at a time" click
