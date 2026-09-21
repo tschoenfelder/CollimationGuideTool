@@ -21,6 +21,7 @@ than `min_duration_ms` (timing/acceleration would dominate).
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import Enum
 
@@ -53,6 +54,23 @@ def rate_arcsec_per_s(preset: str) -> float:
     return RATE_PRESET_X[preset] * SIDEREAL_ARCSEC_PER_S
 
 
+def measured_rate_arcsec_per_s(
+    camera: CameraGeometry,
+    dx_px: float,
+    dy_px: float,
+    duration_ms: float,
+    *,
+    distance_m: float | None = None,
+) -> float | None:
+    """The mount's REAL angular rate from one timed bootstrap move: the measured
+    2-D image shift x the camera's plate scale / the commanded duration. None
+    without configured optics or a usable duration (nothing is guessed)."""
+    scale = camera.arcsec_per_px_at(distance_m)
+    if scale is None or duration_ms <= 0:
+        return None
+    return math.hypot(dx_px, dy_px) * scale / (duration_ms / 1000.0)
+
+
 def finite_distance_scale(distance_m: float | None, focal_length_mm: float | None) -> float:
     """Factor applied to a camera's FOV when focused at a finite distance.
 
@@ -77,19 +95,26 @@ class CameraGeometry:
     arcsec_per_px: float | None
     focal_length_mm: float | None = None
 
-    def fov_arcsec(self, distance_m: float | None = None) -> tuple[float, float] | None:
+    def arcsec_per_px_at(self, distance_m: float | None = None) -> float | None:
+        """Plate scale at the focus distance (None without configured optics)."""
         if self.arcsec_per_px is None or self.arcsec_per_px <= 0:
             return None
-        scale = finite_distance_scale(distance_m, self.focal_length_mm)
-        return (
-            self.width_px * self.arcsec_per_px * scale,
-            self.height_px * self.arcsec_per_px * scale,
-        )
+        return self.arcsec_per_px * finite_distance_scale(distance_m, self.focal_length_mm)
+
+    def fov_arcsec(self, distance_m: float | None = None) -> tuple[float, float] | None:
+        scale = self.arcsec_per_px_at(distance_m)
+        if scale is None:
+            return None
+        return (self.width_px * scale, self.height_px * scale)
 
 
 @dataclass(frozen=True)
 class SizingPolicy:
     rate_preset: str = "6"  # 20x sidereal
+    #: When set, the seed rate is this multiple of sidereal (OnStepAdapter's
+    #: center rate) instead of a `rate_preset` -- a SEED only, the measured
+    #: displacement is authoritative.
+    center_rate_x: float | None = None
     target_fraction: float = 0.25
     band_low: float = 0.20
     band_high: float = 0.30
@@ -115,6 +140,9 @@ class MovePlan:
     duration_ms: int
     seed_camera: str | None
     status: SizingStatus
+    #: The calculated angular size of the first move (target fraction of the
+    #: seed camera's frame width), independent of any rate assumption.
+    target_arcsec: float | None = None
 
 
 class StepAction(Enum):
@@ -158,8 +186,8 @@ def plan_first_move(
     if not sized:
         return MovePlan(fallback_ms, None, SizingStatus.NO_OPTICS)
     smallest_arcsec, key = min(sized)
-    needed_ms = policy.target_fraction * smallest_arcsec / rate_arcsec_per_s(policy.rate_preset)
-    needed_ms *= 1000.0
+    target_arcsec = policy.target_fraction * smallest_arcsec
+    needed_ms = target_arcsec / seed_rate_arcsec_per_s(policy) * 1000.0
     duration = _clamp_duration(needed_ms, policy)
     if needed_ms > policy.max_duration_ms:
         status = SizingStatus.CAPPED
@@ -167,7 +195,13 @@ def plan_first_move(
         status = SizingStatus.RAISED_TO_MIN
     else:
         status = SizingStatus.OK
-    return MovePlan(duration, key, status)
+    return MovePlan(duration, key, status, target_arcsec)
+
+
+def seed_rate_arcsec_per_s(policy: SizingPolicy) -> float:
+    if policy.center_rate_x is not None:
+        return policy.center_rate_x * SIDEREAL_ARCSEC_PER_S
+    return rate_arcsec_per_s(policy.rate_preset)
 
 
 def measured_fraction(camera: CameraGeometry, dx_px: float, dy_px: float) -> float:

@@ -74,3 +74,29 @@ class MountPort(Protocol):
         and nudge pulse to run at one deliberately-chosen rate regardless of
         an adapter's own default."""
         ...
+
+
+class AngularMotionPort(Protocol):
+    """Optional capability of a `MountPort`: angular moves with runtime-installed rates.
+
+    `OnStepMountPulseAdapter` provides it over OnStepAdapter's `move_ra`/`move_dec` +
+    `set_motion_calibration` (>= 0.3.5). The application decides the angular size (image
+    space -> optics -> arcsec) and measures the achieved displacement; rates are
+    established by a timed bootstrap move (`MountPort.pulse_axis` with no rate preset,
+    i.e. OnStep's center rate), measured from camera displacement, then installed here.
+    `direction` is the axis direction, `arcsec` a positive magnitude."""
+
+    def installed_rate(self, axis: MountAxis, direction: AxisDirection) -> float | None:
+        """Installed centering rate (arcsec/s) for this axis direction, or None."""
+        ...
+
+    def install_rate(self, axis: MountAxis, direction: AxisDirection, arcsec_per_s: float) -> None:
+        """Install one MEASURED centering rate; other directions' rates are kept."""
+        ...
+
+    def move_angular(
+        self, axis: MountAxis, direction: AxisDirection, arcsec: float
+    ) -> CommandResult:
+        """Move by `arcsec` through OnStepAdapter's angular API; `accepted=False` (with
+        the adapter's reason) if refused or no rate is installed for the direction."""
+        ...

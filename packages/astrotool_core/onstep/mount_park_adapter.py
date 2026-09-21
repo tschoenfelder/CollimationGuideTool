@@ -70,3 +70,19 @@ class OnStepMountParkAdapter(MountParkPort):
         mount = self._mount()
         if mount is not None and not mount.enable_tracking():
             raise RuntimeError("OnStep did not accept the tracking-on command")
+
+    def confirm_home(self) -> None:
+        """The OPERATOR confirms the mount is physically at its mechanical home.
+
+        OnStepAdapter refuses every motion (`mechanical_position_authority_untrusted`) until
+        this is done; it must be an explicit human action, never automatic. Not part of
+        `MountParkPort` (like `abort()` it is an adapter capability the panel duck-types)."""
+        mount = self._mount()
+        if mount is None:
+            raise ConnectionError("OnStep mount is not connected")
+        mount.confirm_home_position()
+
+    @property
+    def home_confirmed(self) -> bool:
+        mount = self._mount()
+        return bool(mount is not None and mount.safety_snapshot().get("home_confirmed"))

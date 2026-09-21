@@ -6,7 +6,11 @@ from astrotool_core.onstep.connection import OnStepConnection
 from astrotool_core.onstep.focuser_adapter import OnStepFocuserAdapter
 from astrotool_core.onstep.mount_park_adapter import OnStepMountParkAdapter
 from astrotool_core.onstep.mount_pulse_adapter import OnStepMountPulseAdapter
-from astrotool_core.onstep.settings import OnStepSettings, load_onstep_settings
+from astrotool_core.onstep.settings import (
+    OnStepSettings,
+    build_onstep_safety_config,
+    load_onstep_settings,
+)
 
 __all__ = [
     "OnStepConnection",
@@ -14,5 +18,6 @@ __all__ = [
     "OnStepMountParkAdapter",
     "OnStepMountPulseAdapter",
     "OnStepSettings",
+    "build_onstep_safety_config",
     "load_onstep_settings",
 ]

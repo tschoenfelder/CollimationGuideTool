@@ -24,9 +24,7 @@ _FAKE_MOUNT_CAPABILITIES = MountCapabilities(
 
 
 class FakeMountAdapter:
-    def __init__(
-        self, *, fail_connect: bool = False, reject_first_n_pulses: int = 0
-    ) -> None:
+    def __init__(self, *, fail_connect: bool = False, reject_first_n_pulses: int = 0) -> None:
         self._fail_connect = fail_connect
         self._connected = False
         self._tracking = False
@@ -89,3 +87,76 @@ class FakeMountAdapter:
 
     def abort(self) -> None:
         self.abort_log.append(None)
+
+
+class FakeAngularMountAdapter(FakeMountAdapter):
+    """`FakeMountAdapter` + `AngularMotionPort`, with a small physical model.
+
+    The mount really moves the sky at `true_rate` arcsec/s per axis direction (unknown
+    to the application). A timed pulse moves `true_rate x duration`; an angular move of
+    `arcsec` runs for `arcsec / installed_rate` seconds (that is what OnStepAdapter does),
+    so it moves `arcsec x true_rate / installed_rate` -- exactly right only when the
+    installed rate was measured correctly. `sky_arcsec[axis]` is the cumulative signed
+    result (axis1 + = east, axis2 + = north)."""
+
+    def __init__(
+        self,
+        *,
+        true_rate: dict[tuple[MountAxis, AxisDirection], float] | float = 100.0,
+        refuse_angular: str | None = None,
+        **kwargs: object,
+    ) -> None:
+        super().__init__(**kwargs)  # type: ignore[arg-type]
+        self._true_rate = true_rate
+        self._installed: dict[tuple[MountAxis, AxisDirection], float] = {}
+        self.refuse_angular = refuse_angular
+        self.angular_log: list[tuple[MountAxis, AxisDirection, float]] = []
+        self.install_log: list[tuple[MountAxis, AxisDirection, float]] = []
+        self.sky_arcsec: dict[MountAxis, float] = {MountAxis.AXIS1: 0.0, MountAxis.AXIS2: 0.0}
+
+    def _true(self, axis: MountAxis, direction: AxisDirection) -> float:
+        if isinstance(self._true_rate, dict):
+            return self._true_rate[(axis, direction)]
+        return self._true_rate
+
+    @staticmethod
+    def _sign(direction: AxisDirection) -> int:
+        return 1 if direction is AxisDirection.POSITIVE else -1
+
+    def pulse_axis(
+        self,
+        axis: MountAxis,
+        direction: AxisDirection,
+        duration_ms: int,
+        *,
+        rate_preset: str | None = None,
+    ) -> CommandResult:
+        result = super().pulse_axis(axis, direction, duration_ms, rate_preset=rate_preset)
+        if result.accepted:
+            self.sky_arcsec[axis] += (
+                self._sign(direction) * self._true(axis, direction) * duration_ms / 1000.0
+            )
+        return result
+
+    def installed_rate(self, axis: MountAxis, direction: AxisDirection) -> float | None:
+        return self._installed.get((axis, direction))
+
+    def install_rate(self, axis: MountAxis, direction: AxisDirection, arcsec_per_s: float) -> None:
+        self._installed[(axis, direction)] = arcsec_per_s
+        self.install_log.append((axis, direction, arcsec_per_s))
+
+    def move_angular(
+        self, axis: MountAxis, direction: AxisDirection, arcsec: float
+    ) -> CommandResult:
+        if not self._connected:
+            return CommandResult(accepted=False, message="not connected")
+        if self.refuse_angular is not None:
+            return CommandResult(accepted=False, message=self.refuse_angular)
+        installed = self._installed.get((axis, direction))
+        if installed is None:
+            return CommandResult(accepted=False, message="no centering rate installed")
+        self.angular_log.append((axis, direction, arcsec))
+        self.sky_arcsec[axis] += (
+            self._sign(direction) * arcsec * self._true(axis, direction) / installed
+        )
+        return CommandResult(accepted=True)

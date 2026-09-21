@@ -20,6 +20,7 @@ from astrotool_core.mount.no_mount import NoMountAdapter
 from astrotool_core.mount.no_mount_park import NoMountPark
 from astrotool_core.mount.park_port import MountParkPort, MountParkStatus
 from astrotool_core.mount.port import (
+    AngularMotionPort,
     AxisDirection,
     CommandResult,
     MountAxis,
@@ -35,6 +36,7 @@ from astrotool_core.mount.tracking_mode import (
 )
 
 __all__ = [
+    "AngularMotionPort",
     "AxisDirection",
     "AxisResponse",
     "CalibrationMatrix",

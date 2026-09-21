@@ -238,6 +238,97 @@ class TestPulse:
         assert pulse.pulse_axis(MountAxis.AXIS1, AxisDirection.POSITIVE, 300).accepted
 
 
+class TestAngularMotion:
+    """OnStepAdapter 0.3.5: timed bootstrap -> install measured rate -> move_ra/move_dec."""
+
+    def _ready(self, *, tracking: bool = True) -> tuple[OnStepMountPulseAdapter, FakeOnStepClient]:
+        conn, made = _connection()
+        pulse = OnStepMountPulseAdapter(conn)
+        pulse.connect()
+        made[0].mount.state = MountState.TRACKING if tracking else MountState.UNPARKED
+        made[0].mount.at_home = False
+        return pulse, made[0]
+
+    def test_an_angular_move_is_refused_until_its_rate_is_installed(self) -> None:
+        pulse, client = self._ready()
+        result = pulse.move_angular(MountAxis.AXIS1, AxisDirection.POSITIVE, 100.0)
+        assert not result.accepted
+        assert "no centering rate" in result.message
+        assert client.mount.motion_calls == []  # nothing was commanded
+
+    def test_installing_a_rate_reaches_onstepadapters_motion_calibration(self) -> None:
+        pulse, client = self._ready()
+        pulse.install_rate(MountAxis.AXIS1, AxisDirection.POSITIVE, 120.0)
+        cal = client.mount.get_motion_calibration()
+        assert cal is not None
+        assert cal.center_ra_east_arcsec_per_s == 120.0
+        assert cal.center_ra_west_arcsec_per_s is None
+        assert pulse.installed_rate(MountAxis.AXIS1, AxisDirection.POSITIVE) == 120.0
+        assert pulse.installed_rate(MountAxis.AXIS1, AxisDirection.NEGATIVE) is None
+
+    def test_installing_another_direction_keeps_the_earlier_rates(self) -> None:
+        pulse, client = self._ready()
+        pulse.install_rate(MountAxis.AXIS1, AxisDirection.POSITIVE, 120.0)
+        pulse.install_rate(MountAxis.AXIS2, AxisDirection.NEGATIVE, 110.0)
+        cal = client.mount.get_motion_calibration()
+        assert cal is not None
+        assert cal.center_ra_east_arcsec_per_s == 120.0
+        assert cal.center_dec_south_arcsec_per_s == 110.0
+
+    def test_invalid_rates_are_rejected_and_not_installed(self) -> None:
+        pulse, client = self._ready()
+        for bad in (0.0, -3.0, float("nan"), float("inf")):
+            with pytest.raises(ValueError):
+                pulse.install_rate(MountAxis.AXIS1, AxisDirection.POSITIVE, bad)
+        assert client.mount.get_motion_calibration() is None
+
+    def test_angular_moves_map_to_signed_move_ra_and_move_dec(self) -> None:
+        pulse, client = self._ready()
+        for axis in (MountAxis.AXIS1, MountAxis.AXIS2):
+            for direction in (AxisDirection.POSITIVE, AxisDirection.NEGATIVE):
+                pulse.install_rate(axis, direction, 100.0)
+        for axis, direction in [
+            (MountAxis.AXIS1, AxisDirection.POSITIVE),
+            (MountAxis.AXIS1, AxisDirection.NEGATIVE),
+            (MountAxis.AXIS2, AxisDirection.POSITIVE),
+            (MountAxis.AXIS2, AxisDirection.NEGATIVE),
+        ]:
+            assert pulse.move_angular(axis, direction, 150.0).accepted
+        got = [
+            (c.axis, c.direction, c.requested_arcsec, c.duration_ms, c.mode)
+            for c in client.mount.motion_calls
+        ]
+        assert got == [
+            ("ra", "e", 150.0, 1500, "center"),
+            ("ra", "w", -150.0, 1500, "center"),
+            ("dec", "n", 150.0, 1500, "center"),
+            ("dec", "s", -150.0, 1500, "center"),
+        ]
+
+    def test_at_home_refusal_is_reported_with_the_adapters_reason(self) -> None:
+        pulse, client = self._ready()
+        client.mount.at_home = True
+        pulse.install_rate(MountAxis.AXIS1, AxisDirection.POSITIVE, 100.0)
+        result = pulse.move_angular(MountAxis.AXIS1, AxisDirection.POSITIVE, 100.0)
+        assert not result.accepted
+        assert "axis_motion_refused_at_home" in result.message
+
+    def test_a_bad_size_or_no_connection_is_rejected(self) -> None:
+        pulse, _ = self._ready()
+        pulse.install_rate(MountAxis.AXIS1, AxisDirection.POSITIVE, 100.0)
+        assert not pulse.move_angular(MountAxis.AXIS1, AxisDirection.POSITIVE, 0.0).accepted
+        idle = OnStepMountPulseAdapter(_connection()[0])
+        assert not idle.move_angular(MountAxis.AXIS1, AxisDirection.POSITIVE, 10.0).accepted
+        with pytest.raises(ConnectionError):
+            idle.install_rate(MountAxis.AXIS1, AxisDirection.POSITIVE, 10.0)
+
+    def test_the_bootstrap_timed_move_runs_at_the_center_rate(self) -> None:
+        """No preset -> OnStepAdapter selects `:RC#`, the rate the angular moves use."""
+        pulse, client = self._ready(tracking=False)
+        assert pulse.pulse_axis(MountAxis.AXIS1, AxisDirection.POSITIVE, 500).accepted
+        assert client.mount.motion_calls[-1].rate_preset is None
+
+
 class TestSettings:
     def test_defaults_when_nothing_is_configured(self, tmp_path: Path) -> None:
         s = load_onstep_settings(tmp_path / "missing.toml", environ={})

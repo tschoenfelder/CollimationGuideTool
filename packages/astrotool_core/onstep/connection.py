@@ -11,7 +11,7 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable
 
-from onstep_adapter import OnStepClient
+from onstep_adapter import OnStepClient, OnStepSafetyConfig
 
 
 class OnStepConnection:
@@ -22,11 +22,13 @@ class OnStepConnection:
         baud_rate: int = 9600,
         timeout: float = 2.0,
         client_factory: Callable[..., OnStepClient] = OnStepClient,
+        safety_config: OnStepSafetyConfig | None = None,
     ) -> None:
         self._port = port
         self._baud_rate = baud_rate
         self._timeout = timeout
         self._client_factory = client_factory
+        self._safety_config = safety_config
         self._client: OnStepClient | None = None
         self._users = 0
         self._lock = threading.Lock()
@@ -46,8 +48,11 @@ class OnStepConnection:
         open leaves no half-open state and no user count behind."""
         with self._lock:
             if self._client is None:
+                extra = (
+                    {} if self._safety_config is None else {"safety_config": self._safety_config}
+                )
                 client = self._client_factory(
-                    self._port, baud_rate=self._baud_rate, timeout=self._timeout
+                    self._port, baud_rate=self._baud_rate, timeout=self._timeout, **extra
                 )
                 result = client.connect()
                 if not result.connected:

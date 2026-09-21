@@ -10,6 +10,7 @@ refusing at home, a motion lock, and cancellation via `cancel_check`.
 
 from __future__ import annotations
 
+import math
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -20,6 +21,7 @@ from onstep_adapter import (
     FocuserMoveResult,
     FocuserStatus,
     OnStepClient,
+    OnStepMotionCalibration,
     OnStepSafetyError,
     SafetySeverity,
     SafetyViolation,
@@ -42,6 +44,8 @@ class MotionCall:
     duration_ms: int
     mode: str
     rate_preset: int | None
+    #: Set for `move_ra`/`move_dec` (angular) calls: the requested signed offset.
+    requested_arcsec: float | None = None
 
 
 class FakeOnStepMount:
@@ -56,6 +60,24 @@ class FakeOnStepMount:
         #: Real time the fake "moves" for; 0 keeps tests instant.
         self.simulate_motion_s = 0.0
         self.calls: list[str] = []
+        #: The application-supplied angular calibration (OnStepAdapter 0.3.5).
+        self.motion_calibration: OnStepMotionCalibration | None = None
+        #: A manual jog moves the axis away from home (unverified on the real
+        #: controller); tests flip it to model "still reports at home".
+        self.manual_move_clears_home = True
+        self.home_confirmed = False
+
+    def confirm_home_position(self) -> None:
+        self.home_confirmed = True
+
+    def safety_snapshot(self) -> dict[str, object]:
+        return {"home_confirmed": self.home_confirmed}
+
+    def set_motion_calibration(self, calibration: OnStepMotionCalibration | None) -> None:
+        self.motion_calibration = calibration
+
+    def get_motion_calibration(self) -> OnStepMotionCalibration | None:
+        return self.motion_calibration
 
     def connect(self) -> bool:
         self.connected = True
@@ -116,6 +138,7 @@ class FakeOnStepMount:
         mode: str,
         rate_preset: int | None,
         cancel_check: Callable[[], bool] | None,
+        requested_arcsec: float | None = None,
     ) -> AxisMotionResult:
         command = f"move_{axis}_{mode}"
         if not 20 <= duration_ms <= 120000:
@@ -127,7 +150,9 @@ class FakeOnStepMount:
             raise _blocked("manual_jog_requires_tracking_off", command)
         if mode == "center" and self.at_home:
             raise _blocked("axis_motion_refused_at_home", command)
-        self.motion_calls.append(MotionCall(axis, direction, duration_ms, mode, rate_preset))
+        self.motion_calls.append(
+            MotionCall(axis, direction, duration_ms, mode, rate_preset, requested_arcsec)
+        )
         cancelled = False
         deadline = time.monotonic() + self.simulate_motion_s
         while time.monotonic() < deadline:
@@ -135,12 +160,14 @@ class FakeOnStepMount:
                 cancelled = True
                 break
             time.sleep(0.005)
+        if mode == "manual" and self.manual_move_clears_home:
+            self.at_home = False
         return AxisMotionResult(
             ok=not cancelled,
             axis=axis,
             direction=direction[0],
             mode=mode,
-            requested_arcsec=None,
+            requested_arcsec=requested_arcsec,
             estimated_duration_ms=duration_ms,
             rate_preset=rate_preset,
             commands_sent=(),
@@ -174,6 +201,49 @@ class FakeOnStepMount:
         cancel_check: Callable[[], bool] | None = None,
     ) -> AxisMotionResult:
         return self._move("dec", direction, duration_ms, mode, rate_preset, cancel_check)
+
+    def _angular(
+        self,
+        axis: str,
+        offset_arcsec: float,
+        mode: str,
+        cancel_check: Callable[[], bool] | None,
+    ) -> AxisMotionResult:
+        """OnStepAdapter 0.3.5 semantics: needs the exact direction's installed rate."""
+        if mode not in {"guide", "center"}:
+            raise ValueError("manual mode is only supported by timed motion")
+        if not math.isfinite(offset_arcsec) or offset_arcsec == 0.0:
+            raise ValueError(f"{axis.upper()} offset_arcsec must be finite and non-zero")
+        direction = (
+            ("e" if offset_arcsec > 0 else "w")
+            if axis == "ra"
+            else ("n" if offset_arcsec > 0 else "s")
+        )
+        rate = None
+        if self.motion_calibration is not None:
+            rate = self.motion_calibration.rate_for(mode=mode, axis=axis, direction=direction)
+        if rate is None:
+            raise ValueError(f"motion calibration is required for angular {axis.upper()} offsets")
+        duration = round(abs(offset_arcsec) / rate * 1000.0)
+        return self._move(axis, direction, duration, mode, None, cancel_check, offset_arcsec)
+
+    def move_ra(
+        self,
+        offset_arcsec: float,
+        *,
+        mode: str = "center",
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> AxisMotionResult:
+        return self._angular("ra", offset_arcsec, mode, cancel_check)
+
+    def move_dec(
+        self,
+        offset_arcsec: float,
+        *,
+        mode: str = "center",
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> AxisMotionResult:
+        return self._angular("dec", offset_arcsec, mode, cancel_check)
 
 
 class FakeOnStepFocuser:
