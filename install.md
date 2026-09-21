@@ -157,7 +157,29 @@ The port comes from `ONSTEP_PORT` (environment) or the `[onstep]` table:
 [onstep]
 serial_port = "/dev/ttyACM0"   # default
 baud_rate = 9600               # default
+time_trust_source = "raspberry_plausible"   # or "ntp" / "gps" / "rtc" / "user_confirmed"
+# observer_lat / observer_lon / observer_alt_m override the site read from SmartTScope
 ```
+
+OnStepAdapter's safety layer checks every motion against the site and mount limits, which
+are read from the rig's `~/.SmartTScope/config.toml` (`[observer] lat/lon`,
+`[mount_limits]`); its state files live beside SmartTScope's, so both applications share one
+home/park authority. Two things are deliberately explicit:
+
+- **Confirm at home** (Mount panel): OnStepAdapter refuses every motion
+  (`mechanical_position_authority_untrusted`) until the operator confirms the mount is
+  physically at its home position. Never automatic.
+- **Clock trust**: angular moves (`move_ra`/`move_dec`, used by Mount Align once a direction's
+  rate is known) are astronomy-grade and refuse a clock that is only *plausible*. A Pi whose
+  clock is disciplined by NTP/GPS should say so with `time_trust_source`; otherwise Mount
+  Align continues with the equivalent timed moves (terrestrial, tracking off) and records
+  `timed_fallback` in its diagnostics.
+
+Mount Align on this connection: the first move per direction is a timed bootstrap at the
+controller's centering rate (sized from the optics; `calibration_center_rate_x`, default 8x
+sidereal, is only a seed). The rate is MEASURED from the image shift, installed into
+OnStepAdapter at runtime, and every later move of that direction is an angular
+`move_ra`/`move_dec` of ~25% of the frame.
 
 Because only one process may own that serial port, `indi_lx200_OnStep` must
 **not** be running for the OnStep controller (unrelated INDI devices --
