@@ -59,6 +59,6 @@ def test_no_source_file_bypasses_onstepadapter() -> None:
                 continue
             text = path.read_text(encoding="utf-8")
             offenders += [f"{path.relative_to(_ROOT)}: {t}" for t in _FORBIDDEN if t in text]
-    assert not offenders, (
-        "direct OnStep access outside OnStepAdapter (AGENTS.md):\n" + "\n".join(offenders)
+    assert not offenders, "direct OnStep access outside OnStepAdapter (AGENTS.md):\n" + "\n".join(
+        offenders
     )
