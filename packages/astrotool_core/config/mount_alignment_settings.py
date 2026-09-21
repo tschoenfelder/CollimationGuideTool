@@ -27,11 +27,9 @@ from typing import Any
 
 DEFAULT_CONFIG_PATH = Path.home() / ".CollimationGuideTool" / "config.toml"
 
-#: IndiMountPulseAdapter's probed TELESCOPE_SLEW_RATE table: element "7" is
-#: "48x" -- see that module's docstring. Kept as the default here so the
-#: calibration/nudge pulses run faster than the adapter's own "20x" default
-#: (chosen for a quick, easily-detected test move) without changing that
-#: adapter's default for any other caller.
+#: OnStep rate preset 7 is "48x" sidereal (presets 0-9, passed through
+#: OnStepAdapter's `move_*_timed(rate_preset=)`). Kept as the default here so
+#: the nudge pulses run fast.
 _DEFAULT_RATE_PRESET = "7"
 _DEFAULT_PULSE_MS = 1000
 #: Issue #46: calibration moves are sized to ~25% of the frame (not a fixed

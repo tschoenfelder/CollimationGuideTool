@@ -301,7 +301,7 @@ class FocuserPanel(QWidget):
         # left In/Out permanently disabled with no way to recover -- this
         # is that panel's own missing escape hatch, same reasoning as
         # MountTestMovePanel's Stop button. Sends the real hardware abort
-        # (FOCUS_ABORT_MOTION) via FocuserPort.stop() -- unlike the mount
+        # via FocuserPort.stop() -- unlike the mount
         # adapter's abort(), this is a real FocuserPort ABC method, no
         # duck-typing needed. Also drops this panel's own in-flight
         # tracking immediately, so a stuck safety-net timeout isn't the
@@ -489,8 +489,8 @@ class FocuserPanel(QWidget):
         """Stop polling and disconnect. Safe to call whether or not connected.
 
         Aborts any in-flight motion first -- real report: the focuser kept
-        moving after quitting the app. disconnect() alone only closes the
-        INDI client socket; it never sends FOCUS_ABORT_MOTION, so a move
+        moving after quitting the app. disconnect() alone only releases the
+        OnStep connection; it never sends an abort, so a move
         already in progress on the real hardware would just keep running
         with nothing left to stop it (same underlying gap the Stop button
         exists for, see this module's own docstring's "Stop" section --

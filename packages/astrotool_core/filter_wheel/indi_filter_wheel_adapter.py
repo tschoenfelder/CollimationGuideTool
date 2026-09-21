@@ -10,8 +10,7 @@ Wheel Interface properties: `CONNECTION` (standard), `FILTER_SLOT`
 `Busy` state while moving), `FILTER_NAME` (text vector, elements
 `FILTER_SLOT_NAME_<n>`, one per slot, 1-indexed).
 
-Unlike the focuser adapter's confirmed `"LX200 OnStep"` device name, no
-real EFW hardware has been identified for this rig yet -- `device_name`
+No real EFW hardware has been identified for this rig yet -- `device_name`
 below is an unverified placeholder. Same "hypothesis pending Pi
 verification" caveat this project already applies to new adapters (see
 memory `feedback_verify_hardware_hypotheses_before_shipping`): treat

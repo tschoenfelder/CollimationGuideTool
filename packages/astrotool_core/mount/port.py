@@ -66,8 +66,8 @@ class MountPort(Protocol):
         *,
         rate_preset: str | None = None,
     ) -> CommandResult:
-        """`rate_preset` is adapter-specific (e.g. an INDI TELESCOPE_SLEW_RATE
-        element string on `IndiMountPulseAdapter`) and optional -- `None`
+        """`rate_preset` is adapter-specific (an OnStep rate-preset digit "0"-"9"
+        on `OnStepMountPulseAdapter`) and optional -- `None`
         means "whatever rate the adapter would otherwise use," so existing
         callers that never pass it keep their current behavior unchanged.
         Added for the mount-alignment feature, which needs every calibration

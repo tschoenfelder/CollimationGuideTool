@@ -23,9 +23,8 @@ and computes the response itself, also on the main thread (fast enough,
 unlike FOV registration's search, not to need its own thread). This
 runner's only job is the unpark/pulse/re-park timing.
 
-Always ensures unparked first — a real-hardware check (see incident notes
-on `IndiMountPulseAdapter`) found OnStep's driver refuses
-`TELESCOPE_MOTION_NS`/`_WE` while parked ("Please unpark the mount before
+Always ensures unparked first — a real-hardware check found OnStep refuses
+motion commands while parked ("Please unpark the mount before
 issuing any motion/sync commands"). That refusal is a deliberate safety
 interlock, not a defect — parked is supposed to mean "don't move" — so
 this runner works *with* it rather than around it: it still reports the

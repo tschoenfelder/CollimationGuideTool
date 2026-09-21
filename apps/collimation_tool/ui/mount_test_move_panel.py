@@ -53,7 +53,7 @@ Unlike the original diagnostic, this panel no longer requires the mount to
 already be parked (or already unparked) before anything is clickable —
 every pulse, whether a calibration step or a direction-pad nudge, goes
 through `MountTestMoveRunner`, which unparks first if needed (a real-
-hardware check found OnStep's driver refuses `TELESCOPE_MOTION_NS`/`_WE`
+hardware check found OnStep refuses motion commands
 while parked — a deliberate safety interlock, not a defect) and then never
 re-parks (`park_after=False` on every call here) — "Run Calibration" and the
 direction pads are meant to run one after another across a single unparked
@@ -1907,7 +1907,7 @@ class MountTestMovePanel(QWidget):
         )
         # Issue #30: tracking state must be re-verified after *every*
         # commanded pulse -- the same real OnStep quirk that motivated
-        # this is a side effect of any TELESCOPE_PARK/UNPARK-adjacent
+        # this is a side effect of any park/unpark-adjacent
         # command, not specifically a measured one. `_capture_both`
         # (below) re-checks this again on its own -- redundant but
         # harmless.
