@@ -28,6 +28,18 @@ If the existing deployment has `indi_lx200_OnStep` owning the serial port, resol
 This rule does not prohibit INDI for non-OnStep devices such as cameras or external filter wheels.
 
 
+
+## Consumer enforcement responsibility — mandatory
+
+OnStepAdapter cannot technically prevent CollimationGuideTool/GuideTool from opening a second direct connection to the OnStep controller. Therefore enforcement of the adapter boundary is a **consumer responsibility**.
+
+CollimationGuideTool/GuideTool must actively ensure that no direct OnStep connection path exists outside OnStepAdapter. This includes serial, raw LX200 TCP/socket, and direct INDI access to the OnStep device.
+
+Any existing direct OnStep access is technical debt to be removed. Any new direct OnStep access is an architectural violation and must not be merged.
+
+Tests/review should protect this boundary where practical, for example by asserting that mount/focuser/park/tracking construction is sourced through the OnStepAdapter integration rather than a direct OnStep-specific INDI adapter.
+
+
 ## Mount movement boundary — mandatory
 
 For **RA/DEC mount movement**, `OnStepAdapter` is the authoritative hardware-control boundary.
