@@ -8,6 +8,26 @@ These rules are not suggestions. If a requested implementation appears to confli
 
 ---
 
+
+
+## OnStep connection ownership — mandatory
+
+CollimationGuideTool must **never open any connection to the OnStep controller that bypasses OnStepAdapter**.
+
+This applies to the full OnStep device surface, not only RA/DEC motion. CollimationGuideTool must not directly create:
+
+- a serial connection to the OnStep controller;
+- a raw LX200 TCP/socket connection;
+- an INDI client connection to `LX200 OnStep` for mount movement;
+- a separate direct INDI connection to the same OnStep device for park/unpark, tracking, state or focuser operations.
+
+All OnStep-backed functionality used by CollimationGuideTool must be provided through OnStepAdapter. The adapter may internally use serial, TCP, INDI, or another supported transport, but that choice must remain hidden behind the adapter boundary.
+
+If the existing deployment has `indi_lx200_OnStep` owning the serial port, resolve that ownership inside the OnStepAdapter/deployment architecture. Do not preserve direct CollimationGuideTool-to-OnStep INDI adapters as a workaround.
+
+This rule does not prohibit INDI for non-OnStep devices such as cameras or external filter wheels.
+
+
 ## Mount movement boundary — mandatory
 
 For **RA/DEC mount movement**, `OnStepAdapter` is the authoritative hardware-control boundary.
