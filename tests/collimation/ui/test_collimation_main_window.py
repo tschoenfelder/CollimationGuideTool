@@ -3379,7 +3379,9 @@ class TestMountTestMovePanel:
         # The very first call's own budget is the full deadline; every
         # later one can only be <= that (the remaining-budget shrinks as
         # the sliding window draws more samples), never larger.
-        assert timeouts[0] == pytest.approx(8.0)
+        # The timeout is derived from a monotonic deadline, so it can come out a few
+        # microseconds under the 8.0 s floor -- a 1e-6 tolerance made this flaky in CI.
+        assert timeouts[0] == pytest.approx(8.0, abs=0.05)
         assert all(t <= 8.0 for t in timeouts)
         panel.stop()
 
