@@ -332,7 +332,7 @@ class TestAngularMotion:
 class TestSettings:
     def test_defaults_when_nothing_is_configured(self, tmp_path: Path) -> None:
         s = load_onstep_settings(tmp_path / "missing.toml", environ={})
-        assert (s.serial_port, s.baud_rate) == ("/dev/ttyACM0", 9600)
+        assert (s.serial_port, s.baud_rate) == ("/dev/ttyUSB_ONSTEP0", 9600)
 
     def test_config_file_then_environment_override(self, tmp_path: Path) -> None:
         cfg = tmp_path / "config.toml"
@@ -346,4 +346,4 @@ class TestSettings:
         cfg = tmp_path / "config.toml"
         cfg.write_text('[onstep]\nserial_port = 5\nbaud_rate = "fast"\n')
         s = load_onstep_settings(cfg, environ={})
-        assert (s.serial_port, s.baud_rate) == ("/dev/ttyACM0", 9600)
+        assert (s.serial_port, s.baud_rate) == ("/dev/ttyUSB_ONSTEP0", 9600)

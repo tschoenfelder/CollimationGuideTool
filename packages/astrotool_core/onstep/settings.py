@@ -1,6 +1,6 @@
 """Where the one OnStep serial port is: the `[onstep]` table of
 `~/.CollimationGuideTool/config.toml`, overridable by the `ONSTEP_PORT`
-environment variable (the same variable and `/dev/ttyACM0` default
+environment variable (the same variable SmartTScope uses; the default is the rig's udev symlink
 SmartTScope uses).
 
 This app never opens that port itself: `OnStepConnection` hands it to
@@ -18,7 +18,7 @@ from pathlib import Path
 from onstep_adapter import OnStepSafetyConfig
 
 DEFAULT_CONFIG_PATH = Path.home() / ".CollimationGuideTool" / "config.toml"
-DEFAULT_SERIAL_PORT = "/dev/ttyACM0"
+DEFAULT_SERIAL_PORT = "/dev/ttyUSB_ONSTEP0"
 DEFAULT_BAUD_RATE = 9600
 
 

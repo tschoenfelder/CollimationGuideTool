@@ -155,7 +155,7 @@ The port comes from `ONSTEP_PORT` (environment) or the `[onstep]` table:
 
 ```toml
 [onstep]
-serial_port = "/dev/ttyACM0"   # default
+serial_port = "/dev/ttyUSB_ONSTEP0"   # default
 baud_rate = 9600               # default
 time_trust_source = "raspberry_plausible"   # or "ntp" / "gps" / "rtc" / "user_confirmed"
 # observer_lat / observer_lon / observer_alt_m override the site read from SmartTScope

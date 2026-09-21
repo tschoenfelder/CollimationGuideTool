@@ -25,7 +25,7 @@ Each section polls its own `status()` on a 250 ms QTimer, mirroring
 `apps/collimation_tool/ui/*_panel.py`.
 
 Usage:
-    python scripts/onstep_adapter_uat.py [--serial-port /dev/ttyACM0]
+    python scripts/onstep_adapter_uat.py [--serial-port /dev/ttyUSB_ONSTEP0]
 """
 
 from __future__ import annotations
