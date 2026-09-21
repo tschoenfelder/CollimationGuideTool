@@ -61,6 +61,7 @@ from __future__ import annotations
 import logging
 import threading
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from astrotool_core.mount.park_port import MountParkPort
@@ -83,6 +84,22 @@ _PULSE_REJECTION_RETRY_DELAY_S = 0.3
 
 #: One pulse within a submitted sequence: (axis, direction, duration_ms).
 PulseStep = tuple[MountAxis, AxisDirection, int]
+#: The same, but executed as an ANGULAR move of `arcsec` through OnStepAdapter when the
+#: mount offers `AngularMotionPort` (and a rate is installed); `duration_ms` is then the
+#: equivalent timed duration, used only for the fallback below.
+AngularPulseStep = tuple[MountAxis, AxisDirection, int, float]
+
+#: OnStepAdapter's reasons for refusing an angular (center-mode, astronomy-grade) move that
+#: its timed `manual` mode (tracking off, terrestrial) still allows: the mount is still at
+#: home, or the clock is only plausible, not trusted. ONLY these fall back to the timed move
+#: of the same size; every other refusal (limits, projected-target safety, parked, home
+#: authority...) stays a refusal.
+_AT_HOME_REFUSAL = "axis_motion_refused_at_home"
+_TIMED_FALLBACK_REFUSALS = (_AT_HOME_REFUSAL, "raspberry_time_plausible_not_trusted")
+
+MOTION_ANGULAR = "angular"
+MOTION_TIMED = "timed"
+MOTION_TIMED_FALLBACK = "timed_fallback"
 
 
 @dataclass(frozen=True)
@@ -98,6 +115,8 @@ class MountPulseOutcome:
     #: None when the sequence never got that far.
     motion_started_at: float | None = None
     motion_ended_at: float | None = None
+    #: How each step actually moved (`MOTION_*`), in step order.
+    motion_paths: tuple[str, ...] = ()
     settled_at: float | None = None
 
 
@@ -132,6 +151,31 @@ def _pulse_with_retry(
 
 
 _log = logging.getLogger(__name__)
+
+
+def _move_with_retry(
+    mount: MountPort,
+    step: PulseStep | AngularPulseStep,
+    rate_preset: str | None,
+) -> tuple[CommandResult, str]:
+    """One step: angular through OnStepAdapter when asked and supported, else timed. An
+    angular refusal because the mount is still at home falls back to the timed move of
+    the same equivalent duration (recorded in the path); any other refusal is final."""
+    axis, direction, pulse_ms = step[0], step[1], step[2]
+    arcsec = step[3] if len(step) > 3 else None
+    move_angular = getattr(mount, "move_angular", None)
+    if arcsec is not None and move_angular is not None:
+        result = move_angular(axis, direction, arcsec)
+        if result.accepted:
+            return result, MOTION_ANGULAR
+        if not any(token in result.message for token in _TIMED_FALLBACK_REFUSALS):
+            return result, MOTION_ANGULAR
+        _log.warning("angular move refused -- timed fallback: %s", result.message)
+        return (
+            _pulse_with_retry(mount, axis, direction, pulse_ms, rate_preset),
+            MOTION_TIMED_FALLBACK,
+        )
+    return _pulse_with_retry(mount, axis, direction, pulse_ms, rate_preset), MOTION_TIMED
 
 
 class MountTestMoveRunner:
@@ -172,7 +216,7 @@ class MountTestMoveRunner:
         self,
         mount_park: MountParkPort,
         mount: MountPort,
-        steps: list[PulseStep],
+        steps: Sequence[PulseStep | AngularPulseStep],
         *,
         rate_preset: str | None = None,
         park_after: bool = True,
@@ -217,7 +261,7 @@ class MountTestMoveRunner:
         self,
         mount_park: MountParkPort,
         mount: MountPort,
-        steps: list[PulseStep],
+        steps: Sequence[PulseStep | AngularPulseStep],
         rate_preset: str | None,
         park_after: bool,
         settle_ms: int,
@@ -241,12 +285,13 @@ class MountTestMoveRunner:
         self,
         mount_park: MountParkPort,
         mount: MountPort,
-        steps: list[PulseStep],
+        steps: Sequence[PulseStep | AngularPulseStep],
         rate_preset: str | None,
         park_after: bool,
         settle_ms: int,
     ) -> MountPulseOutcome:
         pulsed = False
+        paths: list[str] = []
         error: str | None = None
         motion_started_at: float | None = None
         motion_ended_at: float | None = None
@@ -302,12 +347,14 @@ class MountTestMoveRunner:
                 # caller treating "not fully pulsed" as "don't trust an
                 # after-measurement" is the safer default.
                 motion_started_at = time.monotonic()
-                for axis, direction, pulse_ms in steps:
-                    result = _pulse_with_retry(mount, axis, direction, pulse_ms, rate_preset)
+                for step in steps:
+                    axis, direction = step[0], step[1]
+                    result, path = _move_with_retry(mount, step, rate_preset)
+                    paths.append(path)
                     if not result.accepted:
                         error = (
                             f"pulse rejected for {axis.name} {direction.name} "
-                            f"after {_PULSE_REJECTION_RETRIES} attempts: {result.message}"
+                            f"({path}): {result.message}"
                         )
                         break
                 else:
@@ -321,9 +368,7 @@ class MountTestMoveRunner:
                 # Always try to leave the mount parked again, even if the
                 # pulse failed above -- see module docstring.
                 mount_park.park()
-                if not _wait_for_parked(
-                    mount_park, want_parked=True, timeout_s=_REPARK_TIMEOUT_S
-                ):
+                if not _wait_for_parked(mount_park, want_parked=True, timeout_s=_REPARK_TIMEOUT_S):
                     error = error or "mount did not confirm re-parked in time"
 
         return MountPulseOutcome(
@@ -332,6 +377,7 @@ class MountTestMoveRunner:
             motion_started_at=motion_started_at,
             motion_ended_at=motion_ended_at,
             settled_at=settled_at,
+            motion_paths=tuple(paths),
         )
 
     def take_latest(self) -> MountPulseOutcome | None:

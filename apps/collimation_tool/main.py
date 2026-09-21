@@ -30,6 +30,7 @@ from astrotool_core.onstep import (
     OnStepFocuserAdapter,
     OnStepMountParkAdapter,
     OnStepMountPulseAdapter,
+    build_onstep_safety_config,
     load_onstep_settings,
 )
 from astrotool_core.testing.frame_factory import donut_image
@@ -74,7 +75,11 @@ def _default_onstep_connection() -> OnStepConnection:
     park/unpark control and the Mount Align pulses all share it; nothing
     here may reach the OnStep controller any other way (AGENTS.md)."""
     settings = load_onstep_settings()
-    return OnStepConnection(settings.serial_port, baud_rate=settings.baud_rate)
+    return OnStepConnection(
+        settings.serial_port,
+        baud_rate=settings.baud_rate,
+        safety_config=build_onstep_safety_config(),
+    )
 
 
 def _default_focuser(connection: OnStepConnection) -> FocuserPort:

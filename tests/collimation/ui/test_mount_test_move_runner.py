@@ -3,9 +3,15 @@ from collections.abc import Callable
 
 from astrotool_core.mount.park_port import MountParkPort, MountParkStatus
 from astrotool_core.mount.port import AxisDirection, CommandResult, MountAxis
-from astrotool_core.testing.fake_mount import FakeMountAdapter
+from astrotool_core.testing.fake_mount import FakeAngularMountAdapter, FakeMountAdapter
 from astrotool_core.testing.fake_mount_park import FakeMountPark
-from collimation_tool.ui.mount_test_move_runner import MountPulseOutcome, MountTestMoveRunner
+from collimation_tool.ui.mount_test_move_runner import (
+    MOTION_ANGULAR,
+    MOTION_TIMED,
+    MOTION_TIMED_FALLBACK,
+    MountPulseOutcome,
+    MountTestMoveRunner,
+)
 
 
 def _wait_for(predicate: Callable[[], bool], *, timeout_s: float = 5.0) -> bool:
@@ -239,9 +245,7 @@ class TestMountTestMoveRunner:
 
     def test_submit_sequence_with_no_steps_is_a_no_op(self) -> None:
         runner = MountTestMoveRunner()
-        started = runner.submit_sequence(
-            FakeMountPark(start_parked=True), FakeMountAdapter(), []
-        )
+        started = runner.submit_sequence(FakeMountPark(start_parked=True), FakeMountAdapter(), [])
         assert started is False
         assert runner.is_busy is False
 
@@ -486,7 +490,11 @@ class TestWorkerCrashesNeverStrandTheRunner:
         mount.connect()
 
         assert runner.submit(
-            _RaisingPark(on="unpark"), mount, MountAxis.AXIS1, AxisDirection.POSITIVE, 10,
+            _RaisingPark(on="unpark"),
+            mount,
+            MountAxis.AXIS1,
+            AxisDirection.POSITIVE,
+            10,
             park_after=False,
         )
         outcome = self._finished_outcome(runner)
@@ -541,16 +549,105 @@ class TestWorkerCrashesNeverStrandTheRunner:
         mount = FakeMountAdapter()
         mount.connect()
         assert runner.submit(
-            _RaisingPark(on="unpark"), mount, MountAxis.AXIS1, AxisDirection.POSITIVE, 10,
+            _RaisingPark(on="unpark"),
+            mount,
+            MountAxis.AXIS1,
+            AxisDirection.POSITIVE,
+            10,
             park_after=False,
         )
         self._finished_outcome(runner)
 
         assert runner.submit(
-            FakeMountPark(start_parked=False), mount, MountAxis.AXIS1, AxisDirection.POSITIVE, 10,
+            FakeMountPark(start_parked=False),
+            mount,
+            MountAxis.AXIS1,
+            AxisDirection.POSITIVE,
+            10,
             park_after=False,
         )
         outcome = self._finished_outcome(runner)
 
         assert outcome.pulsed is True and outcome.error is None
         assert mount.pulse_log  # the second submit really pulsed
+
+
+class TestAngularSteps:
+    """A step with an angular size runs through the mount's angular API; only the
+    at-home refusal may fall back to the equivalent timed move (issue #31/#46)."""
+
+    def _run(
+        self,
+        mount: FakeAngularMountAdapter,
+        steps: list[tuple[MountAxis, AxisDirection, int, float]],
+    ) -> MountPulseOutcome:
+        mount.connect()
+        runner = MountTestMoveRunner()
+        assert runner.submit_sequence(
+            FakeMountPark(start_parked=False), mount, steps, park_after=False
+        )
+        assert _wait_for(lambda: not runner.is_busy)
+        outcome = runner.take_latest()
+        assert outcome is not None
+        return outcome
+
+    def test_an_angular_step_uses_move_angular_not_a_timed_pulse(self) -> None:
+        mount = FakeAngularMountAdapter()
+        mount.connect()
+        mount.install_rate(MountAxis.AXIS1, AxisDirection.POSITIVE, 100.0)
+        outcome = self._run(mount, [(MountAxis.AXIS1, AxisDirection.POSITIVE, 1500, 150.0)])
+        assert outcome.pulsed and outcome.motion_paths == (MOTION_ANGULAR,)
+        assert mount.angular_log == [(MountAxis.AXIS1, AxisDirection.POSITIVE, 150.0)]
+        assert mount.pulse_log == []
+
+    def test_a_timed_step_is_unchanged_and_reported_as_timed(self) -> None:
+        mount = FakeAngularMountAdapter()
+        outcome = self._run_timed(mount)
+        assert outcome.pulsed and outcome.motion_paths == (MOTION_TIMED,)
+        assert mount.pulse_log == [(MountAxis.AXIS1, AxisDirection.POSITIVE, 400)]
+
+    def _run_timed(self, mount: FakeAngularMountAdapter) -> MountPulseOutcome:
+        mount.connect()
+        runner = MountTestMoveRunner()
+        assert runner.submit_sequence(
+            FakeMountPark(start_parked=False),
+            mount,
+            [(MountAxis.AXIS1, AxisDirection.POSITIVE, 400)],
+            park_after=False,
+        )
+        assert _wait_for(lambda: not runner.is_busy)
+        outcome = runner.take_latest()
+        assert outcome is not None
+        return outcome
+
+    def test_a_refusal_at_home_falls_back_to_the_equivalent_timed_move(self) -> None:
+        mount = FakeAngularMountAdapter(refuse_angular="refused: axis_motion_refused_at_home")
+        mount.connect()
+        mount.install_rate(MountAxis.AXIS1, AxisDirection.POSITIVE, 100.0)
+        outcome = self._run(mount, [(MountAxis.AXIS1, AxisDirection.POSITIVE, 1500, 150.0)])
+        assert outcome.pulsed and outcome.motion_paths == (MOTION_TIMED_FALLBACK,)
+        assert mount.pulse_log == [(MountAxis.AXIS1, AxisDirection.POSITIVE, 1500)]
+
+    def test_any_other_refusal_is_final_and_never_falls_back_to_a_timed_move(self) -> None:
+        mount = FakeAngularMountAdapter(refuse_angular="refused: axis_motion_reached_hard_limit")
+        mount.connect()
+        mount.install_rate(MountAxis.AXIS1, AxisDirection.POSITIVE, 100.0)
+        outcome = self._run(mount, [(MountAxis.AXIS1, AxisDirection.POSITIVE, 1500, 150.0)])
+        assert not outcome.pulsed
+        assert outcome.error is not None and "hard_limit" in outcome.error
+        assert mount.pulse_log == []  # the safety refusal was not bypassed
+
+    def test_a_mount_without_the_angular_capability_runs_the_step_timed(self) -> None:
+        mount = FakeMountAdapter()
+        mount.connect()
+        runner = MountTestMoveRunner()
+        assert runner.submit_sequence(
+            FakeMountPark(start_parked=False),
+            mount,
+            [(MountAxis.AXIS1, AxisDirection.POSITIVE, 700, 90.0)],
+            park_after=False,
+        )
+        assert _wait_for(lambda: not runner.is_busy)
+        outcome = runner.take_latest()
+        assert outcome is not None and outcome.motion_paths == (MOTION_TIMED,)
+        assert mount.pulse_log == [(MountAxis.AXIS1, AxisDirection.POSITIVE, 700)]

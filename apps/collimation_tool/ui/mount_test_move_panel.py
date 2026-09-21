@@ -283,6 +283,7 @@ from astrotool_core.mount.movement_sizing import (
     StepAction,
     decide_next,
     measured_fraction,
+    measured_rate_arcsec_per_s,
     plan_first_move,
     plan_followup,
 )
@@ -703,6 +704,8 @@ class _PendingAction:
     #: move (unused for a calibration step, which has its own step.axis to
     #: report against instead).
     duration_ms: int = 0
+    #: Set when this calibration step runs as an ANGULAR move (arcsec); None = timed.
+    angular_arcsec: float | None = None
     #: Real diagnostic 6cb859d2: True if `_on_nudge_clicked` clamped this
     #: move's duration down to `max_nudge_pulse_ms` -- see that method's
     #: own docstring. `_finish_nudge` uses this to tell the user the move
@@ -837,7 +840,20 @@ class MountTestMovePanel(QWidget):
         self._sizing_geometry: dict[str, CameraGeometry] = {}
         self._axis_duration_ms: dict[MountAxis, int] = {}
         self._axis_attempt: dict[MountAxis, int] = {MountAxis.AXIS1: 1, MountAxis.AXIS2: 1}
-        self._calibration_rate_preset: str = ''
+        self._calibration_rate_preset: str | None = ''
+        #: Issue #31/#46 + AGENTS.md: with an angular-capable mount (OnStepAdapter >= 0.3.5) the
+        #: first move per direction is a TIMED bootstrap at the controller's centering rate; the
+        #: measured rate is installed into the adapter and every later move of that direction
+        #: is ANGULAR (`_axis_arcsec` = the calculated ~25%-frame size, rescaled from measured
+        #: pixels). Off when the mount lacks the capability or the optics are unknown.
+        self._angular_active = False
+        self._axis_arcsec: dict[MountAxis, float] = {}
+        #: Net commanded SKY displacement per axis in arcsec (angular runs): opposite
+        #: directions rarely share a rate, so the return to the start is sized from this,
+        #: not from equal milliseconds.
+        self._axis_net_arcsec: dict[MountAxis, float] = {MountAxis.AXIS1: 0.0, MountAxis.AXIS2: 0.0}
+        self._sizing_distance_m: float | None = None
+        self._last_motion_paths: tuple[str, ...] = ()
         self._sizing_bounded: dict[str, str] = {}
         self._sizing_log: list[dict[str, Any]] = []
         self._calibration_partial: dict[str, dict[MountAxis, AxisResponse]] = {
@@ -1677,6 +1693,7 @@ class MountTestMovePanel(QWidget):
         self._pending_first_response = {"left": {}, "right": {}}
         self._calibration_characterizations = {"left": {}, "right": {}}
         self._axis_net_pulse_ms = {MountAxis.AXIS1: 0, MountAxis.AXIS2: 0}
+        self._axis_net_arcsec = {MountAxis.AXIS1: 0.0, MountAxis.AXIS2: 0.0}
         self._calibration_failed_cameras = set()
         self._last_failure_classes = {}
         self._init_sizing()
@@ -1746,16 +1763,27 @@ class MountTestMovePanel(QWidget):
         duration_ms: int,
         before: dict[str, _Measurement],
     ) -> None:
-        started = self._runner.submit(
-            self._mount_park,
-            self._mount,
-            step.axis,
-            step.direction,
-            duration_ms,
-            rate_preset=self._calibration_rate_preset,
-            park_after=False,
-            settle_ms=self._settings.settle_ms,
-        )
+        arcsec = self._step_arcsec(step, duration_ms)
+        if arcsec is None:
+            started = self._runner.submit(
+                self._mount_park,
+                self._mount,
+                step.axis,
+                step.direction,
+                duration_ms,
+                rate_preset=self._calibration_rate_preset,
+                park_after=False,
+                settle_ms=self._settings.settle_ms,
+            )
+        else:
+            started = self._runner.submit_sequence(
+                self._mount_park,
+                self._mount,
+                [(step.axis, step.direction, duration_ms, arcsec)],
+                rate_preset=self._calibration_rate_preset,
+                park_after=False,
+                settle_ms=self._settings.settle_ms,
+            )
         if not started:
             self._abort_calibration(
                 "mount busy — could not start calibration pulse", axis=step.axis
@@ -1763,14 +1791,21 @@ class MountTestMovePanel(QWidget):
             return
         self._calibration_queue.pop(0)
         self._pending = _PendingAction(
-            kind="calibration", before=before, mode=mode, step=step, duration_ms=duration_ms
+            kind="calibration",
+            before=before,
+            mode=mode,
+            step=step,
+            duration_ms=duration_ms,
+            angular_arcsec=arcsec,
         )
         if step.role is _CalibrationStepRole.RETURN:
             self._result_label.setText("Returning the mount to its start position…")
         else:
             self._result_label.setText(
                 f"Calibrating {step.axis.name} ({step.direction.name.lower()}, "
-                f"{step.role.value}, {duration_ms} ms)…"
+                f"{step.role.value}, "
+                + (f"{arcsec:.0f} arcsec angular" if arcsec is not None else f"{duration_ms} ms")
+                + ")…"
             )
         self._update_buttons_enabled()
 
@@ -1807,13 +1842,10 @@ class MountTestMovePanel(QWidget):
         own retry logic, which already covers transient rejection but
         not every possible failure).
         """
-        net_ms = self._axis_net_pulse_ms[axis]
         correction: tuple[AxisDirection, int] | None = None
-        if net_ms != 0:
-            correction = (
-                AxisDirection.NEGATIVE if net_ms > 0 else AxisDirection.POSITIVE,
-                abs(net_ms),
-            )
+        return_direction, return_ms = self._net_return(axis)
+        if return_ms != 0:
+            correction = (return_direction, return_ms)
         self._calibration_queue = []
         self._pending = None
         self._last_error = message
@@ -1888,6 +1920,7 @@ class MountTestMovePanel(QWidget):
         # if this run gets aborted before the axis's own 4-step group
         # completes (which always cancels this back to exactly 0).
         duration_ms = pending.duration_ms
+        self._account_arcsec(step, pending)
         self._axis_net_pulse_ms[step.axis] += (
             duration_ms if step.direction is AxisDirection.POSITIVE else -duration_ms
         )
@@ -1942,6 +1975,8 @@ class MountTestMovePanel(QWidget):
             )
             return
         responses, newly_failed = self._measure_step_responses(step, pending, after, duration_ms)
+        self._log_motion(step, pending)
+        self._learn_rate(step, pending, responses)
         if len(self._calibration_failed_cameras) >= 2:
             self._abort_calibration(
                 "not enough structure to measure a displacement in either camera",
@@ -1962,6 +1997,89 @@ class MountTestMovePanel(QWidget):
         self._last_responses = responses or self._last_responses
         self._after_axis_group(step)
         self._start_next_calibration_step()
+
+    def _account_arcsec(self, step: _CalibrationStep, pending: _PendingAction) -> None:
+        """Add this move's sky displacement to the axis net: the commanded angular size, or
+        the installed rate x duration for a timed move (0 while the rate is still unknown --
+        `_learn_rate` adds the bootstrap move's own measured size)."""
+        if not self._angular_active:
+            return
+        arcsec = pending.angular_arcsec
+        if arcsec is None:
+            rate = self._installed_rate(step)
+            arcsec = rate * pending.duration_ms / 1000.0 if rate else 0.0
+        sign = 1.0 if step.direction is AxisDirection.POSITIVE else -1.0
+        self._axis_net_arcsec[step.axis] += sign * arcsec
+
+    def _net_return(self, axis: MountAxis) -> tuple[AxisDirection, int]:
+        """Direction and duration that undo this axis's net displacement. Angular runs size it
+        from the net sky arcsec through the return direction's own rate."""
+        net_arcsec = self._axis_net_arcsec.get(axis, 0.0)
+        if self._angular_active and net_arcsec != 0.0:
+            direction = AxisDirection.NEGATIVE if net_arcsec > 0 else AxisDirection.POSITIVE
+            rate = self._mount.installed_rate(axis, direction)  # type: ignore[attr-defined]
+            if rate:
+                return direction, int(round(abs(net_arcsec) / rate * 1000.0))
+        net_ms = self._axis_net_pulse_ms[axis]
+        return (AxisDirection.NEGATIVE if net_ms > 0 else AxisDirection.POSITIVE), abs(net_ms)
+
+    def _log_motion(self, step: _CalibrationStep, pending: _PendingAction) -> None:
+        if not self._angular_active:
+            return
+        self._sizing_log.append(
+            {
+                "event": "motion",
+                "axis": step.axis.name,
+                "direction": step.direction.name,
+                "path": self._last_motion_paths[-1] if self._last_motion_paths else None,
+                "angular_arcsec": pending.angular_arcsec,
+                "duration_ms": pending.duration_ms,
+            }
+        )
+
+    def _learn_rate(
+        self, step: _CalibrationStep, pending: _PendingAction, responses: dict[str, AxisResponse]
+    ) -> None:
+        """A TIMED bootstrap move yields this direction's real centering rate (measured image
+        shift x plate scale / duration); it is installed into the mount so every later move
+        of the direction is angular. A move that ran angular (or fell back) never re-derives
+        it, and an unmeasurable camera or a shift below the no-motion floor teaches nothing."""
+        if (
+            not self._angular_active
+            or pending.angular_arcsec is not None
+            or step.role is _CalibrationStepRole.RETURN
+            or not responses
+        ):
+            return
+        key = self._smallest_fov_key(list(responses)) or next(iter(responses))
+        geometry = self._sizing_geometry.get(key)
+        response = responses[key]
+        if geometry is None or response.magnitude_px < _NO_MOTION_MIN_PX:
+            return
+        rate = measured_rate_arcsec_per_s(
+            geometry,
+            response.dx_px,
+            response.dy_px,
+            pending.duration_ms,
+            distance_m=self._sizing_distance_m,
+        )
+        if rate is None or rate <= 0:
+            return
+        first_for_direction = self._installed_rate(step) is None
+        self._mount.install_rate(step.axis, step.direction, rate)  # type: ignore[attr-defined]
+        if first_for_direction:  # the bootstrap move itself was not accounted yet
+            sign = 1.0 if step.direction is AxisDirection.POSITIVE else -1.0
+            self._axis_net_arcsec[step.axis] += sign * rate * pending.duration_ms / 1000.0
+        self._sizing_log.append(
+            {
+                "event": "rate_installed",
+                "axis": step.axis.name,
+                "direction": step.direction.name,
+                "camera": key,
+                "arcsec_per_s": round(rate, 4),
+                "from_duration_ms": pending.duration_ms,
+            }
+        )
 
     def _measure_step_responses(
         self,
@@ -2036,6 +2154,9 @@ class MountTestMovePanel(QWidget):
         self._sizing_bounded = {}
         self._sizing_log = []
         self._calibration_rate_preset = settings.rate_preset
+        self._angular_active = False
+        self._axis_arcsec = {}
+        self._sizing_distance_m = None
         self._axis_duration_ms = {
             MountAxis.AXIS1: settings.pulse_ms,
             MountAxis.AXIS2: settings.pulse_ms,
@@ -2044,8 +2165,10 @@ class MountTestMovePanel(QWidget):
         if self._camera_geometry is None:
             return
         cameras = self._camera_geometry()
+        angular = self._mount_supports_angular()
         policy = SizingPolicy(
             rate_preset=settings.calibration_rate_preset,
+            center_rate_x=settings.calibration_center_rate_x if angular else None,
             target_fraction=settings.calibration_target_fraction,
             max_duration_ms=settings.max_calibration_pulse_ms,
             min_duration_ms=settings.min_calibration_pulse_ms,
@@ -2063,7 +2186,16 @@ class MountTestMovePanel(QWidget):
             return
         self._sizing_policy = policy
         self._sizing_geometry = {camera.key: camera for camera in cameras}
-        self._calibration_rate_preset = policy.rate_preset
+        self._sizing_distance_m = distance_m
+        self._angular_active = angular
+        # Angular mode: no rate preset anywhere -- OnStepAdapter's centering rate is the one
+        # rate the timed bootstrap, the installed calibration and the angular moves share.
+        self._calibration_rate_preset = None if angular else policy.rate_preset
+        if angular and plan.target_arcsec is not None:
+            self._axis_arcsec = {
+                MountAxis.AXIS1: plan.target_arcsec,
+                MountAxis.AXIS2: plan.target_arcsec,
+            }
         self._axis_duration_ms = {
             MountAxis.AXIS1: plan.duration_ms,
             MountAxis.AXIS2: plan.duration_ms,
@@ -2074,15 +2206,46 @@ class MountTestMovePanel(QWidget):
                 "duration_ms": plan.duration_ms,
                 "seed_camera": plan.seed_camera,
                 "status": plan.status.value,
-                "rate_preset": policy.rate_preset,
+                "rate_preset": self._calibration_rate_preset,
                 "distance_m": distance_m,
+                "angular": angular,
+                "target_arcsec": plan.target_arcsec,
             }
         )
 
+    def _mount_supports_angular(self) -> bool:
+        return all(
+            hasattr(self._mount, name)
+            for name in ("installed_rate", "install_rate", "move_angular")
+        )
+
+    def _installed_rate(self, step: _CalibrationStep) -> float | None:
+        if not self._angular_active:
+            return None
+        rate = self._mount.installed_rate(step.axis, step.direction)  # type: ignore[attr-defined]
+        return float(rate) if rate else None
+
     def _step_duration_ms(self, step: _CalibrationStep) -> int:
+        """The step's size as a duration. With an installed rate an axis-sized step is the
+        calculated angular size expressed in that rate's time (the equivalent duration the
+        response is normalised by and the timed fallback would run), bounded like any move."""
         if step.duration_ms is not None:
             return step.duration_ms
+        rate = self._installed_rate(step)
+        arcsec = self._axis_arcsec.get(step.axis)
+        policy = self._sizing_policy
+        if rate is not None and arcsec is not None and policy is not None:
+            ms = arcsec / rate * 1000.0
+            return int(round(max(policy.min_duration_ms, min(policy.max_duration_ms, ms))))
         return self._axis_duration_ms[step.axis]
+
+    def _step_arcsec(self, step: _CalibrationStep, duration_ms: int) -> float | None:
+        """Angular size of this step, or None = run it as a timed (bootstrap) move: no
+        angular capability/optics, or no rate installed yet for this direction."""
+        rate = self._installed_rate(step)
+        if rate is None:
+            return None
+        return rate * duration_ms / 1000.0
 
     def _is_probe(self, step: _CalibrationStep) -> bool:
         """The axis's first POSITIVE/FIRST move sizes the whole axis."""
@@ -2135,6 +2298,8 @@ class MountTestMovePanel(QWidget):
             }
         )
         if decision.action is StepAction.RETRY:
+            if step.axis in self._axis_arcsec and duration_ms > 0:
+                self._axis_arcsec[step.axis] *= decision.duration_ms / duration_ms
             self._axis_duration_ms[step.axis] = decision.duration_ms
             self._axis_attempt[step.axis] = attempt + 1
             self._calibration_queue.insert(0, step)
@@ -2154,6 +2319,8 @@ class MountTestMovePanel(QWidget):
         if step.axis is MountAxis.AXIS1:
             # RA and Dec share the mount's rate: start Dec from RA's accepted size.
             self._axis_duration_ms[MountAxis.AXIS2] = self._axis_duration_ms[MountAxis.AXIS1]
+            if MountAxis.AXIS1 in self._axis_arcsec:
+                self._axis_arcsec[MountAxis.AXIS2] = self._axis_arcsec[MountAxis.AXIS1]
         return False
 
     def _exclude_camera_bounded(
@@ -2192,9 +2359,7 @@ class MountTestMovePanel(QWidget):
             return
         axis = step.axis
         inserts: list[_CalibrationStep] = []
-        net = self._axis_net_pulse_ms[axis]
-        direction = AxisDirection.NEGATIVE if net > 0 else AxisDirection.POSITIVE
-        remaining = abs(net)
+        direction, remaining = self._net_return(axis)
         while remaining > 0:
             chunk = min(remaining, policy.max_duration_ms)
             inserts.append(
@@ -2780,6 +2945,7 @@ class MountTestMovePanel(QWidget):
             # "after" capture actually runs only ever makes the freshness
             # check stricter, never looser.
             completed_at = time.monotonic()
+            self._last_motion_paths = outcome.motion_paths
             self._last_pulse_timing = {
                 "motion_started_at": outcome.motion_started_at,
                 "motion_ended_at": outcome.motion_ended_at,

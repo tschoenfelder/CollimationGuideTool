@@ -59,10 +59,21 @@ class MountParkPanel(QWidget):
         self._park_button.clicked.connect(self._on_park)
         self._unpark_button = QPushButton("Unpark")
         self._unpark_button.clicked.connect(self._on_unpark)
+        #: OnStepAdapter refuses every motion until the OPERATOR has confirmed the mount is
+        #: physically at its mechanical home -- an explicit human action, never automatic.
+        #: Present only when the injected port offers it (`OnStepMountParkAdapter`).
+        self._confirm_home_button = QPushButton("Confirm at home")
+        self._confirm_home_button.setToolTip(
+            "Tell OnStepAdapter the mount is physically at its home position. Required once "
+            "before it will move the mount; only click when that is true."
+        )
+        self._confirm_home_button.clicked.connect(self._on_confirm_home)
+        self._confirm_home_button.setVisible(hasattr(mount, "confirm_home"))
 
         action_row = QHBoxLayout()
         action_row.addWidget(self._park_button)
         action_row.addWidget(self._unpark_button)
+        action_row.addWidget(self._confirm_home_button)
         action_row.addStretch(1)
 
         top_row = QHBoxLayout()
@@ -144,6 +155,20 @@ class MountParkPanel(QWidget):
     def _on_unpark(self) -> None:
         self._begin_action("unpark")
 
+    def _on_confirm_home(self) -> None:
+        try:
+            self._mount.confirm_home()  # type: ignore[attr-defined]
+        except Exception as exc:  # noqa: BLE001 -- shown to the operator, never swallowed silently
+            self._status_label.setText(f"Confirm home failed — {exc}")
+            return
+        self._status_label.setText("Home position confirmed.")
+        self._update_buttons_enabled()
+
+    def _home_confirmed(self) -> bool | None:
+        """None when the port has no such concept."""
+        confirmed = getattr(self._mount, "home_confirmed", None)
+        return None if confirmed is None else bool(confirmed)
+
     def _poll_status(self) -> None:
         if not self._connected:
             return
@@ -153,7 +178,12 @@ class MountParkPanel(QWidget):
         else:
             state = "Parked" if status.parked else "Unparked"
             tracking = "tracking" if status.tracking else "not tracking"
-            self._status_label.setText(f"{state}, {tracking}{self._policy_suffix(status.tracking)}")
+            home = {None: "", True: ", home confirmed", False: ", HOME NOT CONFIRMED"}[
+                self._home_confirmed()
+            ]
+            self._status_label.setText(
+                f"{state}, {tracking}{home}{self._policy_suffix(status.tracking)}"
+            )
         if self._action_in_flight:
             # "Busy" here means "not yet settled at the target state" --
             # still parked right after an unpark request, or vice versa.
@@ -177,6 +207,7 @@ class MountParkPanel(QWidget):
         self._update_buttons_enabled()
 
     def _update_buttons_enabled(self) -> None:
+        self._confirm_home_button.setEnabled(self._connected and self._mount.is_available)
         if not (self._connected and self._mount.is_available) or self._action_in_flight:
             self._park_button.setEnabled(False)
             self._unpark_button.setEnabled(False)

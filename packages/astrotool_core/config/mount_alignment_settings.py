@@ -37,6 +37,10 @@ _DEFAULT_PULSE_MS = 1000
 #: shorter than ~0.2 s -- see astrotool_core.mount.movement_sizing.
 _DEFAULT_CALIBRATION_RATE_PRESET = "6"
 _DEFAULT_CALIBRATION_TARGET_FRACTION = 0.25
+#: Seed for the first (timed bootstrap) calibration move through OnStepAdapter: the
+#: controller's centering rate as a multiple of sidereal. ONLY a seed -- the measured
+#: displacement decides the real rate (installed into OnStepAdapter at runtime).
+_DEFAULT_CALIBRATION_CENTER_RATE_X = 8.0
 _DEFAULT_MAX_CALIBRATION_PULSE_MS = 3000
 _DEFAULT_MIN_CALIBRATION_PULSE_MS = 200
 #: Real request: nudges should move a large, decisive distance for rough
@@ -202,6 +206,7 @@ class MountAlignmentSettings:
     #: optics are known; otherwise `pulse_ms`/`rate_preset` apply unchanged).
     calibration_rate_preset: str = _DEFAULT_CALIBRATION_RATE_PRESET
     calibration_target_fraction: float = _DEFAULT_CALIBRATION_TARGET_FRACTION
+    calibration_center_rate_x: float = _DEFAULT_CALIBRATION_CENTER_RATE_X
     max_calibration_pulse_ms: int = _DEFAULT_MAX_CALIBRATION_PULSE_MS
     min_calibration_pulse_ms: int = _DEFAULT_MIN_CALIBRATION_PULSE_MS
 
@@ -334,6 +339,9 @@ def load_mount_alignment_settings(
         ),
         calibration_target_fraction=_read(
             table, "calibration_target_fraction", defaults.calibration_target_fraction, float
+        ),
+        calibration_center_rate_x=_read(
+            table, "calibration_center_rate_x", defaults.calibration_center_rate_x, float
         ),
         max_calibration_pulse_ms=_read(
             table, "max_calibration_pulse_ms", defaults.max_calibration_pulse_ms, int
