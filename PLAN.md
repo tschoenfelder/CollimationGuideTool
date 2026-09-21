@@ -6,7 +6,7 @@
 
 The user explicitly authorized drawing on prior art from the sibling project `C:\Users\tscho\Documents\Torsten\TSBrain\smart_telescope` (a FastAPI+browser-UI app controlling a Celestron C8 + ToupTek camera + OnStep mount). Three exploration passes over that codebase, plus a GitHub survey of the user's account (`tschoenfelder`), turned up a large amount of directly reusable prior art — both inline in `smart_telescope` and in two separate, already-published, hardware-independent libraries (`OnStepAdapter`, `SmartTScopeLiveAnalysis`) that the user already maintains as standalone pip-installable packages. Three open architecture decisions were resolved with the user before finalizing this plan:
 
-1. **Mount protocol**: `astrotool_core/mount/indi_adapter.py` wraps the existing `onstep-adapter` pip package (from `https://github.com/tschoenfelder/OnStepAdapter`, currently `v0.3.4`) over a real serial connection — the same proven path `smart_telescope` uses — rather than building a literal INDI/`pyindi-client`/`indiserver` stack. The file keeps the doc's name (`indi_adapter.py`) even though it doesn't speak the INDI wire protocol.
+1. **Mount protocol**: `astrotool_core/mount/indi_adapter.py` wraps the existing `onstep-adapter` pip package (from `https://github.com/tschoenfelder/OnStepAdapter`, currently `v0.3.5`) over a real serial connection — the same proven path `smart_telescope` uses — rather than building a literal INDI/`pyindi-client`/`indiserver` stack. The file keeps the doc's name (`indi_adapter.py`) even though it doesn't speak the INDI wire protocol.
 2. **Repository**: one dedicated new git repository at `CollimationGuideTool/` (not nested inside TSBrain, not split into per-component repos), matching the architecture doc's explicit "ein Repository" recommendation and its "one install, two menu entries" deployment model.
 3. **Detection/tracking reuse**: `astrotool_core.target` takes a runtime pip dependency on `smarttscope-live-analysis` (from `https://github.com/tschoenfelder/SmartTScopeLiveAnalysis`) for multi-source star detection and multi-frame temporal track-linking, instead of reimplementing that logic. This library is already boundary-clean (no camera/mount/FITS coupling, NumPy-only) and already does most of what a shared `target` subsystem needs.
 
@@ -81,7 +81,7 @@ dependencies = [
     "numpy>=1.26",
     "astropy>=6.0",
     "PySide6>=6.7",
-    "onstep-adapter @ https://github.com/tschoenfelder/OnStepAdapter/releases/download/v0.3.4/onstep_adapter-0.3.4-py3-none-any.whl",
+    "onstep-adapter @ https://github.com/tschoenfelder/OnStepAdapter/releases/download/v0.3.5/onstep_adapter-0.3.5-py3-none-any.whl",
     "smarttscope-live-analysis @ git+https://github.com/tschoenfelder/SmartTScopeLiveAnalysis.git@v0.1.0",
 ]
 
