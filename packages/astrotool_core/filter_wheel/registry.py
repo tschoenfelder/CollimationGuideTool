@@ -1,49 +1,41 @@
-"""Physical filter wheels and which optical trains use them (issue #41).
+"""Physical filter wheels and which optical trains use them (issue #41; #47
+made the wiring source itself correct rather than invented -- see
+`filter_wheel.config`'s own docstring).
 
 One physical wheel is ONE device: one adapter, one connection state, referenced
-by every optical train that uses it (today: Main and OAG share one wheel, Guide
-has none). Modelling a wheel per train would offer two "independent" Connect
-buttons for one piece of hardware and let their states disagree.
+by every optical train that uses it. Modelling a wheel per train would offer
+two "independent" Connect buttons for one piece of hardware and let their
+states disagree.
 
-    PhysicalFilterWheel  <--  Main
-                         <--  OAG
-    (Guide: no wheel)
+    PhysicalFilterWheel  <--  <whichever train the shared config names>
 
-The layout comes from `~/.CollimationGuideTool/config.toml`:
-
-    [filter_wheels.efw1]
-    device = "ToupTek EFW 1"      # exact INDI device name (see indi_getprop)
-    host = "localhost"            # optional
-    port = 7624                   # optional
-
-    [optical_trains.Main]
-    filter_wheel = "efw1"
-    [optical_trains.OAG]
-    filter_wheel = "efw1"
-    [optical_trains.Guide]        # no filter_wheel key: this train has no wheel
-
-Without a `[filter_wheels]` table the built-in `DEFAULT_LAYOUT` applies.
+The wiring (which train currently uses the wheel, and its per-slot filter
+names) comes from `filter_wheel.config.load_filter_wheel_wiring` -- the
+shared `~/.SmartTScope/config.toml` first, then the same table shapes in
+`~/.CollimationGuideTool/config.toml`, then a built-in default matching this
+rig's known-good state (verified live: the wheel is in Main's optical path
+only, not shared with OAG as an earlier version of this module assumed).
 """
 
 from __future__ import annotations
 
-import tomllib
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
 
+from astrotool_core.filter_wheel.config import (
+    DEFAULT_LOCAL_CONFIG_PATH,
+    DEFAULT_SMARTTSCOPE_CONFIG_PATH,
+    load_filter_wheel_wiring,
+)
 from astrotool_core.filter_wheel.indi_filter_wheel_adapter import IndiFilterWheelAdapter
 from astrotool_core.filter_wheel.port import FilterWheelPort
 
-DEFAULT_CONFIG_PATH = Path.home() / ".CollimationGuideTool" / "config.toml"
-
-#: The wheel's device name on this rig's indiserver (`indi_toupcam_wheel`),
-#: read with `indi_getprop`; the adapter's own "Filter Wheel" default matches
-#: nothing real.
-_DEFAULT_DEVICE_NAME = "ToupTek EFW 1"
+#: Only ever used when neither config source names a host/port -- matches
+#: this rig's real indiserver (see filter_wheel.config's own built-in default).
 _DEFAULT_HOST = "localhost"
 _DEFAULT_PORT = 7624
+_WHEEL_ID = "efw1"
 
 
 @dataclass(frozen=True)
@@ -52,6 +44,9 @@ class FilterWheelConfig:
     device_name: str
     host: str = _DEFAULT_HOST
     port: int = _DEFAULT_PORT
+    #: slot -> short filter code (e.g. {2: "R"}) -- issue #47; used as a
+    #: fallback when the device itself reports no name for a slot.
+    filter_names: dict[int, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -72,62 +67,31 @@ class FilterWheelAssignment:
     port: FilterWheelPort
 
 
-DEFAULT_LAYOUT = FilterWheelLayout(
-    wheels=(FilterWheelConfig("efw1", _DEFAULT_DEVICE_NAME),),
-    trains=(("Main", "efw1"), ("OAG", "efw1"), ("Guide", None)),
-)
-
-
-def _wheel_from(wheel_id: str, table: object) -> FilterWheelConfig | None:
-    if not isinstance(table, dict):
-        return None
-    device = table.get("device")
-    if not isinstance(device, str) or not device:
-        return None
-    host = table.get("host", _DEFAULT_HOST)
-    port = table.get("port", _DEFAULT_PORT)
-    return FilterWheelConfig(
-        id=wheel_id,
-        device_name=device,
-        host=host if isinstance(host, str) else _DEFAULT_HOST,
-        port=port if isinstance(port, int) and not isinstance(port, bool) else _DEFAULT_PORT,
+def load_filter_wheel_layout(
+    *,
+    smarttscope_path: Path | str = DEFAULT_SMARTTSCOPE_CONFIG_PATH,
+    local_path: Path | str = DEFAULT_LOCAL_CONFIG_PATH,
+) -> FilterWheelLayout:
+    """One wheel, wired to whichever train `load_filter_wheel_wiring` names --
+    an empty layout (no wheel, no trains) when the wiring is explicitly
+    disabled or names no train."""
+    wiring = load_filter_wheel_wiring(smarttscope_path=smarttscope_path, local_path=local_path)
+    if not wiring.enabled or wiring.active_train is None:
+        return FilterWheelLayout(wheels=(), trains=())
+    wheel = FilterWheelConfig(
+        id=_WHEEL_ID,
+        device_name=wiring.device_name or "ToupTek EFW 1",
+        host=wiring.host or _DEFAULT_HOST,
+        port=wiring.port or _DEFAULT_PORT,
+        filter_names=dict(wiring.filter_names),
     )
-
-
-def _train_wheel_id(table: object) -> str | None:
-    wheel = table.get("filter_wheel") if isinstance(table, dict) else None
-    return wheel if isinstance(wheel, str) and wheel else None
-
-
-def load_filter_wheel_layout(path: Path | str = DEFAULT_CONFIG_PATH) -> FilterWheelLayout:
-    """Read the wheel layout; the built-in default for a missing file/table or
-    any malformed input (a convenience override, never required state)."""
-    try:
-        with Path(path).open("rb") as f:
-            data: dict[str, Any] = tomllib.load(f)
-    except (OSError, tomllib.TOMLDecodeError):
-        return DEFAULT_LAYOUT
-    wheel_tables = data.get("filter_wheels")
-    if not isinstance(wheel_tables, dict):
-        return DEFAULT_LAYOUT
-    wheels = tuple(
-        wheel
-        for wheel_id, table in wheel_tables.items()
-        if (wheel := _wheel_from(str(wheel_id), table)) is not None
-    )
-    if not wheels:
-        return DEFAULT_LAYOUT
-    train_tables = data.get("optical_trains")
-    trains = (
-        tuple((str(name), _train_wheel_id(table)) for name, table in train_tables.items())
-        if isinstance(train_tables, dict)
-        else ()
-    )
-    return FilterWheelLayout(wheels=wheels, trains=trains)
+    return FilterWheelLayout(wheels=(wheel,), trains=((wiring.active_train, _WHEEL_ID),))
 
 
 def default_factory(config: FilterWheelConfig) -> FilterWheelPort:
-    return IndiFilterWheelAdapter(config.host, config.port, config.device_name)
+    return IndiFilterWheelAdapter(
+        config.host, config.port, config.device_name, filter_names=config.filter_names
+    )
 
 
 def build_filter_wheels(
