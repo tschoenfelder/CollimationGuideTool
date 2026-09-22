@@ -1,9 +1,11 @@
 """Shared FocuserPort contract — every focuser adapter must satisfy this.
 
 no_focuser_factory / fake_focuser_factory / onstep_focuser_factory (the
-OnStepAdapter shim over a FakeOnStepClient) all run hardware-free.
+OnStepAdapter shim over a FakeOnStepIndiClient) all run hardware-free.
 onstep_real_focuser_factory is real-hardware and skipif-guarded: set
-ASTROTOOL_ONSTEP_PORT to exercise it against a real controller.
+ASTROTOOL_ONSTEP_INDI to exercise it against a real indiserver/controller
+(host:port:device come from `load_onstep_indi_config`'s normal config
+files, same as production).
 """
 
 from __future__ import annotations
@@ -13,12 +15,12 @@ from collections.abc import Callable
 
 import pytest
 from astrotool_core.focus import FakeFocuser, FocuserPort, NoFocuser
-from astrotool_core.onstep import OnStepConnection, OnStepFocuserAdapter
-from astrotool_core.testing.fake_onstep_client import make_fake_onstep_connection
+from astrotool_core.onstep import OnStepConnection, OnStepFocuserAdapter, load_onstep_indi_config
+from astrotool_core.testing.fake_onstep_indi_client import make_fake_onstep_indi_connection
 
 FocuserFactory = Callable[[], FocuserPort]
 
-_ONSTEP_PORT = os.environ.get("ASTROTOOL_ONSTEP_PORT")
+_ONSTEP_INDI = os.environ.get("ASTROTOOL_ONSTEP_INDI")
 
 
 def no_focuser_factory() -> FocuserPort:
@@ -30,12 +32,12 @@ def fake_focuser_factory() -> FocuserPort:
 
 
 def onstep_focuser_factory() -> FocuserPort:
-    return OnStepFocuserAdapter(make_fake_onstep_connection())
+    return OnStepFocuserAdapter(make_fake_onstep_indi_connection()[0])
 
 
 def onstep_real_focuser_factory() -> FocuserPort:
-    assert _ONSTEP_PORT is not None
-    return OnStepFocuserAdapter(OnStepConnection(_ONSTEP_PORT))
+    assert _ONSTEP_INDI is not None
+    return OnStepFocuserAdapter(OnStepConnection(load_onstep_indi_config()))
 
 
 FOCUSER_FACTORIES = [no_focuser_factory, fake_focuser_factory, onstep_focuser_factory]
@@ -43,8 +45,8 @@ REAL_FOCUSER_FACTORIES = [
     pytest.param(
         onstep_real_focuser_factory,
         marks=pytest.mark.skipif(
-            _ONSTEP_PORT is None,
-            reason="ASTROTOOL_ONSTEP_PORT not set — no OnStep controller available",
+            _ONSTEP_INDI is None,
+            reason="ASTROTOOL_ONSTEP_INDI not set — no OnStep INDI server available",
         ),
     ),
 ]

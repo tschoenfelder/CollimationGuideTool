@@ -1,8 +1,8 @@
 """Shared MountParkPort contract — every park adapter must satisfy this.
 
 no_mount_park_factory / fake_mount_park_factory / onstep_mount_park_factory
-(the OnStepAdapter shim over a FakeOnStepClient) run hardware-free;
-onstep_real_mount_park_factory is skipif-guarded on ASTROTOOL_ONSTEP_PORT.
+(the OnStepAdapter shim over a FakeOnStepIndiClient) run hardware-free;
+onstep_real_mount_park_factory is skipif-guarded on ASTROTOOL_ONSTEP_INDI.
 """
 
 from __future__ import annotations
@@ -14,13 +14,13 @@ from collections.abc import Callable
 import pytest
 from astrotool_core.mount.no_mount_park import NoMountPark
 from astrotool_core.mount.park_port import MountParkPort
-from astrotool_core.onstep import OnStepConnection, OnStepMountParkAdapter
+from astrotool_core.onstep import OnStepConnection, OnStepMountParkAdapter, load_onstep_indi_config
 from astrotool_core.testing.fake_mount_park import FakeMountPark
-from astrotool_core.testing.fake_onstep_client import make_fake_onstep_connection
+from astrotool_core.testing.fake_onstep_indi_client import make_fake_onstep_indi_connection
 
 MountParkFactory = Callable[[], MountParkPort]
 
-_ONSTEP_PORT = os.environ.get("ASTROTOOL_ONSTEP_PORT")
+_ONSTEP_INDI = os.environ.get("ASTROTOOL_ONSTEP_INDI")
 
 
 def no_mount_park_factory() -> MountParkPort:
@@ -32,12 +32,12 @@ def fake_mount_park_factory() -> MountParkPort:
 
 
 def onstep_mount_park_factory() -> MountParkPort:
-    return OnStepMountParkAdapter(make_fake_onstep_connection())
+    return OnStepMountParkAdapter(make_fake_onstep_indi_connection()[0])
 
 
 def onstep_real_mount_park_factory() -> MountParkPort:
-    assert _ONSTEP_PORT is not None
-    return OnStepMountParkAdapter(OnStepConnection(_ONSTEP_PORT))
+    assert _ONSTEP_INDI is not None
+    return OnStepMountParkAdapter(OnStepConnection(load_onstep_indi_config()))
 
 
 MOUNT_PARK_FACTORIES = [no_mount_park_factory, fake_mount_park_factory, onstep_mount_park_factory]
@@ -45,8 +45,8 @@ REAL_MOUNT_PARK_FACTORIES = [
     pytest.param(
         onstep_real_mount_park_factory,
         marks=pytest.mark.skipif(
-            _ONSTEP_PORT is None,
-            reason="ASTROTOOL_ONSTEP_PORT not set — no OnStep controller available",
+            _ONSTEP_INDI is None,
+            reason="ASTROTOOL_ONSTEP_INDI not set — no OnStep INDI server available",
         ),
     ),
 ]

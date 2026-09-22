@@ -1,10 +1,10 @@
 """Shared MountPort contract — every mount adapter must satisfy this.
 
 no_mount_factory / fake_mount_factory / onstep_pulse_mount_factory (the
-OnStepAdapter shim over a FakeOnStepClient) run hardware-free.
-onstep_real_mount_factory is real-hardware and skipif-guarded — no OnStep
-serial port is present in this Windows dev environment (set
-ASTROTOOL_ONSTEP_PORT to exercise it against real hardware).
+OnStepAdapter shim over a FakeOnStepIndiClient) run hardware-free.
+onstep_real_mount_factory is real-hardware and skipif-guarded — no INDI
+server is present in this Windows dev environment (set
+ASTROTOOL_ONSTEP_INDI to exercise it against a real one).
 """
 
 from __future__ import annotations
@@ -14,13 +14,13 @@ from collections.abc import Callable
 
 import pytest
 from astrotool_core.mount import AxisDirection, MountAxis, MountPort, NoMountAdapter
-from astrotool_core.onstep import OnStepConnection, OnStepMountPulseAdapter
+from astrotool_core.onstep import OnStepConnection, OnStepMountPulseAdapter, load_onstep_indi_config
 from astrotool_core.testing.fake_mount import FakeMountAdapter
-from astrotool_core.testing.fake_onstep_client import make_fake_onstep_connection
+from astrotool_core.testing.fake_onstep_indi_client import make_fake_onstep_indi_connection
 
 MountFactory = Callable[[], MountPort]
 
-_ONSTEP_PORT = os.environ.get("ASTROTOOL_ONSTEP_PORT")
+_ONSTEP_INDI = os.environ.get("ASTROTOOL_ONSTEP_INDI")
 
 
 def no_mount_factory() -> MountPort:
@@ -32,12 +32,12 @@ def fake_mount_factory() -> MountPort:
 
 
 def onstep_pulse_mount_factory() -> MountPort:
-    return OnStepMountPulseAdapter(make_fake_onstep_connection())
+    return OnStepMountPulseAdapter(make_fake_onstep_indi_connection()[0])
 
 
 def onstep_real_mount_factory() -> MountPort:
-    assert _ONSTEP_PORT is not None
-    return OnStepMountPulseAdapter(OnStepConnection(_ONSTEP_PORT))
+    assert _ONSTEP_INDI is not None
+    return OnStepMountPulseAdapter(OnStepConnection(load_onstep_indi_config()))
 
 
 MOUNT_FACTORIES = [no_mount_factory, fake_mount_factory, onstep_pulse_mount_factory]
@@ -45,7 +45,8 @@ REAL_MOUNT_FACTORIES = [
     pytest.param(
         onstep_real_mount_factory,
         marks=pytest.mark.skipif(
-            _ONSTEP_PORT is None, reason="ASTROTOOL_ONSTEP_PORT not set — no OnStep mount available"
+            _ONSTEP_INDI is None,
+            reason="ASTROTOOL_ONSTEP_INDI not set — no OnStep INDI server available",
         ),
     ),
 ]
@@ -123,7 +124,9 @@ def test_real_onstep_mount_capabilities_and_status(mount_factory: MountFactory) 
     mount.connect()
     try:
         caps = mount.capabilities()
-        assert caps.supports_pulse_guiding is True
+        # No timed/rate-based pulse exists over INDI (>= 0.4.0) -- see
+        # OnStepMountPulseAdapter's module docstring.
+        assert caps.supports_pulse_guiding is False
         status = mount.status()
         assert status.connected is True
     finally:

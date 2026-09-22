@@ -1,9 +1,9 @@
-"""OnStepMountParkAdapter — `MountParkPort` over OnStepAdapter's `OnStepMount`."""
+"""OnStepMountParkAdapter — `MountParkPort` over OnStepAdapter's `IndiMount`
+(>= 0.4.0, INDI-backed)."""
 
 from __future__ import annotations
 
-from onstep_adapter import OnStepMount
-from onstep_adapter.ports.mount import MountState
+from onstep_adapter import IndiMount
 
 from astrotool_core.mount.park_port import MountParkPort, MountParkStatus
 from astrotool_core.onstep.connection import OnStepConnection
@@ -28,7 +28,7 @@ class OnStepMountParkAdapter(MountParkPort):
     def is_available(self) -> bool:
         return self._mount() is not None
 
-    def _mount(self) -> OnStepMount | None:
+    def _mount(self) -> IndiMount | None:
         client = self._connection.client
         return client.mount if self._held and client is not None else None
 
@@ -36,69 +36,81 @@ class OnStepMountParkAdapter(MountParkPort):
         mount = self._mount()
         if mount is None:
             return MountParkStatus(available=False, parked=False, tracking=False)
-        state = mount.get_state()
+        snapshot = mount.get_status()
         return MountParkStatus(
-            available=True,
-            parked=state == MountState.PARKED,
-            tracking=state == MountState.TRACKING,
+            available=True, parked=snapshot.parked, tracking=snapshot.tracking
         )
 
     def park(self) -> None:
-        """Park the field-proven way: route to mechanical HOME, settle, then PARK -- each
-        step proven by OnStep's own status flags (OnStepAdapter's `park_via_home`)."""
+        """Park via OnStepAdapter's own status-confirmed mechanical route.
+
+        Gated by `[indi].home_motion_enabled` in OnStepAdapter itself (off
+        by default, pending its own supervised HOME test) -- that refusal
+        surfaces here as the same `RuntimeError` a genuine park failure
+        would, since `park()` never distinguished "refused" from "failed"
+        for the caller even under 0.3.5."""
         mount = self._mount()
         if mount is None:
             return
-        result = mount.park_via_home()
-        if not result.get("ok"):
-            raise RuntimeError(f"OnStep did not reach the parked state: {result.get('reason')}")
+        result = mount.park()
+        if not result.confirmed:
+            raise RuntimeError(f"OnStep did not reach the parked state: {result.error}")
 
     #: `park()`/`unpark()` take seconds to minutes (the mount slews); a UI must not call
     #: them on its GUI thread (`MountParkPanel` runs them on a worker when this is set).
     long_running_actions = True
 
     def unpark(self) -> None:
-        """Unpark, leave tracking OFF and drive the mount to its mechanical HOME.
-
-        A plain unpark leaves the mount at its PARK position, which is not home; OnStepAdapter's
-        `unpark_to_home_stop_tracking` does the whole sequence and is confirmed by OnStep's
-        at-home flag (up to ~45 s), not by an acknowledgement. It needs no trusted clock or
-        location, and no home confirmation (that comes AFTER, from the operator)."""
+        """Unpark and drive to HOME with tracking off -- OnStepAdapter's
+        `unpark()` already does the whole sequence (unpark, confirm not
+        parked/slewing, then TRACK_OFF, confirmed) and ends at HOME, not
+        merely off the PARK position (`indi_home.py`'s `IndiHomeRouter.unpark`)."""
         mount = self._mount()
         if mount is None:
             return
-        result = mount.unpark_to_home_stop_tracking()
-        if not result.get("ok"):
-            raise RuntimeError(
-                "OnStep did not reach home unparked with tracking off "
-                f"(at_home={result.get('at_home')}, final_state={result.get('final_state')})"
-            )
+        result = mount.unpark()
+        if not result.unparked_confirmed:
+            raise RuntimeError(f"OnStep did not reach unparked with tracking off: {result.error}")
 
     def stop_tracking(self) -> None:
+        """No bare "tracking off" exists over INDI yet -- `emergency_stop`
+        (abort + tracking off, confirmed) is this port's only available
+        primitive and is at least as safe for this method's real caller
+        (`MainWindow.closeEvent`'s "don't leave the mount moving after the
+        app quits" safety net)."""
         mount = self._mount()
         if mount is None:
             return
-        result = mount.disable_tracking_verified()
-        if not result.get("ok"):
-            raise RuntimeError(f"OnStep still reports tracking after disable: {result}")
+        result = mount.stop()
+        if not result.stopped_confirmed:
+            raise RuntimeError(f"OnStep still reports motion after stop: {result.errors}")
 
     def start_tracking(self) -> None:
-        mount = self._mount()
-        if mount is not None and not mount.enable_tracking():
-            raise RuntimeError("OnStep did not accept the tracking-on command")
-
-    def confirm_home(self) -> None:
-        """The OPERATOR confirms the mount is physically at its mechanical home.
-
-        OnStepAdapter refuses every motion (`mechanical_position_authority_untrusted`) until
-        this is done; it must be an explicit human action, never automatic. Not part of
-        `MountParkPort` (like `abort()` it is an adapter capability the panel duck-types)."""
+        """OnStepAdapter 0.4.0 cannot enable tracking over INDI yet
+        (`IndiMount.enable_tracking` always raises `NotImplementedError`) --
+        a real regression versus 0.3.5 for issue #30's star-mode calibration.
+        Re-raised as `RuntimeError` so callers see an explicit, actionable
+        failure instead of an adapter-internal exception type leaking
+        through unannounced."""
         mount = self._mount()
         if mount is None:
-            raise ConnectionError("OnStep mount is not connected")
-        mount.confirm_home_position()
+            return
+        try:
+            mount.enable_tracking()
+        except NotImplementedError as exc:
+            raise RuntimeError(
+                "OnStepAdapter cannot enable tracking over INDI yet "
+                "(tracked as an OnStepAdapter enhancement request)"
+            ) from exc
 
+    #: No `confirm_home()` method (unlike 0.3.5): >= 0.4.0 establishes home
+    #: authority automatically from live status
+    #: (`OnStepIndiClient.home_authority_established`), not from a manual
+    #: operator action, so `MountParkPanel` correctly auto-hides its
+    #: "Confirm at home" button here (`hasattr(mount, "confirm_home")` is
+    #: False) rather than showing a control that would do nothing. The
+    #: read-only status this enables is still useful, so it stays exposed.
     @property
     def home_confirmed(self) -> bool:
-        mount = self._mount()
-        return bool(mount is not None and mount.safety_snapshot().get("home_confirmed"))
+        client = self._connection.client
+        return bool(self._held and client is not None and client.home_authority_established)

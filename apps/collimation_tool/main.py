@@ -30,8 +30,7 @@ from astrotool_core.onstep import (
     OnStepFocuserAdapter,
     OnStepMountParkAdapter,
     OnStepMountPulseAdapter,
-    build_onstep_safety_config,
-    load_onstep_settings,
+    load_onstep_indi_config,
 )
 from astrotool_core.testing.frame_factory import donut_image
 from PySide6.QtWidgets import QApplication
@@ -69,17 +68,16 @@ def _default_camera() -> CameraPort:
 
 
 def _default_onstep_connection() -> OnStepConnection:
-    """The ONE OnStep connection this app has: OnStepAdapter's `OnStepClient`
-    on the configured serial port (`[onstep] serial_port` in
-    ~/.CollimationGuideTool/config.toml or `ONSTEP_PORT`). The focuser, the
-    park/unpark control and the Mount Align pulses all share it; nothing
-    here may reach the OnStep controller any other way (AGENTS.md)."""
-    settings = load_onstep_settings()
-    return OnStepConnection(
-        settings.serial_port,
-        baud_rate=settings.baud_rate,
-        safety_config=build_onstep_safety_config(),
-    )
+    """The ONE OnStep connection this app has: OnStepAdapter's
+    `OnStepIndiClient` (>= 0.4.0), talking to the local indiserver
+    (`[indi]`/`[observer]`/`[meridian]` in ~/.CollimationGuideTool/config.toml
+    and ~/.SmartTScope/config.toml -- see `load_onstep_indi_config`). Per
+    AGENTS.md, indiserver is the sole owner of the OnStep serial port for
+    this deployment (so IndiMonitor keeps working alongside this app); the
+    focuser, park/unpark control and Mount Align's axis moves all share this
+    one client -- nothing here may reach the OnStep controller any other
+    way."""
+    return OnStepConnection(load_onstep_indi_config())
 
 
 def _default_focuser(connection: OnStepConnection) -> FocuserPort:
@@ -106,7 +104,9 @@ def _default_filter_wheels() -> list[FilterWheelAssignment]:
 
 def _default_pulse_mount(connection: OnStepConnection) -> MountPort:
     """The OnStep mount's bounded directional motion for the Mount Align
-    panel, via OnStepAdapter's timed-move API."""
+    panel, via OnStepAdapter's finite axis-degree move API (>= 0.4.0: no
+    timed/rate-based pulse exists over INDI, and moves below 720" are
+    refused -- see `OnStepMountPulseAdapter`'s module docstring)."""
     return OnStepMountPulseAdapter(connection)
 
 

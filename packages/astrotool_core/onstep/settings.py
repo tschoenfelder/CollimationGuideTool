@@ -1,56 +1,24 @@
-"""Where the one OnStep serial port is: the `[onstep]` table of
-`~/.CollimationGuideTool/config.toml`, overridable by the `ONSTEP_PORT`
-environment variable (the same variable SmartTScope uses; the default is the rig's udev symlink
-SmartTScope uses).
+"""OnStepAdapter >= 0.4.0's INDI runtime config -- AGENTS.md: indiserver is
+the sole owner of the OnStep serial port for this deployment, and
+OnStepAdapter itself talks INDI; nothing in this app opens the serial port
+or a raw INDI connection directly.
 
-This app never opens that port itself: `OnStepConnection` hands it to
-OnStepAdapter's `OnStepClient`, the only OnStep connection allowed
-(AGENTS.md, OnStepAdapter >= 0.3.5 ownership contract).
+`OnStepSettings`/`load_onstep_settings`/`build_onstep_safety_config`
+(0.3.5's direct-serial config -- a port/baud pair plus an `OnStepSafetyConfig`)
+were removed in this migration: `onstep_adapter.OnStepSafetyConfig` no
+longer exists at all in >= 0.4.0 (the whole safety-config/serial-ownership
+model it described belongs to the direct-serial transport this deployment
+no longer uses), so keeping them was dead code that could not even import.
 """
 
 from __future__ import annotations
 
-import os
 import tomllib
-from dataclasses import dataclass
 from pathlib import Path
 
-from onstep_adapter import OnStepSafetyConfig
+from onstep_adapter import IndiRuntimeConfig
 
 DEFAULT_CONFIG_PATH = Path.home() / ".CollimationGuideTool" / "config.toml"
-DEFAULT_SERIAL_PORT = "/dev/ttyUSB_ONSTEP0"
-DEFAULT_BAUD_RATE = 9600
-
-
-@dataclass(frozen=True)
-class OnStepSettings:
-    serial_port: str = DEFAULT_SERIAL_PORT
-    baud_rate: int = DEFAULT_BAUD_RATE
-
-
-def load_onstep_settings(
-    path: Path | None = None, environ: dict[str, str] | None = None
-) -> OnStepSettings:
-    """Missing file/table/malformed value -> defaults, never an error."""
-    env = os.environ if environ is None else environ
-    table: dict[str, object] = {}
-    try:
-        with open(path or DEFAULT_CONFIG_PATH, "rb") as f:
-            loaded = tomllib.load(f).get("onstep", {})
-        if isinstance(loaded, dict):
-            table = loaded
-    except (OSError, tomllib.TOMLDecodeError):
-        pass
-    port = env.get("ONSTEP_PORT") or table.get("serial_port")
-    baud = table.get("baud_rate")
-    return OnStepSettings(
-        serial_port=port if isinstance(port, str) and port else DEFAULT_SERIAL_PORT,
-        baud_rate=baud
-        if isinstance(baud, int) and not isinstance(baud, bool) and baud > 0
-        else DEFAULT_BAUD_RATE,
-    )
-
-
 SMARTTSCOPE_CONFIG_PATH = Path.home() / ".SmartTScope" / "config.toml"
 
 
@@ -75,38 +43,52 @@ def _text(table: dict[str, object], key: str, default: str) -> str:
     return value if isinstance(value, str) and value else default
 
 
-def build_onstep_safety_config(
-    smarttscope_path: Path | None = None, own_path: Path | None = None
-) -> OnStepSafetyConfig:
-    """The site and mount limits OnStepAdapter's safety layer checks every motion against.
+def _bool(table: dict[str, object], key: str, default: bool) -> bool:
+    value = table.get(key)
+    return value if isinstance(value, bool) else default
 
-    Without them the adapter runs "unconfigured" (observer 0/0, no trusted clock) and refuses
-    to move. The site and limits come from the rig's existing `~/.SmartTScope/config.toml`
-    (`[observer] lat/lon`, `[mount_limits]`, the same file the optics come from); the state
-    files live beside SmartTScope's so both applications see one home/park authority. Home
-    confirmation stays REQUIRED -- it is an explicit operator action in the Mount panel.
-    `[onstep] time_trust_source` (default `raspberry_plausible`) declares how far the Pi clock
-    is trusted (`ntp`, `gps`, `rtc`, `user_confirmed`): OnStepAdapter's angular center moves
-    are astronomy-grade and refuse a clock that is only plausible, so a rig whose clock IS
-    disciplined (NTP/GPS) should say so.
+
+#: Conservative, field-verify-pending defaults (see install.md): no real-rig
+#: measurement backs these yet -- they must be tuned against the firmware's
+#: own `Minutes Past Meridian` readback before the meridian supervisor can be
+#: trusted to protect anything.
+_DEFAULT_FLIP_REQUEST_DEG = 100.0
+_DEFAULT_TRACKING_STOP_DEG = 110.0
+
+
+def load_onstep_indi_config(
+    smarttscope_path: Path | None = None, own_path: Path | None = None
+) -> IndiRuntimeConfig:
+    """OnStepAdapter >= 0.4.0's INDI runtime config.
+
+    The observer site is the same `[observer]` table this module always
+    read from `~/.SmartTScope/config.toml` -- never re-invented here. The
+    INDI connection identity (`[indi]`: host/port/device/
+    home_motion_enabled/focuser_max_position) and the meridian supervisor's
+    degree limits (`[meridian]`) have no SmartTScope equivalent (that
+    project owns its own, separate INDI/serial wiring) and live only in
+    this app's own `~/.CollimationGuideTool/config.toml`. Missing
+    file/table/malformed value -> the defaults below, never an error.
     """
     site = _table(smarttscope_path or SMARTTSCOPE_CONFIG_PATH, "observer")
-    limits = _table(smarttscope_path or SMARTTSCOPE_CONFIG_PATH, "mount_limits")
-    own = _table(own_path or DEFAULT_CONFIG_PATH, "onstep")
-    state_dir = Path.home() / ".SmartTScope"
-    horizon = state_dir / "horizon.dat"
-    return OnStepSafetyConfig(
-        observer_lat=_number(own, "observer_lat", _number(site, "lat", 50.336)),
-        observer_lon=_number(own, "observer_lon", _number(site, "lon", 8.533)),
-        observer_alt_m=_number(own, "observer_alt_m", _number(site, "height_m", 0.0)),
-        min_alt_deg=_number(limits, "min_alt_deg", 10.0),
-        max_alt_deg=_number(limits, "max_alt_deg", 88.0),
-        ha_east_limit_h=_number(limits, "ha_east_limit_h", -5.5),
-        ha_west_limit_h=_number(limits, "ha_west_limit_h", 0.333),
-        horizon_path=str(horizon) if horizon.exists() else "",
-        state_file=str(state_dir / "onstep_last_state.json"),
-        mechanical_calibration_file=str(state_dir / "onstep_calibration.json"),
-        require_home_confirmation=True,
-        time_trust_source=_text(own, "time_trust_source", "raspberry_plausible"),
-        allow_broad_onstep_limits=True,
+    indi = _table(own_path or DEFAULT_CONFIG_PATH, "indi")
+    meridian = _table(own_path or DEFAULT_CONFIG_PATH, "meridian")
+    focuser_max = indi.get("focuser_max_position")
+    return IndiRuntimeConfig(
+        host=_text(indi, "host", "127.0.0.1"),
+        port=int(_number(indi, "port", 7624)),
+        device=_text(indi, "device", "LX200 OnStep"),
+        observer_lat=_number(site, "lat", 50.336),
+        observer_lon=_number(site, "lon", 8.533),
+        observer_alt_m=_number(site, "height_m", 0.0),
+        flip_request_deg=_number(meridian, "flip_request_deg", _DEFAULT_FLIP_REQUEST_DEG),
+        tracking_stop_deg=_number(meridian, "tracking_stop_deg", _DEFAULT_TRACKING_STOP_DEG),
+        flip_allowance_seconds=_number(meridian, "flip_allowance_seconds", 120.0),
+        reserve_seconds=_number(meridian, "reserve_seconds", 30.0),
+        safe_meridian_flip_via_home=_bool(indi, "safe_meridian_flip_via_home", True),
+        focuser_max_position=(
+            int(focuser_max) if isinstance(focuser_max, int) and not isinstance(focuser_max, bool)
+            else None
+        ),
+        home_motion_enabled=_bool(indi, "home_motion_enabled", False),
     )

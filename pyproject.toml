@@ -111,6 +111,5 @@ source_modules = ["astrotool_core", "collimation_tool", "guide_tool"]
 forbidden_modules = ["onstep_adapter", "serial"]
 ignore_imports = [
   "astrotool_core.onstep.* -> onstep_adapter",
-  "astrotool_core.testing.fake_onstep_client -> onstep_adapter",
-  "astrotool_core.testing.fake_onstep_serial -> onstep_adapter",
+  "astrotool_core.testing.fake_onstep_indi_client -> onstep_adapter",
 ]
