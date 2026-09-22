@@ -50,6 +50,10 @@ class CameraPanelSettings:
     exposure_ms: float
     gain: int
     auto_exposure_enabled: bool
+    #: Cooling ON/OFF is deliberately NOT persisted here -- every connect
+    #: always starts with cooling off (see TouptekCameraAdapter._basic_configure).
+    #: Only the operator's chosen target temperature is remembered.
+    target_temperature_c: float = -10.0
 
 
 def load_camera_settings(
@@ -84,6 +88,7 @@ def load_camera_settings(
                 exposure_ms=float(table["exposure_ms"]),
                 gain=int(table["gain"]),
                 auto_exposure_enabled=bool(table.get("auto_exposure_enabled", False)),
+                target_temperature_c=float(table.get("target_temperature_c", -10.0)),
             )
         except (KeyError, TypeError, ValueError):
             continue
@@ -151,6 +156,7 @@ def save_camera_settings(
         lines.append(f"exposure_ms = {_toml_scalar(panel.exposure_ms)}")
         lines.append(f"gain = {_toml_scalar(panel.gain)}")
         lines.append(f"auto_exposure_enabled = {_toml_scalar(panel.auto_exposure_enabled)}")
+        lines.append(f"target_temperature_c = {_toml_scalar(panel.target_temperature_c)}")
         lines.append("")
 
     target.parent.mkdir(parents=True, exist_ok=True)

@@ -51,6 +51,28 @@ class TestLoadCameraSettings:
         settings = load_camera_settings(path)
         assert settings["guide"].camera_id is None
 
+    def test_reads_a_saved_target_temperature(self, tmp_path: Path) -> None:
+        path = tmp_path / "config.toml"
+        path.write_text(
+            "[cameras.main]\n"
+            'camera_id = "dev-1"\n'
+            "exposure_ms = 50.0\n"
+            "gain = 120\n"
+            "target_temperature_c = -15.5\n",
+            encoding="utf-8",
+        )
+        assert load_camera_settings(path)["main"].target_temperature_c == -15.5
+
+    def test_missing_target_temperature_defaults_to_minus_ten(self, tmp_path: Path) -> None:
+        """Old config files, saved before this field existed, must not be
+        treated as malformed."""
+        path = tmp_path / "config.toml"
+        path.write_text(
+            "[cameras.main]\ncamera_id = \"dev-1\"\nexposure_ms = 50.0\ngain = 120\n",
+            encoding="utf-8",
+        )
+        assert load_camera_settings(path)["main"].target_temperature_c == -10.0
+
     def test_a_malformed_panel_is_skipped_without_dropping_the_others(
         self, tmp_path: Path
     ) -> None:
@@ -104,6 +126,20 @@ class TestSaveCameraSettings:
         )
         save_camera_settings({"main": CameraPanelSettings(None, 30.0, 150, True)}, path)
         assert set(load_camera_settings(path)) == {"main"}
+
+    def test_a_non_default_target_temperature_round_trips(self, tmp_path: Path) -> None:
+        path = tmp_path / "config.toml"
+        original = {
+            "main": CameraPanelSettings(
+                camera_id="dev-1",
+                exposure_ms=50.0,
+                gain=120,
+                auto_exposure_enabled=False,
+                target_temperature_c=-25.0,
+            )
+        }
+        save_camera_settings(original, path)
+        assert load_camera_settings(path) == original
 
     def test_camera_id_with_special_characters_round_trips(self, tmp_path: Path) -> None:
         path = tmp_path / "config.toml"

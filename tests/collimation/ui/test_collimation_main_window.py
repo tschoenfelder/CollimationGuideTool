@@ -279,6 +279,8 @@ class _SlowCamera(CameraPort):
         self._gain = 100
         self._black_level = 0
         self._conversion_gain = ConversionGain.LCG
+        self._cooling_enabled = False
+        self._target_temperature_c = -10.0
         self.capture_count = 0
 
     def connect(self) -> None:
@@ -322,6 +324,18 @@ class _SlowCamera(CameraPort):
 
     def get_temperature(self) -> float | None:
         return None
+
+    def get_cooling_enabled(self) -> bool:
+        return self._cooling_enabled
+
+    def set_cooling_enabled(self, enabled: bool) -> None:
+        self._cooling_enabled = bool(enabled)
+
+    def get_target_temperature(self) -> float | None:
+        return self._target_temperature_c
+
+    def set_target_temperature(self, celsius: float) -> None:
+        self._target_temperature_c = float(celsius)
 
     def get_descriptor(self) -> CameraDescriptor:
         return CameraDescriptor(
@@ -451,6 +465,145 @@ def test_stopping_the_stream_updates_the_label(qapp: object) -> None:
     panel._start_button.setChecked(False)
     assert panel._recommendation_label.text() == "Stream stopped."
     assert panel._stream is None
+
+
+_COOLED_CAPABILITIES = CameraCapabilities(
+    min_gain=100,
+    max_gain=3200,
+    min_exposure_ms=0.1,
+    max_exposure_ms=60_000.0,
+    supports_cooling=True,
+    supports_hcg=False,
+    supports_lcg=True,
+    supports_hdr=False,
+    supports_black_level=False,
+    bit_depth=16,
+    pixel_size_um=2.4,
+    sensor_width_px=64,
+    sensor_height_px=64,
+    min_target_temp_c=-30.0,
+    max_target_temp_c=20.0,
+)
+
+
+def _cooled_camera() -> ReplayCamera:
+    array = np.full((64, 64), 500.0, dtype=np.float32)
+    return ReplayCamera.from_arrays([array], cycle=True, capabilities=_COOLED_CAPABILITIES)
+
+
+class _CallOrderRecordingCamera(ReplayCamera):
+    """Wraps set_target_temperature/set_cooling_enabled to record call order,
+    so a test can prove the target is set BEFORE cooling is enabled."""
+
+    def __init__(self) -> None:
+        array = np.full((64, 64), 500.0, dtype=np.float32)
+        super().__init__(
+            [Frame(pixels=array, header={}, exposure_seconds=1.0, bit_depth=16)],
+            capabilities=_COOLED_CAPABILITIES,
+        )
+        self.calls: list[str] = []
+
+    def set_target_temperature(self, celsius: float) -> None:
+        self.calls.append(f"set_target_temperature({celsius})")
+        super().set_target_temperature(celsius)
+
+    def set_cooling_enabled(self, enabled: bool) -> None:
+        self.calls.append(f"set_cooling_enabled({enabled})")
+        super().set_cooling_enabled(enabled)
+
+
+class TestCameraPanelCooling:
+    """Issue: ToupTek TEC control. Cooling on/off + target-temp widgets are
+    gated on CameraCapabilities.supports_cooling; current-temperature display
+    is shown for any camera reporting one (both ReplayCamera/FakeCamera
+    return None from get_temperature(), so that path is covered indirectly
+    via "Temp: --" staying displayed, not by a real hardware value here)."""
+
+    def test_cooling_widgets_are_hidden_for_a_camera_without_a_cooler(
+        self, qapp: object
+    ) -> None:
+        # isHidden() (not isVisible(), which is always False for a never-.show()n
+        # widget hierarchy in a headless test) reflects setVisible()'s own explicit
+        # request, independent of whether the top-level window is actually shown.
+        panel = CameraPanel(_donut_camera((0.0, 0.0)), title="Test")
+        assert panel._cooling_checkbox.isHidden()
+        assert panel._target_temp_spin.isHidden()
+
+    def test_cooling_widgets_are_visible_for_a_cooling_capable_camera(
+        self, qapp: object
+    ) -> None:
+        panel = CameraPanel(_cooled_camera(), title="Test")
+        assert not panel._cooling_checkbox.isHidden()
+        assert not panel._target_temp_spin.isHidden()
+
+    def test_the_target_spin_range_is_clamped_from_capabilities(self, qapp: object) -> None:
+        panel = CameraPanel(_cooled_camera(), title="Test")
+        assert panel._target_temp_spin.minimum() == -30.0
+        assert panel._target_temp_spin.maximum() == 20.0
+
+    def test_cooling_always_starts_off_after_connect(self, qapp: object) -> None:
+        camera = _cooled_camera()
+        camera.set_cooling_enabled(True)  # simulate a leftover "on" state
+        panel = CameraPanel(camera, title="Test")
+        assert not panel._cooling_checkbox.isChecked()
+
+    def test_toggling_cooling_on_sets_the_target_before_enabling(self, qapp: object) -> None:
+        camera = _CallOrderRecordingCamera()
+        panel = CameraPanel(camera, title="Test")
+        panel._target_temp_spin.setValue(-12.0)
+        camera.calls.clear()  # drop the valueChanged-triggered set_target_temperature above
+
+        panel._cooling_checkbox.setChecked(True)
+
+        assert camera.calls == ["set_target_temperature(-12.0)", "set_cooling_enabled(True)"]
+        assert camera.get_target_temperature() == -12.0
+        assert camera.get_cooling_enabled() is True
+
+    def test_toggling_cooling_off_disables_it_on_the_camera(self, qapp: object) -> None:
+        camera = _cooled_camera()
+        panel = CameraPanel(camera, title="Test")
+        panel._cooling_checkbox.setChecked(True)
+        panel._cooling_checkbox.setChecked(False)
+        assert camera.get_cooling_enabled() is False
+
+    def test_the_temperature_timer_starts_and_stops_with_the_stream(
+        self, qapp: object
+    ) -> None:
+        panel = CameraPanel(_donut_camera((0.0, 0.0)), title="Test")
+        assert not panel._temperature_timer.isActive()
+        panel._start_button.setChecked(True)
+        try:
+            assert panel._temperature_timer.isActive()
+        finally:
+            panel._start_button.setChecked(False)
+        assert not panel._temperature_timer.isActive()
+        assert panel._temperature_label.text() == "Temp: --"
+
+    def test_the_restored_switch_path_resets_a_stale_cooling_checkbox(
+        self, qapp: object
+    ) -> None:
+        """The pre-existing _handle_failed_switch() "restored previous
+        camera" branch never resynced the panel's controls -- a stale
+        checked cooling checkbox from before the failed switch attempt
+        must not survive it."""
+        devices = [TouptekDeviceInfo(index=0, camera_id="dev-1", display_name="ATR585M")]
+        good_camera = _cooled_camera()
+        panel = CameraPanel(
+            good_camera,
+            title="Test",
+            device_lister=lambda: devices,
+            camera_factory=lambda camera_id: good_camera,
+        )
+        panel._camera_combo.setCurrentIndex(1)
+        panel._on_connect_camera()
+        panel._cooling_checkbox.setChecked(True)
+
+        failing_camera = FakeTouptekCamera(fail_connect=True)
+        panel._camera_factory = lambda camera_id: failing_camera
+        panel._on_connect_camera()  # combo stays on dev-1; this attempt fails and restores it
+
+        assert panel._camera is good_camera
+        assert not panel._cooling_checkbox.isChecked()
 
 
 class TestCameraSelection:

@@ -137,14 +137,22 @@ mkdir -p ~/.CollimationGuideTool
 ```
 
 CollimationTool now reads and writes this file itself for one thing —
-each panel's connected camera plus its exposure/gain/auto-exposure state
-(`[cameras.main]`/`[cameras.guide]`) — saved automatically on every
+each panel's connected camera plus its exposure/gain/auto-exposure/cooling-target-temperature
+state (`[cameras.main]`/`[cameras.guide]`) — saved automatically on every
 change and restored on the next launch, on the assumption that a rig's
 cameras stay on the same USB ports between sessions; a saved camera no
 longer plugged in just falls back to the demo camera. A broader config
 loader (mount settings, other session state) is still planned but not
 yet implemented — see `PLAN.md` — and can add its own tables to this
 same file alongside `[cameras.*]` without conflict.
+
+For a camera with a TEC cooler (detected automatically from the SDK's own
+model report — no camera list to maintain), the panel shows the current
+sensor temperature and, only for that camera, a cooling on/off toggle and
+a target-temperature spinner. Cooling never remembers "on" across a
+restart or a reconnect — it always starts off and must be switched on
+again explicitly each session — but the target temperature you last set
+is remembered like exposure/gain.
 
 #### OnStep connection (mount + focuser)
 

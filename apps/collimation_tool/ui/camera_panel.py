@@ -273,6 +273,29 @@ class CameraPanel(QWidget):
         # permanently freezing gain high on a blown-out white frame.
         self._exposure_spin.setDecimals(3)
         self._gain_spin = QSpinBox()
+
+        #: Cooling (TEC) -- on/off + target temperature, visible only for a
+        #: camera reporting supports_cooling (see _init_camera_controls); the
+        #: current-temperature label is shown for ANY camera that reports one,
+        #: cooling-capable or not (some sensors report temperature without a
+        #: controllable cooler).
+        self._cooling_checkbox = QCheckBox("Cooling")
+        self._cooling_checkbox.toggled.connect(self._on_cooling_toggled)
+        self._target_temp_spin = QDoubleSpinBox()
+        self._target_temp_spin.setSuffix(" °C")
+        self._target_temp_spin.setDecimals(1)
+        self._target_temp_spin.setSingleStep(0.1)
+        self._target_temp_spin.setRange(-40.0, 40.0)
+        self._target_temp_spin.setValue(-10.0)
+        self._target_temp_spin.valueChanged.connect(self._on_target_temperature_changed)
+        self._temperature_label = QLabel("Temp: --")
+        #: Only runs while a camera is connected (started/stopped alongside
+        #: _timer in _on_toggle_stream/stop) -- current temperature is live
+        #: hardware state, not something to poll from an unconnected camera.
+        self._temperature_timer = QTimer(self)
+        self._temperature_timer.setInterval(1000)
+        self._temperature_timer.timeout.connect(self._refresh_temperature)
+
         self._init_camera_controls()
         self._exposure_spin.valueChanged.connect(self._on_exposure_changed)
         self._gain_spin.valueChanged.connect(self._on_gain_changed)
@@ -308,12 +331,20 @@ class CameraPanel(QWidget):
         controls.addWidget(self._gain_spin)
         controls.addStretch(1)
 
+        cooling_row = QHBoxLayout()
+        cooling_row.addWidget(self._cooling_checkbox)
+        cooling_row.addWidget(QLabel("Target"))
+        cooling_row.addWidget(self._target_temp_spin)
+        cooling_row.addWidget(self._temperature_label)
+        cooling_row.addStretch(1)
+
         layout = QVBoxLayout()
         layout.addWidget(self._title_label)
         layout.addLayout(camera_row)
         layout.addWidget(self._camera_status_label)
         layout.addLayout(stream_row)
         layout.addLayout(controls)
+        layout.addLayout(cooling_row)
         layout.addWidget(self._live_view, stretch=1)
         layout.addWidget(self._recommendation_label)
         self.setLayout(layout)
@@ -336,6 +367,21 @@ class CameraPanel(QWidget):
         self._exposure_spin.setValue(self._camera.get_exposure_ms())
         self._gain_spin.setRange(caps.min_gain, caps.max_gain)
         self._gain_spin.setValue(self._camera.get_gain())
+        self._cooling_checkbox.setVisible(caps.supports_cooling)
+        self._target_temp_spin.setVisible(caps.supports_cooling)
+        if caps.supports_cooling:
+            min_t = caps.min_target_temp_c if caps.min_target_temp_c is not None else -40.0
+            max_t = caps.max_target_temp_c if caps.max_target_temp_c is not None else 40.0
+            self._target_temp_spin.setRange(min_t, max_t)
+            self._target_temp_spin.setValue(min(max(self._target_temp_spin.value(), min_t), max_t))
+        # Cooling always starts off on connect/swap -- TouptekCameraAdapter's own
+        # _basic_configure() already forces the real hardware off; this just keeps
+        # the checkbox from showing a stale "on" from a previous camera/session.
+        # blockSignals: setChecked(False) here must not itself trigger
+        # _on_cooling_toggled() and send a redundant/premature set_cooling_enabled(False).
+        self._cooling_checkbox.blockSignals(True)
+        self._cooling_checkbox.setChecked(False)
+        self._cooling_checkbox.blockSignals(False)
 
     def _on_exposure_changed(self, value: float) -> None:
         self._camera.set_exposure_ms(value)
@@ -344,6 +390,23 @@ class CameraPanel(QWidget):
     def _on_gain_changed(self, value: int) -> None:
         self._camera.set_gain(value)
         self.settings_changed.emit()
+
+    def _on_cooling_toggled(self, checked: bool) -> None:
+        # On/off itself is never persisted (settings_changed is deliberately not
+        # emitted here) -- every connect always starts back at off regardless.
+        if checked:
+            self._camera.set_target_temperature(self._target_temp_spin.value())
+            self._camera.set_cooling_enabled(True)
+        else:
+            self._camera.set_cooling_enabled(False)
+
+    def _on_target_temperature_changed(self, value: float) -> None:
+        self._camera.set_target_temperature(value)
+        self.settings_changed.emit()
+
+    def _refresh_temperature(self) -> None:
+        value = self._camera.get_temperature()
+        self._temperature_label.setText(f"Temp: {value:.1f}°C" if value is not None else "Temp: --")
 
     def _on_auto_exposure_toggled(self, checked: bool) -> None:
         self._exposure_spin.setEnabled(not checked)
@@ -402,8 +465,11 @@ class CameraPanel(QWidget):
             self._start_button.setText("Stop stream")
             if not self._updates_paused:
                 self._timer.start()
+            self._temperature_timer.start()
         else:
             self._timer.stop()
+            self._temperature_timer.stop()
+            self._temperature_label.setText("Temp: --")
             if self._stream is not None:
                 self._stream.stop_stream()
                 self._stream = None
@@ -523,6 +589,11 @@ class CameraPanel(QWidget):
         elif previous_device is not None:
             descriptor = previous_camera.get_descriptor()
             text += f" (still using {descriptor.logical_name})"
+            # Resync exposure/gain/cooling to the restored camera's own current
+            # state -- idempotent here (nothing actually changed on this path),
+            # but this is the same sync point every other connect path already
+            # uses, so a new per-camera control (e.g. cooling) is never missed.
+            self._init_camera_controls()
         self._camera_status_label.setText(text)
         self._sync_combo_to(self._connected_device.camera_id if self._connected_device else None)
         self._record_switch(requested_id, previous_id, "failed", str(exc))
@@ -679,6 +750,7 @@ class CameraPanel(QWidget):
             exposure_ms=self._exposure_spin.value(),
             gain=self._gain_spin.value(),
             auto_exposure_enabled=self._auto_exposure_checkbox.isChecked(),
+            target_temperature_c=self._target_temp_spin.value(),
         )
 
     def apply_saved_settings(self, settings: CameraPanelSettings | None) -> None:
@@ -713,6 +785,9 @@ class CameraPanel(QWidget):
         self._auto_exposure_checkbox.setChecked(settings.auto_exposure_enabled)
         self._exposure_spin.setValue(settings.exposure_ms)
         self._gain_spin.setValue(settings.gain)
+        # Cooling-enabled is deliberately never restored -- stays whatever
+        # _init_camera_controls() already set (off) regardless of `settings`.
+        self._target_temp_spin.setValue(settings.target_temperature_c)
 
     def diagnostic_context(self) -> dict[str, Any]:
         context: dict[str, Any] = {
@@ -724,6 +799,9 @@ class CameraPanel(QWidget):
             "updates_paused": self._updates_paused,
             "auto_exposure_paused": self._auto_exposure_paused,
             "camera_switch": dict(self._switch_evidence),
+            "current_temperature_c": self._camera.get_temperature(),
+            "target_temperature_c": self._target_temp_spin.value(),
+            "cooling_enabled": self._camera.get_cooling_enabled(),
         }
         if self._last_stream_error is not None:
             context["stream_error"] = self._last_stream_error
@@ -963,6 +1041,7 @@ class CameraPanel(QWidget):
         contract every `CameraPort` implementer already provides for
         `stop`/`park`/`unpark`-style calls elsewhere in this app."""
         self._timer.stop()
+        self._temperature_timer.stop()
         if self._stream is not None:
             self._stream.stop_stream()
             self._stream = None
