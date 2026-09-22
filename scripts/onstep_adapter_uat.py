@@ -5,7 +5,7 @@ the three OnStep shims over OnStepAdapter: `OnStepMountParkAdapter`,
 
 Not part of the shipped app (`apps/collimation_tool`) -- deliberately thin,
 no cameras, no diagnostics service. All three sections share ONE
-`OnStepConnection` (OnStepAdapter's `OnStepClient` owning the serial port),
+`OnStepConnection` (OnStepAdapter's `OnStepIndiClient`, INDI-backed, >= 0.4.0),
 exactly as `apps/collimation_tool/main.py` wires them; nothing here reaches
 the OnStep controller any other way.
 
@@ -25,7 +25,11 @@ Each section polls its own `status()` on a 250 ms QTimer, mirroring
 `apps/collimation_tool/ui/*_panel.py`.
 
 Usage:
-    python scripts/onstep_adapter_uat.py [--serial-port /dev/ttyUSB_ONSTEP0]
+    python scripts/onstep_adapter_uat.py
+
+Connection identity comes from the normal `[indi]`/`[observer]` config
+files (see `load_onstep_indi_config`), same as the shipped app -- there is
+no `--serial-port` any more.
 """
 
 from __future__ import annotations
@@ -39,7 +43,7 @@ from astrotool_core.onstep import (
     OnStepFocuserAdapter,
     OnStepMountParkAdapter,
     OnStepMountPulseAdapter,
-    load_onstep_settings,
+    load_onstep_indi_config,
 )
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QCloseEvent
@@ -337,10 +341,11 @@ class _FocuserSection(QGroupBox):
 
 
 class _UatWindow(QMainWindow):
-    def __init__(self, serial_port: str) -> None:
+    def __init__(self) -> None:
         super().__init__()
-        self.setWindowTitle(f"OnStepAdapter UAT — {serial_port}")
-        connection = OnStepConnection(serial_port)
+        config = load_onstep_indi_config()
+        self.setWindowTitle(f"OnStepAdapter UAT — {config.host}:{config.port} ({config.device})")
+        connection = OnStepConnection(config)
         self._mount_park_section = _MountParkSection(OnStepMountParkAdapter(connection))
         self._mount_pulse_section = _MountPulseSection(OnStepMountPulseAdapter(connection))
         self._focuser_section = _FocuserSection(OnStepFocuserAdapter(connection))
@@ -363,15 +368,14 @@ class _UatWindow(QMainWindow):
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--serial-port", default=load_onstep_settings().serial_port)
-    args = parser.parse_args()
+    parser.parse_args()
 
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)-7s %(name)s: %(message)s"
     )
 
     app = QApplication([])
-    window = _UatWindow(args.serial_port)
+    window = _UatWindow()
     window.resize(700, 400)
     window.show()
     app.exec()

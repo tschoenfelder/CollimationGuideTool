@@ -8,10 +8,9 @@ structurally cannot touch the mount. Always attempts to return the
 focuser to its starting position when done, even on a partial failure.
 
 The camera side (`TouptekCameraAdapter`) talks to the vendor SDK
-directly over USB, and the focuser goes through OnStepAdapter on the
-OnStep serial port, so this must run on the machine both are attached to
-(the Pi). Do not run it while the CollimationTool is open: only one process
-may own the OnStep serial port.
+directly over USB, and the focuser goes through OnStepAdapter's INDI-backed
+transport (>= 0.4.0), so this must run on the machine both are attached to
+(the Pi), with indiserver's `indi_lx200_OnStep` driver already running.
 
 Usage (run on the Pi, where the camera is attached):
     python scripts/terrestrial_focus_sweep.py --out-dir ~/sweep_output
@@ -30,7 +29,7 @@ from astropy.io import fits
 from astrotool_core.camera.touptek_adapter import TouptekCameraAdapter
 from astrotool_core.focus.port import FocuserPort
 from astrotool_core.focus.terrestrial_focus_metric import measure_terrestrial_focus
-from astrotool_core.onstep import OnStepConnection, OnStepFocuserAdapter, load_onstep_settings
+from astrotool_core.onstep import OnStepConnection, OnStepFocuserAdapter, load_onstep_indi_config
 
 _DEFAULT_RANGE_STEPS = 500
 _DEFAULT_STEP = 50
@@ -72,7 +71,6 @@ def _wait_for_settle(focuser: FocuserPort) -> None:
 
 def run_sweep(
     *,
-    serial_port: str,
     camera_name: str,
     center: int | None,
     range_steps: int,
@@ -84,7 +82,7 @@ def run_sweep(
 ) -> list[SweepSample]:
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    focuser = OnStepFocuserAdapter(OnStepConnection(serial_port))
+    focuser = OnStepFocuserAdapter(OnStepConnection(load_onstep_indi_config()))
     focuser.connect()
     if not focuser.is_available:
         raise RuntimeError("focuser connected but not available -- no hardware detected")
@@ -156,11 +154,6 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
     )
-    parser.add_argument(
-        "--serial-port",
-        default=load_onstep_settings().serial_port,
-        help="OnStep serial port (opened by OnStepAdapter; default: config/ONSTEP_PORT)",
-    )
     parser.add_argument("--camera-name", default="ATR585M")
     parser.add_argument(
         "--center", type=int, default=None, help="defaults to the focuser's current live position"
@@ -177,7 +170,6 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
 def main(argv: list[str] | None = None) -> int:
     args = _parse_args(argv)
     run_sweep(
-        serial_port=args.serial_port,
         camera_name=args.camera_name,
         center=args.center,
         range_steps=args.range_steps,
