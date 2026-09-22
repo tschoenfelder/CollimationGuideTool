@@ -157,43 +157,65 @@ is remembered like exposure/gain.
 #### OnStep connection (mount + focuser)
 
 The tool reaches the OnStep controller **only through OnStepAdapter**
-(>= 0.3.5), which owns the serial port exclusively -- the focuser, the
-park/unpark control and Mount Align's motion all share that one connection.
-The port comes from `ONSTEP_PORT` (environment) or the `[onstep]` table:
+(>= 0.4.0), which itself talks INDI (AGENTS.md: for this deployment,
+indiserver is the sole owner of the OnStep serial port, and OnStepAdapter
+uses the INDI-backed transport, so IndiMonitor and other INDI clients keep
+receiving mount/focuser properties while this app runs). The focuser, the
+park/unpark control and Mount Align's axis moves all share that one
+connection. Connection identity comes from `[indi]` in
+`~/.CollimationGuideTool/config.toml`; the observer site comes from the
+SAME `~/.SmartTScope/config.toml` this tool already reads elsewhere
+(`[observer] lat/lon/height_m`) -- never re-invented here:
 
 ```toml
-[onstep]
-serial_port = "/dev/ttyUSB_ONSTEP0"   # default
-baud_rate = 9600               # default
-time_trust_source = "raspberry_plausible"   # or "ntp" / "gps" / "rtc" / "user_confirmed"
-# observer_lat / observer_lon / observer_alt_m override the site read from SmartTScope
+[indi]
+host = "127.0.0.1"             # default
+port = 7624                    # default
+device = "LX200 OnStep"        # default -- must match indiserver's driver
+home_motion_enabled = false    # default -- see below
+focuser_max_position = 20000   # optional; required for the focuser to move at all
+
+[meridian]
+# field-verify-pending defaults -- tune against the firmware's own
+# "Minutes Past Meridian" readback before trusting the supervisor
+flip_request_deg = 100.0       # default
+tracking_stop_deg = 110.0      # default
+flip_allowance_seconds = 120.0 # default
+reserve_seconds = 30.0         # default
 ```
 
-OnStepAdapter's safety layer checks every motion against the site and mount limits, which
-are read from the rig's `~/.SmartTScope/config.toml` (`[observer] lat/lon`,
-`[mount_limits]`); its state files live beside SmartTScope's, so both applications share one
-home/park authority. Two things are deliberately explicit:
+**Capability boundary as of this OnStepAdapter build** (not a temporary
+bug — each item is either an explicit safety gate pending its own
+supervised test, or genuinely not ported to INDI yet; each is tracked as
+an OnStepAdapter enhancement request, per AGENTS.md, rather than worked
+around locally):
 
-- **Confirm at home** (Mount panel): OnStepAdapter refuses every motion
-  (`mechanical_position_authority_untrusted`) until the operator confirms the mount is
-  physically at its home position. Never automatic.
-- **Clock trust**: angular moves (`move_ra`/`move_dec`, used by Mount Align once a direction's
-  rate is known) are astronomy-grade and refuse a clock that is only *plausible*. A Pi whose
-  clock is disciplined by NTP/GPS should say so with `time_trust_source`; otherwise Mount
-  Align continues with the equivalent timed moves (terrestrial, tracking off) and records
-  `timed_fallback` in its diagnostics.
+- **`home_motion_enabled = false` (default)**: park/unpark/go-home all
+  refuse until set `true` in `[indi]` — OnStepAdapter's own gate, pending
+  its supervised HOME-status check. There is no more manual "Confirm at
+  home" step (0.3.5's operator button is gone) — home authority is now
+  established automatically from live status.
+- **No tracking-enable over INDI**: `enable_tracking()` always raises;
+  the Mount panel's tracking can be stopped (`stop_tracking`, which routes
+  through emergency-stop) but not started programmatically yet.
+- **No timed pulse, and a 720″ (0.2°) floor on axis moves**: Mount Align's
+  RA/Dec motion goes through a finite, feedback-verified axis-degree move
+  (a mini-GOTO, not a pulse) bounded to 720″–36000″ per move, requiring
+  tracking already OFF, home authority established, and a fixed
+  astronomical safety corridor. Requests below 720″ (most of this app's
+  own historical calibration seeds) are refused with an explicit message,
+  never silently rounded up.
 
-Mount Align on this connection: the first move per direction is a timed bootstrap at the
-controller's centering rate (sized from the optics; `calibration_center_rate_x`, default 8x
-sidereal, is only a seed). The rate is MEASURED from the image shift, installed into
-OnStepAdapter at runtime, and every later move of that direction is an angular
-`move_ra`/`move_dec` of ~25% of the frame.
+Mount Align on this connection: a requested move under 720″ is refused
+outright (see above); one at or above it is issued directly as a finite
+axis-degree move — there is no more "timed bootstrap → measure the rate →
+install it" step, since the new primitive needs no rate at all.
 
-Because only one process may own that serial port, `indi_lx200_OnStep` must
-**not** be running for the OnStep controller (unrelated INDI devices --
-cameras, filter wheel -- keep using indiserver), and SmartTScope must not be
-running at the same time. After upgrading OnStepAdapter, update the Pi's
-venv: `.venv/bin/pip install <release wheel URL from pyproject.toml>`.
+`indi_lx200_OnStep` must be **running** in indiserver for the OnStep
+controller (this reverses 0.3.5's deployment, which required it stopped so
+OnStepAdapter could own the serial port exclusively). After upgrading
+OnStepAdapter, update the Pi's venv:
+`.venv/bin/pip install <release wheel URL from pyproject.toml>`.
 
 #### Filter wheel (which optical train it serves, and its filter names)
 
