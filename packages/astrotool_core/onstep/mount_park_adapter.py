@@ -44,19 +44,35 @@ class OnStepMountParkAdapter(MountParkPort):
         )
 
     def park(self) -> None:
-        mount = self._mount()
-        if mount is not None and not mount.park():
-            raise RuntimeError("OnStep did not accept the park command")
-
-    def unpark(self) -> None:
-        """Unpark and leave tracking OFF. OnStepAdapter verifies the final
-        state itself instead of trusting the controller's post-unpark default."""
+        """Park the field-proven way: route to mechanical HOME, settle, then PARK -- each
+        step proven by OnStep's own status flags (OnStepAdapter's `park_via_home`)."""
         mount = self._mount()
         if mount is None:
             return
-        result = mount.recovery_unpark_stop_tracking()
+        result = mount.park_via_home()
         if not result.get("ok"):
-            raise RuntimeError(f"OnStep unpark did not reach unparked, tracking-off: {result}")
+            raise RuntimeError(f"OnStep did not reach the parked state: {result.get('reason')}")
+
+    #: `park()`/`unpark()` take seconds to minutes (the mount slews); a UI must not call
+    #: them on its GUI thread (`MountParkPanel` runs them on a worker when this is set).
+    long_running_actions = True
+
+    def unpark(self) -> None:
+        """Unpark, leave tracking OFF and drive the mount to its mechanical HOME.
+
+        A plain unpark leaves the mount at its PARK position, which is not home; OnStepAdapter's
+        `unpark_to_home_stop_tracking` does the whole sequence and is confirmed by OnStep's
+        at-home flag (up to ~45 s), not by an acknowledgement. It needs no trusted clock or
+        location, and no home confirmation (that comes AFTER, from the operator)."""
+        mount = self._mount()
+        if mount is None:
+            return
+        result = mount.unpark_to_home_stop_tracking()
+        if not result.get("ok"):
+            raise RuntimeError(
+                "OnStep did not reach home unparked with tracking off "
+                f"(at_home={result.get('at_home')}, final_state={result.get('final_state')})"
+            )
 
     def stop_tracking(self) -> None:
         mount = self._mount()

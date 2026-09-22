@@ -98,8 +98,28 @@ class TestPark:
         park = OnStepMountParkAdapter(conn)
         park.connect()
         park.unpark()
-        assert made[0].mount.calls == ["recovery_unpark_stop_tracking"]
+        assert made[0].mount.calls == ["unpark_to_home_stop_tracking"]
         assert not park.status().parked and not park.status().tracking
+
+    def test_unpark_ends_at_home_not_at_the_park_position(self) -> None:
+        conn, made = _connection()
+        park = OnStepMountParkAdapter(conn)
+        park.connect()
+        made[0].mount.at_home = False
+        park.unpark()
+        assert made[0].mount.at_home
+
+    def test_park_goes_via_home(self) -> None:
+        conn, made = _connection()
+        park = OnStepMountParkAdapter(conn)
+        park.connect()
+        park.unpark()
+        park.park()
+        assert made[0].mount.calls[-1] == "park_via_home"
+        assert park.status().parked
+
+    def test_the_long_running_actions_are_flagged_for_the_ui(self) -> None:
+        assert OnStepMountParkAdapter.long_running_actions is True
 
     def test_rejected_unpark_is_an_error_not_silence(self) -> None:
         conn, made = _connection()

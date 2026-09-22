@@ -56,7 +56,7 @@ class FakeOnStepSerial:
         site_lon_deg: float,
         site_lat_deg: float = 50.336,
         parked: bool = True,
-        at_home: bool = True,
+        at_home: bool = False,
         tracking: bool = False,
         center_rate_arcsec_per_s: float = 120.0,
         ra_h: float | None = None,
@@ -75,9 +75,7 @@ class FakeOnStepSerial:
         # Default: 2 h EAST of the meridian (HA = -2 h), safely inside any sane hour-angle
         # limit whatever time of day the test runs at.
         self.ra_h = (
-            (_lst_hours(site_lon_deg, datetime.now(UTC)) + 2.0) % 24.0
-            if ra_h is None
-            else ra_h
+            (_lst_hours(site_lon_deg, datetime.now(UTC)) + 2.0) % 24.0 if ra_h is None else ra_h
         )
         self.dec_deg = dec_deg
         #: Cumulative arcsec actually moved per axis (RA + = east, Dec + = north).
@@ -182,6 +180,11 @@ class FakeOnStepSerial:
         if cmd == ":hR#":
             self.parked = False
             return b"1"
+        if cmd == ":hC#":  # find home
+            self._stop_motion()
+            self.at_home = True
+            self.moved_arcsec = {"ra": 0.0, "dec": 0.0}
+            return b""
         if cmd == ":hP#":
             self.parked = True
             self._stop_motion()

@@ -111,6 +111,19 @@ class FakeOnStepMount:
         self.state = MountState.UNPARKED
         return {"ok": True}
 
+    def park_via_home(self, **_: object) -> dict[str, object]:
+        self.calls.append("park_via_home")
+        self.state = MountState.PARKED
+        return {"ok": True, "parked": True}
+
+    def unpark_to_home_stop_tracking(self, **_: object) -> dict[str, object]:
+        self.calls.append("unpark_to_home_stop_tracking")
+        if self.unpark_rejected:
+            return {"ok": False, "at_home": False, "final_state": "parked"}
+        self.state = MountState.UNPARKED
+        self.at_home = True
+        return {"ok": True, "at_home": True, "final_state": "unparked"}
+
     def enable_tracking(self) -> bool:
         self.calls.append("enable_tracking")
         if self.state == MountState.PARKED:

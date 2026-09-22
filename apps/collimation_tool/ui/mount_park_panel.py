@@ -14,7 +14,9 @@ second click can race the first). Deliberately minimal, matching
 
 from __future__ import annotations
 
+import threading
 import time
+from collections.abc import Callable
 from typing import Any
 
 from astrotool_core.mount.operating_mode import OperatingMode, TrackingEnforcer
@@ -48,6 +50,8 @@ class MountParkPanel(QWidget):
         self._pending_action: str | None = None  # "park" | "unpark" | None
         self._seen_busy_since_action = False
         self._action_issued_at: float | None = None
+        self._action_worker: threading.Thread | None = None
+        self._action_error: str | None = None
 
         self._title_label = QLabel(f"<b>{title}</b>")
         self._connect_button = QPushButton("Connect")
@@ -143,11 +147,24 @@ class MountParkPanel(QWidget):
         self._pending_action = action
         self._seen_busy_since_action = False
         self._action_issued_at = time.monotonic()
+        self._action_error = None
         self._update_buttons_enabled()
-        if action == "park":
-            self._mount.park()
+        run = self._mount.park if action == "park" else self._mount.unpark
+        if getattr(self._mount, "long_running_actions", False):
+            # The mount slews for seconds to minutes (unpark also drives it home): never on
+            # the GUI thread. The poll loop watches the worker.
+            self._action_worker = threading.Thread(
+                target=self._run_action, args=(run,), daemon=True, name="mount-park-action"
+            )
+            self._action_worker.start()
         else:
-            self._mount.unpark()
+            run()
+
+    def _run_action(self, run: Callable[[], None]) -> None:
+        try:
+            run()
+        except Exception as exc:  # noqa: BLE001 -- surfaced in the status line by the poll loop
+            self._action_error = str(exc)
 
     def _on_park(self) -> None:
         self._begin_action("park")
@@ -184,6 +201,24 @@ class MountParkPanel(QWidget):
             self._status_label.setText(
                 f"{state}, {tracking}{home}{self._policy_suffix(status.tracking)}"
             )
+        worker = self._action_worker
+        if worker is not None:
+            if worker.is_alive():
+                self._status_label.setText(
+                    f"{self._pending_action or 'Action'} in progress — the mount is moving…"
+                )
+                self._update_buttons_enabled()
+                return
+            self._action_worker = None
+            settled_action = self._pending_action
+            self._action_in_flight = False
+            self._pending_action = None
+            if self._action_error is not None:
+                self._status_label.setText(f"{settled_action} failed — {self._action_error}")
+                self._update_buttons_enabled()
+                return
+            if settled_action == "unpark":
+                self._enforce_tracking("unpark")
         if self._action_in_flight:
             # "Busy" here means "not yet settled at the target state" --
             # still parked right after an unpark request, or vice versa.

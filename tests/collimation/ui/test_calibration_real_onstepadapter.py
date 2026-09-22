@@ -103,6 +103,7 @@ def _connection(tmp_path: Path) -> OnStepConnection:
         mechanical_calibration_file=str(tmp_path / "calibration.json"),
         horizon_path="",
         time_trust_source="ntp",
+        home_park_settle_s=0.0,
     )
     return OnStepConnection("FAKE", safety_config=config)
 
@@ -121,9 +122,7 @@ def _run(panel: MountTestMovePanel, *, timeout_s: float = 240.0) -> None:
     panel._poll()
 
 
-def test_calibration_end_to_end_through_the_real_adapter(
-    qapp: object, sim: FakeOnStepSerial, tmp_path: Path
-) -> None:
+def _calibrate(qapp: object, sim: FakeOnStepSerial, tmp_path: Path, *, via_home: bool) -> None:
     connection = _connection(tmp_path)
     park = OnStepMountParkAdapter(connection)
     pulse = OnStepMountPulseAdapter(connection)
@@ -142,9 +141,11 @@ def test_calibration_end_to_end_through_the_real_adapter(
     )
     panel._terrestrial_button.click()  # texture-based (cross-correlation) measurement
     panel._connect_button.setChecked(True)
-    # the operator's explicit step: the mount is unparked and physically at its home
-    park.unpark()
-    park.confirm_home()
+    if via_home:
+        park.unpark()  # the adapter's own route: unpark, tracking off, drive to HOME
+    else:
+        sim.parked, sim.at_home = False, False  # unparked/jogged by other means
+    park.confirm_home()  # the operator's explicit step
 
     try:
         _run(panel)
@@ -153,8 +154,13 @@ def test_calibration_end_to_end_through_the_real_adapter(
         paths = [e["path"] for e in events if e.get("event") == "motion"]
         assert paths, "no motion was logged"
         assert paths[0] == "timed"  # the bootstrap
-        assert "angular" in paths  # ... then OnStepAdapter's move_ra / move_dec
-        assert "timed_fallback" not in paths  # a trusted clock: no workaround was needed
+        if via_home:
+            # OnStepAdapter 0.3.5 keeps reporting 'at home' after the unpark-to-home route, so
+            # every angular attempt is refused and runs as the equivalent timed move.
+            assert "timed_fallback" in paths and "angular" not in paths
+        else:
+            assert "angular" in paths  # ... then OnStepAdapter's move_ra / move_dec
+            assert "timed_fallback" not in paths  # a trusted clock: no workaround needed
 
         # The rates the real adapter now holds were MEASURED from the images.
         client = connection.client
@@ -182,3 +188,15 @@ def test_calibration_end_to_end_through_the_real_adapter(
         panel.stop()
         pulse.disconnect()
         park.disconnect()
+
+
+def test_calibration_through_the_real_adapter_with_angular_moves(
+    qapp: object, sim: FakeOnStepSerial, tmp_path: Path
+) -> None:
+    _calibrate(qapp, sim, tmp_path, via_home=False)
+
+
+def test_calibration_after_unpark_to_home_completes_via_the_timed_fallback(
+    qapp: object, sim: FakeOnStepSerial, tmp_path: Path
+) -> None:
+    _calibrate(qapp, sim, tmp_path, via_home=True)

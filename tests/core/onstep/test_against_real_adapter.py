@@ -54,6 +54,7 @@ def _connection(tmp_path: Path, trust: str = "ntp") -> OnStepConnection:
         mechanical_calibration_file=str(tmp_path / "calibration.json"),
         horizon_path="",
         time_trust_source=trust,
+        home_park_settle_s=0.0,
     )
     return OnStepConnection("FAKE", safety_config=config)
 
@@ -68,6 +69,14 @@ class _Rig:
 
     def unpark_and_confirm_home(self) -> None:
         self.park.unpark()
+        self.park.confirm_home()
+
+    def unparked_elsewhere_and_confirmed(self, sim: FakeOnStepSerial) -> None:
+        """The mount was unparked and jogged by other means (not by the adapter's own
+        unpark-to-home route), then the operator confirmed home: the adapter has no
+        remembered 'at home', so its center-mode angular moves are allowed."""
+        sim.parked = False
+        sim.at_home = False
         self.park.confirm_home()
 
     def close(self) -> None:
@@ -94,15 +103,17 @@ class TestSafetyPreconditions:
         assert config.require_home_confirmation is True
 
     def test_an_unconfirmed_home_refuses_every_motion_with_the_adapters_reason(
-        self, rig: _Rig
+        self, rig: _Rig, sim: FakeOnStepSerial
     ) -> None:
-        rig.park.unpark()  # not confirmed as home by the operator yet
+        sim.parked, sim.at_home = False, False  # unparked elsewhere; home never confirmed
         result = rig.pulse.pulse_axis(MountAxis.AXIS1, AxisDirection.POSITIVE, 300)
         assert not result.accepted
         assert "mechanical_position_authority_untrusted" in result.message
 
-    def test_the_operator_confirmation_is_what_unlocks_motion(self, rig: _Rig) -> None:
-        rig.park.unpark()
+    def test_the_operator_confirmation_is_what_unlocks_motion(
+        self, rig: _Rig, sim: FakeOnStepSerial
+    ) -> None:
+        sim.parked, sim.at_home = False, False
         assert not rig.park.home_confirmed
         rig.park.confirm_home()
         assert rig.park.home_confirmed
@@ -160,7 +171,7 @@ class TestTimedBootstrap:
 class TestRuntimeCalibrationThenAngular:
     def _bootstrap(self, rig: _Rig, sim: FakeOnStepSerial) -> float:
         """Timed bootstrap -> measured rate -> installed; returns the measured rate."""
-        rig.unpark_and_confirm_home()
+        rig.unparked_elsewhere_and_confirmed(sim)
         before = sim.moved_arcsec["ra"]
         assert rig.pulse.pulse_axis(MountAxis.AXIS1, AxisDirection.POSITIVE, 500).accepted
         measured = (sim.moved_arcsec["ra"] - before) / 0.5
@@ -187,6 +198,21 @@ class TestRuntimeCalibrationThenAngular:
 
         assert _AT_HOME_REFUSAL in result.message
 
+    def test_after_unpark_to_home_the_adapter_still_reports_home_after_a_jog(
+        self, rig: _Rig, sim: FakeOnStepSerial
+    ) -> None:
+        """Documents the OnStepAdapter 0.3.5 behaviour our runner's timed fallback exists for:
+        `unpark_to_home_stop_tracking` remembers 'at home' and `move_*_timed` never clears it, so
+        even after a real jog away from home the angular center move is still refused. If a
+        later release fixes that, this test flips -- the signal to drop the workaround."""
+        rig.unpark_and_confirm_home()
+        assert rig.pulse.pulse_axis(MountAxis.AXIS1, AxisDirection.POSITIVE, 500).accepted
+        assert not sim.at_home  # the controller itself says the mount left home
+        rig.pulse.install_rate(MountAxis.AXIS1, AxisDirection.POSITIVE, _CENTER_RATE)
+        result = rig.pulse.move_angular(MountAxis.AXIS1, AxisDirection.POSITIVE, 30.0)
+        assert not result.accepted
+        assert "axis_motion_refused_at_home" in result.message
+
     def test_after_the_bootstrap_an_angular_move_lands_at_the_requested_size(
         self, rig: _Rig, sim: FakeOnStepSerial
     ) -> None:
@@ -208,6 +234,22 @@ class TestRuntimeCalibrationThenAngular:
         before = sim.moved_arcsec["ra"]
         assert rig.pulse.move_angular(MountAxis.AXIS1, AxisDirection.NEGATIVE, 40.0).accepted
         assert abs((sim.moved_arcsec["ra"] - before) + 40.0) < 15.0  # west = negative
+
+
+class TestParkAndUnparkAgainstTheRealAdapter:
+    def test_unpark_from_the_park_position_drives_the_mount_to_home(
+        self, rig: _Rig, sim: FakeOnStepSerial
+    ) -> None:
+        assert sim.parked and not sim.at_home  # parked at the PARK position, not at home
+        rig.park.unpark()
+        assert ":hC#" in sim.commands  # the mechanical find-home route
+        assert sim.at_home and not sim.parked and not sim.tracking
+
+    def test_park_returns_via_home_and_ends_parked(self, rig: _Rig, sim: FakeOnStepSerial) -> None:
+        rig.park.unpark()
+        rig.park.park()
+        assert sim.parked
+        assert ":hP#" in sim.commands
 
 
 class TestParkAndFocuserAgainstTheRealAdapter:
