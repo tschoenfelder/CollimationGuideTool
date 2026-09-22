@@ -1,10 +1,11 @@
 """Full FilterWheelPort behavior for IndiFilterWheelAdapter against a
-real (loopback) FakeIndiServer -- issue #34."""
+real (loopback) FakeIndiServer -- issue #34 (read-only status) + issue #47
+(commanding a slot change)."""
 
 from __future__ import annotations
 
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 
 import pytest
 from astrotool_core.filter_wheel.indi_filter_wheel_adapter import IndiFilterWheelAdapter
@@ -123,6 +124,127 @@ class TestMovingState:
         status = filter_wheel.status()
         assert status.current_slot == 4
         assert status.moving is True
+
+
+def _wait_until(predicate: Callable[[], bool], timeout_s: float = 2.0) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while time.monotonic() < deadline:
+        if predicate():
+            return True
+        time.sleep(0.01)
+    return predicate()
+
+
+class TestSetSlot:
+    def test_commands_the_device_and_reports_moving_then_arrived(
+        self, filter_wheel: IndiFilterWheelAdapter
+    ) -> None:
+        filter_wheel.connect()
+        assert filter_wheel.status().current_slot == 2
+
+        filter_wheel.set_slot(4)
+        # The Busy push is a real round trip over the fake server's socket --
+        # give the client's reader thread a moment to receive/parse it.
+        assert _wait_until(lambda: filter_wheel.status().moving is True)
+
+        assert _wait_until(lambda: filter_wheel.status().moving is False)
+        status = filter_wheel.status()
+        assert status.moving is False
+        assert status.current_slot == 4
+
+    def test_a_second_move_while_the_first_is_in_progress_is_refused(
+        self, filter_wheel: IndiFilterWheelAdapter
+    ) -> None:
+        filter_wheel.connect()
+        filter_wheel.set_slot(3)
+        assert _wait_until(lambda: filter_wheel.status().moving is True)
+
+        with pytest.raises(RuntimeError, match="already in progress"):
+            filter_wheel.set_slot(4)
+
+    def test_not_connected_is_a_safe_no_op(self) -> None:
+        adapter = IndiFilterWheelAdapter("127.0.0.1", 1, _DEVICE_NAME)
+        adapter.set_slot(1)  # must not raise
+
+    def test_connected_but_no_wheel_detected_is_a_safe_no_op(self) -> None:
+        fake = FakeIndiServer(device_name=_DEVICE_NAME, filter_wheel_available=False)
+        fake.start()
+        adapter = IndiFilterWheelAdapter(fake.host, fake.port, _DEVICE_NAME, connect_timeout_s=2.0)
+        try:
+            adapter.connect()
+            adapter.set_slot(1)  # must not raise
+        finally:
+            adapter.disconnect()
+            fake.stop()
+
+
+class TestFilterNamePrecedence:
+    """Issue #47: device-reported name wins; the configured fallback only
+    fills in a slot the device itself doesn't name."""
+
+    def test_device_reported_name_wins_over_the_configured_fallback(self) -> None:
+        fake = FakeIndiServer(
+            device_name=_DEVICE_NAME, filter_slot=2, filter_names=("Luminance", "Red")
+        )
+        fake.start()
+        adapter = IndiFilterWheelAdapter(
+            fake.host, fake.port, _DEVICE_NAME, connect_timeout_s=2.0, filter_names={2: "X"}
+        )
+        try:
+            adapter.connect()
+            assert adapter.status().filter_name == "Red"  # device wins, not the configured "X"
+        finally:
+            adapter.disconnect()
+            fake.stop()
+
+    def test_configured_fallback_is_used_when_the_device_names_nothing(self) -> None:
+        fake = FakeIndiServer(device_name=_DEVICE_NAME, filter_slot=3, filter_names=None)
+        fake.start()
+        adapter = IndiFilterWheelAdapter(
+            fake.host, fake.port, _DEVICE_NAME, connect_timeout_s=2.0, filter_names={3: "G"}
+        )
+        try:
+            adapter.connect()
+            assert adapter.status().filter_name == "G"
+        finally:
+            adapter.disconnect()
+            fake.stop()
+
+    def test_neither_source_leaves_the_name_none(self) -> None:
+        fake = FakeIndiServer(device_name=_DEVICE_NAME, filter_slot=6, filter_names=None)
+        fake.start()
+        adapter = IndiFilterWheelAdapter(
+            fake.host, fake.port, _DEVICE_NAME, connect_timeout_s=2.0, filter_names={3: "G"}
+        )
+        try:
+            adapter.connect()
+            assert adapter.status().filter_name is None
+        finally:
+            adapter.disconnect()
+            fake.stop()
+
+
+class TestSlotNames:
+    def test_reports_a_name_per_slot_device_first_then_configured(self) -> None:
+        fake = FakeIndiServer(
+            device_name=_DEVICE_NAME, filter_slot=1, filter_names=("Luminance", "", "Green")
+        )
+        fake.start()
+        adapter = IndiFilterWheelAdapter(
+            fake.host, fake.port, _DEVICE_NAME, connect_timeout_s=2.0, filter_names={2: "R"}
+        )
+        try:
+            adapter.connect()
+            assert adapter.slot_names() == {1: "Luminance", 2: "R", 3: "Green"}
+        finally:
+            adapter.disconnect()
+            fake.stop()
+
+    def test_before_connect_returns_only_the_configured_names(self) -> None:
+        adapter = IndiFilterWheelAdapter(
+            "127.0.0.1", 1, _DEVICE_NAME, filter_names={1: "L", 2: "R"}
+        )
+        assert adapter.slot_names() == {1: "L", 2: "R"}
 
 
 class TestPropertyRefresh:

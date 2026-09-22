@@ -34,15 +34,18 @@ class FakeIndiServer:
         filter_wheel_available: bool = True,
         filter_slot: int = 1,
         filter_names: tuple[str, ...] | None = None,
+        move_delay_s: float = 0.05,
     ) -> None:
         self._device_name = device_name
-        #: Issue #34: libindi standard Filter Wheel Interface simulation --
-        #: read-only from this fake's own point of view (no incoming
-        #: FILTER_SLOT vector is handled, since IndiFilterWheelAdapter
-        #: never commands a move, only reads device-reported state).
+        #: Issue #34: libindi standard Filter Wheel Interface simulation.
+        #: Issue #47: a commanded FILTER_SLOT now actually moves -- Busy
+        #: immediately, Ok after `move_delay_s` (mirrors real hardware/the
+        #: IndiFocuserAdapter fake's own Busy-then-Ok move pattern).
         self._filter_wheel_available = filter_wheel_available
         self._filter_slot = filter_slot
         self._filter_names = filter_names
+        self._move_delay_s = move_delay_s
+        self._pending_timers: list[threading.Timer] = []
         #: Simulates a driver-level focuser move rejection -- real libindi
         #: FocuserInterface semantics (verified against
         #: indifocuserinterface.cpp's source, see IndiFocuserAdapter's own
@@ -77,6 +80,8 @@ class FakeIndiServer:
 
     def stop(self) -> None:
         self._stop.set()
+        for timer in self._pending_timers:
+            timer.cancel()
         with self._write_lock:
             if self._conn is not None:
                 with contextlib.suppress(OSError):
@@ -174,8 +179,7 @@ class FakeIndiServer:
 
     def _def_text_vector(self, name: str, state: str, elements: dict[str, str]) -> None:
         children = "".join(
-            f'<defText name="{xml_escape_attr(el)}">{val}</defText>'
-            for el, val in elements.items()
+            f'<defText name="{xml_escape_attr(el)}">{val}</defText>' for el, val in elements.items()
         )
         self._send(
             f'<defTextVector device="{xml_escape_attr(self._device_name)}" '
@@ -226,4 +230,21 @@ class FakeIndiServer:
             self._send_device_properties_if_connected()
 
     def _handle_new_number_vector(self, name: str, elements: dict[str, str]) -> None:
-        """The filter wheel is read-only from this fake's point of view."""
+        """Issue #47: a commanded FILTER_SLOT actually moves -- Busy at once,
+        Ok (at the new slot) after `move_delay_s`."""
+        if name != "FILTER_SLOT" or not self._filter_wheel_available:
+            return
+        try:
+            target = int(float(elements.get("FILTER_SLOT_VALUE", "")))
+        except ValueError:
+            return
+        self._send_number_vector("FILTER_SLOT", "Busy", {"FILTER_SLOT_VALUE": target})
+
+        def _finish() -> None:
+            self._filter_slot = target
+            self._send_number_vector("FILTER_SLOT", "Ok", {"FILTER_SLOT_VALUE": target})
+
+        timer = threading.Timer(self._move_delay_s, _finish)
+        timer.daemon = True
+        self._pending_timers.append(timer)
+        timer.start()

@@ -1,5 +1,6 @@
 """Shared FilterWheelPort contract — every filter wheel adapter must
-satisfy this. Issue #34: read-only status display, no commanding.
+satisfy this. Issue #34 shipped read-only status display; issue #47 adds
+commanding (`set_slot`).
 
 no_filter_wheel_factory / fake_filter_wheel_factory /
 indi_filter_wheel_factory (against a real, in-process FakeIndiServer —
@@ -93,6 +94,20 @@ def test_unavailable_status_never_reports_a_slot(filter_wheel_factory: FilterWhe
     if not status.available:
         assert status.current_slot is None
         assert status.reason is not None
+
+
+@pytest.mark.parametrize("filter_wheel_factory", FILTER_WHEEL_FACTORIES)
+def test_set_slot_before_connect_is_a_safe_no_op(
+    filter_wheel_factory: FilterWheelFactory,
+) -> None:
+    filter_wheel = filter_wheel_factory()
+    filter_wheel.set_slot(1)  # must not raise
+
+
+@pytest.mark.parametrize("filter_wheel_factory", FILTER_WHEEL_FACTORIES)
+def test_slot_names_returns_a_dict(filter_wheel_factory: FilterWheelFactory) -> None:
+    filter_wheel = filter_wheel_factory()
+    assert isinstance(filter_wheel.slot_names(), dict)
 
 
 def test_no_filter_wheel_is_never_available() -> None:

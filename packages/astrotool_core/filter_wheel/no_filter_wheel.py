@@ -24,3 +24,6 @@ class NoFilterWheel(FilterWheelPort):
             moving=False,
             reason="not connected",
         )
+
+    def set_slot(self, slot: int) -> None:
+        pass  # no wheel configured -- always a safe no-op

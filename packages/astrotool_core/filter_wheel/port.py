@@ -1,9 +1,6 @@
 """FilterWheelPort — hardware-independent electronic filter wheel (EFW)
-status surface. Issue #34: read-only display of device-reported state,
-deliberately no commanding method (no move/set-slot) -- the issue's own
-"Do not couple this directly to capture logic" instruction and its
-"redesigning filter-selection workflow" non-goal both scope commanding
-a filter change as a separate, not-yet-decided concern.
+control surface. Issue #34 shipped read-only display of device-reported
+state; issue #47 adds commanding a slot change.
 """
 
 from __future__ import annotations
@@ -38,3 +35,24 @@ class FilterWheelPort(ABC):
     @property
     @abstractmethod
     def is_available(self) -> bool: ...
+
+    @abstractmethod
+    def set_slot(self, slot: int) -> None:
+        """Command the wheel to `slot`. Returns immediately -- poll `status()`
+        for `moving`/`current_slot` to observe progress and confirm arrival
+        (issue #47: never treat the requested slot as current until the
+        device actually reports it). Raises RuntimeError if a move is
+        already in progress (never issue a second move while one is in
+        flight, unless a future adapter can confirm its driver replaces the
+        target safely -- this base contract does not assume that). A no-op
+        when not connected/available, matching this port's existing
+        tolerance elsewhere."""
+        ...
+
+    def slot_names(self) -> dict[int, str]:
+        """Best-known name for every slot this wheel has, by precedence:
+        device-reported name, then any config-supplied fallback, else absent
+        (the caller shows a bare slot number). Default: empty (no fallback
+        source, no way to enumerate slots) -- `IndiFilterWheelAdapter`
+        overrides this with a real answer."""
+        return {}

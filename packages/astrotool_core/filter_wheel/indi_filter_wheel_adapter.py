@@ -1,6 +1,6 @@
 """IndiFilterWheelAdapter — FilterWheelPort backed by a real indiserver
-connection. Issue #34: read-only status display of an electronic filter
-wheel (EFW), device-reported state only, no commanding.
+connection. Issue #34 shipped read-only status display; issue #47 adds
+commanding (`set_slot`).
 
 Structurally a smaller copy of `astrotool_core.focus.indi_focuser_
 adapter.IndiFocuserAdapter` (see that module's own docstring for the
@@ -9,6 +9,12 @@ Wheel Interface properties: `CONNECTION` (standard), `FILTER_SLOT`
 (number vector, element `FILTER_SLOT_VALUE` -- current/target slot,
 `Busy` state while moving), `FILTER_NAME` (text vector, elements
 `FILTER_SLOT_NAME_<n>`, one per slot, 1-indexed).
+
+`set_slot()` is fire-and-forget, mirroring `OnStepFocuserAdapter.move()` --
+not a blocking call, since INDI's own model is inherently async (send a
+`newNumberVector`, watch it change over subsequent pushes) and blocking here
+would freeze the GUI thread for the length of a real wheel rotation. The
+caller polls `status()` for `moving`/`current_slot` to confirm arrival.
 
 No real EFW hardware has been identified for this rig yet -- `device_name`
 below is an unverified placeholder. Same "hypothesis pending Pi
@@ -59,6 +65,7 @@ class IndiFilterWheelAdapter(FilterWheelPort):
         device_name: str = _DEFAULT_DEVICE_NAME,
         *,
         connect_timeout_s: float = _CONNECT_TIMEOUT_S,
+        filter_names: dict[int, str] | None = None,
     ) -> None:
         self._device_name = device_name
         self._connect_timeout_s = connect_timeout_s
@@ -66,6 +73,10 @@ class IndiFilterWheelAdapter(FilterWheelPort):
         self._connected = False
         self._available = False
         self._last_property_refresh: float = 0.0
+        #: Issue #47: config-supplied slot -> name fallback, used only when
+        #: the device itself reports no name for that slot -- see
+        #: _lookup_filter_name/slot_names. Device-reported state always wins.
+        self._configured_filter_names: dict[int, str] = dict(filter_names or {})
 
     def connect(self) -> None:
         self._client.connect()
@@ -163,10 +174,43 @@ class IndiFilterWheelAdapter(FilterWheelPort):
             return None
 
     def _lookup_filter_name(self, slot: int) -> str | None:
+        """Device-reported name wins when present and non-empty; otherwise
+        the config-supplied fallback for this slot, if any (issue #47)."""
+        names_vector = self._client.get_vector(self._device_name, "FILTER_NAME")
+        reported = names_vector.elements.get(f"FILTER_SLOT_NAME_{slot}") if names_vector else None
+        if reported:
+            return reported
+        return self._configured_filter_names.get(slot)
+
+    def slot_names(self) -> dict[int, str]:
+        """Best-known name for every slot the device has (one
+        `FILTER_SLOT_NAME_<n>` element per physical slot, per the standard
+        libindi Filter Wheel Interface -- unverified against this rig's real
+        driver, see the module docstring's own hardware caveat), falling
+        back to the configured name per slot. {} before the device has
+        defined `FILTER_NAME` (not yet connected, or no wheel detected)."""
         names_vector = self._client.get_vector(self._device_name, "FILTER_NAME")
         if names_vector is None:
-            return None
-        return names_vector.elements.get(f"FILTER_SLOT_NAME_{slot}")
+            return dict(self._configured_filter_names)
+        slots: dict[int, str] = {}
+        for key, value in names_vector.elements.items():
+            if not key.startswith("FILTER_SLOT_NAME_"):
+                continue
+            try:
+                slot = int(key.removeprefix("FILTER_SLOT_NAME_"))
+            except ValueError:
+                continue
+            slots[slot] = value or self._configured_filter_names.get(slot, "")
+        return {slot: name for slot, name in slots.items() if name}
+
+    def set_slot(self, slot: int) -> None:
+        if not (self._connected and self._available):
+            return
+        if self.status().moving:
+            raise RuntimeError("IndiFilterWheelAdapter: a filter move is already in progress")
+        self._client.send_new_number_vector(
+            self._device_name, "FILTER_SLOT", {"FILTER_SLOT_VALUE": float(slot)}
+        )
 
     def _maybe_refresh_properties(self) -> None:
         if not self._connected:
