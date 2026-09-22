@@ -123,6 +123,7 @@ the run in flight finishes, not mid-search.
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Sequence
 from pathlib import Path
 from typing import Any
@@ -195,6 +196,14 @@ from collimation_tool.ui.mount_test_move_panel import MountTestMovePanel
 _CALIBRATION_POLL_INTERVAL_MS = 200
 
 _DEFAULT_MANUAL_REASON = "Manual capture from UI (no note given)"
+
+_log = logging.getLogger(__name__)
+
+#: Issue #47: the optical trains that actually have a real CameraPanel in
+#: this app -- a wheel assignment naming any other train (e.g. "oag", which
+#: this app has no panel for) never gets a selector, only ever a status
+#: display; see the panel-construction loop below.
+_REAL_TRAINS = {"main", "guide"}
 
 
 class MainWindow(QMainWindow):
@@ -331,10 +340,21 @@ class MainWindow(QMainWindow):
                         "guide", "Guide Filter Wheel", ("Guide",), guide_filter_wheel
                     )
                 )
-        self._filter_wheel_panels: list[FilterWheelPanel] = [
-            FilterWheelPanel(a.port, title=a.device_name, used_by=a.trains)
-            for a in assignments
-        ]
+        self._filter_wheel_panels: list[FilterWheelPanel] = []
+        for a in assignments:
+            selectable = any(t.lower() in _REAL_TRAINS for t in a.trains)
+            if not selectable:
+                _log.warning(
+                    "filter wheel %r is assigned to train(s) %s, none of which has a real "
+                    "camera panel in this app -- no selector shown for it",
+                    a.device_name,
+                    a.trains,
+                )
+            self._filter_wheel_panels.append(
+                FilterWheelPanel(
+                    a.port, title=a.device_name, used_by=a.trains, selectable=selectable
+                )
+            )
         self._filter_wheel_ids: list[str] = [a.wheel_id for a in assignments]
 
         # Resolved from the module-level DEFAULT_CONFIG_PATH at call time

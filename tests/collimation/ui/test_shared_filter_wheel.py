@@ -5,13 +5,13 @@ explicit; and main.py really builds the wheel (the original bug: it never did)."
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from astrotool_core.camera.replay_camera import ReplayCamera
 from astrotool_core.filter_wheel.fake_filter_wheel import FakeFilterWheel
 from astrotool_core.filter_wheel.port import FilterWheelPort, FilterWheelState
 from astrotool_core.filter_wheel.registry import FilterWheelAssignment
 from collimation_tool.ui.filter_wheel_panel import FilterWheelPanel
 from collimation_tool.ui.main_window import MainWindow
-from PySide6.QtWidgets import QPushButton
 
 
 def _window(assignments: list[FilterWheelAssignment] | None) -> MainWindow:
@@ -46,8 +46,11 @@ class TestOneControlPerPhysicalWheel:
 
         panels = window._filter_wheel_panels
         assert len(panels) == 1
-        buttons = [b for p in panels for b in p.findChildren(QPushButton)]
-        assert len(buttons) == 1
+        # One physical wheel -> one Connect control, never duplicated per
+        # train sharing it (a Set button may ALSO exist -- issue #47 -- since
+        # "Main" is one of this app's real panels; that's a separate control).
+        connect_buttons = [p._connect_button for p in panels]
+        assert len(connect_buttons) == 1
 
     def test_the_panel_says_which_trains_use_the_wheel(self, qapp: object) -> None:
         window = _window([_shared()])
@@ -114,6 +117,27 @@ class TestSharedState:
         assert wheels["efw1"]["used_by"] == ["Main", "OAG"]
         assert wheels["efw1"]["connected"] is True
 
+    def test_a_commanded_slot_change_is_seen_by_every_sharing_train_alike(
+        self, qapp: object
+    ) -> None:
+        """Issue #47: commanding the shared wheel through the one selector
+        must be reflected identically wherever `used_by` lists multiple
+        trains -- forward compatibility, even though today only one train
+        uses the wheel (see TestActiveRoleWiring)."""
+        wheel = FakeFilterWheel(slot=3, filter_name="OIII")
+        window = _window([_shared(wheel)])
+        panel = window._filter_wheel_panels[0]
+        panel._connect_button.setChecked(True)
+
+        wheel.set_slot(4)
+        wheel.finish_move()
+        panel._poll_status()
+
+        context = window._diagnostic_context()
+        assert context["main_filter_wheel"]["current_slot"] == 4
+        assert context["oag_filter_wheel"]["current_slot"] == 4
+        assert context["main_filter_wheel"] == context["oag_filter_wheel"]
+
     def test_a_train_without_a_wheel_reports_none_assigned(self, qapp: object) -> None:
         window = _window([_shared()])
 
@@ -174,7 +198,9 @@ class TestLifecycle:
 class TestMainWiresTheRealWheel:
     def test_main_builds_a_filter_wheel_for_the_real_device(self) -> None:
         """The original #41 bug: main.py never built a filter-wheel adapter,
-        so every panel silently used NoFilterWheel."""
+        so every panel silently used NoFilterWheel. Issue #47: the wiring now
+        comes from the shared config (ground truth, verified live: the wheel
+        is in Main's optical path only, not shared with OAG)."""
         from astrotool_core.filter_wheel.indi_filter_wheel_adapter import IndiFilterWheelAdapter
         from collimation_tool.main import _default_filter_wheels
 
@@ -183,4 +209,34 @@ class TestMainWiresTheRealWheel:
         assert len(assignments) == 1
         assert isinstance(assignments[0].port, IndiFilterWheelAdapter)
         assert assignments[0].device_name == "ToupTek EFW 1"
-        assert assignments[0].trains == ("Main", "OAG")
+        assert assignments[0].trains == ("main",)
+
+
+class TestActiveRoleWiring:
+    """Issue #47: only the panel(s) whose train has a real CameraPanel in
+    this app become selectable; a wiring naming a real panel here is a
+    graceful "no selector, no crash" that never mis-attaches to a different
+    panel."""
+
+    def test_a_wheel_wired_to_main_is_selectable(self, qapp: object) -> None:
+        assignment = FilterWheelAssignment("efw1", "ToupTek EFW 1", ("main",), FakeFilterWheel())
+        window = _window([assignment])
+
+        assert window._filter_wheel_panels[0].selectable is True
+
+    def test_a_wheel_wired_to_a_train_with_no_real_panel_is_not_selectable(
+        self, qapp: object, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        assignment = FilterWheelAssignment("efw1", "ToupTek EFW 1", ("oag",), FakeFilterWheel())
+
+        with caplog.at_level("WARNING"):
+            window = _window([assignment])
+
+        assert window._filter_wheel_panels[0].selectable is False
+        assert "no selector shown" in caplog.text
+
+    def test_case_insensitive_matching_against_the_real_panel_names(self, qapp: object) -> None:
+        assignment = FilterWheelAssignment("efw1", "ToupTek EFW 1", ("Guide",), FakeFilterWheel())
+        window = _window([assignment])
+
+        assert window._filter_wheel_panels[0].selectable is True

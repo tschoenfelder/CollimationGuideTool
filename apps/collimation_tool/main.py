@@ -93,11 +93,14 @@ def _default_mount(connection: OnStepConnection) -> MountParkPort:
 
 
 def _default_filter_wheels() -> list[FilterWheelAssignment]:
-    """The rig's physical filter wheel(s) and which optical trains use them
-    (issue #41): by default ONE wheel, `ToupTek EFW 1`, shared by Main and
-    OAG, none for Guide -- overridable in `~/.CollimationGuideTool/config.toml`
-    (see `astrotool_core.filter_wheel.registry`). This used to be missing
-    entirely, so every filter-wheel panel silently used `NoFilterWheel`."""
+    """The rig's physical filter wheel and which optical train uses it right
+    now (issue #41/#47) -- sourced from the shared `~/.SmartTScope/config.toml`
+    (falling back to the same table shapes in
+    `~/.CollimationGuideTool/config.toml`, then a built-in default), never a
+    CollimationGuideTool-invented schema for the same facts -- see
+    `astrotool_core.filter_wheel.config`'s own docstring. Verified live: the
+    wheel (`ToupTek EFW 1`) is in Main's optical path only, not shared with
+    OAG as an earlier version of this assumed."""
     return build_filter_wheels(load_filter_wheel_layout())
 
 

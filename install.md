@@ -195,6 +195,47 @@ cameras, filter wheel -- keep using indiserver), and SmartTScope must not be
 running at the same time. After upgrading OnStepAdapter, update the Pi's
 venv: `.venv/bin/pip install <release wheel URL from pyproject.toml>`.
 
+#### Filter wheel (which optical train it serves, and its filter names)
+
+CollimationGuideTool reads which optical train the shared electronic filter
+wheel (EFW) currently serves, and each slot's filter name, from the SAME
+`~/.SmartTScope/config.toml` SmartTScope itself uses (`[filter_wheel]`'s
+`enabled`/`active_camera_role`, and `[filters]`) -- never a separate,
+CollimationGuideTool-invented copy of the same facts. This is a plain file
+read: SmartTScope does not need to be running for it to work.
+
+Where that file isn't present (e.g. a CollimationGuideTool-only install),
+the SAME two tables in `~/.CollimationGuideTool/config.toml` are read
+instead, extended with the EFW's INDI connection identity (SmartTScope talks
+to this wheel over its own native SDK, never INDI, so it has no equivalent):
+
+```toml
+[filter_wheel]
+enabled = true
+active_camera_role = "main"    # which optical train the selector appears on
+device = "ToupTek EFW 1"       # optional override; default is the rig's known device
+host = "localhost"             # optional
+port = 7624                    # optional
+
+[filters]
+luminance = 1
+red       = 2
+green     = 3
+blue      = 4
+ha        = 5
+oiii      = 6
+sii       = 7
+```
+
+If neither file has a `[filter_wheel]` table at all, CollimationGuideTool
+falls back to this rig's own known-good state (`ToupTek EFW 1`, Main's
+optical train, the 7 filters above). The slot selector only appears on a
+real camera panel (Main/Guide) whose name matches `active_camera_role`; a
+role naming anything else (e.g. a not-yet-implemented OAG panel) shows no
+selector anywhere and logs a warning, rather than crashing or attaching to
+the wrong panel. Noticing a changed `active_camera_role` requires restarting
+the app, same as every other config this project reads at startup.
+
 ### Diagnostics
 
 Both apps write local diagnostic bundles to
