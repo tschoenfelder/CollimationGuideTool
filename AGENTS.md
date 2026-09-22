@@ -12,20 +12,32 @@ These rules are not suggestions. If a requested implementation appears to confli
 
 ## OnStep connection ownership — mandatory
 
-CollimationGuideTool must **never open any connection to the OnStep controller that bypasses OnStepAdapter**.
+For the CollimationGuideTool/GuideTool deployment, **indiserver is the sole owner of the physical OnStep serial port**.
 
-This applies to the full OnStep device surface, not only RA/DEC motion. CollimationGuideTool must not directly create:
+Required path:
 
-- a serial connection to the OnStep controller;
-- a raw LX200 TCP/socket connection;
-- an INDI client connection to `LX200 OnStep` for mount movement;
-- a separate direct INDI connection to the same OnStep device for park/unpark, tracking, state or focuser operations.
+```text
+CollimationGuideTool / GuideTool
+        ↓
+OnStepAdapter
+        ↓
+indiserver / indi_lx200_OnStep
+        ↓
+OnStep controller
+```
 
-All OnStep-backed functionality used by CollimationGuideTool must be provided through OnStepAdapter. The adapter may internally use serial, TCP, INDI, or another supported transport, but that choice must remain hidden behind the adapter boundary.
+This is required so IndiMonitor and any other authorized INDI clients continue to receive OnStep mount/focuser properties.
 
-If the existing deployment has `indi_lx200_OnStep` owning the serial port, resolve that ownership inside the OnStepAdapter/deployment architecture. Do not preserve direct CollimationGuideTool-to-OnStep INDI adapters as a workaround.
+CollimationGuideTool/GuideTool must therefore never:
 
-This rule does not prohibit INDI for non-OnStep devices such as cameras or external filter wheels.
+- open the OnStep serial port directly;
+- instantiate a direct-serial `OnStepClient` for this deployment;
+- open a raw LX200 TCP/socket path to the controller;
+- implement a second direct INDI OnStep control stack alongside OnStepAdapter.
+
+All OnStep-backed functionality used by the applications must still be exposed through OnStepAdapter. For this deployment, OnStepAdapter itself must use the INDI-backed transport.
+
+Direct-serial OnStepAdapter operation may remain valid for other consumers, but it is not the CollimationGuideTool/GuideTool deployment architecture.
 
 
 
