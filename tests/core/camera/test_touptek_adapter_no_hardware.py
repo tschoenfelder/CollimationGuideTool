@@ -116,6 +116,8 @@ def test_getters_return_defaults_when_not_connected() -> None:
     assert adapter.get_black_level() == 0
     assert adapter.get_conversion_gain() == ConversionGain.LCG
     assert adapter.get_temperature() is None
+    assert adapter.get_cooling_enabled() is False
+    assert adapter.get_target_temperature() == -10.0
 
 
 def test_setters_are_safe_no_ops_when_not_connected() -> None:
@@ -125,6 +127,10 @@ def test_setters_are_safe_no_ops_when_not_connected() -> None:
     assert adapter.get_gain() == 200  # local state still updates
     adapter.set_black_level(10)
     adapter.set_conversion_gain(ConversionGain.HCG)
+    adapter.set_cooling_enabled(True)
+    assert adapter.get_cooling_enabled() is True
+    adapter.set_target_temperature(-20.0)
+    assert adapter.get_target_temperature() == -20.0
 
 
 def test_descriptor_reports_sane_defaults_when_not_connected() -> None:
@@ -140,6 +146,22 @@ def test_is_color_sensor_reflects_model_flag_without_hardware() -> None:
     assert adapter.is_color_sensor() is True  # default model_flag=0 has no MONO bit
     adapter._model_flag = 0x00000040  # _FLAG_MONO
     assert adapter.is_color_sensor() is False
+
+
+def test_supports_cooling_reflects_model_flag_without_hardware() -> None:
+    adapter = TouptekCameraAdapter()
+    assert adapter.get_descriptor().capabilities.supports_cooling is False
+    adapter._model_flag = 0x00000080  # _FLAG_TEC
+    assert adapter.get_descriptor().capabilities.supports_cooling is True
+    adapter._model_flag = 0x00020000  # _FLAG_TEC_ONOFF
+    assert adapter.get_descriptor().capabilities.supports_cooling is True
+
+
+def test_target_temp_range_is_none_when_not_connected() -> None:
+    adapter = TouptekCameraAdapter()
+    caps = adapter.get_descriptor().capabilities
+    assert caps.min_target_temp_c is None
+    assert caps.max_target_temp_c is None
 
 
 class TestSelectDevice:

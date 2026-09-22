@@ -53,6 +53,8 @@ class FakeCamera(CameraPort):
         self._gain = 100
         self._black_level = 0
         self._conversion_gain = ConversionGain.LCG
+        self._cooling_enabled = False
+        self._target_temperature_c = -10.0
 
     def connect(self) -> None:
         if self._fail_connect:
@@ -98,6 +100,18 @@ class FakeCamera(CameraPort):
 
     def get_temperature(self) -> float | None:
         return None
+
+    def get_cooling_enabled(self) -> bool:
+        return self._cooling_enabled
+
+    def set_cooling_enabled(self, enabled: bool) -> None:
+        self._cooling_enabled = bool(enabled)
+
+    def get_target_temperature(self) -> float | None:
+        return self._target_temperature_c
+
+    def set_target_temperature(self, celsius: float) -> None:
+        self._target_temperature_c = float(celsius)
 
     def get_descriptor(self) -> CameraDescriptor:
         return CameraDescriptor(

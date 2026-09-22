@@ -2,12 +2,12 @@
 
 Ported from smart_telescope's ``adapters.touptek.managed.SmartTouptekCamera``,
 trimmed to what a single-camera collimation/guide tool needs: connect,
-capture, exposure/gain/black-level/conversion-gain, temperature, and
+capture, exposure/gain/black-level/conversion-gain, temperature/cooling, and
 descriptor. Dropped entirely (out of scope for these tools, and each one
 carries real smart_telescope-specific complexity that would need its own
-characterization pass): TEC/cooling control, filter-wheel control, the
-multi-"role" camera-selector/conflict-validation machinery, setup profiles,
-and capture priming.
+characterization pass): filter-wheel control, the multi-"role"
+camera-selector/conflict-validation machinery, setup profiles, and capture
+priming.
 
 ``_detect_pixel_shift`` and the ``EnumV2()``-at-most-once-per-process guard
 are ported byte-for-byte — see CONTRIBUTING.md's characterization-test rule
@@ -83,6 +83,9 @@ _OPTION_RGB = 0x16
 _OPTION_FLUSH = 0x36
 _OPTION_NOFRAME_TIMEOUT = 0x3F
 _OPTION_AUTOEXPO_TRIGGER = 0x5A
+_OPTION_TEC = 0x08
+_OPTION_TECTARGET = 0x0F
+_OPTION_TECTARGET_RANGE = 0x6D
 
 
 def _detect_pixel_shift(raw: np.ndarray) -> int:
@@ -301,6 +304,12 @@ class TouptekCameraAdapter(CameraPort):
         # only bootstraps the very first exposure rather than permanently
         # overriding whatever was set afterward on every subsequent frame.
         self._exposure_ever_set = False
+        # Cooling: _basic_configure() forces the real TEC off on every
+        # connect (never trusts a pre-existing ON state -- e.g. left on by a
+        # crashed prior session), so this always starts False; _target_temperature_c
+        # is a user intention, not read back from hardware -- see set_target_temperature.
+        self._cooling_enabled = False
+        self._target_temperature_c: float | None = -10.0
 
     def connect(self) -> None:
         if self._cam is not None:
@@ -381,11 +390,16 @@ class TouptekCameraAdapter(CameraPort):
         if self._cam is not None:  # pragma: no cover
             with _sdk_lifecycle_lock:
                 try:
+                    # Never leave the cooler running unattended once this adapter stops
+                    # tracking the camera -- same "deactivate before disconnect" safety
+                    # pattern as the mount's stop_tracking()-before-disconnect.
+                    self._put_option("TOUPCAM_OPTION_TEC", _OPTION_TEC, 0)
                     self._cam.Stop()
                 finally:
                     self._cam.Close()
         self._cam = None
         self._tc = None
+        self._cooling_enabled = False
         self._exposure_ever_set = False  # a reconnect should re-bootstrap from capture()'s hint
 
     def abort_capture(self) -> None:
@@ -497,6 +511,40 @@ class TouptekCameraAdapter(CameraPort):
         value = self._try(lambda: self._cam.get_Temperature())  # pragma: no cover
         return None if value is None else round(float(value) / 10.0, 1)  # pragma: no cover
 
+    def get_cooling_enabled(self) -> bool:
+        if self._cam is not None:  # pragma: no cover
+            value = self._get_option("TOUPCAM_OPTION_TEC", _OPTION_TEC)
+            if value is not None:
+                return bool(value)
+        return self._cooling_enabled
+
+    def set_cooling_enabled(self, enabled: bool) -> None:
+        self._cooling_enabled = bool(enabled)
+        if self._cam is not None:  # pragma: no cover
+            self._put_option("TOUPCAM_OPTION_TEC", _OPTION_TEC, 1 if enabled else 0)
+
+    def get_target_temperature(self) -> float | None:
+        if self._cam is not None:  # pragma: no cover
+            value = self._get_option("TOUPCAM_OPTION_TECTARGET", _OPTION_TECTARGET)
+            if value is not None:
+                return round(int(value) / 10.0, 1)
+        return self._target_temperature_c
+
+    def set_target_temperature(self, celsius: float) -> None:
+        self._target_temperature_c = float(celsius)
+        if self._cam is not None:  # pragma: no cover
+            self._put_option(
+                "TOUPCAM_OPTION_TECTARGET", _OPTION_TECTARGET, int(round(celsius * 10))
+            )
+
+    def _query_target_temp_range(self) -> tuple[float, float] | None:  # pragma: no cover
+        if self._cam is None:
+            return None
+        rng = self._try(lambda: self._cam.get_TecTargetRange())
+        if not rng:
+            return None
+        return round(rng[0] / 10.0, 1), round(rng[1] / 10.0, 1)
+
     def get_descriptor(self) -> CameraDescriptor:
         min_gain = max_gain = 100
         if self._cam is not None:  # pragma: no cover
@@ -509,6 +557,9 @@ class TouptekCameraAdapter(CameraPort):
             if rng:
                 min_exp_ms = float(rng[0]) / 1000.0
                 max_exp_ms = float(rng[1]) / 1000.0
+        target_range = self._query_target_temp_range()
+        min_target_temp_c = target_range[0] if target_range is not None else None
+        max_target_temp_c = target_range[1] if target_range is not None else None
         capabilities = CameraCapabilities(
             min_gain=min_gain,
             max_gain=max_gain,
@@ -525,6 +576,8 @@ class TouptekCameraAdapter(CameraPort):
             pixel_size_um=0.0,
             sensor_width_px=self._width,
             sensor_height_px=self._height,
+            min_target_temp_c=min_target_temp_c,
+            max_target_temp_c=max_target_temp_c,
         )
         return CameraDescriptor(
             serial_number=self._serial_number,
@@ -618,6 +671,10 @@ class TouptekCameraAdapter(CameraPort):
     def _basic_configure(self) -> None:  # pragma: no cover
         self._try(lambda: self._cam.put_AutoExpoEnable(0))
         self._put_option("TOUPCAM_OPTION_AUTOEXPO_TRIGGER", _OPTION_AUTOEXPO_TRIGGER, 0)
+        # Never trust a pre-existing TEC state (e.g. left on by a crashed prior
+        # session) -- every connect starts with cooling actively forced off.
+        self._put_option("TOUPCAM_OPTION_TEC", _OPTION_TEC, 0)
+        self._cooling_enabled = False
         self._put_option("TOUPCAM_OPTION_RAW", _OPTION_RAW, 1)
         self._put_option(
             "TOUPCAM_OPTION_BITDEPTH", _OPTION_BITDEPTH, 1 if self._bit_depth > 8 else 0

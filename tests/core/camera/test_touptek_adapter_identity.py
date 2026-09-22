@@ -39,12 +39,25 @@ class _FakeDevice:
 class _FakeCam:
     def __init__(self, serial: str) -> None:
         self._serial = serial
+        #: Recorded (option, value) pairs from every put_Option() call, in order --
+        #: lets a test prove _basic_configure() actively wrote a value, not just
+        #: that it didn't crash (every _put_option()/_get_option() call is normally
+        #: swallowed by _try(), so without this a missing real call is invisible).
+        self.put_option_calls: list[tuple[int, int]] = []
+        self._options: dict[int, int] = {}
 
     def SerialNumber(self) -> str:
         return self._serial
 
     def StartPullModeWithCallback(self, callback: Any, ctx: Any) -> None:  # noqa: ANN401
         pass
+
+    def put_Option(self, option: int, value: int) -> None:
+        self.put_option_calls.append((option, value))
+        self._options[option] = value
+
+    def get_Option(self, option: int) -> int:
+        return self._options.get(option, 0)
 
 
 class _FakeToupcamClass:
@@ -216,3 +229,38 @@ class TestFailureAfterOpenReleasesTheHandle:
         adapter._open_device(_two_device_module())
 
         assert adapter.device_id == _DEVICE_B.id
+
+
+class TestForceCoolingOffOnConnect:
+    """Never trust a pre-existing TEC ON state (e.g. left on by a crashed prior
+    session) -- every connect must actively command it off, not just leave it
+    alone when already off."""
+
+    def test_tec_is_actively_forced_off_during_open_even_if_previously_on(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _fresh_state(monkeypatch)
+        tc = _two_device_module()
+        cam = _FakeCam("SN-A")
+        cam._options[adapter_module._OPTION_TEC] = 1  # simulate left on by a crashed session
+        tc.Toupcam.Open = lambda device_id: cam  # type: ignore[method-assign]
+        adapter = TouptekCameraAdapter(camera_id=_DEVICE_A.id)
+
+        adapter._open_device(tc)
+
+        assert (adapter_module._OPTION_TEC, 0) in cam.put_option_calls
+        assert cam.get_Option(adapter_module._OPTION_TEC) == 0
+
+    def test_tec_is_forced_off_even_when_it_was_already_off(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _fresh_state(monkeypatch)
+        tc = _two_device_module()
+        cam = _FakeCam("SN-A")
+        tc.Toupcam.Open = lambda device_id: cam  # type: ignore[method-assign]
+        adapter = TouptekCameraAdapter(camera_id=_DEVICE_A.id)
+
+        adapter._open_device(tc)
+
+        assert (adapter_module._OPTION_TEC, 0) in cam.put_option_calls
+        assert adapter.get_cooling_enabled() is False

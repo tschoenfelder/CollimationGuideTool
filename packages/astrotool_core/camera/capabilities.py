@@ -34,6 +34,11 @@ class CameraCapabilities:
     pixel_size_um: float
     sensor_width_px: int
     sensor_height_px: int
+    #: TEC target-temperature range, degrees C, from the SDK's own range query.
+    #: None when unknown (not connected, query failed, or supports_cooling is
+    #: False) -- same "no data" convention as CameraPort.get_temperature().
+    min_target_temp_c: float | None = None
+    max_target_temp_c: float | None = None
 
 
 @dataclass(frozen=True)

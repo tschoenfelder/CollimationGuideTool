@@ -92,6 +92,19 @@ def test_exposure_gain_black_level_round_trip(camera_factory: CameraFactory) -> 
 
 
 @pytest.mark.parametrize("camera_factory", CAMERA_FACTORIES)
+def test_cooling_state_round_trip(camera_factory: CameraFactory) -> None:
+    """Not extended to REAL_CAMERA_FACTORIES: whether the connected model
+    actually has TEC hardware isn't something this contract can assume."""
+    camera = camera_factory()
+    camera.set_target_temperature(-15.0)
+    assert camera.get_target_temperature() == -15.0
+    camera.set_cooling_enabled(True)
+    assert camera.get_cooling_enabled() is True
+    camera.set_cooling_enabled(False)
+    assert camera.get_cooling_enabled() is False
+
+
+@pytest.mark.parametrize("camera_factory", CAMERA_FACTORIES)
 def test_abort_capture_is_safe_to_call_when_idle(camera_factory: CameraFactory) -> None:
     camera = camera_factory()
     camera.abort_capture()  # must not raise
