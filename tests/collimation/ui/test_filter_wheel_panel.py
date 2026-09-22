@@ -57,6 +57,7 @@ class TestDiagnosticContext:
             "filter_name": "OIII",
             "moving": True,
             "reason": None,
+            "requested_slot": None,
         }
 
 
@@ -67,3 +68,110 @@ class TestStop:
         panel = _connected_panel(FakeFilterWheel())
         panel.stop()  # must not raise
         assert panel._connected is False
+
+
+def _connected_selectable_panel(filter_wheel: FakeFilterWheel) -> FilterWheelPanel:
+    panel = FilterWheelPanel(filter_wheel, selectable=True)
+    panel._connect_button.setChecked(True)
+    return panel
+
+
+class TestSelectableVisibility:
+    """Issue #47: the selector only exists on a panel main_window.py has
+    told to be selectable -- selectable=False (the default) stays exactly
+    #34's pure status display."""
+
+    def test_not_selectable_hides_the_selector(self, qapp: object) -> None:
+        panel = _connected_panel(FakeFilterWheel())
+        assert panel._slot_combo.isHidden()
+        assert panel._set_button.isHidden()
+
+    def test_selectable_shows_the_selector(self, qapp: object) -> None:
+        panel = _connected_selectable_panel(FakeFilterWheel())
+        assert not panel._slot_combo.isHidden()
+        assert not panel._set_button.isHidden()
+
+
+class TestComboPopulation:
+    def test_combo_entries_use_the_wheels_slot_names(self, qapp: object) -> None:
+        filter_wheel = FakeFilterWheel(slot=2, filter_names={1: "L", 2: "R", 3: "G"})
+        panel = _connected_selectable_panel(filter_wheel)
+        panel._poll_status()
+
+        labels = [panel._slot_combo.itemText(i) for i in range(panel._slot_combo.count())]
+        assert labels == ["1 — L", "2 — R", "3 — G"]
+
+    def test_a_slot_with_no_known_name_shows_the_bare_number(self, qapp: object) -> None:
+        filter_wheel = FakeFilterWheel(slot=5, filter_names={})
+        panel = _connected_selectable_panel(filter_wheel)
+        panel._poll_status()
+
+        labels = [panel._slot_combo.itemText(i) for i in range(panel._slot_combo.count())]
+        assert labels == ["5"]  # the current slot is always included even if unnamed
+
+
+class TestOneActionAtATime:
+    def test_clicking_set_disables_the_selector_synchronously(self, qapp: object) -> None:
+        filter_wheel = FakeFilterWheel(slot=1, filter_names={1: "L", 2: "R"})
+        panel = _connected_selectable_panel(filter_wheel)
+        panel._poll_status()
+        panel._slot_combo.setCurrentIndex(1)  # slot 2
+
+        panel._on_set_clicked()
+
+        assert not panel._slot_combo.isEnabled()
+        assert not panel._set_button.isEnabled()
+        assert filter_wheel.status().moving is True
+
+    def test_a_second_click_while_in_flight_is_ignored(self, qapp: object) -> None:
+        filter_wheel = FakeFilterWheel(slot=1, filter_names={1: "L", 2: "R"})
+        panel = _connected_selectable_panel(filter_wheel)
+        panel._poll_status()
+        panel._slot_combo.setCurrentIndex(1)
+        panel._on_set_clicked()
+
+        panel._on_set_clicked()  # ignored -- _slot_change_in_flight guards it
+
+        assert filter_wheel._pending_slot == 2  # only ever commanded once  # noqa: SLF001
+
+    def test_arrival_reenables_the_selector(self, qapp: object) -> None:
+        filter_wheel = FakeFilterWheel(slot=1, filter_names={1: "L", 2: "R"})
+        panel = _connected_selectable_panel(filter_wheel)
+        panel._poll_status()
+        panel._slot_combo.setCurrentIndex(1)
+        panel._on_set_clicked()
+        panel._poll_status()  # observes Busy
+
+        filter_wheel.finish_move()
+        panel._poll_status()  # observes Busy -> Ok
+
+        assert panel._slot_combo.isEnabled()
+        assert panel._set_button.isEnabled()
+        assert panel._status_label.text() == "Filter: 2 — R"
+
+
+class TestRequestedTargetText:
+    def test_shows_the_requested_slot_while_moving(self, qapp: object) -> None:
+        filter_wheel = FakeFilterWheel(slot=1, filter_names={1: "L", 2: "R"})
+        panel = _connected_selectable_panel(filter_wheel)
+        panel._poll_status()
+        panel._slot_combo.setCurrentIndex(1)
+        panel._on_set_clicked()
+
+        panel._poll_status()
+
+        assert "requested 2" in panel._status_label.text()
+
+
+class TestSetSlotFailure:
+    def test_a_refused_move_is_shown_not_swallowed(self, qapp: object) -> None:
+        filter_wheel = FakeFilterWheel(slot=1, filter_names={1: "L", 2: "R"}, moving=True)
+        panel = _connected_selectable_panel(filter_wheel)
+        panel._poll_status()
+        panel._slot_combo.setCurrentIndex(1)
+
+        panel._on_set_clicked()
+
+        assert "already in progress" in panel._status_label.text()
+        assert panel._slot_combo.isEnabled()  # recoverable, not stuck disabled
+        assert panel._set_button.isEnabled()
