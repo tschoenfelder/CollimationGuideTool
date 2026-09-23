@@ -82,6 +82,10 @@ class FilterWheelPanel(QWidget):
         self._requested_slot: int | None = None
         self._slot_change_issued_at: float | None = None
         self._last_failure: str | None = None
+        #: What's currently populated in the combo -- `_refresh_combo` only
+        #: rebuilds when this actually changes (see that method's own
+        #: docstring for why an unconditional rebuild is the bug).
+        self._combo_signature: tuple[tuple[int, str | None], ...] | None = None
 
         self._title_label = QLabel(f"<b>{title}</b>")
         self._connect_button = QPushButton("Connect")
@@ -140,6 +144,7 @@ class FilterWheelPanel(QWidget):
                 return
             self._connected = True
             self._set_slot_change_in_flight(False)
+            self._combo_signature = None  # force a fresh populate on this connect
             self._connect_button.setText("Disconnect")
             self._timer.start()
             self._poll_status()
@@ -153,10 +158,17 @@ class FilterWheelPanel(QWidget):
         self._update_selector_enabled()
 
     def _refresh_combo(self) -> None:
-        """(Re)populate the combo from the wheel's own known slot names,
-        preserving whatever is currently selected where possible. Never
-        fires _on_set_clicked-adjacent signals -- selecting an entry only
-        ever changes what a later "Set" click would send."""
+        """(Re)populate the combo from the wheel's own known slot names --
+        but ONLY when the content actually changed since last time.
+
+        Real-field report: this used to clear()+repopulate unconditionally
+        on every ~250ms poll tick, including while the user had the
+        dropdown popup open choosing an entry -- the rebuild happening out
+        from under an open popup reset the selection back to whatever Qt
+        defaults a freshly-repopulated combo to (its first entry) before
+        the click could ever land, so a filter's names ever actually
+        changing mid-session is rare enough that skipping the rebuild
+        entirely when nothing changed is both correct and the fix."""
         if not self._selectable or not self._connected:
             return
         names = self._filter_wheel.slot_names()
@@ -164,6 +176,10 @@ class FilterWheelPanel(QWidget):
         slots = sorted(set(names) | ({status.current_slot} if status.current_slot else set()))
         if not slots:
             return
+        signature = tuple((slot, names.get(slot)) for slot in slots)
+        if signature == self._combo_signature:
+            return
+        self._combo_signature = signature
         previous = self._slot_combo.currentData()
         self._slot_combo.blockSignals(True)
         self._slot_combo.clear()

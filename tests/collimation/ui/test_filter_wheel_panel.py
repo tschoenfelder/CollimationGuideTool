@@ -109,6 +109,36 @@ class TestComboPopulation:
         labels = [panel._slot_combo.itemText(i) for i in range(panel._slot_combo.count())]
         assert labels == ["5"]  # the current slot is always included even if unnamed
 
+    def test_a_provisional_selection_survives_repeated_poll_ticks(self, qapp: object) -> None:
+        """Real-field report: picking an entry (e.g. OIII) kept resetting
+        back to whatever the combo defaults to (its first entry) before a
+        "Set" click could land, because the combo was unconditionally
+        cleared and repopulated on every single poll tick -- including
+        while nothing about the wheel's own names had changed at all."""
+        filter_wheel = FakeFilterWheel(
+            slot=1, filter_names={1: "Red", 2: "Green", 6: "OIII"}
+        )
+        panel = _connected_selectable_panel(filter_wheel)
+        panel._poll_status()
+        oiii_index = panel._slot_combo.findData(6)
+        assert oiii_index >= 0
+        panel._slot_combo.setCurrentIndex(oiii_index)
+
+        for _ in range(5):
+            panel._poll_status()  # the wheel's own state never changes here
+            assert panel._slot_combo.currentData() == 6
+
+    def test_the_combo_is_not_rebuilt_when_nothing_changed(self, qapp: object) -> None:
+        filter_wheel = FakeFilterWheel(slot=1, filter_names={1: "L", 2: "R"})
+        panel = _connected_selectable_panel(filter_wheel)
+        panel._poll_status()
+        first_signature = panel._combo_signature
+
+        panel._poll_status()
+        panel._poll_status()
+
+        assert panel._combo_signature is first_signature
+
 
 class TestOneActionAtATime:
     def test_clicking_set_disables_the_selector_synchronously(self, qapp: object) -> None:
