@@ -3,11 +3,13 @@
 
 Models only the behaviours the `astrotool_core.onstep` shims depend on: a
 parked/tracking mount refusing axis motion, park/unpark/go_home gated by
-`home_motion_enabled`, `goto`/`enable_tracking` always refusing (0.4.0 has
-no INDI equivalent yet), and a motion lock on axis moves. Not a simulation
-of the INDI wire protocol — `OnStepConnection` and the shims never see one;
-they only see `OnStepIndiClient`'s own Python surface, so that is what this
-fake reproduces (same convention as `fake_onstep_client.py` for 0.3.5).
+`home_motion_enabled`, `enable_tracking` refusing from an unsafe/untrusted
+state (matching OnStepAdapter#14's fix -- tracking-enable is real now, not
+always-`NotImplementedError`), `goto` always refusing (0.4.0 has no INDI
+equivalent), and a motion lock on axis moves. Not a simulation of the INDI
+wire protocol — `OnStepConnection` and the shims never see one; they only
+see `OnStepIndiClient`'s own Python surface, so that is what this fake
+reproduces (same convention as `fake_onstep_client.py` did for 0.3.5).
 """
 
 from __future__ import annotations
@@ -37,6 +39,13 @@ class FakeIndiAxisMoveResult:
     requested_deg: float
     measured_deg: float
     stop_confirmed: bool = True
+
+
+@dataclass
+class FakeIndiTrackingResult:
+    command_accepted: bool
+    tracking_confirmed: bool
+    error: str | None = None
 
 
 class FakeIndiMount:
@@ -78,10 +87,8 @@ class FakeIndiMount:
             "INDI goto is unavailable until the 0.4 safety and HOME gates are validated"
         )
 
-    def enable_tracking(self) -> None:
-        raise NotImplementedError(
-            "INDI tracking enable is unavailable until the 0.4 safety and HOME gates are validated"
-        )
+    def enable_tracking(self) -> FakeIndiTrackingResult:
+        return self._client.enable_tracking()
 
 
 class FakeIndiFocuser:
@@ -151,6 +158,8 @@ class FakeOnStepIndiClient:
     go_home_rejected: bool = False
     #: Controls `emergency_stop`/`stop_tracking`.
     stop_confirms: bool = True
+    #: Controls `enable_tracking`/`start_tracking` once preflight passes.
+    tracking_rejected: bool = False
 
     axis_move_calls: list[tuple[str, float]] = field(default_factory=list)
     #: One finite axis move at a time, like the real `IndiAxisMover`.
@@ -256,6 +265,27 @@ class FakeOnStepIndiClient:
             errors=() if self.stop_confirms else ("fake stop did not confirm",),
         )
 
+    # ---- tracking-enable (real since OnStepAdapter#14's fix) -------------
+    def enable_tracking(self, *, timeout: float = 8.0) -> FakeIndiTrackingResult:
+        """Mirrors `enable_tracking_via_indi`'s real preconditions: refuses
+        while parked/at home/slewing/at_limit, or when this fake's
+        `home_authority_established`/`time_site_authority` are False
+        (the real check also gates on meridian phase, not modeled here --
+        nothing in this app's tests exercises that)."""
+        if (
+            self.parked or self.at_home or self.slewing or self.at_limit or
+            not self.home_authority_established or not self.time_site_authority
+        ):
+            return FakeIndiTrackingResult(
+                False, False, "fake tracking preflight refused"
+            )
+        if self.tracking:
+            return FakeIndiTrackingResult(False, True, None)
+        if self.tracking_rejected:
+            return FakeIndiTrackingResult(True, False, "fake tracking not confirmed")
+        self.tracking = True
+        return FakeIndiTrackingResult(True, True, None)
+
     # ---- axis motion (>= this dev build) --------------------------------
     #: Home authority/site-time authority and the fixed astronomical
     #: safety corridor were REMOVED from this primitive in the build this
@@ -265,8 +295,9 @@ class FakeOnStepIndiClient:
     def move_axis_deg(
         self, axis: str, offset_deg: float, *, timeout_s: float = 30.0, poll_s: float = 0.1
     ) -> FakeIndiAxisMoveResult:
-        if not math.isfinite(offset_deg) or not 0.2 <= abs(offset_deg) <= 10.0:
-            raise ValueError("Axis move must be between 0.2 and 10 degrees")
+        minimum_deg = 30.0 / 3600.0
+        if not math.isfinite(offset_deg) or not minimum_deg <= abs(offset_deg) <= 10.0:
+            raise ValueError("Axis move must be between 30 arcseconds and 10 degrees")
         if not self._axis_lock.acquire(blocking=False):
             raise RuntimeError("Another axis motion is active")
         try:

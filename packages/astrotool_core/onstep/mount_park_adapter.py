@@ -86,22 +86,21 @@ class OnStepMountParkAdapter(MountParkPort):
             raise RuntimeError(f"OnStep still reports motion after stop: {result.errors}")
 
     def start_tracking(self) -> None:
-        """OnStepAdapter 0.4.0 cannot enable tracking over INDI yet
-        (`IndiMount.enable_tracking` always raises `NotImplementedError`) --
-        a real regression versus 0.3.5 for issue #30's star-mode calibration.
-        Re-raised as `RuntimeError` so callers see an explicit, actionable
-        failure instead of an adapter-internal exception type leaking
-        through unannounced."""
+        """Enable tracking through OnStepAdapter's verified INDI route
+        (`IndiMount.enable_tracking`, added after OnStepAdapter#14 --
+        0.4.0 originally shipped with this always raising
+        `NotImplementedError`, a real regression for issue #30's star-mode
+        calibration that this now resolves). OnStepAdapter refuses from an
+        unsafe/untrusted state (parked, at home, slewing, an unsafe
+        meridian phase, ...) with its own reason; that refusal surfaces
+        here as a `RuntimeError`, matching every other verified action on
+        this port."""
         mount = self._mount()
         if mount is None:
             return
-        try:
-            mount.enable_tracking()
-        except NotImplementedError as exc:
-            raise RuntimeError(
-                "OnStepAdapter cannot enable tracking over INDI yet "
-                "(tracked as an OnStepAdapter enhancement request)"
-            ) from exc
+        result = mount.enable_tracking()
+        if not result.tracking_confirmed:
+            raise RuntimeError(f"OnStep did not confirm tracking on: {result.error}")
 
     #: No `confirm_home()` method (unlike 0.3.5): >= 0.4.0 establishes home
     #: authority automatically from live status

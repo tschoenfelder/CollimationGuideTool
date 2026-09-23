@@ -1,24 +1,24 @@
 """OnStepMountPulseAdapter — `MountPort` over OnStepAdapter's INDI-backed
 finite axis motion (>= this dev build of 0.4.0).
 
-Raw protocol sequencing (GOTO issuance, HA/Dec feedback verification,
-safety-corridor checks) stays inside OnStepAdapter
+Raw protocol sequencing (GOTO issuance, RA/Dec feedback verification,
+size-scaled arrival tolerances) stays inside OnStepAdapter
 (`IndiMount.move_ra_axis_deg`/`move_dec_axis_deg`); this shim only maps
 axis/direction to a signed degree offset and reports the adapter's verdict.
 
-Two real capability gaps versus 0.3.5, both intentional -- not something
-this shim works around locally (AGENTS.md: extend/fix OnStepAdapter, don't
-build a parallel implementation here):
+One real capability gap versus 0.3.5, intentional -- not something this
+shim works around locally (AGENTS.md: extend/fix OnStepAdapter, don't build
+a parallel implementation here): `pulse_axis` (a timed move at an installed
+rate) has **no** INDI equivalent -- the new primitive is a verified
+degree-target GOTO, not a duration-at-a-rate pulse.
+`capabilities().supports_pulse_guiding` is `False` and `pulse_axis` always
+refuses.
 
-- `pulse_axis` (a timed move at an installed rate) has **no** INDI
-  equivalent: the new primitive is a verified degree-target GOTO, not a
-  duration-at-a-rate pulse. `capabilities().supports_pulse_guiding` is
-  `False` and `pulse_axis` always refuses.
-- `move_angular` only works for offsets >= 720" (0.2 degrees) -- OnStepAdapter's
-  own floor. Most of this app's actual calibration seeds (AGENTS.md: 195"-283")
-  fall below it and are refused with an explicit message, never silently
-  clamped up to the floor. Tracked as an OnStepAdapter enhancement request
-  for a lower floor / a true sub-720" primitive.
+`move_angular` works for offsets from 30" to 36000" (10 degrees) --
+OnStepAdapter's own bound (raised from an original 720" floor after
+OnStepAdapter#14: every seed in AGENTS.md's Mount Align policy now clears
+it). Requests outside that range are refused with an explicit message,
+never silently clamped.
 
 `install_rate`/`installed_rate` are accepted-but-unused no-ops: the new
 primitive takes a target offset directly and needs no arcsec/s rate to
@@ -41,8 +41,8 @@ from astrotool_core.mount.port import (
 )
 from astrotool_core.onstep.connection import OnStepConnection
 
-#: OnStepAdapter's own `IndiAxisMover` bound (0.2..10 degrees).
-_MIN_AXIS_ARCSEC = 720.0
+#: OnStepAdapter's own `IndiAxisMover` bound (30"..10 degrees).
+_MIN_AXIS_ARCSEC = 30.0
 _MAX_AXIS_ARCSEC = 36000.0
 
 _NO_PULSE_PRIMITIVE = (
@@ -114,8 +114,7 @@ class OnStepMountPulseAdapter:
                 accepted=False,
                 message=(
                     f"{arcsec:.1f}\" is outside OnStepAdapter's supported axis-move range "
-                    f"({_MIN_AXIS_ARCSEC:.0f}\"-{_MAX_AXIS_ARCSEC:.0f}\") -- tracked as an "
-                    "OnStepAdapter enhancement request"
+                    f"({_MIN_AXIS_ARCSEC:.0f}\"-{_MAX_AXIS_ARCSEC:.0f}\")"
                 ),
             )
         positive = direction is AxisDirection.POSITIVE

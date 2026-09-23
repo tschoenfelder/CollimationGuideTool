@@ -5,10 +5,10 @@ these pin what this app asks OnStepAdapter to do and how it reports the
 answer. OnStepAdapter >= 0.4.0 is INDI-backed (AGENTS.md: for this
 deployment, indiserver owns the OnStep serial port and OnStepAdapter itself
 talks INDI, so IndiMonitor keeps working alongside this app) -- there is no
-serial port/baud rate to configure any more, and several 0.3.5 capabilities
-(timed pulses, tracking-enable, sub-720" angular moves) have no INDI
-equivalent yet; see each adapter's own module docstring for the exact gap
-and the OnStepAdapter enhancement request tracking it.
+serial port/baud rate to configure any more. Tracking-enable and a usable
+angular-move floor (originally 720", now 30" after OnStepAdapter#14) are
+both real now; 0.3.5's timed pulse (a duration-at-a-rate move) still has
+no INDI equivalent -- see each adapter's own module docstring.
 """
 
 from __future__ import annotations
@@ -152,14 +152,35 @@ class TestPark:
         with pytest.raises(RuntimeError):
             park.stop_tracking()
 
-    def test_start_tracking_is_not_supported_over_indi_yet(self) -> None:
-        """A real 0.4.0 regression versus 0.3.5 (issue #30's star-mode
-        calibration needs this) -- surfaced as an explicit `RuntimeError`,
-        never a silently swallowed `NotImplementedError`."""
+    def test_start_tracking_enables_tracking_when_safe(self) -> None:
+        """OnStepAdapter#14: tracking-enable is real now, not always
+        `NotImplementedError` (issue #30's star-mode calibration needs
+        this)."""
         conn, made = _connection()
         park = OnStepMountParkAdapter(conn)
         park.connect()
-        with pytest.raises(RuntimeError, match="cannot enable tracking"):
+        park.unpark()
+        made[0].at_home = False  # OnStepAdapter's own preflight refuses at home too
+        park.start_tracking()
+        assert made[0].tracking is True
+
+    def test_start_tracking_from_an_unsafe_state_is_an_error(self) -> None:
+        """Still parked -- OnStepAdapter's own preflight refuses; the
+        refusal surfaces as `RuntimeError`, not silence."""
+        conn, made = _connection()
+        park = OnStepMountParkAdapter(conn)
+        park.connect()
+        with pytest.raises(RuntimeError, match="did not confirm tracking on"):
+            park.start_tracking()
+
+    def test_start_tracking_that_does_not_confirm_is_an_error(self) -> None:
+        conn, made = _connection()
+        park = OnStepMountParkAdapter(conn)
+        park.connect()
+        park.unpark()
+        made[0].at_home = False
+        made[0].tracking_rejected = True
+        with pytest.raises(RuntimeError, match="did not confirm tracking on"):
             park.start_tracking()
 
     def test_no_confirm_home_method_and_home_confirmed_is_automatic(self) -> None:
@@ -263,8 +284,9 @@ class TestPulse:
 class TestAngularMotion:
     """>= this dev build of 0.4.0: `move_angular` maps to
     `IndiMount.move_ra_axis_deg`/`move_dec_axis_deg`, a finite,
-    feedback-verified GOTO -- bounded to 720"-36000" (OnStepAdapter's own
-    floor), no rate installation needed."""
+    feedback-verified GOTO -- bounded to 30"-36000" (OnStepAdapter's own
+    range, raised from an original 720" floor per OnStepAdapter#14), no
+    rate installation needed."""
 
     def _ready(
         self, *, tracking: bool = False
@@ -278,10 +300,17 @@ class TestAngularMotion:
 
     def test_a_move_below_the_floor_is_refused_not_silently_clamped(self) -> None:
         pulse, client = self._ready()
-        result = pulse.move_angular(MountAxis.AXIS1, AxisDirection.POSITIVE, 300.0)
+        result = pulse.move_angular(MountAxis.AXIS1, AxisDirection.POSITIVE, 10.0)
         assert not result.accepted
         assert "outside OnStepAdapter's supported axis-move range" in result.message
         assert client.axis_move_calls == []
+
+    def test_a_move_at_or_above_the_floor_is_accepted(self) -> None:
+        """AGENTS.md's own Mount Align seeds (195"-1595") all clear this
+        floor now (raised from an original 720" -- OnStepAdapter#14)."""
+        pulse, client = self._ready()
+        assert pulse.move_angular(MountAxis.AXIS1, AxisDirection.POSITIVE, 30.0).accepted
+        assert pulse.move_angular(MountAxis.AXIS1, AxisDirection.POSITIVE, 195.0).accepted
 
     def test_a_move_above_the_ceiling_is_refused(self) -> None:
         pulse, client = self._ready()
