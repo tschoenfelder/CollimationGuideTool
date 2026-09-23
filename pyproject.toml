@@ -11,11 +11,7 @@ dependencies = [
     "numpy>=1.26",
     "astropy>=6.0",
     "PySide6>=6.7",
-    # PROVISIONAL (see vendor/README.md): OnStepAdapter 0.4.0 is not yet
-    # pushed/tagged/released on GitHub -- vendored locally until it is.
-    # Swap back to a `https://github.com/.../releases/download/...` URL
-    # once a real v0.4.0 release exists.
-    "onstep-adapter @ file:vendor/onstep_adapter-0.4.0-py3-none-any.whl",
+    "onstep-adapter @ https://github.com/tschoenfelder/OnStepAdapter/releases/download/v0.4.0/onstep_adapter-0.4.0-py3-none-any.whl",
     "smarttscope-live-analysis @ git+https://github.com/tschoenfelder/SmartTScopeLiveAnalysis.git@v0.1.0",
 ]
 
