@@ -183,6 +183,7 @@ def _is_real_camera(device: Any) -> bool:  # noqa: ANN401 — untyped SDK device
 
 
 _HRESULT_BUSY = 0x800700AA  # ERROR_BUSY: the device already has an open handle
+_HRESULT_NOTIMPL = 0x80004001  # E_NOTIMPL: this camera model has no such feature
 
 
 def _describe_sdk_error(name: str, exc: Exception) -> str:
@@ -310,6 +311,12 @@ class TouptekCameraAdapter(CameraPort):
         # is a user intention, not read back from hardware -- see set_target_temperature.
         self._cooling_enabled = False
         self._target_temperature_c: float | None = -10.0
+        # Real-field report: GPCMOS02000KPA (no temperature sensor at all)
+        # spammed a WARNING every poll tick forever, one per
+        # get_Temperature() call -- E_NOTIMPL is a model-level capability,
+        # not a transient failure, so it's cached per-connect instead of
+        # retried indefinitely (see get_temperature()).
+        self._temperature_not_implemented = False
 
     def connect(self) -> None:
         if self._cam is not None:
@@ -400,6 +407,7 @@ class TouptekCameraAdapter(CameraPort):
         self._cam = None
         self._tc = None
         self._cooling_enabled = False
+        self._temperature_not_implemented = False  # re-probe on the next connect
         self._exposure_ever_set = False  # a reconnect should re-bootstrap from capture()'s hint
 
     def abort_capture(self) -> None:
@@ -506,10 +514,26 @@ class TouptekCameraAdapter(CameraPort):
             self._put_option("TOUPCAM_OPTION_CG", _OPTION_CG, int(mode))
 
     def get_temperature(self) -> float | None:
-        if self._cam is None:
+        # Real-field report: GPCMOS02000KPA has no temperature sensor at
+        # all -- get_Temperature() raised E_NOTIMPL on every single poll
+        # tick forever (the panel polls this on a timer), spamming a
+        # WARNING every ~0.3-1s indefinitely. E_NOTIMPL is a model-level
+        # capability that cannot change mid-session, so it's probed once
+        # per connect and cached, not retried on every call.
+        if self._cam is None or self._temperature_not_implemented:
             return None
-        value = self._try(lambda: self._cam.get_Temperature())  # pragma: no cover
-        return None if value is None else round(float(value) / 10.0, 1)  # pragma: no cover
+        try:
+            value = self._cam.get_Temperature()  # pragma: no cover
+        except Exception as exc:  # noqa: BLE001 -- SDK raises HRESULTException, caught broadly like _try()
+            hr = getattr(exc, "hr", None)
+            if isinstance(hr, int) and (hr & 0xFFFFFFFF) == _HRESULT_NOTIMPL:
+                self._temperature_not_implemented = True
+            else:
+                _log.warning(
+                    "TouptekCameraAdapter(%s): SDK call failed: %s", self._logical_name, exc
+                )
+            return None
+        return round(float(value) / 10.0, 1)  # pragma: no cover
 
     def get_cooling_enabled(self) -> bool:
         if self._cam is not None:  # pragma: no cover

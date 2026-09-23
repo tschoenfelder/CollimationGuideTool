@@ -264,3 +264,61 @@ class TestForceCoolingOffOnConnect:
 
         assert (adapter_module._OPTION_TEC, 0) in cam.put_option_calls
         assert adapter.get_cooling_enabled() is False
+
+
+class _NoTemperatureSensorCam(_FakeCam):
+    """A camera model with no temperature sensor at all (real report:
+    GPCMOS02000KPA) -- get_Temperature() always raises E_NOTIMPL."""
+
+    def __init__(self, serial: str) -> None:
+        super().__init__(serial)
+        self.get_temperature_calls = 0
+
+    def get_Temperature(self) -> int:
+        self.get_temperature_calls += 1
+        raise _HRESULTException(-2147467263)  # 0x80004001 E_NOTIMPL
+
+    def Stop(self) -> None:
+        pass
+
+    def Close(self) -> None:
+        pass
+
+
+class TestTemperatureNotImplementedIsCachedNotRetried:
+    """Real-field report: a camera with no temperature sensor spammed a
+    WARNING log line on every single poll tick forever (the panel polls
+    get_temperature() on a timer) -- E_NOTIMPL is a model-level capability
+    that cannot change mid-session, so it must be probed once and cached,
+    not retried on every call."""
+
+    def test_repeated_calls_only_hit_the_sdk_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _fresh_state(monkeypatch)
+        tc = _two_device_module()
+        cam = _NoTemperatureSensorCam("SN-A")
+        tc.Toupcam.Open = lambda device_id: cam  # type: ignore[method-assign]
+        adapter = TouptekCameraAdapter(camera_id=_DEVICE_A.id)
+        adapter._open_device(tc)
+
+        for _ in range(5):
+            assert adapter.get_temperature() is None
+
+        assert cam.get_temperature_calls == 1
+
+    def test_a_reconnect_re_probes(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        _fresh_state(monkeypatch)
+        tc = _two_device_module()
+        cam = _NoTemperatureSensorCam("SN-A")
+        tc.Toupcam.Open = lambda device_id: cam  # type: ignore[method-assign]
+        adapter = TouptekCameraAdapter(camera_id=_DEVICE_A.id)
+        adapter._open_device(tc)
+        adapter.get_temperature()
+        assert cam.get_temperature_calls == 1
+
+        adapter.disconnect()
+        adapter._open_device(tc)
+        adapter.get_temperature()
+
+        assert cam.get_temperature_calls == 2
