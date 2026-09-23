@@ -185,29 +185,30 @@ reserve_seconds = 30.0         # default
 ```
 
 **Capability boundary as of this OnStepAdapter build** (not a temporary
-bug — each item is either an explicit safety gate pending its own
-supervised test, or genuinely not ported to INDI yet; each is tracked as
-an OnStepAdapter enhancement request, per AGENTS.md, rather than worked
-around locally):
+bug — each remaining item is an explicit safety gate pending its own
+supervised test; tracking-enable and the axis-move floor, both originally
+gaps here, were fixed upstream after
+[OnStepAdapter#14](https://github.com/tschoenfelder/OnStepAdapter/issues/14)):
 
 - **`home_motion_enabled = false` (default)**: park/unpark/go-home all
   refuse until set `true` in `[indi]` — OnStepAdapter's own gate, pending
   its supervised HOME-status check. There is no more manual "Confirm at
   home" step (0.3.5's operator button is gone) — home authority is now
   established automatically from live status.
-- **No tracking-enable over INDI**: `enable_tracking()` always raises;
-  the Mount panel's tracking can be stopped (`stop_tracking`, which routes
-  through emergency-stop) but not started programmatically yet.
-- **No timed pulse, and a 720″ (0.2°) floor on axis moves**: Mount Align's
+- **Tracking-enable works**: `enable_tracking()` sets tracking ON and
+  verifies it, refusing from an unsafe/untrusted state (parked, at home,
+  slewing, an unsafe meridian phase, ...) with its own reason. Fixed after
+  originally always raising `NotImplementedError`.
+- **No timed pulse; axis moves range 30″–36000″ (10°)**: Mount Align's
   RA/Dec motion goes through a finite, feedback-verified axis-degree move
-  (a mini-GOTO, not a pulse) bounded to 720″–36000″ per move, requiring
-  tracking already OFF, home authority established, and a fixed
-  astronomical safety corridor. Requests below 720″ (most of this app's
-  own historical calibration seeds) are refused with an explicit message,
-  never silently rounded up.
+  (a mini-GOTO, not a pulse), requiring tracking already OFF. Requests
+  outside that range are refused with an explicit message, never silently
+  rounded up. The floor was originally 720″ (which excluded most of this
+  app's own calibration seeds) before OnStepAdapter#14 lowered it to 30″
+  and switched to size-scaled arrival tolerances.
 
-Mount Align on this connection: a requested move under 720″ is refused
-outright (see above); one at or above it is issued directly as a finite
+Mount Align on this connection: a requested move under 30″ is refused
+outright (see above); one within range is issued directly as a finite
 axis-degree move — there is no more "timed bootstrap → measure the rate →
 install it" step, since the new primitive needs no rate at all.
 
