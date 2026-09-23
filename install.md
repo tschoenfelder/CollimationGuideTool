@@ -173,13 +173,24 @@ host = "127.0.0.1"             # default
 port = 7624                    # default
 device = "LX200 OnStep"        # default -- must match indiserver's driver
 home_motion_enabled = false    # default -- see below
-focuser_max_position = 20000   # optional; required for the focuser to move at all
+focuser_max_position = 100000  # required for the focuser to move at all --
+                                # read live from the controller's own FOCUS_MAX
+                                # (indi_getprop -p 7624 'LX200 OnStep.FOCUS_MAX.*'),
+                                # never guessed
 
 [meridian]
-# field-verify-pending defaults -- tune against the firmware's own
-# "Minutes Past Meridian" readback before trusting the supervisor
-flip_request_deg = 100.0       # default
-tracking_stop_deg = 110.0      # default
+# MUST be tuned per rig -- OnStepAdapter refuses to connect at all
+# ("Configured flip/stop must be ordered below both firmware guards") if
+# these aren't below the mount's own firmware guard. Read the real guard
+# first: `indi_getprop -p 7624 'LX200 OnStep.Minutes Past Meridian.*'`
+# (East/West, in minutes of time); the connect-time bound is
+# min(East, West) / 4, in degrees. rasppi3's real guard measured only
+# ~2.0 degrees (12/8 minutes) -- both values here must stay strictly below
+# that. The tiny built-in defaults (0.5/0.75) exist only so an
+# unconfigured install can connect at all; they are not a tuned safety
+# margin for any specific rig.
+flip_request_deg = 1.0         # example -- rasppi3's real, measured-safe value
+tracking_stop_deg = 1.75       # example -- rasppi3's real, measured-safe value
 flip_allowance_seconds = 120.0 # default
 reserve_seconds = 30.0         # default
 ```

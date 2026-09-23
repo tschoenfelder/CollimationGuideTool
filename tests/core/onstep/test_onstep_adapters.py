@@ -376,6 +376,16 @@ class TestSettings:
         assert config.home_motion_enabled is False
         assert config.focuser_max_position is None
 
+    def test_default_meridian_values_clear_a_tight_real_rig_guard(self, tmp_path: Path) -> None:
+        """Real-rig regression (rasppi3): an earlier 100.0/110.0 default
+        could never satisfy OnStepAdapter's own `derive_meridian_policy`
+        against a real, much tighter firmware guard (measured ~2.0 degrees
+        there) -- it refused to connect at all. These defaults must clear
+        a guard at least that tight."""
+        config = load_onstep_indi_config(tmp_path / "missing.toml", tmp_path / "missing2.toml")
+        measured_guard_deg = min(12.0, 8.0) / 4.0  # rasppi3's real firmware readback
+        assert 0 < config.flip_request_deg < config.tracking_stop_deg < measured_guard_deg
+
     def test_observer_site_comes_from_the_shared_smarttscope_config(self, tmp_path: Path) -> None:
         shared = tmp_path / "smarttscope.toml"
         shared.write_text("[observer]\nlat = 47.5\nlon = 11.25\nheight_m = 300.0\n")

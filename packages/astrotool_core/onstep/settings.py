@@ -48,12 +48,21 @@ def _bool(table: dict[str, object], key: str, default: bool) -> bool:
     return value if isinstance(value, bool) else default
 
 
-#: Conservative, field-verify-pending defaults (see install.md): no real-rig
-#: measurement backs these yet -- they must be tuned against the firmware's
-#: own `Minutes Past Meridian` readback before the meridian supervisor can be
-#: trusted to protect anything.
-_DEFAULT_FLIP_REQUEST_DEG = 100.0
-_DEFAULT_TRACKING_STOP_DEG = 110.0
+#: OnStepAdapter's own `derive_meridian_policy` requires
+#: `0 < flip_request_deg < tracking_stop_deg < guard_deg`, where
+#: `guard_deg` comes from the mount's live firmware readback
+#: (`min(east, west guard minutes) / 4` -- see `meridian_policy.py`).
+#: Real-rig measurement (rasppi3, 2026-09-23): that guard was only ~2.0
+#: degrees (12/8 minutes East/West) -- an earlier 100.0/110.0 "conservative"
+#: default here was actually never satisfiable on real hardware (it
+#: refused to connect at all: "Configured flip/stop must be ordered below
+#: both firmware guards"). These are deliberately tiny instead, chosen to
+#: clear almost any real guard rather than to be a well-tuned safety
+#: margin for a specific rig -- **every real deployment still needs its
+#: own measured `[meridian]` override** (see install.md); this only
+#: prevents an unconfigured install from failing to connect at all.
+_DEFAULT_FLIP_REQUEST_DEG = 0.5
+_DEFAULT_TRACKING_STOP_DEG = 0.75
 
 
 def load_onstep_indi_config(
