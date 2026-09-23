@@ -257,6 +257,11 @@ class FakeOnStepIndiClient:
         )
 
     # ---- axis motion (>= this dev build) --------------------------------
+    #: Home authority/site-time authority and the fixed astronomical
+    #: safety corridor were REMOVED from this primitive in the build this
+    #: fake now mirrors -- only tracking/slewing/parked/at_limit still
+    #: block a move (plus a flat -80..80 deg DEC bound, not modeled here
+    #: since nothing in this app's tests exercises it).
     def move_axis_deg(
         self, axis: str, offset_deg: float, *, timeout_s: float = 30.0, poll_s: float = 0.1
     ) -> FakeIndiAxisMoveResult:
@@ -266,9 +271,10 @@ class FakeOnStepIndiClient:
             raise RuntimeError("Another axis motion is active")
         try:
             if self.tracking or self.slewing or self.parked or self.at_limit:
-                raise RuntimeError("Axis motion requires a trusted, stationary target")
-            if not self.home_authority_established:
-                raise RuntimeError("Axis motion safety inputs unavailable: home authority")
+                raise RuntimeError(
+                    "Local axis motion requires fresh unparked, stationary, "
+                    "non-tracking and fault-free state"
+                )
             self.axis_move_calls.append((axis, offset_deg))
             if axis == "ra":
                 self.ha_deg += offset_deg

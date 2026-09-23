@@ -329,7 +329,7 @@ class TestAngularMotion:
         pulse, client = self._ready(tracking=True)
         result = pulse.move_angular(MountAxis.AXIS1, AxisDirection.POSITIVE, 1000.0)
         assert not result.accepted
-        assert "stationary target" in result.message
+        assert "non-tracking" in result.message
 
     def test_a_bad_size_is_rejected(self) -> None:
         pulse, _ = self._ready()
