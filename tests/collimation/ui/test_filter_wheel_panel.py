@@ -179,6 +179,29 @@ class TestOneActionAtATime:
         assert panel._set_button.isEnabled()
         assert panel._status_label.text() == "Filter: 2 — R"
 
+    def test_a_wheel_stuck_reporting_busy_forever_still_recovers(self, qapp: object) -> None:
+        """Real-field report: a wheel that never transitions back to Ok
+        left the selector disabled permanently -- the safety-net timeout
+        used to be unreachable while status.moving stayed True."""
+        filter_wheel = FakeFilterWheel(slot=1, filter_names={1: "L", 2: "R"})
+        panel = _connected_selectable_panel(filter_wheel)
+        panel._poll_status()
+        panel._slot_combo.setCurrentIndex(1)
+        panel._on_set_clicked()
+        panel._poll_status()  # observes Busy
+        assert not panel._slot_combo.isEnabled()
+
+        # Never calls finish_move() -- the wheel stays stuck in Busy --
+        # only time passes.
+        assert panel._slot_change_issued_at is not None
+        panel._slot_change_issued_at -= 999.0
+
+        panel._poll_status()
+
+        assert panel._slot_combo.isEnabled()
+        assert panel._set_button.isEnabled()
+        assert panel._requested_slot is None
+
 
 class TestRequestedTargetText:
     def test_shows_the_requested_slot_while_moving(self, qapp: object) -> None:

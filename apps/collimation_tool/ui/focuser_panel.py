@@ -403,15 +403,20 @@ class FocuserPanel(QWidget):
                 f"Position {status.position} / {status.max_position}{moving}"
             )
         if self._move_in_flight:
-            if status.moving:
-                self._seen_busy_since_move = True
-            elif self._seen_busy_since_move:
-                self._set_move_in_flight(False)
-            elif (
+            # Same fix as FilterWheelPanel's identical gap (real-field
+            # report there): the timeout used to live in an `elif`
+            # reachable only while NOT moving, so a driver stuck reporting
+            # Busy forever could never hit it. Stop stays enabled
+            # regardless either way (see _update_move_buttons_enabled's own
+            # comment), but In/Out re-enabling now doesn't depend on the
+            # stuck state ever clearing on its own.
+            timed_out = (
                 self._move_issued_at is not None
                 and time.monotonic() - self._move_issued_at > _MOVE_CONFIRMATION_TIMEOUT_S
-            ):
-                # Safety net — see _MOVE_CONFIRMATION_TIMEOUT_S's docstring.
+            )
+            if status.moving:
+                self._seen_busy_since_move = True
+            if timed_out or (not status.moving and self._seen_busy_since_move):
                 self._set_move_in_flight(False)
         self._update_move_buttons_enabled()
 

@@ -222,17 +222,22 @@ class FilterWheelPanel(QWidget):
         if self._last_failure is None:
             self._status_label.setText(_status_text(status, self._requested_slot))
         if self._slot_change_in_flight:
-            if status.moving:
-                self._seen_busy_since_request = True
-            elif self._seen_busy_since_request:
-                self._set_slot_change_in_flight(False)
-                self._requested_slot = None
-            elif (
+            # Real-field report: a wheel that gets stuck reporting Busy
+            # forever (never transitions back to Ok) left the selector
+            # disabled with no way to retry -- the timeout below used to
+            # live in an `elif` reachable only while NOT moving, so it
+            # could never fire during exactly the stuck state it exists to
+            # recover from. Checked unconditionally now, same fix already
+            # shipped for FocuserPanel's identical gap (real incident
+            # a4ffe048).
+            timed_out = (
                 self._slot_change_issued_at is not None
                 and time.monotonic() - self._slot_change_issued_at
                 > _SLOT_CHANGE_CONFIRMATION_TIMEOUT_S
-            ):
-                # Safety net -- see _SLOT_CHANGE_CONFIRMATION_TIMEOUT_S's docstring.
+            )
+            if status.moving:
+                self._seen_busy_since_request = True
+            if timed_out or (not status.moving and self._seen_busy_since_request):
                 self._set_slot_change_in_flight(False)
                 self._requested_slot = None
         self._update_selector_enabled()
