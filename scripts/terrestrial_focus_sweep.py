@@ -10,7 +10,7 @@ focuser to its starting position when done, even on a partial failure.
 The camera side (`TouptekCameraAdapter`) talks to the vendor SDK
 directly over USB, and the focuser goes through OnStepAdapter's INDI-backed
 transport (>= 0.4.0), so this must run on the machine both are attached to
-(the Pi), with indiserver's `indi_lx200_OnStep` driver already running.
+(the Pi), with indiserver already running the OnStep INDI driver.
 
 Usage (run on the Pi, where the camera is attached):
     python scripts/terrestrial_focus_sweep.py --out-dir ~/sweep_output
