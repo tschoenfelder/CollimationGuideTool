@@ -172,7 +172,7 @@ SAME `~/.SmartTScope/config.toml` this tool already reads elsewhere
 host = "127.0.0.1"             # default
 port = 7624                    # default
 device = "LX200 OnStep"        # default -- must match indiserver's driver
-home_motion_enabled = false    # default -- see below
+home_motion_enabled = true     # false is the built-in default -- see below
 focuser_max_position = 100000  # required for the focuser to move at all --
                                 # read live from the controller's own FOCUS_MAX
                                 # (indi_getprop -p 7624 'LX200 OnStep.FOCUS_MAX.*'),
@@ -201,10 +201,17 @@ supervised test; tracking-enable and the axis-move floor, both originally
 gaps here, were fixed upstream after
 [OnStepAdapter#14](https://github.com/tschoenfelder/OnStepAdapter/issues/14)):
 
-- **`home_motion_enabled = false` (default)**: park/unpark/go-home all
-  refuse until set `true` in `[indi]` — OnStepAdapter's own gate, pending
-  its supervised HOME-status check. There is no more manual "Confirm at
-  home" step (0.3.5's operator button is gone) — home authority is now
+- **`home_motion_enabled` gates `park()`/`unpark()`/`go_home()` as one
+  bundle, even though only `park()`/`go_home()` are real slews** —
+  `unpark()` is a plain `TELESCOPE_PARK`/`UNPARK` +
+  `TELESCOPE_TRACK_STATE`/`TRACK_OFF` switch flip, confirmed via status,
+  and never requests HOME (`indi_home.py`'s own docstring: "never request
+  HOME"). Real-field report (rasppi3): leaving this `false` (the built-in
+  default) means Mount Align can never even unpark, since its first step
+  is always an `unpark()` when starting from parked — this flag needs
+  setting `true` for Mount Align to do anything at all, not just for
+  park/go-home's genuine slews. There is no more manual "Confirm at home"
+  step (0.3.5's operator button is gone) — home authority is now
   established automatically from live status.
 - **Tracking-enable works**: `enable_tracking()` sets tracking ON and
   verifies it, refusing from an unsafe/untrusted state (parked, at home,

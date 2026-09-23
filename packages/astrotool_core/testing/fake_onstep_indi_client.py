@@ -227,12 +227,15 @@ class FakeOnStepIndiClient:
             )
 
     def unpark(self, *, timeout: float = 20.0) -> IndiUnparkResult:
+        """Real behavior (`indi_home.py`'s own docstring): "never request
+        HOME" -- a plain UNPARK + TRACK_OFF switch flip, no slew. Does
+        NOT touch `at_home` (an earlier version of this fake wrongly set
+        it True, matching a since-corrected wrong docstring elsewhere)."""
         self._require_home_motion()
         if self.unpark_rejected:
             return IndiUnparkResult(False, "unpark", None, "fake rejected unpark", None)
         self.parked = False
         self.tracking = False
-        self.at_home = True
         return IndiUnparkResult(True, "unparked", None, None, None)
 
     def go_home(self, *, timeout: float = 120.0) -> IndiPositionResult:

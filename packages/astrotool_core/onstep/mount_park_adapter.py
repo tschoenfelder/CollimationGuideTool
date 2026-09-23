@@ -42,7 +42,9 @@ class OnStepMountParkAdapter(MountParkPort):
         )
 
     def park(self) -> None:
-        """Park via OnStepAdapter's own status-confirmed mechanical route.
+        """Park via OnStepAdapter's own status-confirmed mechanical route --
+        a REAL slew (verified via live status), requiring the mount
+        already be at a confirmed HOME first.
 
         Gated by `[indi].home_motion_enabled` in OnStepAdapter itself (off
         by default, pending its own supervised HOME test) -- that refusal
@@ -56,15 +58,24 @@ class OnStepMountParkAdapter(MountParkPort):
         if not result.confirmed:
             raise RuntimeError(f"OnStep did not reach the parked state: {result.error}")
 
-    #: `park()`/`unpark()` take seconds to minutes (the mount slews); a UI must not call
-    #: them on its GUI thread (`MountParkPanel` runs them on a worker when this is set).
+    #: `park()` slews (seconds to minutes); `unpark()` is a quick switch
+    #: flip + confirmation poll, not a slew, but both still make a
+    #: blocking INDI round trip a UI must not run on its GUI thread
+    #: (`MountParkPanel` runs them on a worker when this is set).
     long_running_actions = True
 
     def unpark(self) -> None:
-        """Unpark and drive to HOME with tracking off -- OnStepAdapter's
-        `unpark()` already does the whole sequence (unpark, confirm not
-        parked/slewing, then TRACK_OFF, confirmed) and ends at HOME, not
-        merely off the PARK position (`indi_home.py`'s `IndiHomeRouter.unpark`)."""
+        """Leave PARKED with tracking off -- a plain unpark-then-track-off
+        switch sequence, confirmed via live status. **Not a slew** --
+        despite living behind
+        the same `home_motion_enabled` gate as `park()`/`go_home()` (which
+        genuinely do slew), `unpark()` itself never requests HOME or moves
+        the mount at all (`indi_home.py`'s `IndiHomeRouter.unpark`'s own
+        docstring: "never request HOME"). An earlier version of this
+        docstring wrongly claimed it drove to HOME -- corrected after a
+        real-field report questioned why a harmless unpark needed gating
+        at all; the answer is it's bundled with two operations that do
+        need it, not that unpark itself is risky."""
         mount = self._mount()
         if mount is None:
             return

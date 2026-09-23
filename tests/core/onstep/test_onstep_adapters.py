@@ -93,13 +93,16 @@ class TestPark:
         made[0].parked, made[0].tracking = False, True
         assert park.status().tracking and not park.status().parked
 
-    def test_unpark_drives_the_mount_home_with_tracking_off(self) -> None:
+    def test_unpark_is_a_switch_flip_not_a_slew(self) -> None:
+        """`unpark()` never requests HOME (`indi_home.py`'s own docstring)
+        -- it must not claim `at_home` afterward."""
         conn, made = _connection()
         park = OnStepMountParkAdapter(conn)
         park.connect()
+        made[0].at_home = False
         park.unpark()
         assert not park.status().parked and not park.status().tracking
-        assert made[0].at_home
+        assert not made[0].at_home
 
     def test_park_goes_via_the_adapters_own_route(self) -> None:
         conn, made = _connection()
