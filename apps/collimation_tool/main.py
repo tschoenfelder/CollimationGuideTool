@@ -97,8 +97,10 @@ def _default_filter_wheels() -> list[FilterWheelAssignment]:
     `~/.CollimationGuideTool/config.toml`, then a built-in default), never a
     CollimationGuideTool-invented schema for the same facts -- see
     `astrotool_core.filter_wheel.config`'s own docstring. Verified live: the
-    wheel (`ToupTek EFW 1`) is in Main's optical path only, not shared with
-    OAG as an earlier version of this assumed."""
+    wheel (`ToupTek EFW 2` -- corrected 2026-09-24 after a real-field
+    connect failure; an earlier verification session misread it as "EFW 1")
+    is in Main's optical path only, not shared with OAG as an earlier
+    version of this assumed."""
     return build_filter_wheels(load_filter_wheel_layout())
 
 

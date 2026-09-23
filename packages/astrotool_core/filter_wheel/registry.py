@@ -80,7 +80,12 @@ def load_filter_wheel_layout(
         return FilterWheelLayout(wheels=(), trains=())
     wheel = FilterWheelConfig(
         id=_WHEEL_ID,
-        device_name=wiring.device_name or "ToupTek EFW 1",
+        # load_filter_wheel_wiring() always resolves device_name to a real
+        # string whenever enabled=True (its own built-in default, if
+        # nothing else names one) -- this `or` is an unreachable-in-
+        # practice safety net, so it must still name a real device rather
+        # than a stale duplicate of that same default.
+        device_name=wiring.device_name or "ToupTek EFW 2",
         host=wiring.host or _DEFAULT_HOST,
         port=wiring.port or _DEFAULT_PORT,
         filter_names=dict(wiring.filter_names),

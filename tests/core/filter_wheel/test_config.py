@@ -45,7 +45,7 @@ class TestSharedConfigWins:
             enabled=True,
             active_train="main",
             filter_names={1: "L", 2: "R", 3: "G", 4: "B", 5: "H", 6: "O", 7: "S"},
-            device_name="ToupTek EFW 1",
+            device_name="ToupTek EFW 2",
             host=None,
             port=None,
         )
@@ -63,7 +63,7 @@ class TestSharedConfigWins:
         shared = _write(tmp_path / "smarttscope.toml", _SHARED_TABLE)
         local = _write(
             tmp_path / "local.toml",
-            '[filter_wheel]\ndevice = "ToupTek EFW 1"\nhost = "rasppi3"\nport = 7625\n',
+            '[filter_wheel]\ndevice = "ToupTek EFW 2"\nhost = "rasppi3"\nport = 7625\n',
         )
         wiring = load_filter_wheel_wiring(smarttscope_path=shared, local_path=local)
         assert (wiring.host, wiring.port) == ("rasppi3", 7625)
@@ -105,7 +105,7 @@ class TestLocalFallback:
             tmp_path / "local.toml",
             "[filter_wheel]\nenabled = true\n"
             'active_camera_role = "guide"\n'
-            'device = "ToupTek EFW 1"\n'
+            'device = "ToupTek EFW 2"\n'
             "[filters]\nred = 1\n",
         )
         wiring = load_filter_wheel_wiring(
@@ -113,7 +113,7 @@ class TestLocalFallback:
         )
         assert wiring.active_train == "guide"
         assert wiring.filter_names == {1: "R"}
-        assert wiring.device_name == "ToupTek EFW 1"
+        assert wiring.device_name == "ToupTek EFW 2"
 
     def test_shared_file_present_but_malformed_falls_through_to_local(self, tmp_path: Path) -> None:
         shared = _write(tmp_path / "smarttscope.toml", "this is [not valid toml")
@@ -145,7 +145,7 @@ class TestBuiltInDefault:
             enabled=True,
             active_train="main",
             filter_names={1: "L", 2: "R", 3: "G", 4: "B", 5: "H", 6: "O", 7: "S"},
-            device_name="ToupTek EFW 1",
+            device_name="ToupTek EFW 2",
             host=None,
             port=None,
         )
@@ -155,4 +155,4 @@ class TestBuiltInDefault:
         local = _write(tmp_path / "local.toml", "also not ] valid")
         wiring = load_filter_wheel_wiring(smarttscope_path=shared, local_path=local)
         assert wiring.active_train == "main"
-        assert wiring.device_name == "ToupTek EFW 1"
+        assert wiring.device_name == "ToupTek EFW 2"

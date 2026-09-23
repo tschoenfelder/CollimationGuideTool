@@ -21,7 +21,7 @@ from astrotool_core.filter_wheel.registry import (
 )
 from astrotool_core.testing.fake_indi_server import FakeIndiServer
 
-_REAL_DEVICE = "ToupTek EFW 1"  # the device name on the Pi's indiserver (indi_getprop)
+_REAL_DEVICE = "ToupTek EFW 2"  # the device name on the Pi's indiserver (indi_getprop)
 
 
 class _Recorder:
@@ -104,7 +104,7 @@ class TestSharedConfigDrivesTheLayout:
         shared = _shared(tmp_path, '[filter_wheel]\nenabled = true\nactive_camera_role = "main"\n')
         local = tmp_path / "local.toml"
         local.write_text(
-            '[filter_wheel]\ndevice = "ToupTek EFW 1"\nhost = "rasppi3"\nport = 7625\n',
+            '[filter_wheel]\ndevice = "ToupTek EFW 2"\nhost = "rasppi3"\nport = 7625\n',
             encoding="utf-8",
         )
         layout = load_filter_wheel_layout(smarttscope_path=shared, local_path=local)

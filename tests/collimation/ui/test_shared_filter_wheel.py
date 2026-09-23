@@ -23,7 +23,7 @@ def _window(assignments: list[FilterWheelAssignment] | None) -> MainWindow:
 def _shared(port: FilterWheelPort | None = None) -> FilterWheelAssignment:
     return FilterWheelAssignment(
         wheel_id="efw1",
-        device_name="ToupTek EFW 1",
+        device_name="ToupTek EFW 2",
         trains=("Main", "OAG"),
         port=port if port is not None else FakeFilterWheel(slot=3, filter_name="OIII"),
     )
@@ -57,7 +57,7 @@ class TestOneControlPerPhysicalWheel:
 
         panel = window._filter_wheel_panels[0]
 
-        assert "ToupTek EFW 1" in panel._title_label.text()
+        assert "ToupTek EFW 2" in panel._title_label.text()
         assert panel._used_by_label.text() == "Used by: Main, OAG"
 
     def test_guide_without_a_wheel_gets_no_control(self, qapp: object) -> None:
@@ -113,7 +113,7 @@ class TestSharedState:
         wheels = window._diagnostic_context()["filter_wheels"]
 
         assert list(wheels) == ["efw1"]
-        assert wheels["efw1"]["device"] == "ToupTek EFW 1"
+        assert wheels["efw1"]["device"] == "ToupTek EFW 2"
         assert wheels["efw1"]["used_by"] == ["Main", "OAG"]
         assert wheels["efw1"]["connected"] is True
 
@@ -208,7 +208,7 @@ class TestMainWiresTheRealWheel:
 
         assert len(assignments) == 1
         assert isinstance(assignments[0].port, IndiFilterWheelAdapter)
-        assert assignments[0].device_name == "ToupTek EFW 1"
+        assert assignments[0].device_name == "ToupTek EFW 2"
         assert assignments[0].trains == ("main",)
 
 
@@ -219,7 +219,7 @@ class TestActiveRoleWiring:
     panel."""
 
     def test_a_wheel_wired_to_main_is_selectable(self, qapp: object) -> None:
-        assignment = FilterWheelAssignment("efw1", "ToupTek EFW 1", ("main",), FakeFilterWheel())
+        assignment = FilterWheelAssignment("efw1", "ToupTek EFW 2", ("main",), FakeFilterWheel())
         window = _window([assignment])
 
         assert window._filter_wheel_panels[0].selectable is True
@@ -227,7 +227,7 @@ class TestActiveRoleWiring:
     def test_a_wheel_wired_to_a_train_with_no_real_panel_is_not_selectable(
         self, qapp: object, caplog: pytest.LogCaptureFixture
     ) -> None:
-        assignment = FilterWheelAssignment("efw1", "ToupTek EFW 1", ("oag",), FakeFilterWheel())
+        assignment = FilterWheelAssignment("efw1", "ToupTek EFW 2", ("oag",), FakeFilterWheel())
 
         with caplog.at_level("WARNING"):
             window = _window([assignment])
@@ -236,7 +236,7 @@ class TestActiveRoleWiring:
         assert "no selector shown" in caplog.text
 
     def test_case_insensitive_matching_against_the_real_panel_names(self, qapp: object) -> None:
-        assignment = FilterWheelAssignment("efw1", "ToupTek EFW 1", ("Guide",), FakeFilterWheel())
+        assignment = FilterWheelAssignment("efw1", "ToupTek EFW 2", ("Guide",), FakeFilterWheel())
         window = _window([assignment])
 
         assert window._filter_wheel_panels[0].selectable is True

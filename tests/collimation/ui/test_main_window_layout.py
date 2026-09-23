@@ -24,7 +24,7 @@ def _window() -> MainWindow:
         ReplayCamera.from_arrays([image], cycle=True),
         device_lister=lambda: [],
         filter_wheels=[
-            FilterWheelAssignment("efw1", "ToupTek EFW 1", ("Main", "OAG"), FakeFilterWheel())
+            FilterWheelAssignment("efw1", "ToupTek EFW 2", ("Main", "OAG"), FakeFilterWheel())
         ],
     )
 

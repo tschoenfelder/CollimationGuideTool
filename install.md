@@ -254,7 +254,7 @@ to this wheel over its own native SDK, never INDI, so it has no equivalent):
 [filter_wheel]
 enabled = true
 active_camera_role = "main"    # which optical train the selector appears on
-device = "ToupTek EFW 1"       # optional override; default is the rig's known device
+device = "ToupTek EFW 2"       # optional override; default is the rig's known device
 host = "localhost"             # optional
 port = 7624                    # optional
 
@@ -269,7 +269,7 @@ sii       = 7
 ```
 
 If neither file has a `[filter_wheel]` table at all, CollimationGuideTool
-falls back to this rig's own known-good state (`ToupTek EFW 1`, Main's
+falls back to this rig's own known-good state (`ToupTek EFW 2`, Main's
 optical train, the 7 filters above). The slot selector only appears on a
 real camera panel (Main/Guide) whose name matches `active_camera_role`; a
 role naming anything else (e.g. a not-yet-implemented OAG panel) shows no

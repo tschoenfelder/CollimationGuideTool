@@ -49,9 +49,13 @@ _FILTER_NAME_ABBREVIATIONS: dict[str, str] = {
     "sii": "S",
 }
 
-#: This rig's own known-good state (verified live, 2026-09), used only when
-#: NEITHER config file has a [filter_wheel] table at all.
-_BUILT_IN_DEVICE_NAME = "ToupTek EFW 1"
+#: This rig's own known-good state, used only when NEITHER config file
+#: carries an explicit INDI `device` name. Corrected 2026-09-24 -- the
+#: original "ToupTek EFW 1" guess was never checked against the real
+#: indiserver (`indi_getprop`); a real-field UI failure ("EFW 1" not
+#: found) traced to this constant, and the rig's actual driver reports
+#: itself as "ToupTek EFW 2".
+_BUILT_IN_DEVICE_NAME = "ToupTek EFW 2"
 _BUILT_IN_ACTIVE_TRAIN = "main"
 _BUILT_IN_FILTER_NAMES: dict[int, str] = {1: "L", 2: "R", 3: "G", 4: "B", 5: "H", 6: "O", 7: "S"}
 
