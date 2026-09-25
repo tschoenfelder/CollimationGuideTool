@@ -43,8 +43,10 @@ class OnStepMountParkAdapter(MountParkPort):
 
     def park(self) -> None:
         """Park via OnStepAdapter's own status-confirmed mechanical route --
-        a REAL slew (verified via live status), requiring the mount
-        already be at a confirmed HOME first.
+        a REAL slew (verified via live status). As of OnStepAdapter 0.4.1
+        it parks directly from any stationary, non-tracking state (no
+        at-HOME precondition any more -- OnStepAdapter#16); already parked
+        is an immediate success.
 
         Gated by `[indi].home_motion_enabled` in OnStepAdapter itself (off
         by default, pending its own supervised HOME test) -- that refusal
@@ -101,9 +103,12 @@ class OnStepMountParkAdapter(MountParkPort):
         (`IndiMount.enable_tracking`, added after OnStepAdapter#14 --
         0.4.0 originally shipped with this always raising
         `NotImplementedError`, a real regression for issue #30's star-mode
-        calibration that this now resolves). OnStepAdapter refuses from an
-        unsafe/untrusted state (parked, at home, slewing, an unsafe
-        meridian phase, ...) with its own reason; that refusal surfaces
+        calibration that this now resolves). With the default
+        `[indi] tracking_authority_policy = "strict"` OnStepAdapter also
+        demands a completed HOME slew and a time/site sync this app never
+        performs, so a rig must set `"controller_managed"` (0.4.1) for this
+        to ever succeed; either way it refuses parked/slewing/unsafe
+        meridian states with its own reason; that refusal surfaces
         here as a `RuntimeError`, matching every other verified action on
         this port."""
         mount = self._mount()

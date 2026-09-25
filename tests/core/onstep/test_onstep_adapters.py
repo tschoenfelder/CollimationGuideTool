@@ -186,6 +186,56 @@ class TestPark:
         with pytest.raises(RuntimeError, match="did not confirm tracking on"):
             park.start_tracking()
 
+    def test_park_needs_no_home_only_stationary_and_not_tracking(self) -> None:
+        """OnStepAdapter#16 (0.4.1): a plain unpark -> park cycle works
+        without ever visiting HOME."""
+        conn, made = _connection()
+        park = OnStepMountParkAdapter(conn)
+        park.connect()
+        park.unpark()
+        assert not made[0].at_home
+        park.park()
+        assert park.status().parked
+
+    def test_park_while_tracking_is_still_refused(self) -> None:
+        conn, made = _connection()
+        park = OnStepMountParkAdapter(conn)
+        park.connect()
+        made[0].parked, made[0].tracking = False, True
+        with pytest.raises(RuntimeError, match="non-tracking"):
+            park.park()
+
+    def test_unpark_of_an_already_unparked_mount_succeeds(self) -> None:
+        """OnStepAdapter#17 (0.4.1): tracking already off / not parked no
+        longer times out waiting for a fresh push."""
+        conn, made = _connection()
+        park = OnStepMountParkAdapter(conn)
+        park.connect()
+        made[0].parked = False
+        park.unpark()
+        assert not park.status().parked and not park.status().tracking
+
+    def test_strict_tracking_policy_still_needs_home_authority(self) -> None:
+        conn, made = _connection()
+        park = OnStepMountParkAdapter(conn)
+        park.connect()
+        park.unpark()
+        made[0].home_authority_established = False  # what this app always has
+        with pytest.raises(RuntimeError, match="did not confirm tracking on"):
+            park.start_tracking()
+
+    def test_controller_managed_policy_starts_tracking_without_home(self) -> None:
+        conn, made = make_fake_onstep_indi_connection(
+            fake_indi_runtime_config(tracking_authority_policy="controller_managed")
+        )
+        park = OnStepMountParkAdapter(conn)
+        park.connect()
+        park.unpark()
+        made[0].home_authority_established = False
+        made[0].time_site_authority = False
+        park.start_tracking()
+        assert made[0].tracking is True
+
     def test_no_confirm_home_method_and_home_confirmed_is_automatic(self) -> None:
         """Unlike 0.3.5, home authority is established automatically from
         live status -- there is no manual operator confirmation call."""
@@ -411,6 +461,19 @@ class TestSettings:
         assert config.home_motion_enabled is True
         assert config.focuser_max_position == 20000
         assert (config.flip_request_deg, config.tracking_stop_deg) == (90.0, 105.0)
+
+    def test_tracking_authority_policy_is_read_and_validated(self, tmp_path: Path) -> None:
+        own = tmp_path / "config.toml"
+        missing = tmp_path / "s.toml"
+
+        def policy() -> str:
+            return str(load_onstep_indi_config(missing, own).tracking_authority_policy)
+
+        assert policy() == "strict"
+        own.write_text("[indi]\ntracking_authority_policy = \"controller_managed\"\n")
+        assert policy() == "controller_managed"
+        own.write_text("[indi]\ntracking_authority_policy = \"anything-else\"\n")
+        assert policy() == "strict"
 
     def test_malformed_values_fall_back_to_defaults(self, tmp_path: Path) -> None:
         own = tmp_path / "config.toml"

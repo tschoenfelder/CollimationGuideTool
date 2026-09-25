@@ -227,13 +227,16 @@ class FakeOnStepIndiClient:
             )
 
     def unpark(self, *, timeout: float = 20.0) -> IndiUnparkResult:
-        """Real behavior (`indi_home.py`'s own docstring): "never request
-        HOME" -- a plain UNPARK + TRACK_OFF switch flip, no slew. Does
-        NOT touch `at_home` (an earlier version of this fake wrongly set
-        it True, matching a since-corrected wrong docstring elsewhere)."""
+        """0.4.1 behavior: a plain UNPARK + TRACK_OFF switch flip, never a
+        slew, and no longer requires the mount to be parked going in (an
+        already-unparked mount just gets the TRACK_OFF, accepted immediately
+        if tracking is already off -- OnStepAdapter#17). Does NOT touch
+        `at_home`."""
         self._require_home_motion()
         if self.unpark_rejected:
             return IndiUnparkResult(False, "unpark", None, "fake rejected unpark", None)
+        if self.slewing:
+            return IndiUnparkResult(False, "preflight", None, "fake: slewing", None)
         self.parked = False
         self.tracking = False
         return IndiUnparkResult(True, "unparked", None, None, None)
@@ -247,11 +250,18 @@ class FakeOnStepIndiClient:
         return IndiPositionResult("home", True, None, None, None)
 
     def park(self, *, timeout: float = 120.0) -> IndiPositionResult:
+        """0.4.1 behavior: parks directly from any stationary, non-tracking
+        state (no at-HOME requirement -- OnStepAdapter#16); already parked
+        is an immediate success."""
         self._require_home_motion()
         if self.park_rejected:
             return IndiPositionResult("park", False, None, "fake rejected park", None)
+        if self.slewing or self.tracking:
+            return IndiPositionResult(
+                "park", False, None,
+                "Fresh stationary, non-tracking and fault-free status is required", None,
+            )
         self.parked = True
-        self.tracking = False
         self.at_home = False
         return IndiPositionResult("park", True, None, None, None)
 
@@ -270,18 +280,17 @@ class FakeOnStepIndiClient:
 
     # ---- tracking-enable (real since OnStepAdapter#14's fix) -------------
     def enable_tracking(self, *, timeout: float = 8.0) -> FakeIndiTrackingResult:
-        """Mirrors `enable_tracking_via_indi`'s real preconditions: refuses
-        while parked/at home/slewing/at_limit, or when this fake's
-        `home_authority_established`/`time_site_authority` are False
-        (the real check also gates on meridian phase, not modeled here --
-        nothing in this app's tests exercises that)."""
-        if (
-            self.parked or self.at_home or self.slewing or self.at_limit or
-            not self.home_authority_established or not self.time_site_authority
-        ):
-            return FakeIndiTrackingResult(
-                False, False, "fake tracking preflight refused"
-            )
+        """Mirrors `enable_tracking_via_indi`: "strict" (the default policy)
+        also demands home/time-site authority and not-at-home;
+        "controller_managed" only refuses parked/slewing/at_limit (the real
+        check also gates on meridian phase, not modeled here)."""
+        hard = self.parked or self.slewing or self.at_limit
+        strict = self.config.tracking_authority_policy == "strict" and (
+            self.at_home or not self.home_authority_established
+            or not self.time_site_authority
+        )
+        if hard or strict:
+            return FakeIndiTrackingResult(False, False, "fake tracking preflight refused")
         if self.tracking:
             return FakeIndiTrackingResult(False, True, None)
         if self.tracking_rejected:

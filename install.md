@@ -173,6 +173,7 @@ host = "127.0.0.1"             # default
 port = 7624                    # default
 device = "LX200 OnStep"        # default -- must match indiserver's driver
 home_motion_enabled = true     # false is the built-in default -- see below
+tracking_authority_policy = "controller_managed"  # built-in default "strict" -- see below
 focuser_max_position = 100000  # required for the focuser to move at all --
                                 # read live from the controller's own FOCUS_MAX
                                 # (indi_getprop -p 7624 'LX200 OnStep.FOCUS_MAX.*'),
@@ -213,6 +214,14 @@ gaps here, were fixed upstream after
   park/go-home's genuine slews. There is no more manual "Confirm at home"
   step (0.3.5's operator button is gone) — home authority is now
   established automatically from live status.
+- **`tracking_authority_policy` (OnStepAdapter >= 0.4.1)**: the default
+  `"strict"` makes `enable_tracking()` require a completed HOME slew, a
+  time/site sync and not-at-home -- none of which this app ever performs, so
+  tracking could never start. `"controller_managed"` leaves those to the
+  mount controller (only parked/slewing/at-limit/unsafe-meridian states are
+  refused). Set it for any rig that needs tracking ON (star-mode
+  calibration). 0.4.1 also lets `park()` run without a prior HOME and makes
+  `unpark()`/stop confirmations accept a value that was already correct.
 - **Tracking-enable works**: `enable_tracking()` sets tracking ON and
   verifies it, refusing from an unsafe/untrusted state (parked, at home,
   slewing, an unsafe meridian phase, ...) with its own reason. Fixed after

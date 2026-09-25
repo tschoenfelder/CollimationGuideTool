@@ -65,6 +65,19 @@ _DEFAULT_FLIP_REQUEST_DEG = 0.5
 _DEFAULT_TRACKING_STOP_DEG = 0.75
 
 
+#: OnStepAdapter >= 0.4.1: "strict" (default) makes `enable_tracking()`
+#: require a completed HOME slew, a time/site sync and not-at-home -- none of
+#: which this app can ever provide (it never calls go_home()/
+#: sync_time_location()); "controller_managed" leaves those to the mount
+#: controller and only refuses parked/slewing/limit/meridian-unsafe states.
+_TRACKING_POLICIES = ("strict", "controller_managed")
+
+
+def _tracking_policy(table: dict[str, object]) -> str:
+    value = table.get("tracking_authority_policy")
+    return value if isinstance(value, str) and value in _TRACKING_POLICIES else "strict"
+
+
 def load_onstep_indi_config(
     smarttscope_path: Path | None = None, own_path: Path | None = None
 ) -> IndiRuntimeConfig:
@@ -100,4 +113,5 @@ def load_onstep_indi_config(
             else None
         ),
         home_motion_enabled=_bool(indi, "home_motion_enabled", False),
+        tracking_authority_policy=_tracking_policy(indi),
     )
