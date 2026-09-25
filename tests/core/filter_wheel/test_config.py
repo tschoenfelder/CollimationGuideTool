@@ -144,7 +144,7 @@ class TestBuiltInDefault:
         assert wiring == FilterWheelWiring(
             enabled=True,
             active_train="main",
-            filter_names={1: "L", 2: "R", 3: "G", 4: "B", 5: "H", 6: "O", 7: "S"},
+            filter_names={1: "L", 2: "R", 3: "G", 4: "B", 5: "S", 6: "H", 7: "O", 8: "NONE"},
             device_name="ToupTek EFW 2",
             host=None,
             port=None,
@@ -156,3 +156,36 @@ class TestBuiltInDefault:
         wiring = load_filter_wheel_wiring(smarttscope_path=shared, local_path=local)
         assert wiring.active_train == "main"
         assert wiring.device_name == "ToupTek EFW 2"
+
+
+class TestLocalNamesOverride:
+    """Real report: the INDI driver's own slot names (and SmartTScope's
+    shared [filters] order) did not match this rig's physical wheel."""
+
+    _LOCAL = (
+        "[filters]\nluminance = 1\nred = 2\ngreen = 3\nblue = 4\n"
+        "sii = 5\nha = 6\noiii = 7\nnone = 8\n"
+    )
+
+    def test_local_filters_replace_the_shared_names_and_flag_an_override(
+        self, tmp_path: Path
+    ) -> None:
+        shared = _write(tmp_path / "smarttscope.toml", _SHARED_TABLE)
+        local = _write(tmp_path / "local.toml", self._LOCAL)
+        wiring = load_filter_wheel_wiring(smarttscope_path=shared, local_path=local)
+        assert wiring.filter_names == {
+            1: "L", 2: "R", 3: "G", 4: "B", 5: "S", 6: "H", 7: "O", 8: "NONE",
+        }
+        assert wiring.names_override is True
+        assert wiring.active_train == "main"  # the wiring itself is still shared
+
+    def test_no_local_filters_table_leaves_device_names_in_charge(self, tmp_path: Path) -> None:
+        shared = _write(tmp_path / "smarttscope.toml", _SHARED_TABLE)
+        wiring = load_filter_wheel_wiring(smarttscope_path=shared, local_path=tmp_path / "x.toml")
+        assert wiring.names_override is False
+
+    def test_an_explicitly_disabled_wheel_is_never_resurrected(self, tmp_path: Path) -> None:
+        shared = _write(tmp_path / "smarttscope.toml", "[filter_wheel]\nenabled = false\n")
+        local = _write(tmp_path / "local.toml", self._LOCAL)
+        wiring = load_filter_wheel_wiring(smarttscope_path=shared, local_path=local)
+        assert wiring.enabled is False

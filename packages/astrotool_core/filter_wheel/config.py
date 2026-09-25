@@ -30,7 +30,7 @@ this package.
 from __future__ import annotations
 
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -47,6 +47,7 @@ _FILTER_NAME_ABBREVIATIONS: dict[str, str] = {
     "ha": "H",
     "oiii": "O",
     "sii": "S",
+    "none": "NONE",  # an empty slot that is still selectable
 }
 
 #: This rig's own known-good state, used only when NEITHER config file
@@ -57,7 +58,10 @@ _FILTER_NAME_ABBREVIATIONS: dict[str, str] = {
 #: itself as "ToupTek EFW 2".
 _BUILT_IN_DEVICE_NAME = "ToupTek EFW 2"
 _BUILT_IN_ACTIVE_TRAIN = "main"
-_BUILT_IN_FILTER_NAMES: dict[int, str] = {1: "L", 2: "R", 3: "G", 4: "B", 5: "H", 6: "O", 7: "S"}
+#: This rig's physical wheel (user-confirmed 2026-09-25): L, R, G, B, SII, Ha, OIII, empty.
+_BUILT_IN_FILTER_NAMES: dict[int, str] = {
+    1: "L", 2: "R", 3: "G", 4: "B", 5: "S", 6: "H", 7: "O", 8: "NONE",
+}
 
 
 @dataclass(frozen=True)
@@ -73,6 +77,10 @@ class FilterWheelWiring:
     device_name: str | None
     host: str | None
     port: int | None
+    #: True when `filter_names` came from an explicit local `[filters]`
+    #: table: those then beat the names the INDI driver itself reports
+    #: (real report: the driver's defaults did not match the physical wheel).
+    names_override: bool = False
 
 
 def _load_toml(path: Path) -> dict[str, Any] | None:
@@ -127,7 +135,7 @@ def _read_indi_identity(data: dict[str, Any]) -> tuple[str | None, str | None, i
     )
 
 
-def load_filter_wheel_wiring(
+def _load_filter_wheel_wiring_base(
     *,
     smarttscope_path: Path | str = DEFAULT_SMARTTSCOPE_CONFIG_PATH,
     local_path: Path | str = DEFAULT_LOCAL_CONFIG_PATH,
@@ -197,3 +205,22 @@ def load_filter_wheel_wiring(
         host=local_host,
         port=local_port,
     )
+
+
+def load_filter_wheel_wiring(
+    *,
+    smarttscope_path: Path | str = DEFAULT_SMARTTSCOPE_CONFIG_PATH,
+    local_path: Path | str = DEFAULT_LOCAL_CONFIG_PATH,
+) -> FilterWheelWiring:
+    """`_load_filter_wheel_wiring_base` plus one rig-specific escape hatch:
+    a non-empty `[filters]` table in the LOCAL file replaces the shared
+    file's names and is marked `names_override`, so it also beats the names
+    the INDI driver reports. Never overrides an explicit "no wheel"."""
+    wiring = _load_filter_wheel_wiring_base(
+        smarttscope_path=smarttscope_path, local_path=local_path
+    )
+    local = _load_toml(Path(local_path))
+    local_names = _read_filter_names(local or {})
+    if not wiring.enabled or not local_names:
+        return wiring
+    return replace(wiring, filter_names=local_names, names_override=True)

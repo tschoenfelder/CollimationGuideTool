@@ -268,3 +268,16 @@ class TestPropertyRefresh:
 
         time.sleep(0.25)
         assert filter_wheel.status().current_slot == 2  # re-announced by the real server
+
+
+class TestNamesOverride:
+    def test_override_beats_device_reported_names(self) -> None:
+        adapter = IndiFilterWheelAdapter(
+            filter_names={1: "L", 8: "NONE"}, names_override=True
+        )
+        assert adapter._lookup_filter_name(1) == "L"  # noqa: SLF001
+        assert adapter.slot_names() == {1: "L", 8: "NONE"}
+
+    def test_without_override_configured_names_stay_a_fallback(self) -> None:
+        adapter = IndiFilterWheelAdapter(filter_names={1: "L"})
+        assert adapter._lookup_filter_name(1) == "L"  # noqa: SLF001 -- no device vector yet

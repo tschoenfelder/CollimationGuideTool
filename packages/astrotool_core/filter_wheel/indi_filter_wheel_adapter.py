@@ -66,6 +66,7 @@ class IndiFilterWheelAdapter(FilterWheelPort):
         *,
         connect_timeout_s: float = _CONNECT_TIMEOUT_S,
         filter_names: dict[int, str] | None = None,
+        names_override: bool = False,
     ) -> None:
         self._device_name = device_name
         self._connect_timeout_s = connect_timeout_s
@@ -77,6 +78,9 @@ class IndiFilterWheelAdapter(FilterWheelPort):
         #: the device itself reports no name for that slot -- see
         #: _lookup_filter_name/slot_names. Device-reported state always wins.
         self._configured_filter_names: dict[int, str] = dict(filter_names or {})
+        #: True -> the configured names beat the device-reported ones (the
+        #: driver's own defaults did not match this rig's physical wheel).
+        self._names_override = names_override
 
     def connect(self) -> None:
         self._client.connect()
@@ -176,6 +180,8 @@ class IndiFilterWheelAdapter(FilterWheelPort):
     def _lookup_filter_name(self, slot: int) -> str | None:
         """Device-reported name wins when present and non-empty; otherwise
         the config-supplied fallback for this slot, if any (issue #47)."""
+        if self._names_override and slot in self._configured_filter_names:
+            return self._configured_filter_names[slot]
         names_vector = self._client.get_vector(self._device_name, "FILTER_NAME")
         reported = names_vector.elements.get(f"FILTER_SLOT_NAME_{slot}") if names_vector else None
         if reported:
@@ -189,6 +195,8 @@ class IndiFilterWheelAdapter(FilterWheelPort):
         driver, see the module docstring's own hardware caveat), falling
         back to the configured name per slot. {} before the device has
         defined `FILTER_NAME` (not yet connected, or no wheel detected)."""
+        if self._names_override:
+            return dict(self._configured_filter_names)
         names_vector = self._client.get_vector(self._device_name, "FILTER_NAME")
         if names_vector is None:
             return dict(self._configured_filter_names)

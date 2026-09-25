@@ -47,6 +47,8 @@ class FilterWheelConfig:
     #: slot -> short filter code (e.g. {2: "R"}) -- issue #47; used as a
     #: fallback when the device itself reports no name for a slot.
     filter_names: dict[int, str] = field(default_factory=dict)
+    #: True -> `filter_names` beat the names the INDI driver reports.
+    names_override: bool = False
 
 
 @dataclass(frozen=True)
@@ -89,13 +91,18 @@ def load_filter_wheel_layout(
         host=wiring.host or _DEFAULT_HOST,
         port=wiring.port or _DEFAULT_PORT,
         filter_names=dict(wiring.filter_names),
+        names_override=wiring.names_override,
     )
     return FilterWheelLayout(wheels=(wheel,), trains=((wiring.active_train, _WHEEL_ID),))
 
 
 def default_factory(config: FilterWheelConfig) -> FilterWheelPort:
     return IndiFilterWheelAdapter(
-        config.host, config.port, config.device_name, filter_names=config.filter_names
+        config.host,
+        config.port,
+        config.device_name,
+        filter_names=config.filter_names,
+        names_override=config.names_override,
     )
 
 

@@ -268,6 +268,24 @@ oiii      = 6
 sii       = 7
 ```
 
+**Overriding the slot names for this rig.** A non-empty `[filters]` table in
+`~/.CollimationGuideTool/config.toml` replaces the shared SmartTScope names
+AND beats the names the INDI driver itself reports (the driver's defaults
+rarely match the physical wheel). `none = 8` names an empty slot that stays
+selectable. rasppi3's wheel is Lum, Red, Green, Blue, SII, Ha, OIII, empty:
+
+```toml
+[filters]
+luminance = 1
+red       = 2
+green     = 3
+blue      = 4
+sii       = 5
+ha        = 6
+oiii      = 7
+none      = 8
+```
+
 If neither file has a `[filter_wheel]` table at all, CollimationGuideTool
 falls back to this rig's own known-good state (`ToupTek EFW 2`, Main's
 optical train, the 7 filters above). The slot selector only appears on a

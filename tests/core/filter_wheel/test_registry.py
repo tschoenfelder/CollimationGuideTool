@@ -70,9 +70,10 @@ class TestBuiltInDefault:
             2: "R",
             3: "G",
             4: "B",
-            5: "H",
-            6: "O",
-            7: "S",
+            5: "S",
+            6: "H",
+            7: "O",
+            8: "NONE",
         }
 
 
