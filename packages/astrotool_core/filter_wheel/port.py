@@ -44,7 +44,11 @@ class FilterWheelPort(ABC):
         device actually reports it). Raises RuntimeError if a move is
         already in progress (never issue a second move while one is in
         flight, unless a future adapter can confirm its driver replaces the
-        target safely -- this base contract does not assume that). A no-op
+        target safely -- this base contract does not assume that). Raises
+        ValueError for `slot <= 0` -- never sent to the device as a
+        plausible-looking command (in practice the UI only ever offers
+        slots `slot_names()`/the device itself already reports, so this
+        guards direct/programmatic callers, not user selection). A no-op
         when not connected/available, matching this port's existing
         tolerance elsewhere."""
         ...

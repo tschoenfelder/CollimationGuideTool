@@ -152,7 +152,13 @@ class FilterWheelPanel(QWidget):
             self._timer.stop()
             self._filter_wheel.disconnect()
             self._connected = False
+            # Real gap (issue #47's own "disconnect during movement" test
+            # case): _slot_change_in_flight was cleared here but a stale
+            # _requested_slot survived a disconnect mid-move, so the next
+            # connect's first status text would still say "(requested N)"
+            # for a move that's meaningless now.
             self._set_slot_change_in_flight(False)
+            self._requested_slot = None
             self._connect_button.setText("Connect")
             self._status_label.setText("Filter: not connected")
         self._update_selector_enabled()

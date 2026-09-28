@@ -212,6 +212,8 @@ class IndiFilterWheelAdapter(FilterWheelPort):
         return {slot: name for slot, name in slots.items() if name}
 
     def set_slot(self, slot: int) -> None:
+        if slot <= 0:
+            raise ValueError(f"IndiFilterWheelAdapter: invalid slot {slot!r}")
         if not (self._connected and self._available):
             return
         if self.status().moving:

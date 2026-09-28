@@ -228,3 +228,21 @@ class TestSetSlotFailure:
         assert "already in progress" in panel._status_label.text()
         assert panel._slot_combo.isEnabled()  # recoverable, not stuck disabled
         assert panel._set_button.isEnabled()
+
+
+class TestDisconnectDuringMovement:
+    def test_disconnecting_mid_move_clears_in_flight_state_cleanly(self, qapp: object) -> None:
+        filter_wheel = FakeFilterWheel(slot=1, filter_names={1: "L", 2: "R"})
+        panel = _connected_selectable_panel(filter_wheel)
+        panel._poll_status()
+        panel._slot_combo.setCurrentIndex(1)
+        panel._on_set_clicked()
+        panel._poll_status()  # observes Busy
+        assert panel._slot_change_in_flight
+
+        panel._connect_button.setChecked(False)  # disconnect while stuck moving
+
+        assert not panel._slot_change_in_flight
+        assert panel._requested_slot is None
+        assert not panel._connected
+        panel.stop()  # must not raise even though already disconnected

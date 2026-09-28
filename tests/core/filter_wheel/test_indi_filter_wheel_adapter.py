@@ -281,3 +281,11 @@ class TestNamesOverride:
     def test_without_override_configured_names_stay_a_fallback(self) -> None:
         adapter = IndiFilterWheelAdapter(filter_names={1: "L"})
         assert adapter._lookup_filter_name(1) == "L"  # noqa: SLF001 -- no device vector yet
+
+
+class TestInvalidSlotRejection:
+    def test_zero_and_negative_slots_are_rejected(self) -> None:
+        adapter = IndiFilterWheelAdapter()
+        for bad in (0, -1, -7):
+            with pytest.raises(ValueError, match="invalid slot"):
+                adapter.set_slot(bad)

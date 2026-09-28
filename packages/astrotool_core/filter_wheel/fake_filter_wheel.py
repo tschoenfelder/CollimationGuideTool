@@ -62,6 +62,8 @@ class FakeFilterWheel(FilterWheelPort):
         into the "moving" state immediately -- a test calls `finish_move()`
         (or `status()` directly checks `moving`) to observe/complete it, the
         same two-step shape a real command-then-poll caller sees."""
+        if slot <= 0:
+            raise ValueError(f"FakeFilterWheel: invalid slot {slot!r}")
         if not self._available:
             return
         if self._moving:
