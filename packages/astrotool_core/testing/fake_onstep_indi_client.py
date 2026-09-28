@@ -227,16 +227,23 @@ class FakeOnStepIndiClient:
             )
 
     def unpark(self, *, timeout: float = 20.0) -> IndiUnparkResult:
-        """0.4.1 behavior: a plain UNPARK + TRACK_OFF switch flip, never a
-        slew, and no longer requires the mount to be parked going in (an
-        already-unparked mount just gets the TRACK_OFF, accepted immediately
-        if tracking is already off -- OnStepAdapter#17). Does NOT touch
-        `at_home`."""
+        """Real 0.4.1 release (verified against the published wheel, not
+        the pre-release dev build this fake originally mirrored): `unpark()`
+        still REQUIRES the mount to already be parked going in -- calling it
+        on an already-unparked mount is refused ("Fresh parked, stationary
+        and fault-free status is required"), not silently accepted. What
+        OnStepAdapter#17 actually fixed was the wire-level confirmation
+        (continuously-refreshed status, not a per-call accept-current
+        hack) -- irrelevant to this fake, which has no wire timing to model.
+        Does NOT touch `at_home`."""
         self._require_home_motion()
         if self.unpark_rejected:
             return IndiUnparkResult(False, "unpark", None, "fake rejected unpark", None)
-        if self.slewing:
-            return IndiUnparkResult(False, "preflight", None, "fake: slewing", None)
+        if not self.parked or self.slewing:
+            return IndiUnparkResult(
+                False, "preflight", None,
+                "Fresh parked, stationary and fault-free status is required", None,
+            )
         self.parked = False
         self.tracking = False
         return IndiUnparkResult(True, "unparked", None, None, None)

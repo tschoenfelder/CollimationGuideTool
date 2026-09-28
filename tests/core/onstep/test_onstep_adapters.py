@@ -205,15 +205,20 @@ class TestPark:
         with pytest.raises(RuntimeError, match="non-tracking"):
             park.park()
 
-    def test_unpark_of_an_already_unparked_mount_succeeds(self) -> None:
-        """OnStepAdapter#17 (0.4.1): tracking already off / not parked no
-        longer times out waiting for a fresh push."""
+    def test_unpark_of_an_already_unparked_mount_is_refused(self) -> None:
+        """Verified against the real published OnStepAdapter 0.4.1 wheel
+        (not the pre-release dev build): `unpark()` still requires the
+        mount to already be parked -- calling it on an already-unparked
+        mount is refused, not silently accepted. `MountParkPanel` never
+        makes this call itself (the Unpark button is only enabled while
+        `status().parked`), so this only guards a direct/programmatic
+        caller."""
         conn, made = _connection()
         park = OnStepMountParkAdapter(conn)
         park.connect()
         made[0].parked = False
-        park.unpark()
-        assert not park.status().parked and not park.status().tracking
+        with pytest.raises(RuntimeError, match="did not reach unparked"):
+            park.unpark()
 
     def test_strict_tracking_policy_still_needs_home_authority(self) -> None:
         conn, made = _connection()
