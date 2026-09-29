@@ -11,6 +11,7 @@ from __future__ import annotations
 import time
 
 import numpy as np
+import pytest
 from astrotool_core.acquisition.stable_frame_acquisition import (
     DeliveredFrame,
     FrameAcquisitionResult,
@@ -68,6 +69,26 @@ class TestConnectFailureIsShownNotCrashed:
         assert "Connect failed" in panel._status_label.text()
         assert not panel._connect_button.isChecked()
         assert not panel._connected
+
+    def test_the_reason_is_logged_and_recorded_for_diagnostics(
+        self, qapp: object, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Field report (diagnostic e1ddabca-...): after the crash above was
+        fixed, a *manual* diagnostic capture right after a connect failure
+        showed nothing at all -- no exception (correctly caught now), no
+        log line, and diagnostic_context() had no field for it either. Both
+        gaps closed: the reason must be logged and present in
+        diagnostic_context()."""
+        panel = FocuserPanel(_TimeoutOnConnectFocuser())
+
+        with caplog.at_level("WARNING"):
+            panel._connect_button.setChecked(True)
+
+        assert "CONNECTION did not update" in caplog.text
+        assert (
+            panel.diagnostic_context()["last_connect_error"]
+            == "INDI property LX200 OnStep.CONNECTION did not update"
+        )
 
 
 class TestManualStepSizes:

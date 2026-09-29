@@ -817,6 +817,10 @@ class MountTestMovePanel(QWidget):
         self._settings = settings if settings is not None else MountAlignmentSettings()
         self._runner = runner if runner is not None else MountTestMoveRunner()
         self._connected = False
+        #: See FocuserPanel's identical field for the reasoning -- a caught
+        #: connect() failure otherwise only ever lived in the status
+        #: label's transient text, invisible to a manual diagnostic capture.
+        self._last_connect_error: str | None = None
         self._pending: _PendingAction | None = None
         self._calibration_queue: list[_CalibrationStep] = []
         #: Issue #42: the exact availability message currently owned by the
@@ -1117,12 +1121,15 @@ class MountTestMovePanel(QWidget):
             try:
                 self._mount.connect()
             except Exception as exc:  # noqa: BLE001 -- any failure must be shown, never swallowed
+                self._last_connect_error = str(exc)
+                _log.warning("MountTestMovePanel: connect failed: %s", exc)
                 self._status_label.setText(f"Connect failed — {exc}")
                 self._connect_button.blockSignals(True)
                 self._connect_button.setChecked(False)
                 self._connect_button.blockSignals(False)
                 self._update_buttons_enabled()
                 return
+            self._last_connect_error = None
             self._connected = True
             self._connect_button.setText("Disconnect")
             self._status_label.setText("Connected.")
@@ -3122,6 +3129,7 @@ class MountTestMovePanel(QWidget):
             "pulse_connected": self._mount.status().connected,
             "park_adapter": type(self._mount_park).__name__,
             "pulse_adapter": type(self._mount).__name__,
+            "last_connect_error": self._last_connect_error,
         }
         if self._sizing_log:
             context["calibration_sizing"] = list(self._sizing_log)

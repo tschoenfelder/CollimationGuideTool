@@ -38,6 +38,7 @@ done.
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Callable
 from typing import Any
@@ -63,6 +64,8 @@ from collimation_tool.application.autofocus_controller import (
 )
 from collimation_tool.application.autofocus_search import AutofocusStatus
 from collimation_tool.ui.autofocus_runner import AutofocusRunner
+
+_log = logging.getLogger(__name__)
 
 _POLL_INTERVAL_MS = 250
 _STEP_SIZES = (1, 10, 100, 200)
@@ -130,6 +133,12 @@ class FocuserPanel(QWidget):
         #: the star saturates at focus (restored after every run).
         self._exposure_control = exposure_control
         self._connected = False
+        #: Field report (2026-09-29, diagnostic e1ddabca-...): a caught
+        #: connect() failure only ever lived in the status label's transient
+        #: text -- a manual diagnostic capture afterward showed nothing at
+        #: all (no exception, no log line) about why. Recorded here so both
+        #: the log (below) and diagnostic_context() can surface it.
+        self._last_connect_error: str | None = None
         # Issue #35: this panel is wired to exactly one optical train
         # today (see module docstring) -- carried through into Auto
         # Focus's own status text and diagnostic evidence so that fact
@@ -265,6 +274,8 @@ class FocuserPanel(QWidget):
             try:
                 self._focuser.connect()
             except Exception as exc:  # noqa: BLE001 -- any failure must be shown, never swallowed
+                self._last_connect_error = str(exc)
+                _log.warning("FocuserPanel: connect failed: %s", exc)
                 self._status_label.setText(f"Connect failed — {exc}")
                 # blockSignals: resetting the button's checked state here
                 # must not re-enter this handler with checked=False, which
@@ -275,6 +286,7 @@ class FocuserPanel(QWidget):
                 self._connect_button.blockSignals(False)
                 self._update_move_buttons_enabled()
                 return
+            self._last_connect_error = None
             self._connected = True
             self._set_move_in_flight(False)
             self._connect_button.setText("Disconnect")
@@ -455,6 +467,7 @@ class FocuserPanel(QWidget):
             "position": status.position,
             "max_position": status.max_position,
             "moving": status.moving,
+            "last_connect_error": self._last_connect_error,
         }
 
     def diagnostic_autofocus_evidence(self) -> dict[str, Any]:

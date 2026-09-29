@@ -14,6 +14,7 @@ second click can race the first). Deliberately minimal, matching
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections.abc import Callable
@@ -23,6 +24,8 @@ from astrotool_core.mount.operating_mode import OperatingMode, TrackingEnforcer
 from astrotool_core.mount.park_port import MountParkPort
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+
+_log = logging.getLogger(__name__)
 
 _POLL_INTERVAL_MS = 250
 #: See FocuserPanel's identical constant for the reasoning — a safety net
@@ -45,6 +48,10 @@ class MountParkPanel(QWidget):
         #: and after unpark, and surfaced in the status line.
         self._tracking_enforcer = tracking_enforcer
         self._connected = False
+        #: See FocuserPanel's identical field for the reasoning -- a caught
+        #: connect() failure otherwise only ever lived in the status
+        #: label's transient text, invisible to a manual diagnostic capture.
+        self._last_connect_error: str | None = None
         #: See module docstring's "one action at a time".
         self._action_in_flight = False
         self._pending_action: str | None = None  # "park" | "unpark" | None
@@ -101,12 +108,15 @@ class MountParkPanel(QWidget):
             try:
                 self._mount.connect()
             except Exception as exc:  # noqa: BLE001 -- any failure must be shown, never swallowed
+                self._last_connect_error = str(exc)
+                _log.warning("MountParkPanel: connect failed: %s", exc)
                 self._status_label.setText(f"Connect failed — {exc}")
                 self._connect_button.blockSignals(True)
                 self._connect_button.setChecked(False)
                 self._connect_button.blockSignals(False)
                 self._update_buttons_enabled()
                 return
+            self._last_connect_error = None
             self._connected = True
             self._action_in_flight = False
             self._pending_action = None
@@ -257,6 +267,7 @@ class MountParkPanel(QWidget):
             "available": status.available,
             "parked": status.parked,
             "tracking": status.tracking,
+            "last_connect_error": self._last_connect_error,
         }
 
     def stop(self) -> None:

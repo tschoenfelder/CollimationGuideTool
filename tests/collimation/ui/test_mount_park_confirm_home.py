@@ -7,6 +7,7 @@ from __future__ import annotations
 import time
 from collections.abc import Callable
 
+import pytest
 from astrotool_core.onstep import OnStepMountParkAdapter
 from astrotool_core.testing.fake_mount_park import FakeMountPark
 from astrotool_core.testing.fake_onstep_indi_client import make_fake_onstep_indi_connection
@@ -32,6 +33,26 @@ def test_a_timeout_on_connect_is_shown_not_raised(qapp: object) -> None:
 
     assert "Connect failed" in panel._status_label.text()
     assert not panel._connect_button.isChecked()
+    panel.stop()
+
+
+def test_the_reason_is_logged_and_recorded_for_diagnostics(
+    qapp: object, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Field report (diagnostic e1ddabca-...): after the crash above was
+    fixed, a *manual* diagnostic capture right after a connect failure
+    showed nothing at all -- no exception (correctly caught now), no log
+    line, and diagnostic_context() had no field for it either."""
+    panel = MountParkPanel(_TimeoutOnConnectMountPark())
+
+    with caplog.at_level("WARNING"):
+        panel._connect_button.setChecked(True)
+
+    assert "CONNECTION did not update" in caplog.text
+    assert (
+        panel.diagnostic_context()["last_connect_error"]
+        == "INDI property LX200 OnStep.CONNECTION did not update"
+    )
     panel.stop()
 
 

@@ -9,6 +9,7 @@ Run Calibration was enabled -- the message was only ever SET, never cleared."""
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from astrotool_core.camera.replay_camera import ReplayCamera
 from astrotool_core.mount.no_mount import NoMountAdapter
 from astrotool_core.mount.port import MountPort
@@ -50,6 +51,26 @@ def test_a_timeout_on_connect_is_shown_not_raised(qapp: object) -> None:
 
     assert "Connect failed" in panel._status_label.text()
     assert not panel._connect_button.isChecked()
+    panel.stop()
+
+
+def test_the_reason_is_logged_and_recorded_for_diagnostics(
+    qapp: object, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Field report (diagnostic e1ddabca-...): after the crash above was
+    fixed, a *manual* diagnostic capture right after a connect failure
+    showed nothing at all -- no exception (correctly caught now), no log
+    line, and diagnostic_context() had no field for it either."""
+    panel, _ = _panel(FakeMountPark(start_parked=False), pulse=_TimeoutOnConnectMount())
+
+    with caplog.at_level("WARNING"):
+        panel._connect_button.setChecked(True)
+
+    assert "CONNECTION did not update" in caplog.text
+    assert (
+        panel.diagnostic_context()["mount_interface"]["last_connect_error"]
+        == "INDI property LX200 OnStep.CONNECTION did not update"
+    )
     panel.stop()
 
 
