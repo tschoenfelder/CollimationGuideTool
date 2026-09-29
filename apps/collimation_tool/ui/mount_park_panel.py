@@ -100,7 +100,7 @@ class MountParkPanel(QWidget):
         if checked:
             try:
                 self._mount.connect()
-            except ConnectionError as exc:
+            except Exception as exc:  # noqa: BLE001 -- any failure must be shown, never swallowed
                 self._status_label.setText(f"Connect failed — {exc}")
                 self._connect_button.blockSignals(True)
                 self._connect_button.setChecked(False)

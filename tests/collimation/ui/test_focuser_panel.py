@@ -47,6 +47,29 @@ def _select_step(panel: FocuserPanel, step: int) -> None:
     panel._step_group.button(step).setChecked(True)
 
 
+class _TimeoutOnConnectFocuser(FakeFocuser):
+    """Real field report (diagnostic 11e564ad-...): connect() on an
+    OnStep-backed focuser can raise TimeoutError (indiserver/the OnStep
+    driver never confirmed CONNECTION within the timeout) -- not just the
+    ConnectionError FakeFocuser's own fail_connect simulates. FocuserPanel
+    only caught ConnectionError, so this crashed as an unhandled exception
+    instead of showing a status message."""
+
+    def connect(self) -> None:
+        raise TimeoutError("INDI property LX200 OnStep.CONNECTION did not update")
+
+
+class TestConnectFailureIsShownNotCrashed:
+    def test_a_timeout_on_connect_is_shown_not_raised(self, qapp: object) -> None:
+        panel = FocuserPanel(_TimeoutOnConnectFocuser())
+
+        panel._connect_button.setChecked(True)  # must not raise
+
+        assert "Connect failed" in panel._status_label.text()
+        assert not panel._connect_button.isChecked()
+        assert not panel._connected
+
+
 class TestManualStepSizes:
     """Issue #38: 1/10/100/200 replaces the old 1/5/10/50 set."""
 

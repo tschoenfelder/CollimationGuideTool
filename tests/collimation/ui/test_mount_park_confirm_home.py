@@ -13,6 +13,28 @@ from astrotool_core.testing.fake_onstep_indi_client import make_fake_onstep_indi
 from collimation_tool.ui.mount_park_panel import MountParkPanel
 
 
+class _TimeoutOnConnectMountPark(FakeMountPark):
+    """Real field report (diagnostic 11e564ad-...): connect() on an
+    OnStep-backed mount can raise TimeoutError (indiserver/the OnStep
+    driver never confirmed CONNECTION within the timeout) -- not just the
+    ConnectionError FakeMountPark's own fail_connect simulates.
+    MountParkPanel only caught ConnectionError, so this crashed as an
+    unhandled exception instead of showing a status message."""
+
+    def connect(self) -> None:
+        raise TimeoutError("INDI property LX200 OnStep.CONNECTION did not update")
+
+
+def test_a_timeout_on_connect_is_shown_not_raised(qapp: object) -> None:
+    panel = MountParkPanel(_TimeoutOnConnectMountPark())
+
+    panel._connect_button.setChecked(True)  # must not raise
+
+    assert "Connect failed" in panel._status_label.text()
+    assert not panel._connect_button.isChecked()
+    panel.stop()
+
+
 def test_a_port_without_the_concept_shows_no_confirm_button(qapp: object) -> None:
     panel = MountParkPanel(FakeMountPark())
     assert panel._confirm_home_button.isHidden()

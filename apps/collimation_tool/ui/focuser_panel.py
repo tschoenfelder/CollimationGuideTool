@@ -264,7 +264,7 @@ class FocuserPanel(QWidget):
         if checked:
             try:
                 self._focuser.connect()
-            except ConnectionError as exc:
+            except Exception as exc:  # noqa: BLE001 -- any failure must be shown, never swallowed
                 self._status_label.setText(f"Connect failed — {exc}")
                 # blockSignals: resetting the button's checked state here
                 # must not re-enter this handler with checked=False, which

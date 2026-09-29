@@ -30,6 +30,29 @@ def _panel(
     return panel, park
 
 
+class _TimeoutOnConnectMount(FakeMountAdapter):
+    """Real field report (diagnostic 11e564ad-...): connect() on an
+    OnStep-backed mount pulse adapter can raise TimeoutError (indiserver/
+    the OnStep driver never confirmed CONNECTION within the timeout) --
+    not just the ConnectionError FakeMountAdapter's own fail_connect
+    simulates. MountTestMovePanel only caught ConnectionError, so this
+    crashed as an unhandled exception instead of showing a status
+    message."""
+
+    def connect(self) -> None:
+        raise TimeoutError("INDI property LX200 OnStep.CONNECTION did not update")
+
+
+def test_a_timeout_on_connect_is_shown_not_raised(qapp: object) -> None:
+    panel, _ = _panel(FakeMountPark(start_parked=False), pulse=_TimeoutOnConnectMount())
+
+    panel._connect_button.setChecked(True)  # must not raise
+
+    assert "Connect failed" in panel._status_label.text()
+    assert not panel._connect_button.isChecked()
+    panel.stop()
+
+
 class TestOneSourceOfTruth:
     def test_not_connected_disables_everything_with_a_reason_code(self, qapp: object) -> None:
         panel, _ = _panel(FakeMountPark(start_parked=False))
