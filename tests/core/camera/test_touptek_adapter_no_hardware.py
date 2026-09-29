@@ -8,6 +8,7 @@ instead exercised by the skipif-guarded real-hardware contract test.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from unittest.mock import MagicMock
 
 import pytest
 from astrotool_core.camera.capabilities import ConversionGain
@@ -162,6 +163,126 @@ def test_target_temp_range_is_none_when_not_connected() -> None:
     caps = adapter.get_descriptor().capabilities
     assert caps.min_target_temp_c is None
     assert caps.max_target_temp_c is None
+
+
+class TestCapabilityGatedSdkCallsAreSkippedWhenUnsupported:
+    """Real-field report (2026-09-29): G3M678M has no TEC at all, but
+    _query_target_temp_range() (reached via get_descriptor(), called on
+    every delivered frame by CameraPanel._apply_auto_exposure() while Auto
+    exposure/gain is on) called get_TecTargetRange() unconditionally,
+    spamming a 'SDK call failed' warning continuously for an entire
+    session. Every capability-gated SDK option call must be skipped
+    entirely -- not just caught-and-logged -- when the connected camera's
+    own _model_flag says it isn't supported, and must still call through
+    normally when the capability IS present (no regression)."""
+
+    def test_query_target_temp_range_skips_the_sdk_without_tec(self) -> None:
+        adapter = TouptekCameraAdapter()
+        adapter._cam = MagicMock()
+        adapter._model_flag = 0  # no _FLAG_TEC/_FLAG_TEC_ONOFF
+        assert adapter._query_target_temp_range() is None
+        adapter._cam.get_TecTargetRange.assert_not_called()
+
+    def test_query_target_temp_range_calls_through_with_tec(self) -> None:
+        adapter = TouptekCameraAdapter()
+        adapter._cam = MagicMock()
+        adapter._cam.get_TecTargetRange.return_value = (-500, 400)
+        adapter._model_flag = 0x00000080  # _FLAG_TEC
+        assert adapter._query_target_temp_range() == (-50.0, 40.0)
+        adapter._cam.get_TecTargetRange.assert_called_once()
+
+    def test_cooling_getters_and_setters_skip_the_sdk_without_tec(self) -> None:
+        adapter = TouptekCameraAdapter()
+        adapter._cam = MagicMock()
+        adapter._model_flag = 0
+
+        assert adapter.get_cooling_enabled() is False  # local default
+        adapter._cam.get_Option.assert_not_called()
+
+        adapter.set_cooling_enabled(True)
+        adapter._cam.put_Option.assert_not_called()
+        assert adapter._cooling_enabled is True  # local state still tracked
+
+        assert adapter.get_target_temperature() == -10.0  # local default
+        adapter.set_target_temperature(-20.0)
+        assert adapter._target_temperature_c == -20.0  # local state still tracked
+        adapter._cam.put_Option.assert_not_called()
+
+    def test_cooling_getters_and_setters_call_through_with_tec(self) -> None:
+        adapter = TouptekCameraAdapter()
+        adapter._cam = MagicMock()
+        adapter._cam.get_Option.return_value = 1
+        adapter._model_flag = 0x00000080  # _FLAG_TEC
+
+        assert adapter.get_cooling_enabled() is True
+        adapter._cam.get_Option.assert_called_once()
+
+        adapter.set_cooling_enabled(False)
+        adapter._cam.put_Option.assert_called_once()
+
+    def test_conversion_gain_getter_and_setter_skip_the_sdk_without_hcg(self) -> None:
+        adapter = TouptekCameraAdapter()
+        adapter._cam = MagicMock()
+        adapter._model_flag = 0
+
+        assert adapter.get_conversion_gain() == ConversionGain.LCG
+        adapter._cam.get_Option.assert_not_called()
+
+        adapter.set_conversion_gain(ConversionGain.HCG)
+        adapter._cam.put_Option.assert_not_called()
+
+    def test_conversion_gain_getter_and_setter_call_through_with_hcg(self) -> None:
+        adapter = TouptekCameraAdapter()
+        adapter._cam = MagicMock()
+        adapter._cam.get_Option.return_value = int(ConversionGain.HCG)
+        adapter._model_flag = 0x04000000  # _FLAG_CG
+
+        assert adapter.get_conversion_gain() == ConversionGain.HCG
+        adapter._cam.get_Option.assert_called_once()
+
+        adapter.set_conversion_gain(ConversionGain.LCG)
+        adapter._cam.put_Option.assert_called_once()
+
+    def test_black_level_getter_and_setter_skip_the_sdk_without_the_flag(self) -> None:
+        adapter = TouptekCameraAdapter()
+        adapter._cam = MagicMock()
+        adapter._model_flag = 0
+
+        assert adapter.get_black_level() == 0
+        adapter._cam.get_Option.assert_not_called()
+
+        adapter.set_black_level(10)
+        adapter._cam.put_Option.assert_not_called()
+
+    def test_black_level_getter_and_setter_call_through_with_the_flag(self) -> None:
+        adapter = TouptekCameraAdapter()
+        adapter._cam = MagicMock()
+        adapter._cam.get_Option.return_value = 5
+        adapter._model_flag = 0x00400000  # _FLAG_BLACKLEVEL
+
+        assert adapter.get_black_level() == 5
+        adapter._cam.get_Option.assert_called_once()
+
+        adapter.set_black_level(20)
+        adapter._cam.put_Option.assert_called_once()
+
+    def test_disconnect_skips_the_tec_off_call_without_tec(self) -> None:
+        adapter = TouptekCameraAdapter()
+        cam = MagicMock()
+        adapter._cam = cam
+        adapter._model_flag = 0
+        adapter.disconnect()  # sets adapter._cam = None -- assert on the captured mock
+        cam.put_Option.assert_not_called()
+
+    def test_basic_configure_skips_the_tec_off_call_without_tec(self) -> None:
+        adapter = TouptekCameraAdapter()
+        adapter._cam = MagicMock()
+        adapter._model_flag = 0  # no MONO bit either -> is_color_sensor() True -> no RGB call
+        adapter._basic_configure()
+        # AUTOEXPO_TRIGGER, RAW, BITDEPTH still fire; the TEC-off call is the
+        # one skipped (put_AutoExpoEnable is a separate, non-put_Option call).
+        assert adapter._cam.put_Option.call_count == 3
+        assert adapter._cooling_enabled is False  # local state still forced off
 
 
 class TestSelectDevice:

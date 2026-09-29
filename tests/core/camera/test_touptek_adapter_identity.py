@@ -240,6 +240,11 @@ class TestForceCoolingOffOnConnect:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _fresh_state(monkeypatch)
+        # TEC-off is only ever issued for a camera whose model actually has
+        # one (_supports_cooling) -- see TestNoTecOnNonCoolingCamera below
+        # for the (real, G3M678M-shaped) no-TEC case this device normally
+        # represents in this file.
+        monkeypatch.setattr(_DEVICE_A.model, "flag", adapter_module._FLAG_TEC)
         tc = _two_device_module()
         cam = _FakeCam("SN-A")
         cam._options[adapter_module._OPTION_TEC] = 1  # simulate left on by a crashed session
@@ -255,6 +260,7 @@ class TestForceCoolingOffOnConnect:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _fresh_state(monkeypatch)
+        monkeypatch.setattr(_DEVICE_A.model, "flag", adapter_module._FLAG_TEC)
         tc = _two_device_module()
         cam = _FakeCam("SN-A")
         tc.Toupcam.Open = lambda device_id: cam  # type: ignore[method-assign]
@@ -264,6 +270,30 @@ class TestForceCoolingOffOnConnect:
 
         assert (adapter_module._OPTION_TEC, 0) in cam.put_option_calls
         assert adapter.get_cooling_enabled() is False
+
+
+class TestNoTecOnNonCoolingCamera:
+    """Real field report (2026-09-29): G3M678M has no TEC at all, but every
+    TEC-related SDK option call (including this defensive force-off) was
+    issued unconditionally, spamming a 'SDK call failed' warning on every
+    call site that hit it. _DEVICE_A's default model.flag=0 (no
+    _FLAG_TEC/_FLAG_TEC_ONOFF) already matches the real G3M678M's actual
+    capability profile -- this is the case the two tests above deliberately
+    now opt OUT of by setting a TEC flag."""
+
+    def test_tec_off_is_never_issued_for_a_camera_with_no_tec(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _fresh_state(monkeypatch)
+        tc = _two_device_module()  # _DEVICE_A's model.flag is 0 -- no TEC
+        cam = _FakeCam("SN-A")
+        tc.Toupcam.Open = lambda device_id: cam  # type: ignore[method-assign]
+        adapter = TouptekCameraAdapter(camera_id=_DEVICE_A.id)
+
+        adapter._open_device(tc)
+
+        assert (adapter_module._OPTION_TEC, 0) not in cam.put_option_calls
+        assert adapter.get_cooling_enabled() is False  # local state, no doomed SDK call needed
 
 
 class _NoTemperatureSensorCam(_FakeCam):

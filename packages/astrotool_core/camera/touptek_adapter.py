@@ -399,8 +399,10 @@ class TouptekCameraAdapter(CameraPort):
                 try:
                     # Never leave the cooler running unattended once this adapter stops
                     # tracking the camera -- same "deactivate before disconnect" safety
-                    # pattern as the mount's stop_tracking()-before-disconnect.
-                    self._put_option("TOUPCAM_OPTION_TEC", _OPTION_TEC, 0)
+                    # pattern as the mount's stop_tracking()-before-disconnect. Skipped
+                    # entirely on hardware with no TEC at all (_supports_cooling False).
+                    if self._supports_cooling:
+                        self._put_option("TOUPCAM_OPTION_TEC", _OPTION_TEC, 0)
                     self._cam.Stop()
                 finally:
                     self._cam.Close()
@@ -487,20 +489,44 @@ class TouptekCameraAdapter(CameraPort):
         if self._cam is not None:  # pragma: no cover
             self._try(lambda: self._cam.put_ExpoAGain(self._gain))
 
+    # Real-field report (2026-09-29): every capability-gated SDK option
+    # below used to be called unconditionally whenever _cam is set, even on
+    # a camera model whose _model_flag already says it doesn't support that
+    # capability -- on G3M678M (no TEC), that meant get_descriptor() (called
+    # every delivered frame by CameraPanel._apply_auto_exposure() while Auto
+    # exposure/gain is on) spammed a "SDK call failed" warning continuously
+    # for an entire session. The capability is knowable up front from
+    # _model_flag (same bits get_descriptor()'s own CameraCapabilities()
+    # uses), so these properties let every option call be skipped entirely
+    # -- not just caught-and-logged-once like get_temperature()'s own
+    # earlier, narrower fix -- on hardware that was never going to support
+    # it in the first place.
+    @property
+    def _supports_cooling(self) -> bool:
+        return bool(self._model_flag & (_FLAG_TEC | _FLAG_TEC_ONOFF))
+
+    @property
+    def _supports_hcg(self) -> bool:
+        return bool(self._model_flag & (_FLAG_CG | _FLAG_CGHDR))
+
+    @property
+    def _supports_black_level(self) -> bool:
+        return bool(self._model_flag & _FLAG_BLACKLEVEL)
+
     def get_black_level(self) -> int:
-        if self._cam is not None:  # pragma: no cover
+        if self._cam is not None and self._supports_black_level:  # pragma: no cover
             value = self._get_option("TOUPCAM_OPTION_BLACKLEVEL", _OPTION_BLACKLEVEL)
             if value is not None:
                 return int(value)
         return 0
 
     def set_black_level(self, level: int) -> None:
-        if self._cam is not None:  # pragma: no cover
+        if self._cam is not None and self._supports_black_level:  # pragma: no cover
             self._put_option("TOUPCAM_OPTION_BLACKLEVEL", _OPTION_BLACKLEVEL, max(0, int(level)))
             self._pixel_shift = -1  # offset changes 16-bit alignment; re-detect on next frame
 
     def get_conversion_gain(self) -> ConversionGain:
-        if self._cam is not None:  # pragma: no cover
+        if self._cam is not None and self._supports_hcg:  # pragma: no cover
             value = self._get_option("TOUPCAM_OPTION_CG", _OPTION_CG)
             if value is not None:
                 try:
@@ -510,7 +536,7 @@ class TouptekCameraAdapter(CameraPort):
         return ConversionGain.LCG
 
     def set_conversion_gain(self, mode: ConversionGain) -> None:
-        if self._cam is not None:  # pragma: no cover
+        if self._cam is not None and self._supports_hcg:  # pragma: no cover
             self._put_option("TOUPCAM_OPTION_CG", _OPTION_CG, int(mode))
 
     def get_temperature(self) -> float | None:
@@ -536,7 +562,7 @@ class TouptekCameraAdapter(CameraPort):
         return round(float(value) / 10.0, 1)  # pragma: no cover
 
     def get_cooling_enabled(self) -> bool:
-        if self._cam is not None:  # pragma: no cover
+        if self._cam is not None and self._supports_cooling:  # pragma: no cover
             value = self._get_option("TOUPCAM_OPTION_TEC", _OPTION_TEC)
             if value is not None:
                 return bool(value)
@@ -544,11 +570,11 @@ class TouptekCameraAdapter(CameraPort):
 
     def set_cooling_enabled(self, enabled: bool) -> None:
         self._cooling_enabled = bool(enabled)
-        if self._cam is not None:  # pragma: no cover
+        if self._cam is not None and self._supports_cooling:  # pragma: no cover
             self._put_option("TOUPCAM_OPTION_TEC", _OPTION_TEC, 1 if enabled else 0)
 
     def get_target_temperature(self) -> float | None:
-        if self._cam is not None:  # pragma: no cover
+        if self._cam is not None and self._supports_cooling:  # pragma: no cover
             value = self._get_option("TOUPCAM_OPTION_TECTARGET", _OPTION_TECTARGET)
             if value is not None:
                 return round(int(value) / 10.0, 1)
@@ -556,13 +582,13 @@ class TouptekCameraAdapter(CameraPort):
 
     def set_target_temperature(self, celsius: float) -> None:
         self._target_temperature_c = float(celsius)
-        if self._cam is not None:  # pragma: no cover
+        if self._cam is not None and self._supports_cooling:  # pragma: no cover
             self._put_option(
                 "TOUPCAM_OPTION_TECTARGET", _OPTION_TECTARGET, int(round(celsius * 10))
             )
 
     def _query_target_temp_range(self) -> tuple[float, float] | None:  # pragma: no cover
-        if self._cam is None:
+        if self._cam is None or not self._supports_cooling:
             return None
         rng = self._try(lambda: self._cam.get_TecTargetRange())
         if not rng:
@@ -589,11 +615,11 @@ class TouptekCameraAdapter(CameraPort):
             max_gain=max_gain,
             min_exposure_ms=min_exp_ms,
             max_exposure_ms=max_exp_ms,
-            supports_cooling=bool(self._model_flag & (_FLAG_TEC | _FLAG_TEC_ONOFF)),
-            supports_hcg=bool(self._model_flag & (_FLAG_CG | _FLAG_CGHDR)),
+            supports_cooling=self._supports_cooling,
+            supports_hcg=self._supports_hcg,
             supports_lcg=True,
             supports_hdr=bool(self._model_flag & _FLAG_CGHDR),
-            supports_black_level=bool(self._model_flag & _FLAG_BLACKLEVEL),
+            supports_black_level=self._supports_black_level,
             bit_depth=(
                 self._effective_bit_depth(max(0, self._pixel_shift)) if self._bit_depth > 8 else 8
             ),
@@ -697,7 +723,10 @@ class TouptekCameraAdapter(CameraPort):
         self._put_option("TOUPCAM_OPTION_AUTOEXPO_TRIGGER", _OPTION_AUTOEXPO_TRIGGER, 0)
         # Never trust a pre-existing TEC state (e.g. left on by a crashed prior
         # session) -- every connect starts with cooling actively forced off.
-        self._put_option("TOUPCAM_OPTION_TEC", _OPTION_TEC, 0)
+        # Skipped entirely on hardware with no TEC at all (_supports_cooling
+        # False) -- same fix as disconnect()'s TEC-off, above.
+        if self._supports_cooling:
+            self._put_option("TOUPCAM_OPTION_TEC", _OPTION_TEC, 0)
         self._cooling_enabled = False
         self._put_option("TOUPCAM_OPTION_RAW", _OPTION_RAW, 1)
         self._put_option(
