@@ -258,6 +258,7 @@ from astrotool_core.acquisition import (
     FrameAcquisitionStatus,
     MotionAwareFrameResult,
     MotionAwareStatus,
+    StabilityStatus,
     StableFrameWaiter,
     acquire_verified_frames,
 )
@@ -330,6 +331,17 @@ _STATUS_MESSAGES: dict[FrameAcquisitionStatus, str] = {
     FrameAcquisitionStatus.SETTLE_NOT_REACHED: "caught up, but no frame after the settle wait",
     FrameAcquisitionStatus.CANCELLED: "cancelled",
 }
+#: Field bundle 1b157b8b: `EXPOSURE_OVERLAPPED_MOTION`'s own message above
+#: says "...overlapped the move", but this same status is also reached by
+#: a nudge/calibration sequence's very first "before" capture, which runs
+#: with no prior pulse at all (`self._last_movement_context is None`) --
+#: there is no move to overlap. Used instead of the message above
+#: whenever `_capture_failure_detail()` knows no movement was commanded
+#: yet for this capture.
+_EXPOSURE_OVERLAPPED_NO_MOVE_MESSAGE = (
+    "no frame's exposure could be confirmed to start after the request -- "
+    "try a shorter camera exposure"
+)
 
 #: Issue #30: message text for a capture that got frames (unlike anything
 #: in `_STATUS_MESSAGES` above) but couldn't verify them stable --
@@ -347,6 +359,19 @@ _MOTION_STATUS_MESSAGES: dict[MotionAwareStatus, str] = {
     MotionAwareStatus.SETTLE_TIMEOUT: "timed out before a full stability check could even run",
     MotionAwareStatus.CANCELLED: "cancelled",
 }
+#: Field bundle 1b157b8b: `IMAGE_NOT_STABLE`'s own generic wording above
+#: assumes real measured displacement (`StabilityStatus.UNSTABLE`), but the
+#: same outer status is also reached when a frame pair had NO correlatable
+#: content at all (`StabilityStatus.INDETERMINATE` -- `max_displacement_px`
+#: stays `None`, nothing was ever actually measured, most likely an
+#: over-saturated/blurred/low-contrast frame, not motion). Used instead of
+#: `_MOTION_STATUS_MESSAGES[IMAGE_NOT_STABLE]` whenever
+#: `result.stability.status is StabilityStatus.INDETERMINATE`.
+_STABILITY_INDETERMINATE_MESSAGE = (
+    "frames could not be compared for stability (correlation failed -- possibly "
+    "over-saturated, low-contrast, or blurred), not necessarily real motion -- "
+    "try lowering exposure/gain"
+)
 
 
 class MeasurementFailureClass(Enum):
@@ -917,6 +942,13 @@ class MountTestMovePanel(QWidget):
         #: instant `verify_stability=False` one -- see
         #: `_capture_invalid_result()`.
         self._last_capture_failures: dict[str, MotionAwareFrameResult] = {}
+        #: Field bundle 1b157b8b: whether the capture that produced
+        #: `_last_capture_failures` had a real prior movement to reference
+        #: (`request.movement_context is not None`) -- lets
+        #: `_capture_failure_detail()` avoid saying "...overlapped the
+        #: move" for a "before" capture that never had one commanded yet.
+        #: Same short lifecycle as `_last_capture_failures`.
+        self._last_capture_had_movement_context = False
         #: Set by `_verify_tracking_mode()` (via `_capture_both`) whenever
         #: the mount's own tracking state didn't match (and couldn't be
         #: repaired into) what the current target mode requires -- see
@@ -1410,6 +1442,7 @@ class MountTestMovePanel(QWidget):
         mode = request.mode
         label = request.label
         self._last_capture_failures = {}
+        self._last_capture_had_movement_context = request.movement_context is not None
         self._last_diagnostic_stability = {}
         self._last_tracking_error = result.tracking_error
         if result.tracking_error is not None:
@@ -1624,14 +1657,37 @@ class MountTestMovePanel(QWidget):
         stability layer's own distinct wording
         (`_MOTION_STATUS_MESSAGES`), keyed off `MotionAwareStatus` rather
         than the underlying `FrameAcquisitionStatus` for anything past
-        `CAPTURE_INVALID`. Empty string if nothing informative is known."""
+        `CAPTURE_INVALID`. Empty string if nothing informative is known.
+
+        Field bundle 1b157b8b: two of these messages used to be wrong for
+        real, reachable shapes -- `EXPOSURE_OVERLAPPED_MOTION` always said
+        "...overlapped the move" even for a "before" capture with no prior
+        move at all (`_last_capture_had_movement_context`), and
+        `IMAGE_NOT_STABLE` always blamed "wind/vibration" even when nothing
+        was ever actually measured (`StabilityStatus.INDETERMINATE` --
+        correlation itself failed, most likely over-saturation). Both are
+        now resolved from the richer evidence already computed and stored
+        alongside `_last_capture_failures`/`_last_diagnostic_stability`
+        rather than the single generic string."""
         if not self._last_capture_failures:
             return ""
         parts = []
         for key, result in self._last_capture_failures.items():
             if result.status is MotionAwareStatus.CAPTURE_INVALID:
                 capture_status = FrameAcquisitionStatus(result.diagnostics["capture_status"])
-                message = _STATUS_MESSAGES[capture_status]
+                if (
+                    capture_status is FrameAcquisitionStatus.EXPOSURE_OVERLAPPED_MOTION
+                    and not self._last_capture_had_movement_context
+                ):
+                    message = _EXPOSURE_OVERLAPPED_NO_MOVE_MESSAGE
+                else:
+                    message = _STATUS_MESSAGES[capture_status]
+            elif (
+                result.status is MotionAwareStatus.IMAGE_NOT_STABLE
+                and result.stability is not None
+                and result.stability.status is StabilityStatus.INDETERMINATE
+            ):
+                message = _STABILITY_INDETERMINATE_MESSAGE
             else:
                 message = _MOTION_STATUS_MESSAGES[result.status]
             parts.append(f"{_CAMERA_LABELS[key]}: {message}")

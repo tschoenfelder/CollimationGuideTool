@@ -8,6 +8,7 @@ import numpy as np
 import pytest
 from astropy.io import fits
 from astropy.wcs import WCS
+from astrotool_core.acquisition import CommandedMovementContext
 from astrotool_core.acquisition.acquisition_state import AcquisitionState
 from astrotool_core.acquisition.auto_exposure import AutoExposureConfig
 from astrotool_core.acquisition.stable_frame_acquisition import (
@@ -5362,6 +5363,47 @@ class TestMotionAwareCapture:
         assert "wind" in panel._capture_failure_detail().lower()
         panel.stop()
 
+    def test_uncorrelatable_frames_are_not_blamed_on_wind(self, qapp: object) -> None:
+        """Field bundle 1b157b8b: a saturated/flat scene makes
+        `measure_translation_offset_with_tier` return no offset at all
+        (`StabilityStatus.INDETERMINATE` -- `max_displacement_px`/
+        `min_score` both stay `None`, distinct from a real measured
+        displacement exceeding tolerance, `StabilityStatus.UNSTABLE`).
+        The live error text used to collapse both into the same
+        "wind/vibration" wording even though nothing was ever measured --
+        must now say something distinct (correlation/saturation), not
+        blame the weather for a frame it never managed to compare."""
+        settings = MountAlignmentSettings(
+            stability_sample_interval_s=0.0, stability_sample_count=2, stability_timeout_s=0.2,
+        )
+        flat = np.full((60, 60), 4095.0, dtype=np.float32)
+
+        panel = MountTestMovePanel(
+            FakeMountAdapter(),
+            mount_park=FakeMountPark(start_parked=True),
+            get_left_frame=lambda: np.zeros((10, 10), dtype=np.float32),
+            get_right_frame=lambda: np.zeros((10, 10), dtype=np.float32),
+            settings=settings,
+            wait_for_left_frame=lambda _reference, _timeout: _ok_result(flat.copy()),
+            wait_for_right_frame=lambda _reference, _timeout: _ok_result(
+                single_star_image(
+                    (60, 60), x=30.0, y=30.0, peak=2000.0, sigma=2.5, background=100.0
+                )
+            ),
+        )
+
+        result = panel._capture_both("star", after_monotonic=time.monotonic())
+
+        assert result is not None
+        assert set(result) == {"right"}
+        assert panel.diagnostic_context()["last_failure_classes"]["left"] == "image_not_stable"
+        evidence = panel.diagnostic_stability_evidence()
+        assert evidence["left"]["stability_status"] == "indeterminate"
+        detail = panel._capture_failure_detail().lower()
+        assert "wind" not in detail
+        assert "correlat" in detail or "satur" in detail
+        panel.stop()
+
     def test_diagnostic_stability_evidence_captures_real_stability_evidence(
         self, qapp: object
     ) -> None:
@@ -5417,6 +5459,65 @@ class TestMotionAwareCapture:
         )
         assert after is not None
         assert set(panel.diagnostic_stability_evidence()) == {"left", "right"}
+        panel.stop()
+
+    def test_exposure_overlapped_motion_does_not_blame_a_move_when_none_was_commanded(
+        self, qapp: object
+    ) -> None:
+        """Field bundle 1b157b8b: a nudge's own "before" reference capture
+        (nothing has moved yet -- `self._last_movement_context` is still
+        `None`) hit `EXPOSURE_OVERLAPPED_MOTION`, but the live text said
+        "...overlapped the move" -- there was no move. The wording must
+        not reference a move that was never commanded."""
+        settings = MountAlignmentSettings(stability_sample_interval_s=0.0)
+
+        def never_fresh(_reference: float, _timeout: float) -> FrameAcquisitionResult:
+            return FrameAcquisitionResult(FrameAcquisitionStatus.EXPOSURE_OVERLAPPED_MOTION)
+
+        panel = MountTestMovePanel(
+            FakeMountAdapter(),
+            mount_park=FakeMountPark(start_parked=True),
+            get_left_frame=lambda: np.zeros((10, 10), dtype=np.float32),
+            get_right_frame=lambda: np.zeros((10, 10), dtype=np.float32),
+            settings=settings,
+            wait_for_left_frame=never_fresh,
+            wait_for_right_frame=never_fresh,
+        )
+        assert panel._last_movement_context is None  # nothing has pulsed yet
+
+        result = panel._capture_both("star", after_monotonic=time.monotonic())
+
+        assert result is None
+        detail = panel._capture_failure_detail().lower()
+        assert "the move" not in detail
+        panel.stop()
+
+    def test_exposure_overlapped_motion_still_blames_the_move_after_a_real_pulse(
+        self, qapp: object
+    ) -> None:
+        """The same failure, but with a real prior movement recorded --
+        the existing "...overlapped the move" wording is still correct
+        and must be kept (no regression)."""
+        settings = MountAlignmentSettings(stability_sample_interval_s=0.0)
+
+        def never_fresh(_reference: float, _timeout: float) -> FrameAcquisitionResult:
+            return FrameAcquisitionResult(FrameAcquisitionStatus.EXPOSURE_OVERLAPPED_MOTION)
+
+        panel = MountTestMovePanel(
+            FakeMountAdapter(),
+            mount_park=FakeMountPark(start_parked=True),
+            get_left_frame=lambda: np.zeros((10, 10), dtype=np.float32),
+            get_right_frame=lambda: np.zeros((10, 10), dtype=np.float32),
+            settings=settings,
+            wait_for_left_frame=never_fresh,
+            wait_for_right_frame=never_fresh,
+        )
+        panel._last_movement_context = CommandedMovementContext(movement_type="pulse")
+
+        result = panel._capture_both("star", after_monotonic=time.monotonic())
+
+        assert result is None
+        assert "the move" in panel._capture_failure_detail().lower()
         panel.stop()
 
 
