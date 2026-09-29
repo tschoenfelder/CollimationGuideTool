@@ -51,6 +51,23 @@ class OnStepFocuserAdapter(FocuserPort):
         maximum = s.driver_maximum or s.configured_maximum or 0
         return FocuserStatus(available, s.position or 0, maximum, bool(s.moving))
 
+    def blockers(self) -> tuple[str, ...]:
+        """The live `IndiFocuserSnapshot.blockers` this instant -- e.g.
+        `focuser_position_stale`, `focuser_configured_maximum_missing` --
+        never collapsed to a single bool the way `status().available` is.
+        `FocuserStatus`/`FocuserPort` stay hardware-neutral (same
+        reasoning as `FocuserMoveResult`'s own docstring); this is an
+        adapter-only diagnostic extra, duck-typed by
+        `FocuserPanel.diagnostic_context()` so a rejected move's real
+        precondition is visible in the next diagnostic bundle even when
+        `move_ready` was already False *before* the move was attempted --
+        not just the `IndiFocuserMoveResult.error` a rejected move itself
+        produces. Empty when not connected."""
+        focuser = self._focuser()
+        if focuser is None:
+            return ()
+        return tuple(focuser.get_status().blockers)
+
     def move_absolute(self, steps: int) -> FocuserMoveResult:
         focuser = self._focuser()
         if focuser is None:

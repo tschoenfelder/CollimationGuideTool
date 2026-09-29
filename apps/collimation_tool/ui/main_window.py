@@ -187,6 +187,7 @@ from collimation_tool.domain.target_mode import CollimationTargetMode
 from collimation_tool.ui.camera_panel import CameraPanel, default_camera_factory
 from collimation_tool.ui.filter_wheel_panel import FilterWheelPanel
 from collimation_tool.ui.fine_collimation_panel import FineCollimationPanel
+from collimation_tool.ui.flow_layout import FlowLayout
 from collimation_tool.ui.focuser_panel import FocuserPanel
 from collimation_tool.ui.fov_calibrator import FovCalibrator
 from collimation_tool.ui.fov_overlay import compute_fov_overlay_rect
@@ -432,11 +433,6 @@ class MainWindow(QMainWindow):
         self._artificial_star_mode_button = QPushButton("Artificial Star")
         self._artificial_star_mode_button.setCheckable(True)
         self._registration_mode_group.addButton(self._artificial_star_mode_button)
-        mode_row = QHBoxLayout()
-        mode_row.addWidget(self._terrestrial_mode_button)
-        mode_row.addWidget(self._star_field_mode_button)
-        mode_row.addWidget(self._artificial_star_mode_button)
-        mode_row.addStretch(1)
         self._calibrate_fov_button = QPushButton("Calibrate FOV")
         self._calibrate_fov_button.clicked.connect(self._on_calibrate_fov)
         # Off by default — the base action is still the one-shot
@@ -530,20 +526,21 @@ class MainWindow(QMainWindow):
         # Field report (2026-09-29): packing mode buttons + Calibrate FOV +
         # Keep calibrating + two status labels into ONE row needed ~530px
         # (measured sizeHints), wider than the "Mount & Alignment" tab's
-        # default splitter viewport (~490px) -- clipping "Keep calibrating"
-        # and the status text off the visible edge (a horizontal scrollbar
-        # existed but wasn't obvious). Three narrower rows each fit well
-        # under the viewport even at a further-narrowed splitter, and the
-        # status labels get their own word-wrapping row instead of
-        # competing for space against fixed-size controls.
-        calibration_row = QHBoxLayout()
-        calibration_row.addLayout(mode_row)
-        calibration_row.addStretch(1)
+        # viewport -- clipping "Keep calibrating" and the status text off
+        # the visible edge. A hand-tuned fixed-row split (narrower rows,
+        # commit 59a89df) fixed it for the platforms tested against at the
+        # time, but still clipped on the real Pi screen's own font
+        # metrics -- FlowLayout wraps by construction at whatever width
+        # it's actually given, so it never needs re-tuning again. The
+        # status labels keep their own word-wrapping row, unaffected.
+        calibration_row = FlowLayout()
+        calibration_row.addWidget(self._terrestrial_mode_button)
+        calibration_row.addWidget(self._star_field_mode_button)
+        calibration_row.addWidget(self._artificial_star_mode_button)
 
-        calibration_action_row = QHBoxLayout()
+        calibration_action_row = FlowLayout()
         calibration_action_row.addWidget(self._calibrate_fov_button)
         calibration_action_row.addWidget(self._auto_recalibrate_checkbox)
-        calibration_action_row.addStretch(1)
 
         calibration_status_row = QHBoxLayout()
         calibration_status_row.addWidget(self._calibrate_fov_status_label, stretch=1)

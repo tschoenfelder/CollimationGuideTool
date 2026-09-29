@@ -380,5 +380,30 @@ class TestArtificialStarMode:
             _run_autofocus_to_completion(panel)
         finally:
             panel._connect_button.setChecked(False)
-
         assert panel._exposure_control is control
+
+
+class _FocuserWithBlockers(FakeFocuser):
+    """A FocuserPort that exposes the OnStepFocuserAdapter-only
+    `blockers()` diagnostic extra -- FakeFocuser itself deliberately
+    doesn't, to prove `diagnostic_context()` duck-types this rather than
+    assuming every FocuserPort has it."""
+
+    def blockers(self) -> tuple[str, ...]:
+        return ("focuser_position_stale",)
+
+
+class TestDiagnosticContextBlockers:
+    """Field bundle 7b21bdf1: a move_rejected failure with no prior log
+    line needs to show whatever precondition was already blocking the
+    move before it was even attempted -- status().available collapses
+    this to one bool; diagnostic_context() must surface the real list
+    when the underlying port exposes one, and omit it cleanly when not."""
+
+    def test_blockers_are_included_when_the_port_exposes_them(self, qapp: object) -> None:
+        panel = FocuserPanel(_FocuserWithBlockers())
+        assert panel.diagnostic_context()["blockers"] == ["focuser_position_stale"]
+
+    def test_blockers_are_omitted_for_a_port_without_the_concept(self, qapp: object) -> None:
+        panel = FocuserPanel(FakeFocuser())
+        assert "blockers" not in panel.diagnostic_context()

@@ -64,6 +64,7 @@ from collimation_tool.application.autofocus_controller import (
 )
 from collimation_tool.application.autofocus_search import AutofocusStatus
 from collimation_tool.ui.autofocus_runner import AutofocusRunner
+from collimation_tool.ui.flow_layout import FlowLayout
 
 _log = logging.getLogger(__name__)
 
@@ -221,20 +222,21 @@ class FocuserPanel(QWidget):
         # Field report (2026-09-29): the same class of bug found in
         # MountTestMovePanel/MainWindow's calibration row -- six items
         # (label + 5 buttons) sharing one row exceeded the Focus & Filters
-        # tab's viewport width, clipping content off the visible edge.
-        # Mode selector and run/cancel+status split across two rows so
-        # neither exceeds the viewport on its own.
-        autofocus_mode_row = QHBoxLayout()
+        # tab's viewport width, clipping content off the visible edge. A
+        # hand-tuned fixed-row split (two rows) fixed it for the platforms
+        # tested against at the time, but still clipped on the real Pi
+        # screen's own font metrics -- FlowLayout wraps by construction at
+        # whatever width it's actually given instead.
+        autofocus_mode_row = FlowLayout()
         autofocus_mode_row.addWidget(QLabel("Auto Focus"))
         autofocus_mode_row.addWidget(self._af_star_button)
         autofocus_mode_row.addWidget(self._af_terrestrial_button)
         autofocus_mode_row.addWidget(self._af_artificial_button)
-        autofocus_mode_row.addStretch(1)
 
-        autofocus_row = QHBoxLayout()
+        autofocus_row = FlowLayout()
         autofocus_row.addWidget(self._auto_focus_button)
         autofocus_row.addWidget(self._auto_focus_cancel_button)
-        autofocus_row.addWidget(self._auto_focus_status_label, stretch=1)
+        autofocus_row.addWidget(self._auto_focus_status_label)
 
         top_row = QHBoxLayout()
         top_row.addWidget(self._title_label)
@@ -462,13 +464,22 @@ class FocuserPanel(QWidget):
 
     def diagnostic_context(self) -> dict[str, Any]:
         status = self._focuser.status()
-        return {
+        context: dict[str, Any] = {
             "available": status.available,
             "position": status.position,
             "max_position": status.max_position,
             "moving": status.moving,
             "last_connect_error": self._last_connect_error,
         }
+        # OnStepFocuserAdapter-only diagnostic extra (duck-typed, same
+        # convention as MountParkPanel's confirm_home/home_confirmed) --
+        # FocuserPort itself stays hardware-neutral. Field report: a
+        # move_rejected failure with no prior log line needs to show
+        # whatever precondition (e.g. focuser_position_stale) was already
+        # blocking the move *before* it was even attempted.
+        if hasattr(self._focuser, "blockers"):
+            context["blockers"] = list(self._focuser.blockers())
+        return context
 
     def diagnostic_autofocus_evidence(self) -> dict[str, Any]:
         """Issue #33's own UUID-diagnostics ask: the full focus curve/

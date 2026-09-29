@@ -320,6 +320,23 @@ class TestFocuser:
         assert not f.status().available
         assert not f.move_absolute(10).accepted
 
+    def test_blockers_passes_through_the_live_snapshot_not_just_a_bool(self) -> None:
+        """Field bundle 7b21bdf1: a rejected move with no prior log line
+        needs to show whatever precondition (e.g. focuser_position_stale)
+        was already blocking it *before* the move was even attempted --
+        status().available collapses this to one bool; blockers() must
+        not."""
+        conn, made = _connection()
+        f = OnStepFocuserAdapter(conn)
+        f.connect()
+        assert f.blockers() == ()  # nothing blocking by default
+        made[0].focuser.connected = False
+        assert f.blockers() == ("indi_device_disconnected",)
+
+    def test_blockers_is_empty_when_not_connected(self) -> None:
+        f = OnStepFocuserAdapter(_connection()[0])
+        assert f.blockers() == ()
+
     def test_operations_are_noops_when_not_connected(self) -> None:
         f = OnStepFocuserAdapter(_connection()[0])
         assert not f.is_available

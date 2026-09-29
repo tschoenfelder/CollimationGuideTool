@@ -301,6 +301,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from collimation_tool.ui.flow_layout import FlowLayout
 from collimation_tool.ui.mount_test_move_runner import MountTestMoveRunner
 
 FrameGetter = Callable[[], np.ndarray | None]
@@ -1045,10 +1046,12 @@ class MountTestMovePanel(QWidget):
         calibration_description_row = QHBoxLayout()
         calibration_description_row.addWidget(calibration_description_label, stretch=1)
 
-        calibration_row = QHBoxLayout()
+        # FlowLayout (not a fixed QHBoxLayout split) -- see FlowLayout's
+        # own module docstring: a hand-tuned fixed-width split still
+        # clipped on the real Pi screen's own font metrics.
+        calibration_row = FlowLayout()
         calibration_row.addWidget(self._run_calibration_button)
         calibration_row.addWidget(self._stop_button)
-        calibration_row.addStretch(1)
 
         self._nudge_buttons: dict[str, dict[str, QPushButton]] = {}
         main_pad_row = self._build_direction_pad("left")
@@ -1061,7 +1064,7 @@ class MountTestMovePanel(QWidget):
         self._size_group = QButtonGroup(self)
         self._size_group.setExclusive(True)
         self._size_buttons: dict[MovementSize, QPushButton] = {}
-        size_row = QHBoxLayout()
+        size_row = FlowLayout()
         size_row.addWidget(QLabel("Move size"))
         for label, size in _SIZE_BUTTONS:
             button = QPushButton(label)
@@ -1070,7 +1073,6 @@ class MountTestMovePanel(QWidget):
             self._size_buttons[size] = button
             size_row.addWidget(button)
         self._size_buttons[MovementSize.SMALL].setChecked(True)  # conservative default
-        size_row.addStretch(1)
 
         self._screen_move_buttons: dict[str, dict[ScreenDirection, QPushButton]] = {}
         main_screen_row = self._build_screen_move_pad("left")
@@ -1103,11 +1105,14 @@ class MountTestMovePanel(QWidget):
 
         self._update_buttons_enabled()
 
-    def _build_direction_pad(self, camera_key: str) -> QHBoxLayout:
+    def _build_direction_pad(self, camera_key: str) -> FlowLayout:
         """One button per `_NUDGE_BUTTONS` entry -- see that constant's own
         docstring for why RA+/RA-/Dec+/Dec- replaced the earlier screen-
-        relative Up/Down/Left/Right pad."""
-        row = QHBoxLayout()
+        relative Up/Down/Left/Right pad. FlowLayout (not QHBoxLayout): see
+        FlowLayout's own module docstring -- a label + 4 buttons was found
+        to become the new binding overflow once the previously-touched
+        rows stopped being the widest."""
+        row = FlowLayout()
         row.addWidget(QLabel(f"{_CAMERA_LABELS[camera_key]}:"))
         buttons: dict[str, QPushButton] = {}
         for label, axis, direction in _NUDGE_BUTTONS:
@@ -1120,18 +1125,18 @@ class MountTestMovePanel(QWidget):
             )
             buttons[label] = button
             row.addWidget(button)
-        row.addStretch(1)
         self._nudge_buttons[camera_key] = buttons
         return row
 
-    def _build_screen_move_pad(self, camera_key: str) -> QHBoxLayout:
+    def _build_screen_move_pad(self, camera_key: str) -> FlowLayout:
         """Issue #31 Phase D: one button per `_SCREEN_MOVE_BUTTONS` entry
         -- disabled until this camera has a full, non-degenerate
         4-direction `CalibrationMatrix` (see `_update_buttons_enabled`'s
         own docstring), unlike `_build_direction_pad`'s own RA/Dec pad,
         which is this panel's bootstrap control and enables as soon as
-        the mount is connected/movable."""
-        row = QHBoxLayout()
+        the mount is connected/movable. FlowLayout, same reasoning as
+        `_build_direction_pad`."""
+        row = FlowLayout()
         row.addWidget(QLabel(f"{_CAMERA_LABELS[camera_key]} screen:"))
         buttons: dict[ScreenDirection, QPushButton] = {}
         for label, screen_direction in _SCREEN_MOVE_BUTTONS:
@@ -1144,7 +1149,6 @@ class MountTestMovePanel(QWidget):
             )
             buttons[screen_direction] = button
             row.addWidget(button)
-        row.addStretch(1)
         self._screen_move_buttons[camera_key] = buttons
         return row
 
