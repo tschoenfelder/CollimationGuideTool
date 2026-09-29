@@ -282,6 +282,35 @@ class TestFocuser:
         made[0].focuser.reject_moves = True
         assert not f.move_absolute(500).accepted
 
+    def test_rejected_moves_specific_reason_is_logged(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """FocuserMoveResult is deliberately hardware-neutral (see its own
+        docstring) -- a rejected move's real reason must still reach
+        application.log (and hence a diagnostic bundle), since that's the
+        only place it can surface. Real field report: a move_rejected
+        autofocus run left `failure_reason: null` in its diagnostic bundle
+        with zero corroborating log lines, making it undebuggable."""
+        conn, made = _connection()
+        f = OnStepFocuserAdapter(conn)
+        f.connect()
+        made[0].focuser.reject_moves = True
+        with caplog.at_level("WARNING"):
+            f.move_absolute(500)
+        assert "rejected by fake" in caplog.text
+
+    def test_a_bounds_rejected_move_logs_the_valueerror_reason(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        conn, made = _connection()
+        f = OnStepFocuserAdapter(conn)
+        f.connect()
+        made[0].focuser.driver_maximum = 100
+        with caplog.at_level("WARNING"):
+            result = f.move_absolute(10_000)
+        assert not result.accepted
+        assert "exceeds confirmed travel limits" in caplog.text
+
     def test_controller_without_a_focuser_reports_unavailable(self) -> None:
         conn, made = _connection()
         f = OnStepFocuserAdapter(conn)

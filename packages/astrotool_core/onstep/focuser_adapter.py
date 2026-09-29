@@ -4,11 +4,14 @@
 from __future__ import annotations
 
 import contextlib
+import logging
 
 from onstep_adapter import IndiFocuser
 
 from astrotool_core.focus.port import FocuserMoveResult, FocuserPort, FocuserStatus
 from astrotool_core.onstep.connection import OnStepConnection
+
+_log = logging.getLogger(__name__)
 
 _UNAVAILABLE = FocuserStatus(available=False, position=0, max_position=0, moving=False)
 
@@ -55,8 +58,16 @@ class OnStepFocuserAdapter(FocuserPort):
         start = focuser.get_status().position or 0
         try:
             r = focuser.move_absolute(steps)
-        except ValueError:
+        except ValueError as exc:
+            # `FocuserMoveResult` is deliberately hardware-neutral (see its
+            # own docstring) and carries no reason field -- log it here
+            # instead, so a rejected move is at least diagnosable from
+            # application.log (and hence a diagnostic bundle) even though
+            # the caller only ever sees `accepted=False`.
+            _log.warning("OnStepFocuserAdapter: move to %s rejected: %s", steps, exc)
             return FocuserMoveResult(accepted=False, target_position=steps, start_position=start)
+        if not r.reached and r.error:
+            _log.warning("OnStepFocuserAdapter: move to %s rejected: %s", steps, r.error)
         return FocuserMoveResult(r.reached, r.target, start)
 
     def move(self, steps: int) -> None:

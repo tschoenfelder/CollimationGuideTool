@@ -116,10 +116,13 @@ class _SearchAbort(Exception):
     threading a tri-state (accepted, sample-or-None) result through every
     call site by hand."""
 
-    def __init__(self, status: AutofocusStatus, best_position: int | None) -> None:
+    def __init__(
+        self, status: AutofocusStatus, best_position: int | None, reason: str | None = None
+    ) -> None:
         super().__init__(status)
         self.status = status
         self.best_position = best_position
+        self.reason = reason
 
 
 @dataclass
@@ -229,7 +232,7 @@ class BoundedFocusSearcher:
         except _SearchAbort as abort:
             if abort.status is not AutofocusStatus.MOVE_REJECTED:
                 self._safe_return_to(run, run.best_position)
-            return self._make_result(run, abort.status, None)
+            return self._make_result(run, abort.status, None, failure_reason=abort.reason)
 
     def _search_from_probe(
         self, run: _Run, measure: FocusMeasurer, cancel_check: Callable[[], bool] | None
@@ -395,7 +398,15 @@ class BoundedFocusSearcher:
             return clamped
         result = self._focuser.move_absolute(clamped)
         if not result.accepted:
-            raise _SearchAbort(AutofocusStatus.MOVE_REJECTED, run.best_position)
+            # FocuserMoveResult is deliberately hardware-neutral (no reason
+            # field) -- the OnStep adapter logs the specific device-level
+            # cause, but this generic reason is what actually reaches
+            # AutofocusResult.failure_reason/the UI status text/the
+            # diagnostic bundle, so a rejected move is never silently blank.
+            raise _SearchAbort(
+                AutofocusStatus.MOVE_REJECTED, run.best_position,
+                reason="the focuser rejected the commanded move",
+            )
         self._wait_for_move_settled()
         return clamped
 
@@ -428,11 +439,16 @@ class BoundedFocusSearcher:
             self._sleep(self._move_poll_interval_s)
 
     def _make_result(
-        self, run: _Run, status: AutofocusStatus, final_value: float | None
+        self,
+        run: _Run,
+        status: AutofocusStatus,
+        final_value: float | None,
+        *,
+        failure_reason: str | None = None,
     ) -> BoundedSearchResult:
         return BoundedSearchResult(
             status=status, start_position=run.start_position, best_position=run.best_position,
             search_min=run.bounds.allowed_min, search_max=run.bounds.allowed_max,
             samples=tuple(run.samples), final_value=final_value,
-            start_value=run.start_value,
+            start_value=run.start_value, failure_reason=failure_reason,
         )

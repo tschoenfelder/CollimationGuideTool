@@ -313,6 +313,10 @@ class TestRejectionCancellationAndFrameLoss:
         assert result.status is AutofocusStatus.MOVE_REJECTED
         # Left at a known, safe position -- not stranded mid-command.
         assert focuser.get_position() == 0
+        # Real field report (diagnostic bundle 7b21bdf1-...): failure_reason
+        # was null with zero corroborating log lines, making a real
+        # move_rejected run undebuggable. Must never be blank.
+        assert result.failure_reason
 
     def test_no_usable_evidence_at_all_is_reported_distinctly(self) -> None:
         focuser = FakeFocuser()
