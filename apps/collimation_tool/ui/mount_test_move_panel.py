@@ -991,17 +991,25 @@ class MountTestMovePanel(QWidget):
         self._run_calibration_button.clicked.connect(self._on_run_calibration_clicked)
         self._stop_button = QPushButton("Stop")
         self._stop_button.clicked.connect(self._on_stop)
-        calibration_row = QHBoxLayout()
-        calibration_row.addWidget(
-            QLabel(
-                f"Calibration (~{int(self._settings.calibration_target_fraction * 100)}% of frame, "
-                f"preset {self._settings.calibration_rate_preset}; "
-                f"fallback {self._settings.pulse_ms}ms @ preset {self._settings.rate_preset})"
-                if self._camera_geometry is not None
-                else f"Calibration ({self._settings.pulse_ms}ms, "
-                f"rate preset {self._settings.rate_preset})"
-            )
+        # Field report (2026-09-29): this descriptive label (up to ~340px
+        # unwrapped) sharing a row with the buttons forced the whole
+        # panel's minimum width past the "Mount & Alignment" tab's default
+        # splitter viewport, clipping content further down the panel (the
+        # "mount interface not available" message) off the visible edge.
+        # Word-wrapping it on its own row lets it shrink to fit instead.
+        calibration_description_label = QLabel(
+            f"Calibration (~{int(self._settings.calibration_target_fraction * 100)}% of frame, "
+            f"preset {self._settings.calibration_rate_preset}; "
+            f"fallback {self._settings.pulse_ms}ms @ preset {self._settings.rate_preset})"
+            if self._camera_geometry is not None
+            else f"Calibration ({self._settings.pulse_ms}ms, "
+            f"rate preset {self._settings.rate_preset})"
         )
+        calibration_description_label.setWordWrap(True)
+        calibration_description_row = QHBoxLayout()
+        calibration_description_row.addWidget(calibration_description_label, stretch=1)
+
+        calibration_row = QHBoxLayout()
         calibration_row.addWidget(self._run_calibration_button)
         calibration_row.addWidget(self._stop_button)
         calibration_row.addStretch(1)
@@ -1043,6 +1051,7 @@ class MountTestMovePanel(QWidget):
         layout = QVBoxLayout()
         layout.addLayout(top_row)
         layout.addLayout(target_row)
+        layout.addLayout(calibration_description_row)
         layout.addLayout(calibration_row)
         layout.addLayout(main_pad_row)
         layout.addLayout(guide_pad_row)

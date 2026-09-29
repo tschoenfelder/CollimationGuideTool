@@ -207,12 +207,22 @@ class FocuserPanel(QWidget):
         self._auto_focus_cancel_button = QPushButton("Cancel")
         self._auto_focus_cancel_button.clicked.connect(self._on_auto_focus_cancel_clicked)
         self._auto_focus_status_label = QLabel("")
+        self._auto_focus_status_label.setWordWrap(True)
+
+        # Field report (2026-09-29): the same class of bug found in
+        # MountTestMovePanel/MainWindow's calibration row -- six items
+        # (label + 5 buttons) sharing one row exceeded the Focus & Filters
+        # tab's viewport width, clipping content off the visible edge.
+        # Mode selector and run/cancel+status split across two rows so
+        # neither exceeds the viewport on its own.
+        autofocus_mode_row = QHBoxLayout()
+        autofocus_mode_row.addWidget(QLabel("Auto Focus"))
+        autofocus_mode_row.addWidget(self._af_star_button)
+        autofocus_mode_row.addWidget(self._af_terrestrial_button)
+        autofocus_mode_row.addWidget(self._af_artificial_button)
+        autofocus_mode_row.addStretch(1)
 
         autofocus_row = QHBoxLayout()
-        autofocus_row.addWidget(QLabel("Auto Focus"))
-        autofocus_row.addWidget(self._af_star_button)
-        autofocus_row.addWidget(self._af_terrestrial_button)
-        autofocus_row.addWidget(self._af_artificial_button)
         autofocus_row.addWidget(self._auto_focus_button)
         autofocus_row.addWidget(self._auto_focus_cancel_button)
         autofocus_row.addWidget(self._auto_focus_status_label, stretch=1)
@@ -226,6 +236,7 @@ class FocuserPanel(QWidget):
         layout.addLayout(top_row)
         layout.addLayout(step_row)
         layout.addLayout(move_row)
+        layout.addLayout(autofocus_mode_row)
         layout.addLayout(autofocus_row)
         self.setLayout(layout)
 

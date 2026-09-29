@@ -447,6 +447,7 @@ class MainWindow(QMainWindow):
         # fresh button click every cycle. See _poll_fov_calibration.
         self._auto_recalibrate_checkbox = QCheckBox("Keep calibrating")
         self._calibrate_fov_status_label = QLabel("")
+        self._calibrate_fov_status_label.setWordWrap(True)
         self._calibrate_fov_poll_timer = QTimer(self)
         self._calibrate_fov_poll_timer.setInterval(_CALIBRATION_POLL_INTERVAL_MS)
         self._calibrate_fov_poll_timer.timeout.connect(self._poll_fov_calibration)
@@ -478,6 +479,7 @@ class MainWindow(QMainWindow):
         #: succeeds.
         self._pending_prior_b: OpticalPrior | None = None
         self._alignment_guidance_label = QLabel("")
+        self._alignment_guidance_label.setWordWrap(True)
 
         self._diagnostics = diagnostics or DiagnosticService(app_name="CollimationTool")
         self._diagnostics.set_context_provider(self._diagnostic_context)
@@ -525,12 +527,27 @@ class MainWindow(QMainWindow):
         diagnostics_row.addWidget(self._diagnostics_status_label, stretch=1)
         diagnostics_row.addWidget(self._diagnostics_copy_button)
 
+        # Field report (2026-09-29): packing mode buttons + Calibrate FOV +
+        # Keep calibrating + two status labels into ONE row needed ~530px
+        # (measured sizeHints), wider than the "Mount & Alignment" tab's
+        # default splitter viewport (~490px) -- clipping "Keep calibrating"
+        # and the status text off the visible edge (a horizontal scrollbar
+        # existed but wasn't obvious). Three narrower rows each fit well
+        # under the viewport even at a further-narrowed splitter, and the
+        # status labels get their own word-wrapping row instead of
+        # competing for space against fixed-size controls.
         calibration_row = QHBoxLayout()
         calibration_row.addLayout(mode_row)
-        calibration_row.addWidget(self._calibrate_fov_button)
-        calibration_row.addWidget(self._auto_recalibrate_checkbox)
-        calibration_row.addWidget(self._calibrate_fov_status_label, stretch=1)
-        calibration_row.addWidget(self._alignment_guidance_label, stretch=1)
+        calibration_row.addStretch(1)
+
+        calibration_action_row = QHBoxLayout()
+        calibration_action_row.addWidget(self._calibrate_fov_button)
+        calibration_action_row.addWidget(self._auto_recalibrate_checkbox)
+        calibration_action_row.addStretch(1)
+
+        calibration_status_row = QHBoxLayout()
+        calibration_status_row.addWidget(self._calibrate_fov_status_label, stretch=1)
+        calibration_status_row.addWidget(self._alignment_guidance_label, stretch=1)
 
         # Issue #36: frames (Main/Guide) get the left, resizable, expanding
         # region; every secondary control lives in a tab on the right, each
@@ -551,6 +568,8 @@ class MainWindow(QMainWindow):
         mount_tab = QWidget()
         mount_layout = QVBoxLayout(mount_tab)
         mount_layout.addLayout(calibration_row)
+        mount_layout.addLayout(calibration_action_row)
+        mount_layout.addLayout(calibration_status_row)
         mount_layout.addWidget(self._mount_panel)
         mount_layout.addWidget(self._test_move_panel)
         mount_layout.addStretch(1)

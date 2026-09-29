@@ -252,28 +252,42 @@ class FineCollimationPanel(QWidget):
         self._cancel_button.clicked.connect(self._on_cancel_clicked)
         self._cancel_button.setEnabled(False)
         self._status_label = QLabel("Not yet measured.")
+        self._status_label.setWordWrap(True)
         self._target_mode_combo = QComboBox()
         for mode in CollimationTargetMode:
             self._target_mode_combo.addItem(mode.label, mode)
         self._target_mode_combo.currentIndexChanged.connect(self._on_target_mode_selected)
 
+        # Field report (2026-09-29): title + mode combo + Run + Cancel +
+        # status all sharing one row exceeded the Collimation tab's
+        # viewport width. Status text gets its own word-wrapping row
+        # below the always-clickable controls.
         top_row = QHBoxLayout()
         top_row.addWidget(self._title_label)
         top_row.addWidget(self._target_mode_combo)
         top_row.addWidget(self._run_button)
         top_row.addWidget(self._cancel_button)
-        top_row.addWidget(self._status_label, stretch=1)
+        top_row.addStretch(1)
+
+        status_row = QHBoxLayout()
+        status_row.addWidget(self._status_label, stretch=1)
 
         self._star_view = _StackedStarView()
         self._profile_widget = RadialProfilePlotWidget()
 
-        display_row = QHBoxLayout()
-        display_row.addWidget(self._star_view, stretch=1)
-        display_row.addWidget(self._profile_widget, stretch=1)
+        # Field report (2026-09-29): side-by-side, each display's 240px
+        # minimum width together exceeded the Collimation tab's viewport
+        # width, clipping the right edge off the visible area. Stacked
+        # vertically instead, using the tab's existing (vertical) scroll
+        # support rather than needing horizontal scroll too.
+        display_column = QVBoxLayout()
+        display_column.addWidget(self._star_view, stretch=1)
+        display_column.addWidget(self._profile_widget, stretch=1)
 
         layout = QVBoxLayout()
         layout.addLayout(top_row)
-        layout.addLayout(display_row)
+        layout.addLayout(status_row)
+        layout.addLayout(display_column)
         self.setLayout(layout)
 
         self._poll_timer = QTimer(self)
