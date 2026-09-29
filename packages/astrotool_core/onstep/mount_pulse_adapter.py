@@ -77,18 +77,27 @@ class OnStepMountPulseAdapter:
         return client.mount if self._held and client is not None else None
 
     def status(self) -> MountStatus:
-        mount = self._mount()
-        if mount is None:
-            return MountStatus(connected=False, tracking=False, slewing=False)
-        snapshot = mount.get_status()
-        return MountStatus(connected=True, tracking=snapshot.tracking, slewing=snapshot.slewing)
+        # Real field report (diagnostic 7b21bdf1): see OnStepConnection's
+        # own module docstring -- move_angular() below runs on a worker
+        # thread (calibration/nudge) while this status() is polled from
+        # the GUI thread; serialize both against every other adapter
+        # sharing this connection so they can never interleave mid-move.
+        with self._connection.operation_lock:
+            mount = self._mount()
+            if mount is None:
+                return MountStatus(connected=False, tracking=False, slewing=False)
+            snapshot = mount.get_status()
+            return MountStatus(
+                connected=True, tracking=snapshot.tracking, slewing=snapshot.slewing
+            )
 
     def abort(self) -> None:
         """Cancel a running move: cooperative cancel first, then OnStep's own stop."""
         self._cancel.set()
-        mount = self._mount()
-        if mount is not None:
-            mount.stop()
+        with self._connection.operation_lock:
+            mount = self._mount()
+            if mount is not None:
+                mount.stop()
 
     # ---- AngularMotionPort ------------------------------------------------
     def installed_rate(self, axis: MountAxis, direction: AxisDirection) -> float | None:
@@ -120,13 +129,14 @@ class OnStepMountPulseAdapter:
         positive = direction is AxisDirection.POSITIVE
         offset_deg = (arcsec if positive else -arcsec) / 3600.0
         self._cancel.clear()
-        try:
-            if axis == MountAxis.AXIS1:
-                mount.move_ra_axis_deg(offset_deg)
-            else:
-                mount.move_dec_axis_deg(offset_deg)
-        except (ConnectionError, RuntimeError, TimeoutError, ValueError) as exc:
-            return CommandResult(accepted=False, message=str(exc))
+        with self._connection.operation_lock:
+            try:
+                if axis == MountAxis.AXIS1:
+                    mount.move_ra_axis_deg(offset_deg)
+                else:
+                    mount.move_dec_axis_deg(offset_deg)
+            except (ConnectionError, RuntimeError, TimeoutError, ValueError) as exc:
+                return CommandResult(accepted=False, message=str(exc))
         return CommandResult(accepted=True)
 
     # ---- MountPort ----------------------------------------------------

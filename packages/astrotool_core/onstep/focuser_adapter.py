@@ -43,13 +43,19 @@ class OnStepFocuserAdapter(FocuserPort):
         return self.status().available
 
     def status(self) -> FocuserStatus:
-        focuser = self._focuser()
-        if focuser is None:
-            return _UNAVAILABLE
-        s = focuser.get_status()
-        available = "indi_device_disconnected" not in s.blockers and s.position is not None
-        maximum = s.driver_maximum or s.configured_maximum or 0
-        return FocuserStatus(available, s.position or 0, maximum, bool(s.moving))
+        # Real field report (diagnostic 7b21bdf1): see OnStepConnection's
+        # own module docstring -- every operation here is serialized
+        # against every other adapter sharing this connection so a
+        # GUI-thread poll can never interleave mid-sequence with a
+        # worker-thread move_absolute().
+        with self._connection.operation_lock:
+            focuser = self._focuser()
+            if focuser is None:
+                return _UNAVAILABLE
+            s = focuser.get_status()
+            available = "indi_device_disconnected" not in s.blockers and s.position is not None
+            maximum = s.driver_maximum or s.configured_maximum or 0
+            return FocuserStatus(available, s.position or 0, maximum, bool(s.moving))
 
     def blockers(self) -> tuple[str, ...]:
         """The live `IndiFocuserSnapshot.blockers` this instant -- e.g.
@@ -63,60 +69,71 @@ class OnStepFocuserAdapter(FocuserPort):
         `move_ready` was already False *before* the move was attempted --
         not just the `IndiFocuserMoveResult.error` a rejected move itself
         produces. Empty when not connected."""
-        focuser = self._focuser()
-        if focuser is None:
-            return ()
-        return tuple(focuser.get_status().blockers)
+        with self._connection.operation_lock:
+            focuser = self._focuser()
+            if focuser is None:
+                return ()
+            return tuple(focuser.get_status().blockers)
 
     def move_absolute(self, steps: int) -> FocuserMoveResult:
-        focuser = self._focuser()
-        if focuser is None:
-            return FocuserMoveResult(accepted=False, target_position=steps, start_position=0)
-        start = focuser.get_status().position or 0
-        try:
-            r = focuser.move_absolute(steps)
-        except ValueError as exc:
-            # `FocuserMoveResult` is deliberately hardware-neutral (see its
-            # own docstring) and carries no reason field -- log it here
-            # instead, so a rejected move is at least diagnosable from
-            # application.log (and hence a diagnostic bundle) even though
-            # the caller only ever sees `accepted=False`.
-            _log.warning("OnStepFocuserAdapter: move to %s rejected: %s", steps, exc)
-            return FocuserMoveResult(accepted=False, target_position=steps, start_position=start)
-        if not r.reached and r.error:
-            _log.warning("OnStepFocuserAdapter: move to %s rejected: %s", steps, r.error)
-        return FocuserMoveResult(r.reached, r.target, start)
+        with self._connection.operation_lock:
+            focuser = self._focuser()
+            if focuser is None:
+                return FocuserMoveResult(accepted=False, target_position=steps, start_position=0)
+            start = focuser.get_status().position or 0
+            try:
+                r = focuser.move_absolute(steps)
+            except ValueError as exc:
+                # `FocuserMoveResult` is deliberately hardware-neutral (see
+                # its own docstring) and carries no reason field -- log it
+                # here instead, so a rejected move is at least diagnosable
+                # from application.log (and hence a diagnostic bundle) even
+                # though the caller only ever sees `accepted=False`.
+                _log.warning("OnStepFocuserAdapter: move to %s rejected: %s", steps, exc)
+                return FocuserMoveResult(
+                    accepted=False, target_position=steps, start_position=start
+                )
+            if not r.reached and r.error:
+                _log.warning("OnStepFocuserAdapter: move to %s rejected: %s", steps, r.error)
+            return FocuserMoveResult(r.reached, r.target, start)
 
     def move(self, steps: int) -> None:
         """Relative move — 0.4.0's `IndiFocuser` only exposes an absolute
         target, so this synthesizes one from the last known position."""
-        focuser = self._focuser()
-        if focuser is None:
-            return
-        current = focuser.get_status().position or 0
-        maximum = focuser.get_status().driver_maximum or focuser.get_status().configured_maximum
-        target = current + steps
-        if maximum is not None:
-            target = max(0, min(maximum, target))
-        with contextlib.suppress(ValueError):
-            focuser.move_absolute(target)
+        with self._connection.operation_lock:
+            focuser = self._focuser()
+            if focuser is None:
+                return
+            current = focuser.get_status().position or 0
+            maximum = (
+                focuser.get_status().driver_maximum or focuser.get_status().configured_maximum
+            )
+            target = current + steps
+            if maximum is not None:
+                target = max(0, min(maximum, target))
+            with contextlib.suppress(ValueError):
+                focuser.move_absolute(target)
 
     def get_position(self) -> int:
-        focuser = self._focuser()
-        return 0 if focuser is None else int(focuser.get_status().position or 0)
+        with self._connection.operation_lock:
+            focuser = self._focuser()
+            return 0 if focuser is None else int(focuser.get_status().position or 0)
 
     def get_max_position(self) -> int:
-        focuser = self._focuser()
-        if focuser is None:
-            return 0
-        s = focuser.get_status()
-        return int(s.driver_maximum or s.configured_maximum or 0)
+        with self._connection.operation_lock:
+            focuser = self._focuser()
+            if focuser is None:
+                return 0
+            s = focuser.get_status()
+            return int(s.driver_maximum or s.configured_maximum or 0)
 
     def is_moving(self) -> bool:
-        focuser = self._focuser()
-        return False if focuser is None else bool(focuser.get_status().moving)
+        with self._connection.operation_lock:
+            focuser = self._focuser()
+            return False if focuser is None else bool(focuser.get_status().moving)
 
     def stop(self) -> None:
-        focuser = self._focuser()
-        if focuser is not None:
-            focuser.stop()
+        with self._connection.operation_lock:
+            focuser = self._focuser()
+            if focuser is not None:
+                focuser.stop()

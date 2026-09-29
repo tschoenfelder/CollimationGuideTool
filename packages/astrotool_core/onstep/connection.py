@@ -9,6 +9,21 @@ their own connection to the same INDI device; each shim `acquire()`s on
 `connect()` and `release()`s on `disconnect()` -- the connection is opened
 by the first and closed by the last, exactly as it was for 0.3.5's serial
 client (that lifecycle policy is orthogonal to which transport backs it).
+
+Real field report (diagnostic 7b21bdf1, 2026-09-29): a focuser move kept
+getting rejected in the live app but succeeded every time in an isolated,
+single-threaded reproduction script talking to the same live controller.
+The difference: `AutofocusRunner.submit()` runs a move on a real
+background `threading.Thread` while `FocuserPanel`/`MountTestMovePanel`/
+`MountParkPanel` each poll `status()` on a `QTimer` (the GUI thread) every
+~250ms -- all sharing this one connection. `IndiTransport`'s own property
+dict is internally thread-safe (a `threading.Condition` guards it), but
+nothing serializes a whole *compound* operation (e.g. `move_absolute()`'s
+read-check-send-wait sequence) against a concurrent, unrelated `status()`
+call arriving mid-sequence from another thread -- exactly the standard
+shared-hardware-resource-across-threads hazard. `operation_lock` below is
+the standard fix: callers wrap each of their own public operations in it
+so the GUI-thread poll and a worker-thread move can never interleave.
 """
 
 from __future__ import annotations
@@ -33,6 +48,12 @@ class OnStepConnection:
         self._client: OnStepIndiClient | None = None
         self._users = 0
         self._lock = threading.Lock()
+        #: Serializes whole operations (status()/move_absolute()/etc.)
+        #: across every adapter sharing this connection -- see this
+        #: module's own docstring. RLock: a caller's own operation may
+        #: legitimately call back into another of its own locked methods
+        #: on the same thread (e.g. move() reading status() first).
+        self.operation_lock = threading.RLock()
 
     @property
     def config(self) -> IndiRuntimeConfig:

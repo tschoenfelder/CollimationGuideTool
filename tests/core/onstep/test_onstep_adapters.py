@@ -13,6 +13,9 @@ no INDI equivalent -- see each adapter's own module docstring.
 
 from __future__ import annotations
 
+import threading
+import time
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -532,3 +535,111 @@ class TestSettings:
         config = load_onstep_indi_config(tmp_path / "missing-shared.toml", own)
         assert config.port == 7624
         assert config.home_motion_enabled is False
+
+
+class TestOperationSerialization:
+    """Real field report (diagnostic 7b21bdf1): a focuser move kept getting
+    rejected in the live app but succeeded every time in an isolated,
+    single-threaded reproduction against the same live controller. Root
+    cause: AutofocusRunner moves the focuser on a real background thread
+    while FocuserPanel/MountTestMovePanel/MountParkPanel each poll
+    status() on a QTimer (the GUI thread) -- all sharing one
+    OnStepConnection. Nothing serialized a whole compound operation (e.g.
+    move_absolute()'s read-check-send-wait sequence) against a concurrent,
+    unrelated status() call arriving mid-sequence from another thread.
+    These tests prove OnStepConnection.operation_lock actually closes that
+    gap -- across a single adapter's own methods, and across two
+    different adapter types sharing the same connection."""
+
+    @staticmethod
+    def _guarded(
+        real: object, holder: list[object], overlap_detected: threading.Event
+    ) -> Callable[..., object]:
+        """Wraps a fake's method so entering it while a DIFFERENT thread's
+        guarded call already holds the critical section is detectable --
+        both sides of a potential race must check-and-set the same shared
+        `holder` from *inside* the call under test, not from an external,
+        unsynchronized spin loop (which would just race against the lock
+        itself and prove nothing). Tracks the holding thread's identity,
+        not a bare bool: the real adapter methods legitimately call each
+        other on the *same* thread while holding operation_lock once
+        (e.g. move_absolute() calling get_status() internally) -- that is
+        correct reentrant behavior, not a race, and must not be flagged."""
+
+        def wrapped(*args: object, **kwargs: object) -> object:
+            me = threading.get_ident()
+            current = holder[0]
+            if current is not None and current != me:
+                overlap_detected.set()
+            holder[0] = me
+            time.sleep(0.02)
+            try:
+                return real(*args, **kwargs)  # type: ignore[operator]
+            finally:
+                if holder[0] == me:
+                    holder[0] = None
+
+        return wrapped
+
+    def test_a_slow_move_and_concurrent_status_polls_never_overlap(self) -> None:
+        conn, made = _connection()
+        focuser = OnStepFocuserAdapter(conn)
+        focuser.connect()
+
+        overlap_detected = threading.Event()
+        holder: list[object] = [None]
+        made[0].focuser.move_absolute = self._guarded(  # type: ignore[method-assign]
+            made[0].focuser.move_absolute, holder, overlap_detected
+        )
+        made[0].focuser.get_status = self._guarded(  # type: ignore[method-assign]
+            made[0].focuser.get_status, holder, overlap_detected
+        )
+
+        mover = threading.Thread(target=lambda: focuser.move_absolute(600))
+        pollers = [threading.Thread(target=lambda: [focuser.status() for _ in range(10)])
+                   for _ in range(3)]
+        mover.start()
+        for p in pollers:
+            p.start()
+        mover.join()
+        for p in pollers:
+            p.join()
+
+        assert not overlap_detected.is_set()
+
+    def test_operations_across_different_adapter_types_never_overlap(self) -> None:
+        """The same hazard, but between TWO different adapters
+        (focuser + mount park) sharing one OnStepConnection -- e.g.
+        MountTestMovePanel's own GUI-thread poll of the mount while
+        autofocus moves the focuser on a worker thread."""
+        conn, made = _connection()
+        focuser = OnStepFocuserAdapter(conn)
+        park = OnStepMountParkAdapter(conn)
+        focuser.connect()
+        park.connect()
+
+        overlap_detected = threading.Event()
+        holder: list[object] = [None]
+        made[0].focuser.get_status = self._guarded(  # type: ignore[method-assign]
+            made[0].focuser.get_status, holder, overlap_detected
+        )
+        made[0].mount.get_status = self._guarded(  # type: ignore[method-assign]
+            made[0].mount.get_status, holder, overlap_detected
+        )
+
+        def hammer_focuser() -> None:
+            for _ in range(10):
+                focuser.status()
+
+        def hammer_park() -> None:
+            for _ in range(10):
+                park.status()
+
+        t1 = threading.Thread(target=hammer_focuser)
+        t2 = threading.Thread(target=hammer_park)
+        t1.start()
+        t2.start()
+        t1.join()
+        t2.join()
+
+        assert not overlap_detected.is_set()

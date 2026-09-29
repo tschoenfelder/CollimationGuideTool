@@ -33,13 +33,20 @@ class OnStepMountParkAdapter(MountParkPort):
         return client.mount if self._held and client is not None else None
 
     def status(self) -> MountParkStatus:
-        mount = self._mount()
-        if mount is None:
-            return MountParkStatus(available=False, parked=False, tracking=False)
-        snapshot = mount.get_status()
-        return MountParkStatus(
-            available=True, parked=snapshot.parked, tracking=snapshot.tracking
-        )
+        # Real field report (diagnostic 7b21bdf1): see OnStepConnection's
+        # own module docstring -- park()/unpark()/etc. below already run
+        # on a worker thread (`long_running_actions`) while this status()
+        # is polled from the GUI thread; serialize both against every
+        # other adapter sharing this connection so they can never
+        # interleave mid-sequence.
+        with self._connection.operation_lock:
+            mount = self._mount()
+            if mount is None:
+                return MountParkStatus(available=False, parked=False, tracking=False)
+            snapshot = mount.get_status()
+            return MountParkStatus(
+                available=True, parked=snapshot.parked, tracking=snapshot.tracking
+            )
 
     def park(self) -> None:
         """Park via OnStepAdapter's own status-confirmed mechanical route --
@@ -53,12 +60,13 @@ class OnStepMountParkAdapter(MountParkPort):
         surfaces here as the same `RuntimeError` a genuine park failure
         would, since `park()` never distinguished "refused" from "failed"
         for the caller even under 0.3.5."""
-        mount = self._mount()
-        if mount is None:
-            return
-        result = mount.park()
-        if not result.confirmed:
-            raise RuntimeError(f"OnStep did not reach the parked state: {result.error}")
+        with self._connection.operation_lock:
+            mount = self._mount()
+            if mount is None:
+                return
+            result = mount.park()
+            if not result.confirmed:
+                raise RuntimeError(f"OnStep did not reach the parked state: {result.error}")
 
     #: `park()` slews (seconds to minutes); `unpark()` is a quick switch
     #: flip + confirmation poll, not a slew, but both still make a
@@ -78,12 +86,15 @@ class OnStepMountParkAdapter(MountParkPort):
         real-field report questioned why a harmless unpark needed gating
         at all; the answer is it's bundled with two operations that do
         need it, not that unpark itself is risky."""
-        mount = self._mount()
-        if mount is None:
-            return
-        result = mount.unpark()
-        if not result.unparked_confirmed:
-            raise RuntimeError(f"OnStep did not reach unparked with tracking off: {result.error}")
+        with self._connection.operation_lock:
+            mount = self._mount()
+            if mount is None:
+                return
+            result = mount.unpark()
+            if not result.unparked_confirmed:
+                raise RuntimeError(
+                    f"OnStep did not reach unparked with tracking off: {result.error}"
+                )
 
     def stop_tracking(self) -> None:
         """No bare "tracking off" exists over INDI yet -- `emergency_stop`
@@ -91,12 +102,13 @@ class OnStepMountParkAdapter(MountParkPort):
         primitive and is at least as safe for this method's real caller
         (`MainWindow.closeEvent`'s "don't leave the mount moving after the
         app quits" safety net)."""
-        mount = self._mount()
-        if mount is None:
-            return
-        result = mount.stop()
-        if not result.stopped_confirmed:
-            raise RuntimeError(f"OnStep still reports motion after stop: {result.errors}")
+        with self._connection.operation_lock:
+            mount = self._mount()
+            if mount is None:
+                return
+            result = mount.stop()
+            if not result.stopped_confirmed:
+                raise RuntimeError(f"OnStep still reports motion after stop: {result.errors}")
 
     def start_tracking(self) -> None:
         """Enable tracking through OnStepAdapter's verified INDI route
@@ -111,12 +123,13 @@ class OnStepMountParkAdapter(MountParkPort):
         meridian states with its own reason; that refusal surfaces
         here as a `RuntimeError`, matching every other verified action on
         this port."""
-        mount = self._mount()
-        if mount is None:
-            return
-        result = mount.enable_tracking()
-        if not result.tracking_confirmed:
-            raise RuntimeError(f"OnStep did not confirm tracking on: {result.error}")
+        with self._connection.operation_lock:
+            mount = self._mount()
+            if mount is None:
+                return
+            result = mount.enable_tracking()
+            if not result.tracking_confirmed:
+                raise RuntimeError(f"OnStep did not confirm tracking on: {result.error}")
 
     #: No `confirm_home()` method (unlike 0.3.5): >= 0.4.0 establishes home
     #: authority automatically from live status
@@ -127,5 +140,8 @@ class OnStepMountParkAdapter(MountParkPort):
     #: read-only status this enables is still useful, so it stays exposed.
     @property
     def home_confirmed(self) -> bool:
-        client = self._connection.client
-        return bool(self._held and client is not None and client.home_authority_established)
+        with self._connection.operation_lock:
+            client = self._connection.client
+            return bool(
+                self._held and client is not None and client.home_authority_established
+            )
