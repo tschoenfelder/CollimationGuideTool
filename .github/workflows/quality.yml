@@ -1,9 +1,26 @@
 name: Quality gauntlet
 
-# Server-side mirror of `scripts/check.sh --release` / `scripts/check.ps1
-# -Release` (see CONTRIBUTING.md, "Before pushing a release"). Runs the full
-# release gate on every push/PR so the rules are machine-enforced rather than
-# convention-enforced (relates to #3).
+# Server-side quality gate, split by test tier (issue #50; see
+# CONTRIBUTING.md, "Server-side quality gate"). The three jobs run in
+# PARALLEL, none waits for another:
+#
+#   fast      lint + unit/component/contract tiers, no coverage -- lint and
+#             tier failures are reported under the tier's own job name
+#   slow      integration/regressions/acceptance tiers (~2 min) -- reports
+#             long before the full suite finishes
+#   coverage  THE release gate: the same test set as
+#             `scripts/check.sh --release` with coverage fail-under 80, plus
+#             coverage.xml and the hotspot report
+#
+# Why parallel rather than chained: the coverage job has to run every test
+# anyway, so starting it only after `fast` would roughly double wall-clock
+# (~14 min + ~14 min). Run side by side, the whole gate takes about as long
+# as the release gate alone did before the split, while the quick jobs
+# still deliver the first actionable, tier-labelled failure. The overlap
+# (coverage re-runs what fast/slow run) costs runner minutes, not waiting.
+#
+# Every job repeats the same Python pin and Qt runtime install: each one
+# imports PySide6.
 
 on:
   push:
@@ -12,7 +29,8 @@ on:
     branches: [main]
 
 jobs:
-  quality:
+  fast:
+    name: "fast tier: lint + unit/component/contract"
     runs-on: ubuntu-latest
     env:
       QT_QPA_PLATFORM: offscreen
@@ -31,7 +49,8 @@ jobs:
           # specific patch rather than a bug in our own threading. Local
           # dev machines on 3.13.13 (Windows) and 3.13.5 (Pi) don't
           # reproduce it. Bump deliberately, not automatically, once a
-          # later patch is confirmed not to regress this again.
+          # later patch is confirmed not to regress this again. Keep all
+          # three jobs on the same pin.
           python-version: "3.13.13"
 
       - name: Install Qt runtime libraries
@@ -40,6 +59,7 @@ jobs:
         # default, so every UI test module fails to import at collection
         # time (ImportError: libEGL.so.1). Mirrors the analogous
         # libxcb-cursor0 gap install.md documents for real Pi hardware.
+        # Repeated in every job below.
         run: |
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
@@ -61,11 +81,67 @@ jobs:
       - name: import-linter
         run: lint-imports
 
-      - name: pytest — full release gate
+      - name: pytest — fast tiers (unit, component, contract)
+        run: pytest -m "unit or component or contract"
+
+  slow:
+    name: "slow tier: integration/regressions/acceptance"
+    runs-on: ubuntu-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13.13" # same pin as the fast job — see its comment
+
+      - name: Install Qt runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libgl1 libopengl0 \
+            libxkbcommon0 libxkbcommon-x11-0 \
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
+            libxcb-xfixes0 libdbus-1-3
+
+      - name: Install project + dev dependencies
+        run: python -m pip install -e ".[dev]"
+
+      - name: pytest — slow tiers (integration, acceptance)
+        run: pytest -m "integration or acceptance"
+
+  coverage:
+    name: "release gate: full suite + coverage"
+    runs-on: ubuntu-latest
+    env:
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13.13" # same pin as the fast job — see its comment
+
+      - name: Install Qt runtime libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libegl1 libgl1 libopengl0 \
+            libxkbcommon0 libxkbcommon-x11-0 \
+            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
+            libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0 \
+            libxcb-xfixes0 libdbus-1-3
+
+      - name: Install project + dev dependencies
+        run: python -m pip install -e ".[dev]"
+
+      - name: pytest — full release gate with coverage (fail-under 80)
         run: >
           pytest tests/core tests/collimation tests/guide tests/contracts
           tests/integration tests/regressions tests/acceptance
-          --cov-report=xml
+          --cov --cov-report=term-missing --cov-report=xml
 
       - name: Upload coverage report
         uses: actions/upload-artifact@v4

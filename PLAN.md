@@ -240,13 +240,15 @@ Fill out remaining contract-test factories; build the tolerance-based golden-mas
           assert actual[key] == pytest.approx(expected[key], abs=tol), f"{key} drifted beyond tolerance {tol}"
   ```
   Tolerances defined and justified inline per test (target position ±0.5px, FWHM ±0.3px, drift vector ±0.2px/s, etc.).
-- **Impact-scoped suites**: `tests/{core,collimation,guide,contracts,integration}` split as in the tree above; a `scripts/check.ps1`/`check.sh` always runs `pytest tests/core tests/collimation tests/guide` regardless of what changed, matching doc line "Auch dann, wenn angeblich nur das CollimationTool geändert wurde."
+- **Impact-scoped suites** *(superseded 2026-09-30 by the tiered, risk-based gate of issue #50 — see CONTRIBUTING.md "Test pyramid and the risk-based minimum gate"; the "always run all three" rule below is historical)*: `tests/{core,collimation,guide,contracts,integration}` split as in the tree above; a `scripts/check.ps1`/`check.sh` always runs `pytest tests/core tests/collimation tests/guide` regardless of what changed, matching doc line "Auch dann, wenn angeblich nur das CollimationTool geändert wurde."
 - **Change classification**: `CONTRIBUTING.md` documents the doc's `CORE-CAMERA / CORE-FRAME / ... / UI-GUIDE` labels and their expected test impact; process convention, tied to the always-run-all-three script above so under-scoped testing is structurally impossible even without a machine-checked label.
 - **No incidental refactoring / AI-patch budget**: `CONTRIBUTING.md` reproduces the doc's own list (allowed files = explicitly named implementation files + their tests; no new fallback logic, no removed checks, no signature changes without migration) as the operative rule for this repo, plus a suggested `git diff --stat` file-count sanity check before proposing any patch as done.
 
 ---
 
 ## Verification
+
+*(Historical porting-plan verification. The current rule is the tiered gate in CONTRIBUTING.md, issue #50.)*
 
 - After each stage: `pytest tests/<relevant-scope> -v` plus, from Stage 3 onward, `pytest tests/core tests/collimation tests/guide` in full (per the doc's own "always run all three" rule).
 - `ruff check .`, `mypy --strict`, `lint-imports` clean at every stage boundary, not just at the end.

@@ -43,7 +43,20 @@ include = ["astrotool_core*", "collimation_tool*", "guide_tool*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-addopts = "--cov=packages/astrotool_core --cov=apps/collimation_tool --cov=apps/guide_tool --cov-report=term-missing --cov-fail-under=80"
+# No global coverage (issue #50): a targeted run must not measure the whole
+# repository. Coverage runs in the release gate (`scripts/check.ps1 -Release`
+# / `check.sh --release`) and CI's coverage job via `--cov`, which reads
+# [tool.coverage.run] source and [tool.coverage.report] fail_under below.
+# Every test gets exactly one tier marker from its path (tests/conftest.py,
+# tier_for); see CONTRIBUTING.md "Test pyramid and the risk-based minimum gate".
+markers = [
+    "unit: pure/near-pure deterministic code; no Qt event loop, threads, sleeps, hardware, INDI, network",
+    "component: one production component with fakes for its boundaries (fake clock where timing matters)",
+    "contract: adapter/port conformance against deterministic fakes or the installed library API",
+    "integration: several production components wired together, or real-data replays; no hardware",
+    "acceptance: small below-UI product workflow set",
+    "hardware: real devices; skipped unless --run-hardware or ASTROTOOL_RUN_HARDWARE=1",
+]
 
 [tool.coverage.run]
 # coverage.py's default tracer (CTracer, a C-level sys.settrace hook) has
@@ -56,6 +69,11 @@ addopts = "--cov=packages/astrotool_core --cov=apps/collimation_tool --cov=apps/
 # default core crashed close to every time with --cov active. Neither
 # crash touched code this project owns; only the tracer changed.
 core = "sysmon"
+source = ["packages/astrotool_core", "apps/collimation_tool", "apps/guide_tool"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
 
 [tool.ruff]
 line-length = 100

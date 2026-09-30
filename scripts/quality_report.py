@@ -8,7 +8,7 @@ belongs to separate issues (#7, #8) once this baseline shows a hotspot is
 materially risky.
 
 Usage:
-    pytest                       # writes .coverage (any normal run does this)
+    pytest --cov                 # writes .coverage (or: scripts/check.ps1 -Release)
     python scripts/quality_report.py
 
 Writes docs/quality/hotspots.json (every function) and docs/quality/hotspots.md
@@ -68,7 +68,7 @@ def _load_coverage_functions() -> dict[str, dict[str, dict[str, Any]]]:
     data_file = REPO_ROOT / ".coverage"
     if not data_file.exists():
         raise SystemExit(
-            "No .coverage file found — run `pytest` (or scripts/check.ps1) first "
+            "No .coverage file found — run `pytest --cov` (or scripts/check.ps1 -Release) first "
             "so there is coverage data to combine with complexity."
         )
     cov = coverage.Coverage(data_file=str(data_file))

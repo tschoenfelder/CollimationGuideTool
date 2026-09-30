@@ -42,7 +42,7 @@ Status: `todo` · `in-progress` · `done` · `field-only` (only real hardware ca
 | ID | Issue | Task | Owner | Review | Status | Commit | Proof command |
 |----|-------|------|-------|--------|--------|--------|---------------|
 | S0 | #50–#55 | Tracker + CONTRIBUTING.md / AGENTS.md aligned with the audit | coordinator | — | done | | docs only |
-| S1 | #50 | Test tier markers, fast/changed gate, coverage split, CI jobs, timing report | | | todo | | |
+| S1 | #50 | Test tier markers, fast/changed gate, coverage split, CI jobs, timing report | issue agent | APPROVE-WITH-FIXES → 4 fixes applied, re-verified | done | (this commit) | `scripts/check.ps1` (default mode) · `pytest tests/core/testing` |
 | S2 | #54 | Proof manifests, `scripts/prove.py`, CI validation, 5 backfills (3 revert-proven) | | | todo | | |
 | S3 | #53, #13 | `astrotool_core.timing` (Clock/FakeClock/Deadline/Scheduler); migrate timing modules; sleep guard | | | todo | | |
 | S4 | #51 | Scenario simulators (OnStep mount, focuser, filter wheel, ToupTek camera) on FakeClock; 5 defect reproductions | | | todo | | |
@@ -51,7 +51,7 @@ Status: `todo` · `in-progress` · `done` · `field-only` (only real hardware ca
 | S6.1 | #55 | Single-source device defaults + config-source contract test | | | todo | | |
 | S6.2 | #52 | `DeviceConnectionService` (Focuser → MountPark → MountTestMove) | | | todo | | |
 | S6.3 | #52 | `OperationLifecycle` + bounded Busy timeout (FilterWheel, Focuser) | | | todo | | |
-| S6.4 | #48 | Remove Mount Align local Star/Terrestrial toggle; derive from global OperatingMode | | | todo | | |
+| S6.4 | #48 | Remove Mount Align **and autofocus** local Star/Terrestrial toggles; derive from global OperatingMode (M04 decided) | | | todo | | |
 | S6.5 | #55 | ToupTek capability table (unsupported features contract-driven) | | | todo | | |
 | S6.6 | #52 | Mount Align orchestration out of `mount_test_move_panel.py` into application layer | | | todo | | |
 | S6.7 | #52 | Fresh-frame-after-motion service shared by Mount Align + autofocus | | | todo | | |
@@ -105,11 +105,16 @@ not change · dependencies · non-goals · proof required.
 
 | Date | Task | Commit | What was proven |
 |------|------|--------|-----------------|
+| 2026-10-01 | S1 | (this commit) | 1871 tests partition exactly into 6 tiers; single-file changes proven in 1.5–3.1 s (was a 14.5 min gate); CI fast/slow/coverage run in parallel; coverage ≥80 still enforced. **Not yet faster:** full component tier 801 s — 15 Mount Align panel tests alone take 459 s of real settle/wait time → payoff comes with #53/#51 |
 | 2026-09-30 | S0 | (this commit) | docs only — guidelines now state the tiered gate, deterministic-time, duplicated-knowledge, proof-manifest, layering and agent-ownership rules |
 
 ## Outstanding / field-only assumptions
 
 *(Filled per increment — anything that only real hardware can confirm.)*
+
+- #50 closure still needs: deterministic low-tier tests for the mapped defect classes (connect
+  exception, stuck Busy, shared OnStep concurrency, capability polling) — delivered by S3/S4;
+  component-tier wall time reduced once the 15 slow Mount Align tests use fake time (S3/S6.6).
 
 ## Discovered dependencies
 
@@ -121,7 +126,8 @@ not change · dependencies · non-goals · proof required.
   `recenter_policy.py` reacquisition uses `pulse_axis`. No OnStepAdapter request exists for a timed
   pulse over INDI — none is needed: `move_angular` uses the degree-target move (OnStepAdapter #14)
   and ignores rates. Fix is in this repo. Explains why #46/#31 cannot pass a field run as-is.
-- **S5 open question M04:** should the autofocus panel's Star/Terrestrial choice follow the global
-  OperatingMode? Asked to the user; S6.4 waits for the answer.
+- **S5 open question M04 — decided 2026-09-30 by the user:** the autofocus panel's local
+  Star/Terrestrial selector is removed; the metric follows the global OperatingMode
+  (Terrestrial → Tenengrad, Astronomical → star/FWHM). Folded into S6.4.
 - **S5 live contradictions (9)** are listed in `docs/quality/duplication-audit.md`; each is owned by an
   S6 step and gets a failing regression before its fix.

@@ -5,7 +5,7 @@ import, so UI tests run headless on Windows/CI without a display.
 from __future__ import annotations
 
 import os
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from pathlib import Path
 
 import pytest
@@ -105,3 +105,113 @@ def _flush_qt_events_after_each_test() -> Iterator[None]:
             app.processEvents()
     except ImportError:
         pass
+
+
+# ---------------------------------------------------------------------------
+# Test tiers (issue #50). Every collected test gets exactly one tier marker,
+# assigned from its path by `tier_for` below (an explicit tier marker on the
+# test itself wins). CONTRIBUTING.md "Test pyramid..." describes the tiers;
+# `scripts/check.ps1` / `check.sh` and CI select by them.
+# ---------------------------------------------------------------------------
+
+TIERS = ("unit", "component", "contract", "integration", "acceptance", "hardware")
+
+# tests/core is `unit` by default. A tests/core module is `component` when it
+# drives a production component through a fake boundary (Fake* adapter, fake
+# SDK/runner/INDI server, FakeClock) or uses threads, sockets, subprocesses or
+# real sleeps. tests/core/testing/test_test_tiers.py enforces the mechanical
+# part (threading/socket/subprocess/PySide6/sleep => listed here).
+CORE_COMPONENT_MODULES = frozenset(
+    {
+        "acquisition/test_motion_aware_acquisition.py",
+        "acquisition/test_single_capture.py",
+        "acquisition/test_stable_frame_acquisition.py",
+        "acquisition/test_stream_controller.py",
+        "camera/test_touptek_adapter_identity.py",
+        "camera/test_touptek_adapter_no_hardware.py",
+        "diagnostics/test_pull_diagnostic_bundle_cli.py",
+        "diagnostics/test_remote.py",
+        "filter_wheel/test_indi_filter_wheel_adapter.py",
+        "filter_wheel/test_registry.py",
+        "indi/test_indi_client.py",
+        "mount/test_axis_calibration.py",
+        "mount/test_operating_mode.py",
+        "mount/test_tracking_mode.py",
+        "onstep/test_onstep_adapters.py",
+        "registration/test_astap_adapter.py",
+        "registration/test_star_field_registrar.py",
+        "testing/test_changed_tests.py",
+    }
+)
+
+# First matching prefix wins (after the tests/core and hardware rules).
+_PREFIX_TIERS = (
+    ("tests/contracts/", "contract"),
+    # architectural guard: no OnStep access outside OnStepAdapter
+    ("tests/collimation/test_onstep_boundary.py", "contract"),
+    ("tests/integration/", "integration"),
+    ("tests/regressions/", "integration"),
+    # real captured frames, local-only (skipped when the dataset is absent);
+    # replays real data through several algorithms, no device involved
+    ("tests/local_data/", "integration"),
+    ("tests/acceptance/", "acceptance"),
+    ("tests/collimation/domain/", "unit"),
+    ("tests/guide/domain/", "unit"),
+    ("tests/collimation/application/", "component"),
+    ("tests/guide/application/", "component"),
+    ("tests/collimation/ui/", "component"),
+    ("tests/guide/ui/", "component"),
+)
+
+HARDWARE_ENV_VAR = "ASTROTOOL_RUN_HARDWARE"
+
+
+def tier_for(relpath: str, test_name: str) -> str | None:
+    """Tier of a test from its repo-relative posix path and function name;
+    None when the path isn't covered by any rule (a collection error)."""
+    if relpath.startswith("tests/contracts/") and test_name.startswith("test_real_"):
+        return "hardware"  # real-device contract cases (skipif-guarded too)
+    if relpath.startswith("tests/core/"):
+        module = relpath.removeprefix("tests/core/")
+        return "component" if module in CORE_COMPONENT_MODULES else "unit"
+    for prefix, tier in _PREFIX_TIERS:
+        if relpath.startswith(prefix):
+            return tier
+    return None
+
+
+def hardware_opted_in(run_hardware_flag: bool, environ: Mapping[str, str]) -> bool:
+    return run_hardware_flag or environ.get(HARDWARE_ENV_VAR) == "1"
+
+
+def pytest_addoption(parser: pytest.Parser) -> None:
+    parser.addoption(
+        "--run-hardware",
+        action="store_true",
+        default=False,
+        help=f"run `hardware`-tier tests (real devices); or set {HARDWARE_ENV_VAR}=1",
+    )
+
+
+def pytest_collection_modifyitems(config: pytest.Config, items: list[pytest.Item]) -> None:
+    run_hardware = hardware_opted_in(bool(config.getoption("--run-hardware")), os.environ)
+    skip_hardware = pytest.mark.skip(
+        reason=f"hardware tier: opt in with --run-hardware or {HARDWARE_ENV_VAR}=1"
+    )
+    for item in items:
+        explicit = {mark.name for mark in item.iter_markers() if mark.name in TIERS}
+        if len(explicit) > 1:
+            raise pytest.UsageError(f"{item.nodeid}: more than one tier marker {sorted(explicit)}")
+        if explicit:
+            tier: str | None = explicit.pop()
+        else:
+            relpath = item.path.resolve().relative_to(config.rootpath.resolve()).as_posix()
+            tier = tier_for(relpath, getattr(item, "originalname", item.name))
+            if tier is None:
+                raise pytest.UsageError(
+                    f"{item.nodeid}: no test tier for this path -- add a rule to "
+                    "tier_for() in tests/conftest.py"
+                )
+            item.add_marker(getattr(pytest.mark, tier))
+        if tier == "hardware" and not run_hardware:
+            item.add_marker(skip_hardware)

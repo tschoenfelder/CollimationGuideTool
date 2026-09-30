@@ -75,11 +75,51 @@ Minimum before a change is done:
 - integration / regressions / acceptance / full coverage — escalation when the
   change crosses components, and always before a release.
 
-Tooling for the tiers (markers, `scripts/check.ps1 -Fast`, changed-module test
-selection) is being introduced by issue #50 — see
-[`docs/restructuring-tasks.md`](docs/restructuring-tasks.md). Until it lands,
-`scripts/check.sh` / `scripts/check.ps1` still run the old
-`tests/core tests/collimation tests/guide` gate.
+Every collected test carries exactly one tier marker, assigned from its path
+by `tier_for()` in `tests/conftest.py` (an explicit `@pytest.mark.<tier>` on
+the test wins; a test file no rule covers is a collection error):
+
+| Path | Tier |
+|------|------|
+| `tests/core/**` | `unit`, except the modules listed in `CORE_COMPONENT_MODULES` (they drive a component through a fake boundary/clock, or use threads, sockets, subprocesses or sleeps) → `component` |
+| `tests/{collimation,guide}/domain/` | `unit` |
+| `tests/{collimation,guide}/{application,ui}/` | `component` |
+| `tests/contracts/`, `tests/collimation/test_onstep_boundary.py` | `contract` |
+| `tests/contracts/**::test_real_*` (real-device cases) | `hardware` |
+| `tests/integration/`, `tests/regressions/`, `tests/local_data/` | `integration` |
+| `tests/acceptance/` | `acceptance` |
+
+`hardware` tests are skipped unless you opt in with `pytest --run-hardware`
+(or `ASTROTOOL_RUN_HARDWARE=1`) — on top of their own device env vars
+(`ASTROTOOL_ONSTEP_INDI`, ...). Coverage is **not** collected by a plain
+`pytest` run; it runs in the release gate and CI's coverage job (threshold
+80, `[tool.coverage.report]` in `pyproject.toml`).
+
+Commands (`scripts/check.sh` flags in brackets; every mode runs ruff, mypy and
+import-linter first):
+
+```text
+scripts/check.ps1                # [no flag]      tests for what you changed
+scripts/check.ps1 -AllFast       # [--all-fast]   -m "unit or component or contract"
+scripts/check.ps1 -Integration   # [--integration] -m "integration or acceptance"
+scripts/check.ps1 -Release       # [--release]    full release gate + coverage
+```
+
+The default mode asks `scripts/changed_tests.py` which tests prove the files
+changed vs the merge-base with `origin/main` (plus uncommitted and untracked
+files). A production module `x.py` selects its own test modules
+(`test_x.py` / `test_x_*.py`) in the matching directory —
+`packages/astrotool_core/<sub>/` → `tests/core/<sub>/`,
+`apps/<app>/<layer>/` → `tests/<app>/<layer>/` — and the whole directory
+only when it has none; a changed port/adapter/null object (or anything in
+`onstep`/`indi`) adds `tests/contracts`. A test file selects itself, a
+nested `conftest.py` or test helper its directory, `datasets/<kind>/` the
+tests reading that kind. Anything it can't map safely (`tests/conftest.py`,
+`pyproject.toml`, `requirements*.txt`, shared test doubles — anything in
+`astrotool_core.testing` or any `fake_*.py` — unknown paths) falls back to
+all fast tiers. Pass at most one mode switch; combining them is an error.
+
+Measured wall-clock per tier: [`docs/quality/test-tier-timings.md`](docs/quality/test-tier-timings.md).
 
 Production deployment (the Raspberry Pi) and real hardware are the **final
 validation step**, never the normal environment for reproducing a bug.
@@ -179,20 +219,39 @@ a release/tag to GitHub:
 scripts/check.sh --release      # or: scripts/check.ps1 -Release
 ```
 
-This runs `tests/core tests/collimation tests/guide tests/contracts
-tests/integration tests/acceptance` plus ruff/mypy/lint-imports, on top of
-the always-run-three suites above.
+This runs ruff/mypy/lint-imports plus every test directory
+(`tests/core tests/collimation tests/guide tests/contracts tests/integration
+tests/regressions tests/acceptance`) with coverage (`fail_under = 80`).
 
 ## Server-side quality gate
 
-`.github/workflows/quality.yml` runs on every push/PR to `main` and executes
-exactly the release gate above (Python 3.13, `ruff check .`, `mypy .`,
-`lint-imports`, then the same six test directories) — it calls the same
-tools with the same config, not a separate copy of the thresholds, so local
-and CI runs cannot drift apart. This is the authoritative merge/release
-feedback mechanism: a failing check blocks the PR regardless of what a local
-run showed. Running `scripts/check.sh --release` locally before pushing is
-still recommended so failures are caught before CI, not instead of it.
+`.github/workflows/quality.yml` runs on every push/PR to `main` as three
+**parallel** jobs, each named after its tier so a failure says which tier
+broke:
+
+- **`fast tier: lint + unit/component/contract`** — `ruff check .`, `mypy .`,
+  `lint-imports`, then `pytest -m "unit or component or contract"`, no
+  coverage.
+- **`slow tier: integration/regressions/acceptance`** —
+  `pytest -m "integration or acceptance"` (~2 min, so an integration
+  failure is reported long before the full suite finishes).
+- **`release gate: full suite + coverage`** — the release gate: the same
+  test directories as `scripts/check.sh --release` with `--cov`
+  (fail-under 80), uploads `coverage.xml`, then runs
+  `scripts/quality_report.py` and uploads the hotspot report.
+
+The jobs deliberately don't wait for each other: the coverage job runs
+every test anyway, so chaining it after `fast` would roughly double the
+wall-clock time. In parallel, the whole gate takes about as long as the
+release gate alone, lint lands within minutes, and the overlap costs runner
+minutes rather than waiting time.
+
+All jobs use Python 3.13.13 and call the same tools with the same config, not
+a separate copy of the thresholds, so local and CI runs cannot drift apart.
+This is the authoritative merge/release feedback mechanism: a failing check
+blocks the PR regardless of what a local run showed. Running
+`scripts/check.sh --release` locally before pushing a release is still
+recommended so failures are caught before CI, not instead of it.
 
 Known environment gap: `ubuntu-latest` doesn't ship the Qt runtime
 libraries PySide6 dynamically links even under `QT_QPA_PLATFORM=offscreen`
@@ -229,8 +288,8 @@ before and after, no functional change in the same commit.
 Ruff's McCabe checks (`C90`) are enabled with a hard limit of
 `max-complexity = 15` (`[tool.ruff.lint.mccabe]` in `pyproject.toml`), run as
 part of the normal `ruff check .` in `scripts/check.sh` / `scripts/check.ps1`
-— no separate CI system exists in this repo, so that script *is* the
-enforcement point for every change and release.
+and in the CI fast-tier job, which is the enforcement point for every change
+and release.
 
 Interpretation:
 
