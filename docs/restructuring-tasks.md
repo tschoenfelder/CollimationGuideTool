@@ -88,6 +88,62 @@ not change · dependencies · non-goals · proof required.
   by a targeted command that does not run UI/guide suites; CI shows separate fast/slow/coverage
   jobs; full release gate green.
 
+### S2 — #54 proof manifests
+
+- **Allowed files:** new `proofs/` (manifests + README with schema); new `scripts/prove.py`; new
+  `tests/contracts/test_proof_manifests.py` (+ unit tests for prove.py under `tests/core/testing/`);
+  new `.github/pull_request_template.md`; `.github/workflows/quality.yml` (fast job: manifest
+  validation step only); CONTRIBUTING.md section "Proof manifests" only; conftest tier table only
+  if a new test module needs a tier entry.
+- **Behavior changed:** none in production. Revert experiments run in a **separate git worktree**,
+  never in the shared tree.
+- **Tests:** manifest schema/existence validation; prove.py selection logic.
+- **Frozen:** all production code; existing tests.
+- **Dependencies:** #50 (tiers) done.
+- **Non-goals:** writing new regression tests for old defects (only reference existing ones; missing
+  ones → recorded as S7 gap); manifests for S6/S7 issues (they ship their own).
+- **Proof:** ≥5 backfilled manifests; ≥3 revert-proven (focused test fails with fix reverted); #43 and
+  #49 manifests present; `python scripts/prove.py 49` runs the proof in one command.
+
+### S3a — #53 time abstraction (first half)
+
+- **Allowed files:** new `packages/astrotool_core/timing/` (public via `__init__` only);
+  `packages/astrotool_core/acquisition/stable_frame_acquisition.py`, `motion_aware_acquisition.py`;
+  `apps/collimation_tool/application/autofocus_controller.py`, `autofocus_search.py`;
+  `packages/astrotool_core/mount/tracking_mode.py`; guide-controller timing (`apps/guide_tool/application/`)
+  for #13; their tests; new sleep-guard test; `tests/conftest.py` tier table entries only;
+  `pyproject.toml` import-linter contract for `timing` only.
+- **Excluded until S6.0 merges:** `mount_test_move_runner.py`, `mount_test_move_panel.py`,
+  `recenter_policy.py` (→ S3b).
+- **Behavior changed:** none (behavior-neutral injection; production defaults to the real clock).
+- **Tests:** fake-time tests incl. deadline boundaries (before/at/after) and cancellation per wait
+  state; #13 tests without the 2 s real wait.
+- **Frozen:** public constructor signatures stay backward compatible (clock/scheduler are optional
+  keyword args); no hardware op moved onto the Qt main thread.
+- **Non-goals:** simulators (#51); changing algorithms or timeouts.
+- **Proof:** ≥20 fake-time tests; wall-time before/after of the migrated test modules; sleep guard with
+  a justified allowlist.
+
+### S6.0 — Mount Align movement path on the real OnStep adapter (CRITICAL)
+
+- **Allowed files:** `apps/collimation_tool/ui/mount_test_move_runner.py`,
+  `apps/collimation_tool/ui/mount_test_move_panel.py` (movement dispatch/sizing only),
+  `packages/astrotool_core/onstep/mount_pulse_adapter.py` (only if a capability must be *reported*,
+  e.g. a `supports_timed_motion` flag — no new motion primitive); their tests; a new regression test
+  driving the **production** `OnStepMountPulseAdapter` over the existing fake OnStep INDI client.
+- **Behavior changed:** calibration bootstrap, manual RA/Dec nudges and screen moves use the adapter's
+  angular move sized up front (AGENTS.md "Mount Align movement policy": ~25 % of frame, reference
+  seeds) whenever timed pulses are unsupported; refusal reasons are surfaced, never masked by a
+  fallback.
+- **Tests first:** a regression that fails on current `main` (calibration / nudge against the real
+  adapter + fake OnStep connection never moves the mount).
+- **Frozen:** OnStepAdapter itself; `MountPort` protocol shape for other callers.
+- **Dependencies:** none; blocks S3b and S6.6.
+- **Non-goals:** extracting Mount Align orchestration (S6.6); `recenter_policy.py` and guide-tool
+  pulse guiding (record as dependencies if they share the defect).
+- **Proof:** failing-then-passing regression; proof manifest `proofs/46.yaml` (or linked); field-only
+  assumptions listed.
+
 ### S5 — #55 + #52 duplication inventory (analysis only)
 
 - **Allowed files:** new `docs/quality/duplication-audit.md` only.
