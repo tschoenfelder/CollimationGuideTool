@@ -155,6 +155,43 @@ Natural Star vs Artificial Star is an orthogonal target-type distinction and may
 
 ---
 
+## Application layering — mandatory
+
+Device and workflow policy must not live in Qt widgets. The required shape is:
+
+```text
+Qt panel
+  -> application service / controller
+      -> port / protocol
+          -> adapter (vendor / INDI / OnStepAdapter specifics)
+```
+
+UI panels own only: signals, buttons, layout, rendering state, and translating
+user intent into application commands.
+
+Application services own: lifecycle and state transitions, normalized
+results/failures, cancellation, bounded timeout/retry policy, operating-mode
+and tracking preconditions, fresh-frame acquisition after motion, and
+coordination of ports.
+
+Rules:
+
+- Do not add new device lifecycle, Busy/timeout, capture-validity, calibration
+  or failure-classification logic to a panel module. Put it in (or extend) an
+  application service and bind the panel to it.
+- Extract small services around genuinely repeated behavior. Do not create one
+  mega-controller.
+- Every default/device identity/policy value has one authoritative owner; no
+  contradictory second fallback (see CONTRIBUTING.md, "Duplicated knowledge").
+- Policy waits go through the injected clock/scheduler, not `time.sleep()`
+  (see CONTRIBUTING.md, "Deterministic time").
+- Production code never branches on "am I under test". Simulators and fakes
+  plug in behind the same ports the production adapters implement.
+- Services get direct low-level tests that do not instantiate `MainWindow`;
+  panels get thin binding tests instead of re-testing service behavior.
+
+---
+
 ## Proof of solution
 
 The team/agent owns the proof of a fix.
@@ -182,6 +219,23 @@ For hardware-facing behavior, prefer:
 
 Field confirmation is the final validation layer, not the main proof.
 
+The first proof is the lowest-tier test that reproduces the defect (unit or
+component with a simulator and fake clock), not a green full suite and never a
+Pi deployment. Every fix records that proof in a proof manifest (issue #54).
+
+---
+
+## Agent work model
+
+Agents own **issues, not layers**. Before starting, an agent gets a task
+contract (allowed files, behavior changed, tests, frozen interfaces,
+dependencies, non-goals, required proof) and must not edit outside it —
+discoveries outside the contract become recorded dependencies. An independent
+review agent checks each implementation adversarially. Shared foundations
+(#50 test taxonomy, #51 simulators, #52 application services, #53 time) are
+changed serially, never by two agents at once. Details: CONTRIBUTING.md,
+"Agents and issue ownership".
+
 ---
 
 ## Architectural enforcement checklist
@@ -195,5 +249,13 @@ A mount-related change is not complete unless review can answer **yes** to all a
 - Are calibration movements verified from stable camera data?
 - Are all relevant failure paths automatically tested?
 - Are the issue-specific acceptance criteria proven before requesting field testing?
+
+Any change (not only mount-related) additionally requires **yes** to:
+
+- Does the panel only bind state, with the policy in an application service?
+- Is the defect proven by a test at the lowest practical tier, and named in a proof manifest?
+- Does every policy wait use the injected clock/scheduler rather than `time.sleep()`?
+- Does every changed default/identifier/policy value still have exactly one authoritative owner?
+- Did the change stay inside its task contract?
 
 If not, do not merge the change.

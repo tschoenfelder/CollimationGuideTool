@@ -34,18 +34,106 @@ APP-COLLIMATION   APP-GUIDE
 UI-COLLIMATION   UI-GUIDE
 ```
 
-Regardless of the label, run at minimum:
+## Test pyramid and the risk-based minimum gate
 
+A large green suite is not proof that the change you made works. The first
+proof of a change is the fast, focused test that exercises exactly that
+behavior; broad suites are escalation and release gates, not the first proof.
+
+The intended shape is:
+
+```text
+many pure unit tests
+        ↓
+many deterministic component / state-machine tests
+        ↓
+focused adapter contracts
+        ↓
+few integrations
+        ↓
+very few acceptance / end-to-end tests
+        ↓
+real hardware confirmation (final validation only)
 ```
-pytest tests/core tests/collimation tests/guide
-```
 
-before considering any change done — **even a change that only touches
-CollimationTool**. `scripts/check.sh` / `scripts/check.ps1` runs this plus
-lint/type-check in one step.
+| Tier | What it may touch | Target feedback |
+|------|-------------------|-----------------|
+| `unit` | pure / near-pure code; no Qt event loop, threads, wall-clock sleeps, hardware, INDI, network | seconds |
+| `component` | one production component with fakes/simulators for its boundaries; fake clock where timing matters | seconds |
+| `contract` | adapter/port conformance against deterministic fakes or the installed library's API shape | seconds |
+| `integration` | several production components wired together; still no hardware | minutes |
+| `acceptance` | small below-UI product workflow set (`datasets/acceptance/`) | minutes |
+| `hardware` | real devices; explicit opt-in only | field run |
 
-A `CORE-*` change additionally requires the full `tests/contracts` and
-`tests/integration` suites to pass.
+Minimum before a change is done:
+
+- the unit/component tests directly covering the changed code — **mandatory**;
+- the contract tests of every boundary the change touches — **mandatory**;
+- a defect fix adds or strengthens a test at the **lowest practical tier**. A
+  high-level acceptance test alone is not sufficient proof when the defect
+  belongs to a lower-level component;
+- integration / regressions / acceptance / full coverage — escalation when the
+  change crosses components, and always before a release.
+
+Tooling for the tiers (markers, `scripts/check.ps1 -Fast`, changed-module test
+selection) is being introduced by issue #50 — see
+[`docs/restructuring-tasks.md`](docs/restructuring-tasks.md). Until it lands,
+`scripts/check.sh` / `scripts/check.ps1` still run the old
+`tests/core tests/collimation tests/guide` gate.
+
+Production deployment (the Raspberry Pi) and real hardware are the **final
+validation step**, never the normal environment for reproducing a bug.
+
+## Deterministic time
+
+Application and UI policy code must not call `time.sleep()` or poll the wall
+clock directly for policy waits (settle times, retries, confirmation timeouts,
+deadlines). Express them through the injected clock/scheduler boundary (issue
+#53) so tests can advance fake time instantly and hit exact deadline
+boundaries. Hardware adapters may block internally where the external API
+requires it; each such exception is listed with its reason in the sleep-guard
+allowlist. Tests must not use multi-second real-time waits to observe state.
+
+## Duplicated knowledge
+
+Every device name, slot count, limit, default, timeout representing one
+external behavior, capability rule, and mode/tracking decision has **exactly
+one authoritative owner** (configuration object, domain policy, application
+service, or adapter). Do not add a second fallback literal "just in case" — a
+contradictory fallback is how the wrong EFW device name shipped. Similar-looking
+code is not automatically a defect; duplicated *authoritative knowledge* is
+(issue #55).
+
+## Proof manifests
+
+Every bug fix and every HIGH/CRITICAL issue ships a small machine-readable
+proof manifest (issue #54) naming the issue, the affected modules, the
+regression tests, whether each test failed before the fix, any dataset UUID,
+the single focused command that runs the proof, the broader tier required, and
+any remaining field-only assumption. Review asks one question first: **what
+test would fail if this bug returned?** The manifest must answer it.
+
+## Agents and issue ownership
+
+This repository uses common code ownership. Work is split by **issue**, not by
+layer — there is no permanent "camera agent", "UI agent" or "mount agent":
+failures here live *between* camera, mount, timing, orchestration and UI.
+
+- One implementing agent owns one issue: the implementation and its low-level
+  regression tests. Two agents never share responsibility for one change.
+- A separate review agent then acts as an independent test adversary — it tries
+  to find cases the implementer missed rather than extending the solution.
+- Before an agent starts, it gets a written task contract:
+  allowed production files/modules · behavior being changed · tests to
+  add/change · interfaces that must not change · dependencies on other
+  issues · explicit non-goals · proof required for completion.
+- Anything discovered outside that contract becomes a recorded dependency
+  (another issue or a tracker entry), not an opportunistic edit.
+- Shared architectural foundations (test taxonomy #50, simulators #51,
+  application services #52, time #53) are serialized where their code
+  overlaps: the time abstraction is established once and consumed by the
+  simulators, never invented twice. Parallel work is safe only between
+  contracts with disjoint production files.
 
 ## Proof of solution is the team's responsibility
 
