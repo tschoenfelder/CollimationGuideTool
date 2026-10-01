@@ -24,6 +24,8 @@ Mapping rules (see :func:`map_changed_paths`):
   ``conftest.py`` below ``tests/<dir>/`` -> that directory;
 - ``datasets/<kind>/**`` -> the tests that read that kind;
 - this script -> its own unit tests;
+- ``proofs/**`` or ``scripts/prove.py`` (issue #54) -> the proof-manifest
+  contract test and prove.py's unit tests;
 - docs / markdown / ``.github`` (outside ``tests/`` and ``datasets/``) -> no
   tests;
 - anything else (``tests/conftest.py``, ``pyproject.toml``,
@@ -63,6 +65,8 @@ _NO_TEST_SUFFIXES = {".md", ".txt", ".rst", ".png", ".jpg", ".svg"}
 _NO_TEST_PREFIXES = ("docs/", ".github/", "wiki/")
 _SELF = "scripts/changed_tests.py"
 _SELF_TESTS = "tests/core/testing/test_changed_tests.py"
+# Issue #54: proof manifests and their runner -> the tests that validate them.
+_PROOF_TESTS = ("tests/contracts/test_proof_manifests.py", "tests/core/testing/test_prove.py")
 
 
 class _RunAllFast(Exception):
@@ -92,6 +96,8 @@ def _map_one(path: PurePosixPath, test_files: Collection[str]) -> set[str]:
         return set(_DATASET_TESTS.get(parts[1], _ALL_DATASET_TESTS))
     if path.name.startswith("requirements") or text == "pyproject.toml":
         raise _RunAllFast
+    if parts[0] == "proofs" or text == "scripts/prove.py":
+        return set(_PROOF_TESTS)
     if parts[0] != "tests" and (
         path.suffix in _NO_TEST_SUFFIXES or text.startswith(_NO_TEST_PREFIXES)
     ):

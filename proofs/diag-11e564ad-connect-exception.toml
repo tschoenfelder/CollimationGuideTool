@@ -1,0 +1,56 @@
+# Proof manifest -- schema in proofs/README.md.
+# Run: python scripts/prove.py diag-11e564ad-connect-exception
+issues = []
+summary = """Clicking Connect on the Focuser panel crashed with an unhandled TimeoutError \
+(diagnostic 11e564ad): Focuser/MountPark/MountTestMove panels caught only ConnectionError \
+although OnStepConnection.acquire() also raises TimeoutError/RuntimeError/ValueError \
+(7bb7b68). Follow-up (diagnostic e1ddabca): the caught reason was then shown but never \
+logged nor in the diagnostic bundle -- now logged as WARNING and kept as last_connect_error \
+(ca5bb92)."""
+modules = [
+    "apps/collimation_tool/ui/focuser_panel.py",
+    "apps/collimation_tool/ui/mount_park_panel.py",
+    "apps/collimation_tool/ui/mount_test_move_panel.py",
+]
+fix_commits = ["7bb7b68", "ca5bb92"]
+dataset_uuids = ["11e564ad", "e1ddabca"]
+focused_command = """pytest -q \
+tests/collimation/ui/test_focuser_panel.py::TestConnectFailureIsShownNotCrashed \
+tests/collimation/ui/test_mount_interface_state.py::test_a_timeout_on_connect_is_shown_not_raised \
+tests/collimation/ui/test_mount_interface_state.py::test_the_reason_is_logged_and_recorded_for_diagnostics \
+tests/collimation/ui/test_mount_park_confirm_home.py::test_a_timeout_on_connect_is_shown_not_raised \
+tests/collimation/ui/test_mount_park_confirm_home.py::test_the_reason_is_logged_and_recorded_for_diagnostics"""
+broader_tier = "component"
+field_only_assumptions = [
+    "Why the INDI CONNECTION property timed out on the Pi (indiserver / OnStep driver not answering) is operational, not covered here.",
+]
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_focuser_panel.py::TestConnectFailureIsShownNotCrashed::test_a_timeout_on_connect_is_shown_not_raised"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-01, separate worktree at 645846e, 7bb7b68's hunk reverted by hand (except Exception -> except ConnectionError in all three panels; `git revert` conflicts with ca5bb92): tests/collimation/ui/test_focuser_panel.py:69: AssertionError: assert 'Connect failed' in 'Not connected.'"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_interface_state.py::test_a_timeout_on_connect_is_shown_not_raised"
+failed_before_fix = true
+evidence = "Same 7bb7b68 revert-proof: tests/collimation/ui/test_mount_interface_state.py:52: AssertionError: assert 'Connect failed' in 'Not connected.'"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_park_confirm_home.py::test_a_timeout_on_connect_is_shown_not_raised"
+failed_before_fix = true
+evidence = "Same 7bb7b68 revert-proof: tests/collimation/ui/test_mount_park_confirm_home.py:34: AssertionError: assert 'Connect failed' in 'Not connected.'"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_focuser_panel.py::TestConnectFailureIsShownNotCrashed::test_the_reason_is_logged_and_recorded_for_diagnostics"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-01, separate worktree at 645846e, `git revert -n ca5bb92` alone (tests kept at HEAD): tests/collimation/ui/test_focuser_panel.py:87: AssertionError: assert 'CONNECTION did not update' in ''"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_interface_state.py::test_the_reason_is_logged_and_recorded_for_diagnostics"
+failed_before_fix = true
+evidence = "Same ca5bb92 revert-proof: tests/collimation/ui/test_mount_interface_state.py:69: AssertionError: assert 'CONNECTION did not update' in ''"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_park_confirm_home.py::test_the_reason_is_logged_and_recorded_for_diagnostics"
+failed_before_fix = true
+evidence = "Same ca5bb92 revert-proof: tests/collimation/ui/test_mount_park_confirm_home.py:51: AssertionError: assert 'CONNECTION did not update' in ''"

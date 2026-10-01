@@ -1,0 +1,27 @@
+# Proof manifest -- schema in proofs/README.md.
+# Run: python scripts/prove.py diag-73c7d59d-filter-stuck-busy  (or: prove.py 47)
+issues = [47]
+summary = """'Set filter' stuck forever (diagnostic 73c7d59d): the wheel kept reporting Busy, \
+and the confirmation-timeout safety net sat in an `elif` reachable only while NOT moving, so \
+the selector never re-enabled. Fix: the timeout is checked unconditionally -- in \
+FilterWheelPanel and, for the identical latent gap, FocuserPanel."""
+modules = [
+    "apps/collimation_tool/ui/filter_wheel_panel.py",
+    "apps/collimation_tool/ui/focuser_panel.py",
+]
+fix_commits = ["3fc09ae"]
+dataset_uuids = ["73c7d59d"]
+focused_command = """pytest -q \
+tests/collimation/ui/test_filter_wheel_panel.py::TestOneActionAtATime::test_a_wheel_stuck_reporting_busy_forever_still_recovers"""
+broader_tier = "component"
+field_only_assumptions = [
+    "Why the real EFW stayed Busy is not reproduced (driver/hardware); the fix only bounds the UI's wait.",
+]
+gaps = [
+    "FocuserPanel half of 3fc09ae has NO regression test: with 3fc09ae fully reverted in a separate worktree (2026-10-01, at 645846e) all 23 tests of tests/collimation/ui/test_focuser_panel.py still pass. A 'focuser stuck reporting moving forever re-enables In/Out after the confirmation timeout' component test is missing (S7 gap).",
+]
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_filter_wheel_panel.py::TestOneActionAtATime::test_a_wheel_stuck_reporting_busy_forever_still_recovers"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-01, separate worktree at 645846e, `git revert -n 3fc09ae` with tests kept at HEAD: tests/collimation/ui/test_filter_wheel_panel.py:201: assert panel._slot_combo.isEnabled() -> AssertionError: assert False"

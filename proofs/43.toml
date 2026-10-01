@@ -1,0 +1,58 @@
+# Proof manifest -- schema in proofs/README.md. Run: python scripts/prove.py 43
+issues = [43]
+summary = """Terrestrial Mount Align calibration failed (bundle fe91004f). The bundle showed \
+the frames were NOT motion-blurred: every measured response was exactly (0, 0) -- the mount \
+produced no image motion and the run ended as an unexplained 'calibration_invalid'. Fix: a \
+commanded move with no image displacement is an explicit NO_MOTION_DETECTED outcome (per \
+direction and per nudge), never a matrix; nudge BEFORE frames are verified; stability \
+evidence and a per-capture timeline go into diagnostics. The original hypothesis (overlapping \
+/ stale exposures used as evidence) is pinned by the frame-validity tests too."""
+modules = [
+    "apps/collimation_tool/ui/mount_test_move_panel.py",
+    "apps/collimation_tool/ui/mount_test_move_runner.py",
+    "apps/collimation_tool/ui/main_window.py",
+    "packages/astrotool_core/acquisition/image_stability.py",
+    "packages/astrotool_core/acquisition/motion_aware_acquisition.py",
+]
+fix_commits = ["be6fc48"]
+# No minimized frame dataset was captured into datasets/regressions/: the bundle's
+# evidence (stable 0.0 px, every response (0, 0)) is reproduced deterministically by
+# the rig in test_calibration_frame_validity.py (px_per_ms = 0 on both cameras).
+dataset_uuids = ["fe91004f-1e52-4d93-a69d-6fb8cc0d5e7d"]
+focused_command = """pytest -q \
+tests/collimation/ui/test_calibration_frame_validity.py::TestNoMotionIsExplicit \
+tests/collimation/ui/test_calibration_frame_validity.py::TestOverlappingAndStaleFramesAreNeverMeasured \
+tests/core/acquisition/test_image_stability_evidence.py"""
+broader_tier = "component"
+field_only_assumptions = [
+    "WHY the real mount produced no image motion in fe91004f (parked, motion disabled, rate, tracking) is not reproduced -- the fix only makes that case explicit and actionable.",
+]
+gaps = [
+    "The all-static case (test_a_static_scene_after_commanded_moves_is_reported_and_never_a_matrix) does NOT fail when #43's two no-motion guards are reverted: the older degenerate-axis check still rejects an all-zero matrix, so that test does not prove #43's own guard. Only the dead-direction and nudge tests do.",
+    "No captured frame set from fe91004f in datasets/regressions/ (#6 intake) -- the regression is synthetic (rig-driven), the bundle is provenance only.",
+]
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_calibration_frame_validity.py::TestNoMotionIsExplicit::test_one_dead_direction_is_never_hidden_by_the_working_ones"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-01, separate worktree at 645846e, both #43 no-motion guards disabled (_is_no_motion -> False, 'any direction with magnitude <= 0' check skipped): tests/collimation/ui/test_calibration_frame_validity.py:453: AssertionError: assert CalibrationMatrix(... dx_px=0.0, dy_px=0.0, px_per_ms=0.0) is None"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_calibration_frame_validity.py::TestNoMotionIsExplicit::test_a_nudge_that_moved_nothing_is_not_a_confirmed_displacement"
+failed_before_fix = true
+evidence = "Same revert-proof (also with _is_no_motion reverted alone): tests/collimation/ui/test_calibration_frame_validity.py:468: KeyError: 'left' (no NO_MOTION_DETECTED class recorded; the zero move was accepted as a displacement)"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_calibration_frame_validity.py::TestNoMotionIsExplicit::test_a_static_scene_after_commanded_moves_is_reported_and_never_a_matrix"
+failed_before_fix = false
+reason_no_prefix_repro = "The bundle's literal case. Passes with #43's guards reverted because the pre-existing degenerate-axis check also rejects an all-zero matrix (see gaps); it pins the explicit 'measured no motion on either camera' message, not the guard."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_calibration_frame_validity.py::TestOverlappingAndStaleFramesAreNeverMeasured::test_a_poisoned_frame_never_reaches_the_estimator"
+failed_before_fix = false
+reason_no_prefix_repro = "Guards the issue's original hypothesis (motion-overlapping / stale exposures used as evidence). The bundle disproved it for fe91004f, and the exposure-start freshness rule predates be6fc48 (#30), so there is no pre-fix failure to reproduce; kept as the frame-validity contract."
+
+[[regression_tests]]
+node = "tests/core/acquisition/test_image_stability_evidence.py::TestEvidence::test_a_moving_image_is_still_unstable_and_keeps_its_evidence"
+failed_before_fix = false
+reason_no_prefix_repro = "New evidence fields added by be6fc48 (diagnosability, not a behavior fix): before the commit the fields did not exist, so the test could not run against the old code."

@@ -1,0 +1,50 @@
+# Proof manifest -- schema in proofs/README.md. Run: python scripts/prove.py 47-efw-device-name
+issues = [47, 41]
+summary = """Filter wheel panel failed to connect on rasppi3: the built-in INDI device name \
+was 'ToupTek EFW 1', never checked against indi_getprop; the real driver is 'ToupTek EFW 2'. \
+Fixed the built-in default and a duplicate fallback literal in registry.py."""
+modules = [
+    "packages/astrotool_core/filter_wheel/config.py",
+    "packages/astrotool_core/filter_wheel/registry.py",
+    "apps/collimation_tool/main.py",
+]
+fix_commits = ["c7c4bb8"]
+dataset_uuids = []
+focused_command = """pytest -q \
+tests/core/filter_wheel/test_config.py::TestBuiltInDefault \
+tests/core/filter_wheel/test_config.py::TestSharedConfigWins::test_reads_the_real_shape_of_the_shared_config \
+tests/core/filter_wheel/test_registry.py::TestBuiltInDefault \
+tests/core/filter_wheel/test_registry.py::TestDefaultFactoryTargetsTheRealDevice"""
+broader_tier = "contract"
+field_only_assumptions = [
+    "That rasppi3's indiserver keeps exposing the wheel as 'ToupTek EFW 2' (verified live once with indi_getprop, 2026-09-24); a different rig/driver build needs an explicit [filter_wheel] device.",
+]
+gaps = [
+    "These tests existed before c7c4bb8 and encoded the SAME wrong value ('EFW 1'), so before the fix they passed: a test can only pin a hardware name, not discover it. The real proof was the live indi_getprop check.",
+    "registry.py's fallback literal (`wiring.device_name or \"ToupTek EFW 2\"`) is unreachable in practice and has no test of its own -- a second copy of the default (duplicated knowledge, #55).",
+]
+
+[[regression_tests]]
+node = "tests/core/filter_wheel/test_config.py::TestBuiltInDefault::test_neither_file_present_uses_the_known_good_default"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-01, separate worktree at 645846e, c7c4bb8's production hunks reverted (tests kept at HEAD): tests/core/filter_wheel/test_config.py:144: AssertionError: assert FilterWheelWi...verride=False) == FilterWheelWi...verride=False)"
+
+[[regression_tests]]
+node = "tests/core/filter_wheel/test_config.py::TestBuiltInDefault::test_both_files_malformed_uses_the_known_good_default"
+failed_before_fix = true
+evidence = "Same revert-proof: tests/core/filter_wheel/test_config.py:158: AssertionError: assert 'ToupTek EFW 1' == 'ToupTek EFW 2'"
+
+[[regression_tests]]
+node = "tests/core/filter_wheel/test_config.py::TestSharedConfigWins::test_reads_the_real_shape_of_the_shared_config"
+failed_before_fix = true
+evidence = "Same revert-proof: tests/core/filter_wheel/test_config.py:44: AssertionError: assert FilterWheelWi...verride=False) == FilterWheelWi...verride=False)"
+
+[[regression_tests]]
+node = "tests/core/filter_wheel/test_registry.py::TestBuiltInDefault::test_default_is_one_wheel_wired_to_main_only"
+failed_before_fix = true
+evidence = "Same revert-proof: tests/core/filter_wheel/test_registry.py:56: AssertionError: assert 'ToupTek EFW 1' == 'ToupTek EFW 2'"
+
+[[regression_tests]]
+node = "tests/core/filter_wheel/test_registry.py::TestDefaultFactoryTargetsTheRealDevice::test_the_default_factory_builds_an_indi_adapter_for_the_exact_device"
+failed_before_fix = true
+evidence = "Same revert-proof: packages/astrotool_core/filter_wheel/indi_filter_wheel_adapter.py:97: ConnectionError: IndiFilterWheelAdapter: 'ToupTek EFW 1' did not confirm CONNECTION within 2.0s"

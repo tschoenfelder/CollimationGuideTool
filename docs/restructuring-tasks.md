@@ -43,12 +43,14 @@ Status: `todo` · `in-progress` · `done` · `field-only` (only real hardware ca
 |----|-------|------|-------|--------|--------|--------|---------------|
 | S0 | #50–#55 | Tracker + CONTRIBUTING.md / AGENTS.md aligned with the audit | coordinator | — | done | | docs only |
 | S1 | #50 | Test tier markers, fast/changed gate, coverage split, CI jobs, timing report | issue agent | APPROVE-WITH-FIXES → 4 fixes applied, re-verified | done | (this commit) | `scripts/check.ps1` (default mode) · `pytest tests/core/testing` |
-| S2 | #54 | Proof manifests, `scripts/prove.py`, CI validation, 5 backfills (3 revert-proven) | | | todo | | |
+| S2 | #54 | Proof manifests, `scripts/prove.py`, CI validation, 6 backfills (5 revert-proven) | issue agent | APPROVE-WITH-FIXES → 10 fixes (flag whitelist, tier/skip check, evidence format, fetch-depth 0) | done | (this commit) | `python scripts/prove.py <issue>` · `--validate-all` |
 | S3a | #53, #13 | `astrotool_core.timing` (Clock/FakeClock/Deadline/poll_until); acquisition, autofocus, tracking_mode, guide controller migrated; sleep guard | issue agent | APPROVE-WITH-FIXES → 9 fixes, mutation-proven | done | (this commit) | `pytest tests/core/timing tests/core/acquisition tests/core/mount tests/core/testing tests/guide tests/collimation/application` |
 | S3b | #53 | Migrate `mount_test_move_runner.py`, `recenter_policy.py` (after S6.0); panel wall-clock polling; interruptible waits | | | todo | | |
 | S4 | #51 | Scenario simulators (OnStep mount, focuser, filter wheel, ToupTek camera) on FakeClock; 5 defect reproductions | | | todo | | |
 | S5 | #55, #52 | Duplication inventory + size/dependency baseline (`docs/quality/duplication-audit.md`) | analysis agent | coordinator spot-check (P01 confirmed in code) | done | (this commit) | docs only |
 | S6.0 | #46, #31, #55 (P01/P02) | **CRITICAL, promoted:** Mount Align bootstrap/nudge/screen moves go through `pulse_axis`, which production `OnStepMountPulseAdapter` always refuses; no rate is ever installed, so angular moves never start on the rig. Size the first move angularly from the optics seeds instead of a timed bootstrap; failing regression against the real adapter + fake OnStep connection first | | | todo | | |
+| S6.0b | #39, P01 | Guide-assisted reacquisition (`recenter_policy.py:113`) calls `pulse_axis` on the production OnStep adapter → always `pulse_rejected`, adapter message dropped; move to the angular path (after S6.0). **Must use the same ms↔arcsec factor S6.0 stores the matrix in (equivalent ms at `calibration_center_rate_x`·sidereal) — that factor needs one public owner first** | | | todo | | |
+| S6.0c | #49, AGENTS manual-move rule | `OnStepMountPulseAdapter.move_angular` holds `connection.operation_lock` for the whole blocking GOTO (up to 30 s); `abort()` takes the same lock on the GUI thread before `stop()`, and park-panel status polls also take it → Stop would freeze the UI and not cancel; `_cancel` never checked. Characterize with a failing component test, then decide stop/lock semantics (verify OnStepAdapter's real abort semantics — no assumptions) | | | todo | | |
 | S6.1 | #55 | Single-source device defaults + config-source contract test | | | todo | | |
 | S6.2 | #52 | `DeviceConnectionService` (Focuser → MountPark → MountTestMove) | | | todo | | |
 | S6.3 | #52 | `OperationLifecycle` + bounded Busy timeout (FilterWheel, Focuser) | | | todo | | |
@@ -91,7 +93,7 @@ not change · dependencies · non-goals · proof required.
 
 ### S2 — #54 proof manifests
 
-- **Allowed files:** new `proofs/` (manifests + README with schema); new `scripts/prove.py`; new
+- **Allowed files:** new `proofs/` (manifests + README with schema); new `scripts/prove.py`; (extended after review: the `proofs/**`→manifest-tests mapping rule in `scripts/changed_tests.py` + its unit test); new
   `tests/contracts/test_proof_manifests.py` (+ unit tests for prove.py under `tests/core/testing/`);
   new `.github/pull_request_template.md`; `.github/workflows/quality.yml` (fast job: manifest
   validation step only); CONTRIBUTING.md section "Proof manifests" only; conftest tier table only
@@ -162,6 +164,7 @@ not change · dependencies · non-goals · proof required.
 
 | Date | Task | Commit | What was proven |
 |------|------|--------|-----------------|
+| 2026-10-01 | S2 | (this commit) | 6 manifests (#49, #43, #47, filter stuck Busy, OnStep serialization, connect exception); 5 revert-proven in a separate worktree, 2 of them re-reproduced by the reviewer; CI fast job validates every manifest and rejects focused commands that could skip their tests; proof gaps recorded for S7 |
 | 2026-10-01 | S3a | (this commit) | ~80 fake-time tests incl. before/at/after boundaries decided by production code; #13 tests deterministic (no threads, 10/10 under CPU load); 9087272 pause-before-start guard restored (mutation fails it); migrated modules 4.25 s → 1.9 s; sleep guard + import contract for `timing` |
 | 2026-10-01 | S1 | (this commit) | 1871 tests partition exactly into 6 tiers; single-file changes proven in 1.5–3.1 s (was a 14.5 min gate); CI fast/slow/coverage run in parallel; coverage ≥80 still enforced. **Not yet faster:** full component tier 801 s — 15 Mount Align panel tests alone take 459 s of real settle/wait time → payoff comes with #53/#51 |
 | 2026-09-30 | S0 | (this commit) | docs only — guidelines now state the tiered gate, deterministic-time, duplicated-knowledge, proof-manifest, layering and agent-ownership rules |
@@ -200,5 +203,21 @@ not change · dependencies · non-goals · proof required.
   motion-aware sample interval, tracking settle poll — make interruptible in S6.3/S6.4.
   `TrackingEnforcer` (`mount/operating_mode.py`) needs a `clock=` pass-through (S6.4).
   `StreamController`/`FrameMailbox` need the clock before a threaded GuideController can run on fake time (S4).
+- **S6.0 findings (2026-10-01).** (1) `recenter_policy.py` reacquisition hits the same refusal → S6.0b.
+  (2) GuideTool pulse guiding (`correction_policy.py:25`, `calibration_controller.py:52`) relies only on
+  `pulse_axis`; dormant because `guide_tool/main.py` wires no mount (audit P03) — must be solved before a
+  mount is wired into GuideTool. (3) OnStepAdapter's 30″ minimum is not exposed as a capability
+  (`MountCapabilities`, S6.5). (4) Nudges still capture BEFORE/AFTER measurement frames, against AGENTS.md
+  manual-move rule → S6.6/S6.7. (5) Status texts on angular-only mounts still mention rate presets
+  (`_no_motion_text`, `_exclude_camera_bounded`) → S6.6. (6) Pre-existing on timed-capable mounts:
+  calibrated nudges solve at the calibration preset but execute at nudge `rate_preset` "7" — possible
+  ~2.4× over-move (candidate explanation for diagnostic de295656) → needs its own failing regression (S6.6).
+- **S2 gaps → S7.** (a) FocuserPanel half of 3fc09ae (stuck-moving re-enables In/Out after timeout) has
+  no test — all 23 focuser-panel tests pass with the fix reverted. (b) #43's static-scene test passes
+  with the #43 guards reverted (older degenerate-axis check catches it) — a test that isolates the #43
+  guard is missing. (c) #43 has no captured frame dataset in `datasets/regressions/`. (d) #49 recovery
+  tests take ~80 s of wall clock → fake time in S3b. (e) The `registry.py` EFW fallback literal has no
+  test (→ S6.1). (f) `changed_tests.py` maps `proofs/**`/`scripts/prove.py` to ALL_FAST instead of the
+  two manifest test modules (#50 follow-up). (g) No CI rule yet *requires* a manifest on a bug-fix PR.
 - **S5 live contradictions (9)** are listed in `docs/quality/duplication-audit.md`; each is owned by an
   S6 step and gets a failing regression before its fix.

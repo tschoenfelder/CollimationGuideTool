@@ -36,6 +36,9 @@ jobs:
       QT_QPA_PLATFORM: offscreen
     steps:
       - uses: actions/checkout@v4
+        with:
+          # full history: the proof-manifest step verifies every fix_commits id (issue #54)
+          fetch-depth: 0
 
       - uses: actions/setup-python@v5
         with:
@@ -80,6 +83,9 @@ jobs:
 
       - name: import-linter
         run: lint-imports
+
+      - name: proof manifests (issue #54)
+        run: python scripts/prove.py --validate-all
 
       - name: pytest — fast tiers (unit, component, contract)
         run: pytest -m "unit or component or contract"

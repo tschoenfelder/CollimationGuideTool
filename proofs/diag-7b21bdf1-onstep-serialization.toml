@@ -1,0 +1,31 @@
+# Proof manifest -- schema in proofs/README.md.
+# Run: python scripts/prove.py diag-7b21bdf1-onstep-serialization
+issues = []
+summary = """Persistent focuser move_rejected (diagnostic 7b21bdf1): AutofocusRunner moved \
+the focuser on a worker thread while three panels polled status() on the GUI thread over \
+ONE shared OnStepConnection; nothing serialized a compound operation (move_absolute's \
+read-check-send-wait) against a concurrent poll. Fix: OnStepConnection.operation_lock \
+(re-entrant), held for the full duration of every focuser/park/pulse adapter method."""
+modules = [
+    "packages/astrotool_core/onstep/connection.py",
+    "packages/astrotool_core/onstep/focuser_adapter.py",
+    "packages/astrotool_core/onstep/mount_park_adapter.py",
+    "packages/astrotool_core/onstep/mount_pulse_adapter.py",
+]
+fix_commits = ["9cea2e9"]
+dataset_uuids = ["7b21bdf1"]
+focused_command = "pytest -q tests/core/onstep/test_onstep_adapters.py::TestOperationSerialization"
+broader_tier = "contract"
+field_only_assumptions = [
+    "That this interleaving was the actual mechanism of the live move_rejected (the lock removes a confirmed hazard; the next live autofocus run confirms whether move_rejected is gone).",
+]
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_adapters.py::TestOperationSerialization::test_a_slow_move_and_concurrent_status_polls_never_overlap"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-01, separate worktree at 645846e, `git revert -n 9cea2e9` with tests kept at HEAD: tests/core/onstep/test_onstep_adapters.py:608: assert not overlap_detected.is_set() -> assert not True"
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_adapters.py::TestOperationSerialization::test_operations_across_different_adapter_types_never_overlap"
+failed_before_fix = true
+evidence = "Same revert-proof: tests/core/onstep/test_onstep_adapters.py:645: assert not overlap_detected.is_set() -> assert not True"

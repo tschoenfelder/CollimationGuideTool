@@ -168,6 +168,57 @@ regression tests, whether each test failed before the fix, any dataset UUID,
 the single focused command that runs the proof, the broader tier required, and
 any remaining field-only assumption. Review asks one question first: **what
 test would fail if this bug returned?** The manifest must answer it.
+Documentation-only changes need none.
+
+The manifest is `proofs/<issue>.toml` (`<issue>-<slug>.toml` for a second fix
+under one issue, `diag-<uuid8>-<slug>.toml` for a field fix without an issue);
+the schema is in `proofs/README.md`. In short:
+
+```toml
+issues = [49]
+summary = "what broke, why, what the fix does"
+modules = ["apps/collimation_tool/ui/mount_test_move_panel.py"]
+fix_commits = ["fed00fa"]
+dataset_uuids = ["6d33f37c"]            # diagnostic bundle(s), [] when none
+focused_command = "pytest -q tests/collimation/ui/test_calibration_failure_recovery.py::TestBundle6d33f37cRegression"
+broader_tier = "component"
+field_only_assumptions = []
+gaps = []                               # optional: missing lower-tier tests, said honestly
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_calibration_failure_recovery.py::TestBundle6d33f37cRegression::test_a_camera_that_never_delivers_a_fresh_frame_can_be_retried_over_and_over"
+failed_before_fix = true
+evidence = "revert-proof: ...test_calibration_failure_recovery.py:481: AssertionError: attempt 0: event loop blocked"
+# or: failed_before_fix = false + reason_no_prefix_repro = "why it can't be shown"
+```
+
+The proof for one issue is a single command:
+
+```text
+python scripts/prove.py <issue>         # e.g. 49: every manifest listing that issue
+python scripts/prove.py diag-7b21bdf1   # a manifest by unique stem (or UUID) prefix
+python scripts/prove.py --validate-all  # schema, flags, files, node ids, tiers, fix commits
+```
+
+All selected manifests run; a PASS/FAIL line per manifest is printed. The focused
+command may only use flags that cannot drop a listed test (`-q`, `-x`, `--tb`,
+`-r`, ... -- never `-k`, `-m`, `--deselect`, `--co`; the list is in
+`proofs/README.md`).
+
+`failed_before_fix = true` needs evidence naming the failing line
+(`path.py:NNN`): revert just the fix in a **separate git worktree** created
+from the current HEAD (never in the shared tree), run `scripts/prove.py <issue>`
+there (it puts that worktree's `packages/`/`apps/` first on `PYTHONPATH`), and
+copy the failing assertion line into `evidence`. A defect with no low-tier test
+is recorded under `gaps`, not hidden.
+
+CI does **not** run every focused command: the listed regression tests run in
+their normal tiers in the fast and slow jobs. Validation therefore rejects a
+listed test that would not run there -- tier `hardware` (per `tier_for()` in
+`tests/conftest.py`), `tests/local_data/`, or a static `skip`/`skipif`/`xfail`
+marker. CI's fast job (full git history) runs `scripts/prove.py --validate-all`
+and `tests/contracts/test_proof_manifests.py`; the PR template asks the same
+question and points to the manifest.
 
 ## Agents and issue ownership
 

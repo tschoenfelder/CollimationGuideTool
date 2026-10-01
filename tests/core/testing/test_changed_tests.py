@@ -37,7 +37,9 @@ _TEST_FILES = {
     "tests/core/onstep/test_onstep_adapters.py",
     "tests/core/registration/test_terrestrial_registrar_real_data.py",
     "tests/core/testing/test_changed_tests.py",
+    "tests/core/testing/test_prove.py",
     "tests/contracts/test_camera_contract.py",
+    "tests/contracts/test_proof_manifests.py",
     "tests/collimation/test_onstep_boundary.py",
     "tests/collimation/domain/test_collimation_state.py",
     "tests/collimation/ui/conftest.py",
@@ -50,6 +52,9 @@ _TEST_FILES = {
     "tests/regressions/test_loader.py",
     "tests/acceptance/test_guiding_regression.py",
 }
+
+
+_PROOF_TESTS = ["tests/contracts/test_proof_manifests.py", "tests/core/testing/test_prove.py"]
 
 
 def _map(*paths: str) -> list[str] | str:
@@ -92,6 +97,10 @@ def _map(*paths: str) -> list[str] | str:
         ("tests/regressions/_loader.py", ["tests/regressions"]),
         ("tests/collimation/ui/conftest.py", ["tests/collimation/ui"]),
         ("scripts/changed_tests.py", ["tests/core/testing/test_changed_tests.py"]),
+        # issue #54: a proof manifest, its README or its runner -> the proof tests
+        ("proofs/49.toml", _PROOF_TESTS),
+        ("proofs/README.md", _PROOF_TESTS),
+        ("scripts/prove.py", _PROOF_TESTS),
     ],
 )
 def test_a_mappable_change_selects_only_its_own_tests(changed: str, expected: list[str]) -> None:

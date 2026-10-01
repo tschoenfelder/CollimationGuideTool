@@ -1,0 +1,53 @@
+# Proof manifest -- schema in proofs/README.md. Run: python scripts/prove.py 49
+issues = [49]
+summary = """Mount Align froze the UI: every BEFORE/AFTER capture waited 24-60 s for fresh \
+frames inside a click/timer handler on the Qt GUI thread (bundle 6d33f37c). Fix: frame \
+waits run on a worker thread (threaded_captures), every failure returns to an idle, \
+retryable state through one fail-safe path."""
+modules = [
+    "apps/collimation_tool/ui/mount_test_move_panel.py",
+    "apps/collimation_tool/ui/main_window.py",
+    "apps/collimation_tool/main.py",
+]
+fix_commits = ["fed00fa"]
+# The bundle's frames are not needed: its evidence is the mount_test_move_timeline
+# (10 back-to-back BEFORE waits, no pulse ever commanded), which
+# TestBundle6d33f37cRegression reproduces with a deterministic timing rig.
+dataset_uuids = ["6d33f37c"]
+focused_command = """pytest -q \
+tests/collimation/ui/test_calibration_failure_recovery.py::TestTheEventLoopStaysResponsive \
+tests/collimation/ui/test_calibration_failure_recovery.py::TestBundle6d33f37cRegression \
+tests/collimation/ui/test_calibration_failure_recovery.py::TestEveryFailureReturnsToIdle \
+tests/collimation/ui/test_calibration_failure_recovery.py::TestStop"""
+broader_tier = "component"
+field_only_assumptions = [
+    "That no OTHER hardware-dependent wait remains on the GUI thread in the real rig's Mount Align flow (the tests cover the capture path only).",
+]
+gaps = [
+    "The recovery tests run on the wall clock (the file takes ~80 s; TestOtherFailureClasses::test_no_motion_is_reported_and_the_panel_is_reusable alone ~39 s): move them to astrotool_core.timing.FakeClock once the Mount Align runner is on injected time (#53 part B / S3b).",
+]
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_calibration_failure_recovery.py::TestBundle6d33f37cRegression::test_a_camera_that_never_delivers_a_fresh_frame_can_be_retried_over_and_over"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-01, separate worktree at 645846e, fix hunk reverted (_request_capture always captures inline on the GUI thread): tests/collimation/ui/test_calibration_failure_recovery.py:481: AssertionError: attempt 0: event loop blocked"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_calibration_failure_recovery.py::TestTheEventLoopStaysResponsive::test_run_calibration_returns_at_once_and_the_loop_keeps_ticking"
+failed_before_fix = true
+evidence = "Same revert-proof: tests/collimation/ui/test_calibration_failure_recovery.py:192: assert 0.7317250000778586 < 0.3 (Run Calibration blocked the event loop for 0.73 s)"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_calibration_failure_recovery.py::TestTheEventLoopStaysResponsive::test_a_nudge_capture_is_off_the_gui_thread_too"
+failed_before_fix = true
+evidence = "Same revert-proof: tests/collimation/ui/test_calibration_failure_recovery.py:226: assert (1277043.0230342 - 1277042.2915258) < 0.3"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_calibration_failure_recovery.py::TestEveryFailureReturnsToIdle::test_failure_then_a_second_run_without_restarting"
+failed_before_fix = true
+evidence = "Same revert-proof, all 5 parametrized failure classes failed: tests/collimation/ui/test_calibration_failure_recovery.py:305: assert 0 > 0 (and :315: assert False is True)"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_calibration_failure_recovery.py::TestStop::test_stop_during_a_capture_returns_to_idle_at_once_and_nothing_runs_later"
+failed_before_fix = true
+evidence = "Same revert-proof: tests/collimation/ui/test_calibration_failure_recovery.py:417: assert False is True"
