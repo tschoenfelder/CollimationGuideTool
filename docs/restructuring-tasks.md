@@ -147,6 +147,49 @@ not change · dependencies · non-goals · proof required.
 - **Proof:** failing-then-passing regression; proof manifest `proofs/46.yaml` (or linked); field-only
   assumptions listed.
 
+### S4 — #51 hardware-boundary simulators
+
+- **Allowed files:** `packages/astrotool_core/testing/` (extend existing fakes / add simulator modules,
+  public via its `__init__`); new tests under `tests/core/testing/` and `tests/core/<sub>/` for simulator
+  scenarios; `tests/conftest.py` tier table only; CONTRIBUTING.md new section "Reproducing a hardware
+  bug locally" only; at most one minimal clock injection into `acquisition/stream_controller.py` /
+  `FrameMailbox` if needed for deterministic frame timing (behaviour-neutral, default real clock).
+- **Behavior changed:** none in production (test infrastructure only).
+- **Consumes:** `astrotool_core.timing` (FakeClock) — never a second time model.
+- **Scenarios (from #51):** OnStep mount (park/unpark, tracking with delayed transitions, stale
+  properties, connect error variants, retryable/non-retryable rejects, stop); focuser (limits, stale
+  metadata, backlash, Busy-forever, concurrent status reads); filter wheel (slots, invalid slot,
+  Busy-forever/delayed completion, disconnect while moving, name variants); ToupTek camera (per-model
+  capability matrix with E_NOTIMPL, exposure/gain metadata, frame timing, stale/motion-overlapping
+  frames with explicit timestamps, FITS replay).
+- **Proof:** ≥5 defect classes reproduced deterministically (unsupported capability, connect timeout,
+  stuck Busy, OnStep compound-operation concurrency with deterministic scheduling, stale frames #43);
+  one Mount Align and one autofocus component workflow on the simulators; the filter-wheel
+  `TestSetSlot` wall-clock flake replaced by a deterministic scenario test (the old test may stay
+  only if made deterministic); no live INDI/serial/SDK/network/real sleeps.
+- **Frozen:** production code (except the optional stream clock injection); existing fakes' current
+  behaviour for existing tests.
+- **Non-goals:** S6.0c's lock semantics; fixing production defects found (record them).
+
+### S6.0c — Stop during an angular GOTO
+
+- **Allowed files:** `packages/astrotool_core/onstep/mount_pulse_adapter.py`,
+  `packages/astrotool_core/onstep/connection.py` (lock semantics only),
+  `apps/collimation_tool/ui/mount_test_move_runner.py` (abort path only),
+  `apps/collimation_tool/ui/mount_test_move_panel.py` (Stop handler only),
+  `apps/collimation_tool/ui/mount_park_panel.py` (status-poll path only); their tests.
+- **First:** characterize with failing component tests: Stop pressed during a blocking `move_angular`
+  must (a) not block the GUI thread beyond a bounded time, (b) actually stop the mount; park-panel
+  status polls during a move must not block the GUI thread.
+- **No assumptions:** read the installed OnStepAdapter 0.4.1 source to establish what abort/stop it
+  offers while `move_*_axis_deg` blocks (thread-safety of calling stop concurrently, whether INDI abort
+  is honoured) before choosing a design; cite it in the report.
+- **Frozen:** the 9cea2e9 serialization guarantee (no interleaving of compound operations) must keep
+  its tests green — stop is the deliberate exception and must be justified.
+- **Dependencies:** S6.0 (done). Not S4 (uses the existing fake OnStep client).
+- **Non-goals:** recenter_policy (S6.0b), runner clock migration (S3b).
+- **Proof:** failing-then-passing tests; proof manifest draft; field-only assumptions.
+
 ### S5 — #55 + #52 duplication inventory (analysis only)
 
 - **Allowed files:** new `docs/quality/duplication-audit.md` only.
