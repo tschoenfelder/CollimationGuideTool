@@ -32,6 +32,27 @@ from onstep_adapter import (
 
 from astrotool_core.onstep.connection import OnStepConnection
 
+#: Public names, including the OnStepAdapter result/snapshot types re-exported
+#: for the #51 simulators (`sim_onstep`): only this module may import
+#: onstep_adapter (import-linter "OnStepAdapter is the only route" ignore list).
+__all__ = [
+    "FakeIndiAxisMoveResult",
+    "FakeIndiFocuser",
+    "FakeIndiMount",
+    "FakeIndiTrackingResult",
+    "FakeOnStepIndiClient",
+    "IndiFocuserMoveResult",
+    "IndiFocuserSnapshot",
+    "IndiMountSnapshot",
+    "IndiPositionResult",
+    "IndiRuntimeConfig",
+    "IndiStartupStatus",
+    "IndiStopResult",
+    "IndiUnparkResult",
+    "fake_indi_runtime_config",
+    "make_fake_onstep_indi_connection",
+]
+
 
 @dataclass
 class FakeIndiAxisMoveResult:

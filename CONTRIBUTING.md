@@ -150,6 +150,54 @@ on an allowlist entry that no longer sleeps; an exception needs a stated
 external-API reason there. (Known gap: it does not yet catch `Event.wait` used
 as a sleep or wall-clock polling loops — tracked in the restructuring tracker.)
 
+## Reproducing a hardware bug locally
+
+Reproduce a field defect on the hardware-boundary simulators in
+`astrotool_core.testing` (issue #51) before touching the Pi. They plug in
+behind the *production* adapters, run on `FakeClock`, and need no INDI server,
+serial port, camera SDK, network or real sleep:
+
+| Device | Simulator (configure with) | Production code it drives |
+|--------|----------------------------|---------------------------|
+| OnStep mount + focuser | `make_simulated_onstep_connection(OnStepScenario(...), clock=...)` | `OnStepConnection` + the focuser/park/pulse shims |
+| INDI filter wheel | `make_simulated_filter_wheel_adapter(FilterWheelScenario(...), clock=...)` | `IndiFilterWheelAdapter` + `IndiClient` (parser, cache) |
+| ToupTek camera | `SimulatedToupcamSdk(clock=...)` + `install_simulated_toupcam(monkeypatch, sdk)` | `TouptekCameraAdapter` (connect/capture/pull) |
+| Frame delivery | `FrameTimeline(clock)` (explicit exposure start/length, motion windows) | `acquire_stable_frame` / `acquire_verified_frame` |
+
+Each field state is one scenario field: connect errors (`connect_errors=[TimeoutError(...)]`),
+parked/tracking, tracking confirmation later than the timeout (OnStepAdapter
+then stops tracking -- the simulators reproduce OnStepAdapter 0.4.1's own
+behaviour, cited per item in `sim_onstep.py`), stale status, axis moves that
+fail in motion, focuser limits/stale metadata/backlash/`busy_forever`, wheel
+slot names, `busy_forever`, `reply_latency_s`, a wrong configured device
+name, a connection drop mid-move (`clock.call_later(t, wheel.drop_connection)`),
+a camera model's capability matrix (`CAMERA_MODELS`, real SDK flag/option
+values, E_NOTIMPL recorded in `notimpl_calls`), frames whose exposure
+overlapped a move. Concurrency hazards use `FakeClock(auto_advance=False)` to
+hold an operation open, and `install_observable_operation_lock` to wait until
+another thread is provably blocked behind it. A simulator must model the real
+device/adapter semantics (cite the source), never what production assumes.
+
+Workflow: copy the closest existing scenario test, set the scenario fields to
+what the diagnostic bundle shows, watch it fail, fix, and list the test in the
+proof manifest. One command reproduces a defect class -- e.g. the OnStep
+compound-operation concurrency of diagnostic 7b21bdf1:
+
+```text
+pytest -q tests/core/onstep/test_onstep_simulator.py::TestCompoundOperationSerialization
+```
+
+Name a regression `test_<guarded module>_simulated.py` next to that module's
+tests, so `scripts/changed_tests.py` selects it when the module changes.
+Examples per defect class: `tests/core/onstep/test_onstep_simulator.py`,
+`tests/core/filter_wheel/test_indi_filter_wheel_adapter_simulated.py`,
+`tests/core/camera/test_touptek_adapter_simulated.py`,
+`tests/core/acquisition/test_stable_frame_acquisition_simulated.py`,
+`tests/collimation/ui/test_focuser_panel_simulated.py`,
+`tests/collimation/ui/test_filter_wheel_panel_simulated.py`. The simulators
+model only what the application depends on; real-hardware confirmation stays
+the final step.
+
 ## Duplicated knowledge
 
 Every device name, slot count, limit, default, timeout representing one

@@ -5,12 +5,17 @@ real (loopback) FakeIndiServer -- issue #34 (read-only status) + issue #47
 from __future__ import annotations
 
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Iterator
 
 import pytest
 from astrotool_core.filter_wheel.indi_filter_wheel_adapter import IndiFilterWheelAdapter
 from astrotool_core.indi.client import VectorState
 from astrotool_core.testing.fake_indi_server import FakeIndiServer
+from astrotool_core.testing.sim_indi_filter_wheel import (
+    FilterWheelScenario,
+    make_simulated_filter_wheel_adapter,
+)
+from astrotool_core.timing import FakeClock
 
 _DEVICE_NAME = "Filter Wheel"
 
@@ -126,41 +131,57 @@ class TestMovingState:
         assert status.moving is True
 
 
-def _wait_until(predicate: Callable[[], bool], timeout_s: float = 2.0) -> bool:
-    deadline = time.monotonic() + timeout_s
-    while time.monotonic() < deadline:
-        if predicate():
-            return True
-        time.sleep(0.01)
-    return predicate()
-
-
 class TestSetSlot:
-    def test_commands_the_device_and_reports_moving_then_arrived(
-        self, filter_wheel: IndiFilterWheelAdapter
-    ) -> None:
+    def test_commands_the_device_and_reports_moving_then_arrived(self) -> None:
+        """Deterministic (#51): this used to poll 2 s of real time for a 50 ms
+        transient Busy that the loopback server's own timer could clear before
+        the poll ever saw it (CI flake, run 36784794838). On the simulated
+        wheel the move takes fake time, so Busy lasts exactly until the test
+        advances the clock past the travel time -- not one tick less."""
+        clock = FakeClock()
+        filter_wheel, wheel = make_simulated_filter_wheel_adapter(
+            FilterWheelScenario(
+                device_name=_DEVICE_NAME,
+                slot_names=("Luminance", "Red", "Green", "Blue", "OIII"),
+                initial_slot=2,
+                seconds_per_slot=0.5,
+            ),
+            clock=clock,
+        )
         filter_wheel.connect()
         assert filter_wheel.status().current_slot == 2
 
-        filter_wheel.set_slot(4)
-        # The Busy push is a real round trip over the fake server's socket --
-        # give the client's reader thread a moment to receive/parse it.
-        assert _wait_until(lambda: filter_wheel.status().moving is True)
+        filter_wheel.set_slot(4)  # two slots of travel = 1.0 s of fake time
+        assert wheel.commanded_slots == [4]
+        assert filter_wheel.status().moving is True
+        clock.advance(0.75)
+        assert filter_wheel.status().moving is True
 
-        assert _wait_until(lambda: filter_wheel.status().moving is False)
+        clock.advance(0.25)
         status = filter_wheel.status()
         assert status.moving is False
         assert status.current_slot == 4
+        assert status.filter_name == "Blue"
 
-    def test_a_second_move_while_the_first_is_in_progress_is_refused(
-        self, filter_wheel: IndiFilterWheelAdapter
-    ) -> None:
+    def test_a_second_move_while_the_first_is_in_progress_is_refused(self) -> None:
+        """Deterministic (#51): the first move is held Busy on fake time, so the
+        refusal cannot race the loopback server's real 50 ms timer."""
+        clock = FakeClock()
+        filter_wheel, wheel = make_simulated_filter_wheel_adapter(
+            FilterWheelScenario(
+                device_name=_DEVICE_NAME,
+                slot_names=("Luminance", "Red", "Green", "Blue", "OIII"),
+                initial_slot=2,
+            ),
+            clock=clock,
+        )
         filter_wheel.connect()
         filter_wheel.set_slot(3)
-        assert _wait_until(lambda: filter_wheel.status().moving is True)
+        assert filter_wheel.status().moving is True
 
         with pytest.raises(RuntimeError, match="already in progress"):
             filter_wheel.set_slot(4)
+        assert wheel.commanded_slots == [3]
 
     def test_not_connected_is_a_safe_no_op(self) -> None:
         adapter = IndiFilterWheelAdapter("127.0.0.1", 1, _DEVICE_NAME)

@@ -1,6 +1,9 @@
 """Shared test doubles and fixtures usable by both apps' test suites.
 
-Synthetic frame factory, replay dataset loader, fake camera/mount.
+Synthetic frame factory, replay dataset loader, fake camera/mount, and the
+issue #51 hardware-boundary scenario simulators (`sim_*` modules: OnStep
+mount/focuser, INDI filter wheel, ToupTek SDK, explicit-timestamp frames) --
+see CONTRIBUTING.md "Reproducing a hardware bug locally".
 """
 
 from astrotool_core.testing.fake_indi_server import FakeIndiServer
@@ -27,9 +30,63 @@ from astrotool_core.testing.shift_grid import (
     KNOWN_SHIFT_GRID,
     ShiftCase,
 )
+from astrotool_core.testing.sim_frames import (
+    CameraFrameSource,
+    FrameSpec,
+    FrameTimeline,
+    MotionWindow,
+    frames_from_replay,
+)
+from astrotool_core.testing.sim_indi_filter_wheel import (
+    FilterWheelScenario,
+    SimulatedIndiClient,
+    SimulatedIndiFilterWheel,
+    make_simulated_filter_wheel_adapter,
+)
+from astrotool_core.testing.sim_onstep import (
+    CompoundOperationMonitor,
+    ConnectFailure,
+    FocuserScenario,
+    ObservableRLock,
+    OnStepScenario,
+    SimulatedIndiFocuser,
+    SimulatedOnStepIndiClient,
+    install_observable_operation_lock,
+    make_simulated_onstep_connection,
+)
+from astrotool_core.testing.sim_touptek import (
+    CAMERA_MODELS,
+    CameraModel,
+    SimulatedToupcam,
+    SimulatedToupcamSdk,
+    install_simulated_toupcam,
+)
 
 __all__ = [
+    "CAMERA_MODELS",
     "CI_SHIFT_GRID_SUBSET",
+    "CameraFrameSource",
+    "CameraModel",
+    "CompoundOperationMonitor",
+    "ConnectFailure",
+    "FilterWheelScenario",
+    "FocuserScenario",
+    "FrameSpec",
+    "FrameTimeline",
+    "MotionWindow",
+    "ObservableRLock",
+    "OnStepScenario",
+    "SimulatedIndiClient",
+    "SimulatedIndiFilterWheel",
+    "SimulatedIndiFocuser",
+    "SimulatedOnStepIndiClient",
+    "SimulatedToupcam",
+    "SimulatedToupcamSdk",
+    "frames_from_replay",
+    "install_observable_operation_lock",
+    "install_simulated_toupcam",
+    "make_simulated_filter_wheel_adapter",
+    "make_simulated_onstep_connection",
     "FakeIndiServer",
     "FakeMountAdapter",
     "FakeMountPark",
