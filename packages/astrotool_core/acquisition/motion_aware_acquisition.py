@@ -37,7 +37,6 @@ never issuing mount commands from `astrotool_core.acquisition` itself.
 
 from __future__ import annotations
 
-import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from enum import Enum
@@ -47,6 +46,7 @@ import numpy as np
 
 from astrotool_core.acquisition.image_stability import StabilityCheckResult, check_image_stability
 from astrotool_core.acquisition.stable_frame_acquisition import StableFrameWaiter
+from astrotool_core.timing import SYSTEM_CLOCK, Clock
 
 
 class MotionAwareStatus(Enum):
@@ -136,8 +136,9 @@ def acquire_verified_frame(
     stability_sample_interval_s: float = 0.2,
     movement_context: CommandedMovementContext | None = None,
     cancelled: Callable[[], bool] | None = None,
-    sleep: Callable[[float], None] = time.sleep,
-    now: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], object] | None = None,
+    now: Callable[[], float] | None = None,
+    clock: Clock | None = None,
 ) -> MotionAwareFrameResult:
     """Repeatedly draws exposure-valid frames from `waiter` (issue #27's
     own `StableFrameWaiter` contract) into a sliding window of the most
@@ -158,6 +159,9 @@ def acquire_verified_frame(
     one already in the window.
     """
     is_cancelled = cancelled or (lambda: False)
+    source_clock = clock or SYSTEM_CLOCK
+    sleep = sleep or source_clock.sleep
+    now = now or source_clock.monotonic
     deadline = now() + timeout_s
     samples: list[np.ndarray] = []
     #: Issue #43 evidence: timing of every frame drawn (bounded by the window), so a
@@ -241,8 +245,9 @@ def acquire_verified_frames(
     stability_sample_interval_s: float = 0.2,
     movement_context: CommandedMovementContext | None = None,
     cancelled: Callable[[], bool] | None = None,
-    sleep: Callable[[float], None] = time.sleep,
-    now: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], object] | None = None,
+    now: Callable[[], float] | None = None,
+    clock: Clock | None = None,
 ) -> dict[str, MotionAwareFrameResult]:
     """`acquire_verified_frame` over any number of named sources -- issue
     #30's own "The number of connected cameras is irrelevant. The policy
@@ -260,6 +265,7 @@ def acquire_verified_frames(
             stability_sample_count=stability_sample_count,
             stability_sample_interval_s=stability_sample_interval_s,
             movement_context=movement_context, cancelled=cancelled, sleep=sleep, now=now,
+            clock=clock,
         )
         for key, waiter in sources.items()
     }

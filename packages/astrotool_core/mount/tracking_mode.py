@@ -12,11 +12,11 @@ all three cooperate during a calibration sequence.
 
 from __future__ import annotations
 
-import time
 from dataclasses import dataclass
 from enum import Enum
 
 from astrotool_core.mount.park_port import MountParkPort
+from astrotool_core.timing import SYSTEM_CLOCK, Clock, Deadline
 
 
 class TrackingMode(Enum):
@@ -62,6 +62,7 @@ def ensure_tracking_mode(
     *,
     settle_timeout_s: float = 0.0,
     poll_interval_s: float = 0.05,
+    clock: Clock | None = None,
 ) -> TrackingVerificationResult:
     """Verifies `mount_park`'s current tracking state matches `required`,
     issuing `start_tracking()`/`stop_tracking()` and re-checking if not —
@@ -79,6 +80,9 @@ def ensure_tracking_mode(
     this project's existing pattern of bounded, explicit failure over a
     silent or unbounded wait (see `MountTestMoveRunner`'s own pulse-
     rejection retries for the analogous existing convention).
+
+    The optional settle poll reads time and waits through `clock` (issue
+    #53; default: the real clock), so tests drive it with a `FakeClock`.
     """
     status = mount_park.status()
     if not status.available:
@@ -93,13 +97,16 @@ def ensure_tracking_mode(
     else:
         mount_park.stop_tracking()
 
-    repaired_mode = _mode_of(mount_park.status().tracking)
     # Issue #44: a real (INDI) driver applies the command asynchronously, so
     # the immediate re-read may still show the old state -- optionally poll
     # (bounded) for the mount to confirm before declaring the repair failed.
-    deadline = time.monotonic() + settle_timeout_s
-    while repaired_mode is not required and time.monotonic() < deadline:
-        time.sleep(poll_interval_s)
+    # Same order as before the clock was injected (issue #53): immediate
+    # re-read, then the deadline is taken, then poll.
+    source = clock or SYSTEM_CLOCK
+    repaired_mode = _mode_of(mount_park.status().tracking)
+    deadline = Deadline.after(settle_timeout_s, clock=source)
+    while repaired_mode is not required and not deadline.expired():
+        source.sleep(poll_interval_s)
         repaired_mode = _mode_of(mount_park.status().tracking)
     if repaired_mode is required:
         return TrackingVerificationResult(TrackingVerificationStatus.REPAIRED, repaired_mode)

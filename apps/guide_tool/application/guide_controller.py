@@ -12,23 +12,32 @@ windowed pixel centroid (redundant with astrotool_core's detector — see
 In measure_only mode (default) pulses are computed but never sent to the
 mount. Pass a connected `MountPort` and set `measure_only=False` to enable
 closed-loop corrections via `GuideCorrectionPolicy`.
+
+Time (issue #53): frame ages and the start time come from an injected
+`Clock` (default: the real one). The background loop only waits for the
+next mailbox frame and hands it to `process_mailbox_frame`, which holds all
+per-frame bookkeeping, so tests drive that step directly with synthetic
+frames and a `FakeClock` instead of racing the real stream threads (#13).
+`MailboxFrame.captured_at_monotonic` must be on the same clock: the real
+`StreamController` stamps frames with real monotonic time, so a `FakeClock`
+belongs with synthetic frames, not with `start()` on a real stream.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
-import time
 from dataclasses import dataclass, field
 
 import numpy as np
-from astrotool_core.acquisition.stream_controller import StreamController
+from astrotool_core.acquisition.stream_controller import MailboxFrame, StreamController
 from astrotool_core.camera.port import CameraPort
 from astrotool_core.mount.axis_calibration import CalibrationMatrix
 from astrotool_core.mount.port import MountPort
 from astrotool_core.target.detector import detect_sources
 from astrotool_core.target.roi_selector import select_target
 from astrotool_core.target.roi_tracker import RoiTracker
+from astrotool_core.timing import SYSTEM_CLOCK, Clock
 
 from guide_tool.application.correction_policy import GuideCorrectionPolicy
 from guide_tool.domain.correction_model import (
@@ -77,7 +86,9 @@ class GuideController:
         correction_config: GuideCorrectionConfig | None = None,
         drift_window: int = 10,
         measure_only: bool = True,
+        clock: Clock | None = None,
     ) -> None:
+        self._clock = clock or SYSTEM_CLOCK
         self._camera = camera
         self._calibration = calibration
         self._fallback_after_bad_frames = fallback_after_bad_frames
@@ -98,12 +109,20 @@ class GuideController:
         self._rebaseline_requested = threading.Event()
         self._target: tuple[float, float] | None = None
         self._acquired = False
+        # Per-run loop bookkeeping, owned by whichever thread drives
+        # process_mailbox_frame (the guiding loop, or a test); reset by start().
+        self._started_at: float | None = None
+        self._last_sequence = 0
+        self._bad_count = 0
+        self._latest_pixels: np.ndarray | None = None
 
     def start(self, *, exposure_s: float = 0.5, cadence_s: float = 0.5) -> None:
         with self._lifecycle_lock:
-            with self._status_lock:
-                if self._status.state == "running":
-                    return
+            # A run is in progress exactly while a worker thread is set
+            # (start() sets it, stop() clears it) -- decided on that, not on
+            # the published status, which `process_mailbox_frame` also writes.
+            if self._thread is not None:
+                return
 
             self._stop_event.clear()
             # Deliberately not resetting _pulses_paused here: pause/resume is
@@ -115,13 +134,17 @@ class GuideController:
             self._rebaseline_requested.clear()
             self._target = None
             self._acquired = False
+            self._last_sequence = 0
+            self._bad_count = 0
+            self._latest_pixels = None
 
             self._stream = StreamController(self._camera, name="guide")
             self._stream.start_stream(exposure_s, cadence_s)
 
-            started_at = time.monotonic()
+            started_at = self._clock.monotonic()
+            self._started_at = started_at
             self._thread = threading.Thread(
-                target=self._loop, args=(started_at,), daemon=True, name="guiding-loop"
+                target=self._loop, daemon=True, name="guiding-loop"
             )
             self._thread.start()
 
@@ -161,65 +184,81 @@ class GuideController:
         """On the next accepted measurement, adopt that position as the new target."""
         self._rebaseline_requested.set()
 
-    def _loop(self, started_at: float) -> None:
+    def _loop(self) -> None:
         stream = self._stream
         assert stream is not None
-        last_sequence = 0
-        bad_count = 0
-        latest_pixels: np.ndarray | None = None
-
         while not self._stop_event.is_set():
-            mailbox_frame = stream.mailbox.wait_latest(after_sequence=last_sequence, timeout_s=0.1)
-            hard_failure: str | None = None
-            err = stream.pop_stream_error()
-            if err is not None:
-                hard_failure = str(err)
-                _log.warning("guide stream error: %s", err)
-
-            result: GuidingFrameResult | None = None
-            latest_frame_age: float | None = None
-
-            if mailbox_frame is None:
-                bad_count += 1
-            else:
-                last_sequence = mailbox_frame.sequence
-                frame_age = time.monotonic() - mailbox_frame.captured_at_monotonic
-                latest_frame_age = frame_age
-                latest_pixels = mailbox_frame.frame.pixels
-                try:
-                    result = self.process_frame(mailbox_frame.frame.pixels)
-                except Exception as exc:
-                    _log.warning(
-                        "guide measurement error seq=%s: %s", mailbox_frame.sequence, exc
-                    )
-                    bad_count += 1
-                else:
-                    error = result.error
-                    if error is not None and error.accepted and frame_age <= self._max_frame_age_s:
-                        bad_count = 0
-                    else:
-                        bad_count += 1
-
-            state = source_state_from_error(
-                result.error if result is not None else None,
-                running=True,
-                latest_sequence=last_sequence,
-                latest_frame_age_s=latest_frame_age,
-                bad_frame_count=bad_count,
-                fallback_after_bad_frames=self._fallback_after_bad_frames,
-                hard_failure=hard_failure,
+            mailbox_frame = stream.mailbox.wait_latest(
+                after_sequence=self._last_sequence, timeout_s=0.1
             )
+            self.process_mailbox_frame(mailbox_frame, stream_error=stream.pop_stream_error())
 
-            with self._status_lock:
-                self._status = GuidingStatus(
-                    state="running",
-                    measure_only=self._measure_only,
-                    source=state,
-                    latest_pulses=result.pulses if result is not None else [],
-                    started_at=started_at,
-                    rms_px=result.rms_px if result is not None else self._drift.rms_px(),
-                    latest_pixels=latest_pixels,
+    def process_mailbox_frame(
+        self, mailbox_frame: MailboxFrame | None, *, stream_error: Exception | None = None
+    ) -> GuidingStatus:
+        """One iteration of the guiding loop: `mailbox_frame` is the newest
+        frame since the last one seen (None: none arrived in time),
+        `stream_error` any capture error the stream reported meanwhile.
+        Updates and returns the published status.
+
+        A frame counts as good only when its error is accepted and its age
+        (clock now - `captured_at_monotonic`) is at most `max_frame_age_s`;
+        `fallback_after_bad_frames` consecutive non-good iterations degrade
+        the source state.
+        """
+        hard_failure: str | None = None
+        if stream_error is not None:
+            hard_failure = str(stream_error)
+            _log.warning("guide stream error: %s", stream_error)
+
+        result: GuidingFrameResult | None = None
+        latest_frame_age: float | None = None
+
+        if mailbox_frame is None:
+            self._bad_count += 1
+        else:
+            self._last_sequence = mailbox_frame.sequence
+            frame_age = self._clock.monotonic() - mailbox_frame.captured_at_monotonic
+            latest_frame_age = frame_age
+            self._latest_pixels = mailbox_frame.frame.pixels
+            try:
+                result = self.process_frame(mailbox_frame.frame.pixels)
+            except Exception as exc:
+                _log.warning(
+                    "guide measurement error seq=%s: %s", mailbox_frame.sequence, exc
                 )
+                self._bad_count += 1
+            else:
+                error = result.error
+                if error is not None and error.accepted and frame_age <= self._max_frame_age_s:
+                    self._bad_count = 0
+                else:
+                    self._bad_count += 1
+
+        state = source_state_from_error(
+            result.error if result is not None else None,
+            running=True,
+            latest_sequence=self._last_sequence,
+            latest_frame_age_s=latest_frame_age,
+            bad_frame_count=self._bad_count,
+            fallback_after_bad_frames=self._fallback_after_bad_frames,
+            hard_failure=hard_failure,
+        )
+
+        status = GuidingStatus(
+            # The guiding loop only runs between start() and stop(); a step
+            # driven directly on an idle controller does not claim a run.
+            state="running" if self._thread is not None else "idle",
+            measure_only=self._measure_only,
+            source=state,
+            latest_pulses=result.pulses if result is not None else [],
+            started_at=self._started_at,
+            rms_px=result.rms_px if result is not None else self._drift.rms_px(),
+            latest_pixels=self._latest_pixels,
+        )
+        with self._status_lock:
+            self._status = status
+        return status
 
     def process_frame(self, pixels: np.ndarray) -> GuidingFrameResult:
         """Run one frame through detect/track -> error -> pulses -> optional send.

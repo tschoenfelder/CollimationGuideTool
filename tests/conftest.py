@@ -123,6 +123,7 @@ TIERS = ("unit", "component", "contract", "integration", "acceptance", "hardware
 # part (threading/socket/subprocess/PySide6/sleep => listed here).
 CORE_COMPONENT_MODULES = frozenset(
     {
+        "acquisition/test_acquisition_fake_time.py",
         "acquisition/test_motion_aware_acquisition.py",
         "acquisition/test_single_capture.py",
         "acquisition/test_stable_frame_acquisition.py",
@@ -141,6 +142,8 @@ CORE_COMPONENT_MODULES = frozenset(
         "registration/test_astap_adapter.py",
         "registration/test_star_field_registrar.py",
         "testing/test_changed_tests.py",
+        "timing/test_deadline.py",
+        "timing/test_fake_clock.py",
     }
 )
 

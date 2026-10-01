@@ -16,8 +16,10 @@ overlapped the move — indistinguishable in the field ("calibration
 failed" was the only signal a diagnostic bundle carried). This module owns
 (A) alone: it knows nothing about mount motion, INDI, OnStep, the number
 of cameras, or Qt/UI state — only frame timestamps, exposure durations,
-and a caller-supplied clock/sleep, so it's directly testable with plain
-callables (see `tests/core/acquisition/test_stable_frame_acquisition.py`).
+and a caller-supplied clock (issue #53: an `astrotool_core.timing.Clock`,
+or the older plain `now`/`sleep` callables, which take precedence), so it's
+directly testable without real waits (see
+`tests/core/acquisition/test_stable_frame_acquisition.py`).
 
 Two entry points, matching the two places this replaces ad hoc logic:
 
@@ -36,12 +38,13 @@ Two entry points, matching the two places this replaces ad hoc logic:
 
 from __future__ import annotations
 
-import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 
 import numpy as np
+
+from astrotool_core.timing import SYSTEM_CLOCK, Clock
 
 
 @dataclass(frozen=True)
@@ -113,7 +116,8 @@ def acquire_stable_frame(
     reference_monotonic: float,
     timeout_s: float,
     cancelled: Callable[[], bool] | None = None,
-    now: Callable[[], float] = time.monotonic,
+    now: Callable[[], float] | None = None,
+    clock: Clock | None = None,
 ) -> FrameAcquisitionResult:
     """One frame source's own answer to "is there a frame I can trust was
     captured only after `reference_monotonic`?".
@@ -131,6 +135,7 @@ def acquire_stable_frame(
     without having to fake a timeout. Defaults to never-cancelled.
     """
     is_cancelled = cancelled or (lambda: False)
+    now = now or (clock or SYSTEM_CLOCK).monotonic
     if not is_available():
         return FrameAcquisitionResult(FrameAcquisitionStatus.CAMERA_UNAVAILABLE)
     deadline = now() + timeout_s
@@ -162,8 +167,9 @@ def acquire_settled_frames(
     reference_monotonic: float,
     timeout_s: float,
     settle_ms: int,
-    sleep: Callable[[float], None] = time.sleep,
-    now: Callable[[], float] = time.monotonic,
+    sleep: Callable[[float], object] | None = None,
+    now: Callable[[], float] | None = None,
+    clock: Clock | None = None,
 ) -> dict[str, FrameAcquisitionResult]:
     """Composes any number of already-built per-source stable-frame
     waiters (each shaped like `acquire_stable_frame`'s own
@@ -192,6 +198,9 @@ def acquire_settled_frames(
     another frame after the extra settle wait, distinct from never having
     caught up at all.
     """
+    source_clock = clock or SYSTEM_CLOCK
+    sleep = sleep or source_clock.sleep
+    now = now or source_clock.monotonic
     stage1 = {key: waiter(reference_monotonic, timeout_s) for key, waiter in sources.items()}
     if not all(result.ok for result in stage1.values()):
         return stage1

@@ -26,6 +26,7 @@ from astrotool_core.testing.frame_factory import (
     single_star_image,
     star_field_image,
 )
+from astrotool_core.timing import FakeClock
 from collimation_tool.application.autofocus_controller import (
     AutofocusController,
     AutofocusMode,
@@ -103,13 +104,13 @@ class _Rig:
     def set_auto_exposure_paused(self, paused: bool) -> None:
         self.paused_calls.append(paused)
 
-    def exposure_control(self) -> ExposureControl:
+    def exposure_control(self, settle_s: float = 0.0) -> ExposureControl:
         def set_values(exposure_ms: float, gain: int) -> None:
             self.exposure_ms = max(exposure_ms, self.min_exposure_ms)
             self.gain = gain
 
         return ExposureControl(
-            get=lambda: (self.exposure_ms, self.gain), set=set_values, settle_s=0.0
+            get=lambda: (self.exposure_ms, self.gain), set=set_values, settle_s=settle_s
         )
 
 
@@ -124,7 +125,8 @@ class _RecordingFocuser(FakeFocuser):
 
 
 def _controller(
-    focuser: FakeFocuser, rig: _Rig, *, exposure: bool = False, coarse_step: int = 100
+    focuser: FakeFocuser, rig: _Rig, *, exposure: bool = False, coarse_step: int = 100,
+    clock: FakeClock | None = None, settle_s: float = 0.0,
 ) -> AutofocusController:
     return AutofocusController(
         focuser,
@@ -132,7 +134,8 @@ def _controller(
         wait_for_frame=rig.wait_for_frame,
         set_auto_exposure_paused=rig.set_auto_exposure_paused,
         coarse_step=coarse_step, fine_step=10,
-        exposure_control=rig.exposure_control() if exposure else None,
+        exposure_control=rig.exposure_control(settle_s) if exposure else None,
+        clock=clock,
     )
 
 
@@ -260,6 +263,52 @@ class TestSaturationAtFocus:
         )
 
         assert result.status in (AutofocusStatus.CANCELLED, AutofocusStatus.SUCCESS)
+        assert (rig.exposure_ms, rig.gain) == (100.0, 100)
+
+
+class TestExposureSettleOnFakeTime:
+    """Issue #53: the real 0.5 s exposure settle (the tests above set it to
+    0 to stay fast) now runs on a FakeClock -- each reduction waits exactly
+    `settle_s` of fake time, with no real wait."""
+
+    def test_each_exposure_reduction_waits_the_settle_time_on_the_injected_clock(
+        self,
+    ) -> None:
+        focuser = FakeFocuser()
+        focuser.move_absolute(700)
+        rig = _Rig(focuser, peak_at_focus=90000.0)
+        clock = FakeClock()
+
+        result = _controller(focuser, rig, exposure=True, clock=clock, settle_s=0.5).run(
+            AutofocusMode.ARTIFICIAL_STAR
+        )
+
+        assert result.status is AutofocusStatus.SUCCESS
+        reductions = len(result.exposure_attempts) - 1
+        assert reductions >= 1
+        assert clock.sleeps.count(0.5) == reductions
+        assert clock.monotonic() >= 0.5 * reductions
+
+    def test_a_cancel_during_the_settle_wait_ends_the_run_cancelled_and_restores(
+        self,
+    ) -> None:
+        focuser = FakeFocuser()
+        focuser.move_absolute(700)
+        rig = _Rig(focuser, peak_at_focus=90000.0)
+        clock = FakeClock()
+        cancel_requested: list[bool] = []
+        # Stop pressed in the middle of the first 0.5 s exposure settle: the
+        # settle wait itself is not interruptible today (it completes), and
+        # the retried search sees the cancel at its first step check.
+        clock.call_at(0.25, lambda: cancel_requested.append(True))
+
+        result = _controller(focuser, rig, exposure=True, clock=clock, settle_s=0.5).run(
+            AutofocusMode.ARTIFICIAL_STAR, cancel_check=lambda: bool(cancel_requested)
+        )
+
+        assert cancel_requested
+        assert result.status is AutofocusStatus.CANCELLED
+        assert clock.sleeps.count(0.5) == 1  # no second reduction after the cancel
         assert (rig.exposure_ms, rig.gain) == (100.0, 100)
 
 

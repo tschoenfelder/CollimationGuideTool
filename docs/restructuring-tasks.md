@@ -44,7 +44,8 @@ Status: `todo` · `in-progress` · `done` · `field-only` (only real hardware ca
 | S0 | #50–#55 | Tracker + CONTRIBUTING.md / AGENTS.md aligned with the audit | coordinator | — | done | | docs only |
 | S1 | #50 | Test tier markers, fast/changed gate, coverage split, CI jobs, timing report | issue agent | APPROVE-WITH-FIXES → 4 fixes applied, re-verified | done | (this commit) | `scripts/check.ps1` (default mode) · `pytest tests/core/testing` |
 | S2 | #54 | Proof manifests, `scripts/prove.py`, CI validation, 5 backfills (3 revert-proven) | | | todo | | |
-| S3 | #53, #13 | `astrotool_core.timing` (Clock/FakeClock/Deadline/Scheduler); migrate timing modules; sleep guard | | | todo | | |
+| S3a | #53, #13 | `astrotool_core.timing` (Clock/FakeClock/Deadline/poll_until); acquisition, autofocus, tracking_mode, guide controller migrated; sleep guard | issue agent | APPROVE-WITH-FIXES → 9 fixes, mutation-proven | done | (this commit) | `pytest tests/core/timing tests/core/acquisition tests/core/mount tests/core/testing tests/guide tests/collimation/application` |
+| S3b | #53 | Migrate `mount_test_move_runner.py`, `recenter_policy.py` (after S6.0); panel wall-clock polling; interruptible waits | | | todo | | |
 | S4 | #51 | Scenario simulators (OnStep mount, focuser, filter wheel, ToupTek camera) on FakeClock; 5 defect reproductions | | | todo | | |
 | S5 | #55, #52 | Duplication inventory + size/dependency baseline (`docs/quality/duplication-audit.md`) | analysis agent | coordinator spot-check (P01 confirmed in code) | done | (this commit) | docs only |
 | S6.0 | #46, #31, #55 (P01/P02) | **CRITICAL, promoted:** Mount Align bootstrap/nudge/screen moves go through `pulse_axis`, which production `OnStepMountPulseAdapter` always refuses; no rate is ever installed, so angular moves never start on the rig. Size the first move angularly from the optics seeds instead of a timed bootstrap; failing regression against the real adapter + fake OnStep connection first | | | todo | | |
@@ -161,6 +162,7 @@ not change · dependencies · non-goals · proof required.
 
 | Date | Task | Commit | What was proven |
 |------|------|--------|-----------------|
+| 2026-10-01 | S3a | (this commit) | ~80 fake-time tests incl. before/at/after boundaries decided by production code; #13 tests deterministic (no threads, 10/10 under CPU load); 9087272 pause-before-start guard restored (mutation fails it); migrated modules 4.25 s → 1.9 s; sleep guard + import contract for `timing` |
 | 2026-10-01 | S1 | (this commit) | 1871 tests partition exactly into 6 tiers; single-file changes proven in 1.5–3.1 s (was a 14.5 min gate); CI fast/slow/coverage run in parallel; coverage ≥80 still enforced. **Not yet faster:** full component tier 801 s — 15 Mount Align panel tests alone take 459 s of real settle/wait time → payoff comes with #53/#51 |
 | 2026-09-30 | S0 | (this commit) | docs only — guidelines now state the tiered gate, deterministic-time, duplicated-knowledge, proof-manifest, layering and agent-ownership rules |
 
@@ -185,5 +187,18 @@ not change · dependencies · non-goals · proof required.
 - **S5 open question M04 — decided 2026-09-30 by the user:** the autofocus panel's local
   Star/Terrestrial selector is removed; the metric follows the global OperatingMode
   (Terrestrial → Tenengrad, Astronomical → star/FWHM). Folded into S6.4.
+- **2026-10-01, CI flake → S4 (#51).** `tests/core/filter_wheel/test_indi_filter_wheel_adapter.py::TestSetSlot::
+  test_commands_the_device_and_reports_moving_then_arrived` failed once in the release-gate job
+  (run 36784794838, commit 8149dd7 — docs only) and passed in the fast job of the same commit. It
+  polls real wall time (`_wait_until`, 2 s) for a transient Busy that the FakeIndiServer can clear
+  before the poll observes it. Belongs to the simulator's deterministic Busy/delayed-completion
+  scenario (S4), driven by fake time (S3a).
+- **S3a review → S6.3/S6.4.** Policy waits not caught by the sleep guard: wall-clock deadline
+  polling with `time.monotonic()` in `focuser_panel.py:440`, `filter_wheel_panel.py:241`,
+  `mount_park_panel.py:247`; `Event.wait(timeout)` used as a sleep (`stream_controller.py:164`).
+  Uncancellable waits kept for neutrality: autofocus `settle_s`, searcher move-settle poll,
+  motion-aware sample interval, tracking settle poll — make interruptible in S6.3/S6.4.
+  `TrackingEnforcer` (`mount/operating_mode.py`) needs a `clock=` pass-through (S6.4).
+  `StreamController`/`FrameMailbox` need the clock before a threaded GuideController can run on fake time (S4).
 - **S5 live contradictions (9)** are listed in `docs/quality/duplication-audit.md`; each is owned by an
   S6 step and gets a failing regression before its fix.

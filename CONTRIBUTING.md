@@ -134,6 +134,22 @@ boundaries. Hardware adapters may block internally where the external API
 requires it; each such exception is listed with its reason in the sleep-guard
 allowlist. Tests must not use multi-second real-time waits to observe state.
 
+Use `astrotool_core.timing`: take `clock: Clock | None = None` (fall back to
+`SYSTEM_CLOCK`) and wait with `clock.sleep(seconds, cancel)`,
+`Deadline.after(timeout, clock=...)` or `poll_until(...)`. A deadline is
+expired when `now >= expires_at`. In tests pass `FakeClock()`: `sleep`
+advances fake time instantly and is recorded in `clock.sleeps`; use
+`call_at`/`call_later` to make a device finish or a Stop arrive *during* a
+wait, and `FakeClock(auto_advance=False)` with `wait_for_sleepers()`/`advance()`
+only when a test must observe a worker mid-wait (read the "Limits" section of
+`fake_clock.py` first). Cover each timeout just before / exactly at / just
+after the boundary, and make sure it is the *production* check that decides
+the boundary, not the test double. `tests/core/testing/test_no_policy_sleep.py`
+fails on any direct `time.sleep` in production code outside its allowlist and
+on an allowlist entry that no longer sleeps; an exception needs a stated
+external-API reason there. (Known gap: it does not yet catch `Event.wait` used
+as a sleep or wall-clock polling loops — tracked in the restructuring tracker.)
+
 ## Duplicated knowledge
 
 Every device name, slot count, limit, default, timeout representing one

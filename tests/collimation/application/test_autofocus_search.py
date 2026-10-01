@@ -10,6 +10,7 @@ from collections.abc import Callable
 
 from astrotool_core.focus.fake_focuser import FakeFocuser
 from astrotool_core.focus.port import FocuserMoveResult
+from astrotool_core.timing import FakeClock
 from collimation_tool.application.autofocus_search import (
     AutofocusStatus,
     BoundedFocusSearcher,
@@ -380,8 +381,9 @@ class TestMoveCompletionIsWaitedFor:
         focuser = _OnceMovingFocuser()
         focuser.move_absolute(2500)
         focuser._pending_busy = False  # clear the initial-move flag before the run starts
+        clock = FakeClock()
         searcher = BoundedFocusSearcher(
-            focuser, higher_is_better=False, coarse_step=250, fine_step=25,
+            focuser, higher_is_better=False, coarse_step=250, fine_step=25, clock=clock,
         )
         observed_moving_at_measure_time: list[bool] = []
 
@@ -395,6 +397,8 @@ class TestMoveCompletionIsWaitedFor:
         # the searcher itself before each measure() call -- so a fresh
         # call inside measure() must always see "not moving" by then.
         assert all(not moving for moving in observed_moving_at_measure_time)
+        # Each busy report cost exactly one fake poll interval -- no real wait.
+        assert clock.sleeps and set(clock.sleeps) == {0.05}
 
 
 class _MoveTrackingFocuser(FakeFocuser):
@@ -520,3 +524,95 @@ class TestInvalidSamplesForASingleArtificialStar:
 
         assert result.status is AutofocusStatus.INCONSISTENT_CURVE
         assert focuser.get_position() == result.start_position  # back at the start
+
+
+class _ClockedBusyFocuser(FakeFocuser):
+    """Reports is_moving() for `busy_s` of (fake) time after every
+    move_absolute() -- a focuser that physically takes a while to arrive."""
+
+    def __init__(self, clock: FakeClock, busy_s: float) -> None:
+        super().__init__()
+        self._clock = clock
+        self._busy_s = busy_s
+        self._busy_until = 0.0
+
+    def move_absolute(self, steps: int) -> FocuserMoveResult:
+        result = super().move_absolute(steps)
+        self._busy_until = self._clock.monotonic() + self._busy_s
+        return result
+
+    def is_moving(self) -> bool:
+        return self._clock.monotonic() < self._busy_until
+
+
+class TestMoveSettleDeadlineOnFakeTime:
+    """Issue #53: the move-settle wait (`move_settle_timeout_s`, polled every
+    `move_poll_interval_s`) on a FakeClock -- exact deadline boundaries. The
+    wait is a safety net: when it expires the searcher measures anyway."""
+
+    @staticmethod
+    def _first_measure(busy_s: float) -> tuple[bool, float, list[float]]:
+        clock = FakeClock()
+        focuser = _ClockedBusyFocuser(clock, busy_s)
+        focuser.move_absolute(2500)
+        clock.advance(busy_s)  # the setup move has finished
+        searcher = BoundedFocusSearcher(
+            focuser, higher_is_better=False, coarse_step=250, fine_step=25,
+            move_settle_timeout_s=1.0, move_poll_interval_s=0.25, clock=clock,
+        )
+        observed: list[tuple[bool, float]] = []
+
+        def measure() -> FocusSample:
+            observed.append((focuser.is_moving(), clock.monotonic()))
+            return FocusSample(value=1.0, confidence=1.0)
+
+        searcher.search(measure)
+        # observed[0] is P0 (no move); observed[1] follows the first move.
+        moving, at = observed[1]
+        return moving, at - busy_s, list(clock.sleeps)
+
+    def test_a_move_finishing_just_before_the_deadline_is_waited_for(self) -> None:
+        moving, waited, sleeps = self._first_measure(busy_s=0.999)
+        assert moving is False
+        assert waited == 1.0  # four 0.25 s polls
+        assert sleeps[:4] == [0.25] * 4
+
+    def test_a_move_finishing_exactly_at_the_deadline_is_waited_for(self) -> None:
+        moving, waited, _sleeps = self._first_measure(busy_s=1.0)
+        assert moving is False
+        assert waited == 1.0
+
+    def test_a_move_finishing_just_after_the_deadline_is_measured_anyway(self) -> None:
+        moving, waited, _sleeps = self._first_measure(busy_s=1.001)
+        assert moving is True  # gave up at the deadline, still moving
+        assert waited == 1.0
+
+    def test_cancel_during_the_settle_wait_takes_effect_at_the_next_step(self) -> None:
+        clock = FakeClock()
+        focuser = _ClockedBusyFocuser(clock, busy_s=0.5)
+        focuser.move_absolute(2500)
+        clock.advance(0.5)
+        searcher = BoundedFocusSearcher(
+            focuser, higher_is_better=False, coarse_step=250, fine_step=25,
+            move_settle_timeout_s=1.0, move_poll_interval_s=0.25, clock=clock,
+        )
+        cancel = {"requested": False}
+        moves_before_cancel: list[int] = []
+
+        def request_cancel() -> None:
+            cancel["requested"] = True
+            moves_before_cancel.append(focuser.get_position())
+
+        # Stop pressed while the focuser is still settling after the first move.
+        clock.call_at(0.5 + 0.1, request_cancel)
+
+        result = searcher.search(
+            _v_curve(focuser, best_position=2000), cancel_check=lambda: cancel["requested"]
+        )
+
+        # Characterization: the settle wait itself is not interruptible, and
+        # cancel is honored at the next hill-climb step check (the probe phase
+        # does not check it). Interrupting the wait is a behavior change left
+        # for a later step (see the S3a report).
+        assert moves_before_cancel  # the cancel landed inside a settle wait
+        assert result.status is AutofocusStatus.CANCELLED

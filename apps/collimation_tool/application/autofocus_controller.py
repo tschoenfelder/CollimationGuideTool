@@ -16,14 +16,13 @@ Frame-freshness: `BoundedFocusSearcher` itself already waits for the
 focuser to report movement complete before ever calling this controller's
 own `measure` closure (see `autofocus_search.BoundedFocusSearcher.
 _wait_for_move_settled`) -- so by the time `measure()` runs here, the
-physical move is already known complete, and passing `time.monotonic()`
-(captured right then) as `wait_for_frame`'s own `reference_monotonic` is
+physical move is already known complete, and passing the clock's
+`monotonic()` (captured right then) as `wait_for_frame`'s own `reference_monotonic` is
 guaranteed to reject any frame whose exposure started before that.
 """
 
 from __future__ import annotations
 
-import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
@@ -34,6 +33,7 @@ from astrotool_core.focus.port import FocuserPort
 from astrotool_core.focus.search_bounds import DEFAULT_ENVELOPE_STEPS
 from astrotool_core.focus.star_focus_metric import StarTargetTracker, measure_star_focus
 from astrotool_core.focus.terrestrial_focus_metric import measure_terrestrial_focus
+from astrotool_core.timing import SYSTEM_CLOCK, Clock, poll_until
 
 from collimation_tool.application.autofocus_search import (
     AutofocusStatus,
@@ -46,6 +46,11 @@ from collimation_tool.application.autofocus_search import (
 GetFrame = Callable[[], "np.ndarray | None"]
 WaitForFrame = Callable[[float, float], FrameAcquisitionResult]
 SetAutoExposurePaused = Callable[[bool], None]
+
+#: Bound and poll cadence of the best-effort return to P0 between exposure
+#: attempts (unchanged values; named for the issue #53 migration).
+_RETURN_SETTLE_TIMEOUT_S = 10.0
+_RETURN_POLL_INTERVAL_S = 0.05
 
 
 class AutofocusMode(Enum):
@@ -125,7 +130,11 @@ class AutofocusController:
         exposure_control: ExposureControl | None = None,
         max_exposure_attempts: int = 3,
         tracker_max_shift_px: float = 40.0,
+        clock: Clock | None = None,
     ) -> None:
+        #: Issue #53: every settle wait, move-completion poll and frame
+        #: reference time goes through this clock (default: the real one).
+        self._clock = clock or SYSTEM_CLOCK
         self._exposure_control = exposure_control
         self._max_exposure_attempts = max_exposure_attempts
         self._tracker_max_shift_px = tracker_max_shift_px
@@ -169,6 +178,7 @@ class AutofocusController:
                     final_approach_direction=self._final_approach_direction,
                     envelope_steps=self._envelope_steps,
                     allow_invalid_samples=artificial, require_improvement=artificial,
+                    clock=self._clock,
                 )
                 measure = self._build_measurer(mode, tracker)
                 search_result = searcher.search(measure, cancel_check=cancel_check)
@@ -187,7 +197,7 @@ class AutofocusController:
                 # and search again with the star's peak back below full scale.
                 exposure_ms, gain = control.get()
                 control.set(exposure_ms * control.factor, gain)
-                time.sleep(control.settle_s)
+                self._clock.sleep(control.settle_s)
                 new_ms, new_gain = control.get()
                 if new_ms >= exposure_ms * 0.999:
                     override = (AutofocusStatus.NO_USABLE_EVIDENCE, "saturated_at_min_exposure")
@@ -234,9 +244,11 @@ class AutofocusController:
         """Best-effort return to the original start position between
         exposure attempts (same bounds as the search itself: it is P0)."""
         self._focuser.move_absolute(position)
-        deadline = time.monotonic() + 10.0
-        while self._focuser.is_moving() and time.monotonic() < deadline:
-            time.sleep(0.05)
+        poll_until(
+            lambda: not self._focuser.is_moving(),
+            timeout_s=_RETURN_SETTLE_TIMEOUT_S, interval_s=_RETURN_POLL_INTERVAL_S,
+            clock=self._clock,
+        )
 
     def _build_measurer(
         self, mode: AutofocusMode, tracker: StarTargetTracker
@@ -263,7 +275,7 @@ class AutofocusController:
         return FocusSample(value=measurement.fwhm_px, confidence=1.0 / 3.0)
 
     def _acquire_fresh_frame(self) -> np.ndarray | None:
-        reference_monotonic = time.monotonic()
+        reference_monotonic = self._clock.monotonic()
         acquisition = self._wait_for_frame(reference_monotonic, self._frame_timeout_s)
         if not acquisition.ok or acquisition.frame is None:
             return None

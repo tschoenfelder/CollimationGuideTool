@@ -24,7 +24,6 @@ position this class reasons about is the target it itself just commanded.
 from __future__ import annotations
 
 import contextlib
-import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
@@ -35,6 +34,7 @@ from astrotool_core.focus.search_bounds import (
     FocuserSearchBounds,
     compute_search_bounds,
 )
+from astrotool_core.timing import SYSTEM_CLOCK, Clock
 
 
 class AutofocusStatus(Enum):
@@ -167,8 +167,9 @@ class BoundedFocusSearcher:
         device_min_position: int = 0,
         move_settle_timeout_s: float = 10.0,
         move_poll_interval_s: float = 0.05,
-        sleep: Callable[[float], None] = time.sleep,
-        now: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], object] | None = None,
+        now: Callable[[], float] | None = None,
+        clock: Clock | None = None,
         allow_invalid_samples: bool = False,
         require_improvement: bool = False,
     ) -> None:
@@ -186,8 +187,11 @@ class BoundedFocusSearcher:
         self._device_min_position = device_min_position
         self._move_settle_timeout_s = move_settle_timeout_s
         self._move_poll_interval_s = move_poll_interval_s
-        self._sleep = sleep
-        self._now = now
+        # Issue #53: explicit `sleep`/`now` callables (older tests) win over
+        # `clock`; both default to the real clock.
+        source_clock = clock or SYSTEM_CLOCK
+        self._sleep = sleep or source_clock.sleep
+        self._now = now or source_clock.monotonic
 
     def search(
         self,

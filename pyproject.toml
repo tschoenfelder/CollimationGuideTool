@@ -117,6 +117,34 @@ source_modules = [
 forbidden_modules = ["PySide6"]
 
 [[tool.importlinter.contracts]]
+name = "timing (#53) is a leaf: no UI toolkit, no apps, no other core package"
+type = "forbidden"
+source_modules = ["astrotool_core.timing"]
+# Every other astrotool_core package, listed explicitly: a new core package
+# must be added here too (tests/core/testing/test_no_policy_sleep.py checks).
+forbidden_modules = [
+  "PySide6",
+  "collimation_tool",
+  "guide_tool",
+  "astrotool_core.acquisition",
+  "astrotool_core.camera",
+  "astrotool_core.config",
+  "astrotool_core.diagnostics",
+  "astrotool_core.diffraction",
+  "astrotool_core.filter_wheel",
+  "astrotool_core.focus",
+  "astrotool_core.frames",
+  "astrotool_core.indi",
+  "astrotool_core.mount",
+  "astrotool_core.onstep",
+  "astrotool_core.optics",
+  "astrotool_core.registration",
+  "astrotool_core.session",
+  "astrotool_core.target",
+  "astrotool_core.testing",
+]
+
+[[tool.importlinter.contracts]]
 name = "roi_tracker never touches the mount"
 type = "forbidden"
 source_modules = ["astrotool_core.target.roi_tracker"]
