@@ -21,7 +21,7 @@ modules = [
     "packages/astrotool_core/testing/fake_onstep_indi_client.py",
 ]
 fix_commits = ["0fdf781"]
-dataset_uuids = ["7b21bdf1", "73c7d59d", "11e564ad"]
+dataset_uuids = []  # the field diagnostics 7b21bdf1 / 73c7d59d / 11e564ad are owned by their own diag-* manifests; #51 only reproduces those defect classes
 focused_command = """pytest -q \
 tests/core/onstep/test_onstep_simulator.py \
 tests/core/filter_wheel/test_indi_filter_wheel_adapter_simulated.py \
