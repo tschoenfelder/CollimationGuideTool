@@ -1,0 +1,60 @@
+# Proof manifest -- schema in proofs/README.md.
+# Run: python scripts/prove.py 46-mount-align-angular-path
+issues = [46, 31]
+summary = """S6.0 / audit P01-P02: on OnStepAdapter >= 0.4 (INDI) the production \
+OnStepMountPulseAdapter refuses every timed pulse, but Mount Align's calibration bootstrap, \
+uncalibrated nudges and screen moves all started with a timed pulse_axis move and only went \
+angular once a rate had been learned from a successful timed move -- so on the rig the mount \
+never moved, and an angular refusal was masked by a doomed timed fallback. Fix: mounts that \
+do not support timed pulses are driven angularly from the first move (the #46 25%-of-frame \
+seed), every commanded move respects the adapter-reported 30\" floor (min_angular_arcsec), \
+screen moves are validated as a whole before anything is sent, and refusal reasons are \
+reported unmasked."""
+modules = [
+    "apps/collimation_tool/ui/mount_test_move_runner.py",
+    "apps/collimation_tool/ui/mount_test_move_panel.py",
+    "packages/astrotool_core/onstep/mount_pulse_adapter.py",
+    "packages/astrotool_core/onstep/__init__.py",
+]
+fix_commits = ["787ceed"]
+dataset_uuids = []
+focused_command = "pytest -q tests/collimation/ui/test_mount_align_real_onstep_adapter.py"
+broader_tier = "component"
+field_only_assumptions = [
+    "Real OnStep/INDI accepts angular moves of 30\"-~1900\" (calibration) and up to ~2166\" (nudge cap) under its tracking/park preconditions.",
+    "Measured pixel displacement on the rig tracks the optics-derived seed closely enough for the 20-30% band (measured pixels stay authoritative; resize is bounded).",
+    "RA/Dec-to-image orientation and signs on the rig (tested synthetically for 0/10/35 degrees and inverted signs only).",
+    "A degree GOTO plus settle_ms leaves the mount at rest before the AFTER frame.",
+    "The 30\" floor taken from OnStepAdapter's own constant is the real bound on the rig.",
+    "Stop during a blocking angular GOTO is not yet characterized (operation_lock held for the whole move) -- tracked as S6.0c.",
+]
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestCalibrationMovesTheRealAdapter::test_calibration_moves_the_mount_and_produces_a_matrix"
+failed_before_fix = true
+evidence = "Coordinator pre-fix run 2026-10-01, worktree at 4f1e393 with the new test module copied in (MIN_AXIS_ARCSEC constant shimmed, behaviour pre-fix): tests/collimation/ui/test_mount_align_real_onstep_adapter.py:196: AssertionError: the mount never received a move: Calibration failed: pulse rejected for AXIS1 POSITIVE (timed): OnStepAdapter has no timed pulse primitive over INDI yet"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestCalibrationMovesTheRealAdapter::test_a_refusal_mid_calibration_leaves_the_panel_idle_and_retryable"
+failed_before_fix = true
+evidence = "Same pre-fix run: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:259: assert 'axis_motion_reached_hard_limit' in 'Calibration failed: pulse rejected for AXIS1 POSITIVE (timed): ...'"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestRealisticOpticsRespectTheMountsSmallestMove::test_calibration_succeeds_and_never_commands_below_the_floor"
+failed_before_fix = true
+evidence = "Same pre-fix run, all 7 optics/rotation/sign cases: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:172: AssertionError: Calibration failed: pulse rejected for AXIS1 POSITIVE (timed). The intermediate first S6.0 fix also failed the 195\" case (Dec probe 27.4\" refused below the 30\" floor), found by adversarial review."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestManualMovesMoveTheRealAdapter::test_an_uncalibrated_ra_nudge_moves_the_mount"
+failed_before_fix = true
+evidence = "Same pre-fix run: nudge never reached the mount -- tests/collimation/ui/test_mount_align_real_onstep_adapter.py:178: AssertionError: []"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestManualMovesMoveTheRealAdapter::test_a_screen_move_below_the_floor_is_refused_before_any_motion"
+failed_before_fix = true
+evidence = "Same pre-fix run (calibration precondition failed): tests/collimation/ui/test_mount_align_real_onstep_adapter.py:172: AssertionError: Calibration failed: pulse rejected for AXIS1 POSITIVE (timed). Partial execution (RA ran, Dec 15.4\" refused) of the intermediate first fix was found by adversarial review."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestRunnerAgainstTheRealAdapter::test_an_angular_refusal_is_reported_not_masked_by_a_timed_fallback"
+failed_before_fix = true
+evidence = "Same pre-fix run: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:435: assert 'axis_motion_refused_at_home' in 'pulse rejected for AXIS1 POSITIVE (timed_fallback): OnStepAdapter has no timed pulse primitive over INDI yet'"

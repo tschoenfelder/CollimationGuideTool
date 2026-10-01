@@ -48,7 +48,7 @@ Status: `todo` · `in-progress` · `done` · `field-only` (only real hardware ca
 | S3b | #53 | Migrate `mount_test_move_runner.py`, `recenter_policy.py` (after S6.0); panel wall-clock polling; interruptible waits | | | todo | | |
 | S4 | #51 | Scenario simulators (OnStep mount, focuser, filter wheel, ToupTek camera) on FakeClock; 5 defect reproductions | | | todo | | |
 | S5 | #55, #52 | Duplication inventory + size/dependency baseline (`docs/quality/duplication-audit.md`) | analysis agent | coordinator spot-check (P01 confirmed in code) | done | (this commit) | docs only |
-| S6.0 | #46, #31, #55 (P01/P02) | **CRITICAL, promoted:** Mount Align bootstrap/nudge/screen moves go through `pulse_axis`, which production `OnStepMountPulseAdapter` always refuses; no rate is ever installed, so angular moves never start on the rig. Size the first move angularly from the optics seeds instead of a timed bootstrap; failing regression against the real adapter + fake OnStep connection first | | | todo | | |
+| S6.0 | #46, #31, #55 (P01/P02) | **CRITICAL, promoted:** Mount Align bootstrap/nudge/screen moves go through `pulse_axis`, which production `OnStepMountPulseAdapter` always refuses; no rate is ever installed, so angular moves never start on the rig. Size the first move angularly from the optics seeds instead of a timed bootstrap; failing regression against the real adapter + fake OnStep connection first | issue agent | 2 rounds: APPROVE-WITH-FIXES → APPROVE | done | 787ceed | `python scripts/prove.py 46-mount-align-angular-path` |
 | S6.0b | #39, P01 | Guide-assisted reacquisition (`recenter_policy.py:113`) calls `pulse_axis` on the production OnStep adapter → always `pulse_rejected`, adapter message dropped; move to the angular path (after S6.0). **Must use the same ms↔arcsec factor S6.0 stores the matrix in (equivalent ms at `calibration_center_rate_x`·sidereal) — that factor needs one public owner first** | | | todo | | |
 | S6.0c | #49, AGENTS manual-move rule | `OnStepMountPulseAdapter.move_angular` holds `connection.operation_lock` for the whole blocking GOTO (up to 30 s); `abort()` takes the same lock on the GUI thread before `stop()`, and park-panel status polls also take it → Stop would freeze the UI and not cancel; `_cancel` never checked. Characterize with a failing component test, then decide stop/lock semantics (verify OnStepAdapter's real abort semantics — no assumptions) | | | todo | | |
 | S6.1 | #55 | Single-source device defaults + config-source contract test | | | todo | | |
@@ -164,6 +164,7 @@ not change · dependencies · non-goals · proof required.
 
 | Date | Task | Commit | What was proven |
 |------|------|--------|-----------------|
+| 2026-10-01 | S6.0 | 787ceed | Mount Align moves the production OnStep adapter: 21 component tests (realistic optics, rotation, inverted signs) all fail pre-fix (coordinator-reproduced) and pass now; no command < 30″; no partial screen moves; refusals unmasked. Field: confidence ~85–90 % (nudges/calibration), S6.0c Stop-freeze risk open |
 | 2026-10-01 | S2 | (this commit) | 6 manifests (#49, #43, #47, filter stuck Busy, OnStep serialization, connect exception); 5 revert-proven in a separate worktree, 2 of them re-reproduced by the reviewer; CI fast job validates every manifest and rejects focused commands that could skip their tests; proof gaps recorded for S7 |
 | 2026-10-01 | S3a | (this commit) | ~80 fake-time tests incl. before/at/after boundaries decided by production code; #13 tests deterministic (no threads, 10/10 under CPU load); 9087272 pause-before-start guard restored (mutation fails it); migrated modules 4.25 s → 1.9 s; sleep guard + import contract for `timing` |
 | 2026-10-01 | S1 | (this commit) | 1871 tests partition exactly into 6 tiers; single-file changes proven in 1.5–3.1 s (was a 14.5 min gate); CI fast/slow/coverage run in parallel; coverage ≥80 still enforced. **Not yet faster:** full component tier 801 s — 15 Mount Align panel tests alone take 459 s of real settle/wait time → payoff comes with #53/#51 |
@@ -219,5 +220,12 @@ not change · dependencies · non-goals · proof required.
   tests take ~80 s of wall clock → fake time in S3b. (e) The `registry.py` EFW fallback literal has no
   test (→ S6.1). (f) `changed_tests.py` maps `proofs/**`/`scripts/prove.py` to ALL_FAST instead of the
   two manifest test modules (#50 follow-up). (g) No CI rule yet *requires* a manifest on a bug-fix PR.
+- **S6.0 re-review (APPROVE) leftovers.** (a) The angular floor reaches the panel via a duck-typed
+  `min_angular_arcsec` property read with `getattr(..., 0.0)` — fold into `MountCapabilities` with the
+  other `hasattr` checks (audit C02) in S6.5. (b) Small up/down screen moves are always refused on the real
+  main camera (5% of 440″ = 22″ < 30″) — disable/annotate the button in S6.6. (c) A two-axis screen move
+  can still stop halfway if the second component is refused for a non-floor reason (hard limit, time not
+  trusted, connection) and "Move failed" doesn't say one axis already moved — S6.6. (d) S6.0c (Stop/
+  status polls blocking the GUI thread during a GOTO) is the main field risk for the next Pi run.
 - **S5 live contradictions (9)** are listed in `docs/quality/duplication-audit.md`; each is owned by an
   S6 step and gets a failing regression before its fix.
