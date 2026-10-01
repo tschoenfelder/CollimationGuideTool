@@ -46,7 +46,7 @@ Status: `todo` · `in-progress` · `done` · `field-only` (only real hardware ca
 | S2 | #54 | Proof manifests, `scripts/prove.py`, CI validation, 6 backfills (5 revert-proven) | issue agent | APPROVE-WITH-FIXES → 10 fixes (flag whitelist, tier/skip check, evidence format, fetch-depth 0) | done | (this commit) | `python scripts/prove.py <issue>` · `--validate-all` |
 | S3a | #53, #13 | `astrotool_core.timing` (Clock/FakeClock/Deadline/poll_until); acquisition, autofocus, tracking_mode, guide controller migrated; sleep guard | issue agent | APPROVE-WITH-FIXES → 9 fixes, mutation-proven | done | (this commit) | `pytest tests/core/timing tests/core/acquisition tests/core/mount tests/core/testing tests/guide tests/collimation/application` |
 | S3b | #53 | Migrate `mount_test_move_runner.py`, `recenter_policy.py` (after S6.0); panel wall-clock polling; interruptible waits | | | todo | | |
-| S4 | #51 | Scenario simulators (OnStep mount, focuser, filter wheel, ToupTek camera) on FakeClock; 5 defect reproductions | | | todo | | |
+| S4 | #51 | Scenario simulators (OnStep mount, focuser, filter wheel, ToupTek camera) on FakeClock; 5 defect reproductions | issue agent | 2 rounds: APPROVE-WITH-FIXES (fidelity) → APPROVE-WITH-FIXES (2 minor) → fixed | done | 0fdf781 | `python scripts/prove.py 51` |
 | S5 | #55, #52 | Duplication inventory + size/dependency baseline (`docs/quality/duplication-audit.md`) | analysis agent | coordinator spot-check (P01 confirmed in code) | done | (this commit) | docs only |
 | S6.0 | #46, #31, #55 (P01/P02) | **CRITICAL, promoted:** Mount Align bootstrap/nudge/screen moves go through `pulse_axis`, which production `OnStepMountPulseAdapter` always refuses; no rate is ever installed, so angular moves never start on the rig. Size the first move angularly from the optics seeds instead of a timed bootstrap; failing regression against the real adapter + fake OnStep connection first | issue agent | 2 rounds: APPROVE-WITH-FIXES → APPROVE | done | 787ceed | `python scripts/prove.py 46-mount-align-angular-path` |
 | S6.0b | #39, P01 | Guide-assisted reacquisition (`recenter_policy.py:113`) calls `pulse_axis` on the production OnStep adapter → always `pulse_rejected`, adapter message dropped; move to the angular path (after S6.0). **Must use the same ms↔arcsec factor S6.0 stores the matrix in (equivalent ms at `calibration_center_rate_x`·sidereal) — that factor needs one public owner first** | | | todo | | |
@@ -56,6 +56,7 @@ Status: `todo` · `in-progress` · `done` · `field-only` (only real hardware ca
 | S6.3 | #52 | `OperationLifecycle` + bounded Busy timeout (FilterWheel, Focuser) | | | todo | | |
 | S6.4 | #48 | Remove Mount Align **and autofocus** local Star/Terrestrial toggles; derive from global OperatingMode (M04 decided) | | | todo | | |
 | S6.5 | #55 | ToupTek capability table (unsupported features contract-driven) | | | todo | | |
+| S6.5a | production defect (found by S4 review) | `touptek_adapter.py:54` `_FLAG_MONO = 0x40` is the SDK's `TOUPCAM_FLAG_USB30`; real `TOUPCAM_FLAG_MONO` is `0x10` (resources/touptek/toupcam.py:24/26). `is_color_sensor()` (line 639) therefore answers "not USB3": a colour USB3 camera would be treated as mono (no debayer). Option fallbacks also wrong (RGB 0x16→0x0c, FLUSH 0x36→0x3d, NOFRAME_TIMEOUT 0x3F→0x01, AUTOEXPO_TRIGGER 0x5A→0x51) — only used when the SDK lacks the name. Failing regression first (S4 leaves a strict xfail), then fix; check which rig cameras are affected | | | todo | | |
 | S6.6 | #52 | Mount Align orchestration out of `mount_test_move_panel.py` into application layer | | | todo | | |
 | S6.7 | #52 | Fresh-frame-after-motion service shared by Mount Align + autofocus | | | todo | | |
 | S6.8 | #55, #31, #46 | Verify no competing movement path remains | | | todo | | |
@@ -207,6 +208,7 @@ not change · dependencies · non-goals · proof required.
 
 | Date | Task | Commit | What was proven |
 |------|------|--------|-----------------|
+| 2026-10-01 | S4 | 0fdf781 | Simulators for OnStep (0.4.1 semantics, cited), filter wheel, ToupTek (real SDK constants), frame timelines; 5 defect classes reproduced, 6 fixes revert-proven; both filter-wheel wall-clock flakes gone; regressions selectable by the changed-module gate; production ToupTek mono-flag bug pinned for S6.5a |
 | 2026-10-01 | S6.0 | 787ceed | Mount Align moves the production OnStep adapter: 21 component tests (realistic optics, rotation, inverted signs) all fail pre-fix (coordinator-reproduced) and pass now; no command < 30″; no partial screen moves; refusals unmasked. Field: confidence ~85–90 % (nudges/calibration), S6.0c Stop-freeze risk open |
 | 2026-10-01 | S2 | (this commit) | 6 manifests (#49, #43, #47, filter stuck Busy, OnStep serialization, connect exception); 5 revert-proven in a separate worktree, 2 of them re-reproduced by the reviewer; CI fast job validates every manifest and rejects focused commands that could skip their tests; proof gaps recorded for S7 |
 | 2026-10-01 | S3a | (this commit) | ~80 fake-time tests incl. before/at/after boundaries decided by production code; #13 tests deterministic (no threads, 10/10 under CPU load); 9087272 pause-before-start guard restored (mutation fails it); migrated modules 4.25 s → 1.9 s; sleep guard + import contract for `timing` |
@@ -270,5 +272,16 @@ not change · dependencies · non-goals · proof required.
   can still stop halfway if the second component is refused for a non-floor reason (hard limit, time not
   trusted, connection) and "Move failed" doesn't say one axis already moved — S6.6. (d) S6.0c (Stop/
   status polls blocking the GUI thread during a GOTO) is the main field risk for the next Pi run.
+- **S4 production findings (2026-10-01), characterized not fixed.** (a) `IndiFilterWheelAdapter.status()`
+  trusts its own `_connected` flag: after indiserver drops mid-move it reports cached Busy
+  (`moving=True, available=True`) forever (`TestDisconnectWhileMoving`) → S6.3. (b) An out-of-range slot's
+  driver Alert never reaches `FilterWheelState`; caller only learns via its 10 s timeout (`TestInvalidSlot`)
+  → S6.3. (c) Seams still on the real clock / without injection: IndiFilterWheelAdapter (no client
+  injection, 2 s refresh throttle on `time.monotonic`), TouptekCameraAdapter (no clock), Focuser/FilterWheel
+  panel confirmation timeouts, MountTestMoveRunner (S3b). (d) Latent wall-clock flakes remain in
+  `test_indi_filter_wheel_adapter.py` (`TestPropertyRefresh`, `test_a_second_move_while_the_first_is_in_progress_is_refused`);
+  `FakeIndiServer` re-announces FILTER_SLOT as Ok while moving. (e) App-importing simulator workflow tests live
+  in `tests/core/testing/`, so `changed_tests.py` won't select them for panel/runner/controller changes →
+  move to `tests/collimation/` (S6.6).
 - **S5 live contradictions (9)** are listed in `docs/quality/duplication-audit.md`; each is owned by an
   S6 step and gets a failing regression before its fix.

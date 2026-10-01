@@ -1,0 +1,129 @@
+# Proof manifest -- schema in proofs/README.md. Run: python scripts/prove.py 51
+# DRAFT (S4): replace fix_commits with the commit that lands the simulators.
+issues = [51]
+summary = """Hardware-boundary scenario simulators on FakeClock behind the production adapters: \
+OnStep controller via OnStepConnection(client_factory=...) modeled on OnStepAdapter 0.4.1's own \
+semantics (cited per item), INDI filter wheel via IndiClient (real parser/cache; socket and wait \
+replaced; libindi Busy/Alert semantics), ToupTek SDK as sys.modules['toupcam'] with the vendored \
+SDK's real constants, explicit-timestamp frame delivery. Five defect classes (unsupported camera \
+capability, connect-error variants, stuck Busy, OnStep compound-operation concurrency, \
+motion-overlapping frames) are reproduced through six historical fixes, all six revert-proven; \
+both filter-wheel TestSetSlot wall-clock flakes are replaced by fake-time scenario tests. \
+Review fidelity corrections: tracking not confirmed in time ends OFF (0.4.1 emergency_stop) and is confirmed poll-exact (2nd seeing poll, pre-poll deadline check; boundary-tested), no \
+unpark tracking side effect (0.4.1 issues TRACK_OFF), real SDK flag/option values (the adapter's \
+wrong _FLAG_MONO is pinned by a strict xfail for S6.5a), connect failures count OnStepConnection.acquire()'s close() apart from 0.4.1's own transport self-close."""
+modules = [
+    "packages/astrotool_core/testing/sim_onstep.py",
+    "packages/astrotool_core/testing/sim_indi_filter_wheel.py",
+    "packages/astrotool_core/testing/sim_touptek.py",
+    "packages/astrotool_core/testing/sim_frames.py",
+    "packages/astrotool_core/testing/__init__.py",
+    "packages/astrotool_core/testing/fake_onstep_indi_client.py",
+]
+fix_commits = ["0fdf781"]
+dataset_uuids = ["7b21bdf1", "73c7d59d", "11e564ad"]
+focused_command = """pytest -q \
+tests/core/onstep/test_onstep_simulator.py \
+tests/core/filter_wheel/test_indi_filter_wheel_adapter_simulated.py \
+tests/core/filter_wheel/test_indi_filter_wheel_adapter.py::TestSetSlot \
+tests/core/camera/test_touptek_adapter_simulated.py \
+tests/core/acquisition/test_stable_frame_acquisition_simulated.py \
+tests/core/acquisition/test_motion_aware_acquisition_simulated.py \
+tests/collimation/ui/test_focuser_panel_simulated.py \
+tests/collimation/ui/test_filter_wheel_panel_simulated.py \
+tests/collimation/application/test_autofocus_controller_simulated.py \
+tests/collimation/ui/test_mount_test_move_runner_simulated.py"""
+broader_tier = "component"
+field_only_assumptions = [
+    "Per-model camera capabilities and USB-generation bits (CAMERA_MODELS) come from field reports and model family names, not vendor datasheets or the rig.",
+    "The libindi Busy-keeps-old-slot behaviour is from indilib/indi master FilterInterface::processNumber; the rig's ToupTek EFW driver may override it (scenario option busy_reports_target).",
+    "What OnStepAdapter 0.4.1 does when emergency_stop arrives during a blocking move_*_axis_deg is not modeled (S6.0c establishes it).",
+    "Why the real EFW / focuser stayed Busy, and why the INDI CONNECTION timed out on the Pi, are not reproduced -- only the application's handling of those states.",
+]
+gaps = [
+    "7bb7b68 is proven for FocuserPanel only; MountParkPanel and MountTestMovePanel connect handling are not exercised on the simulator (their existing tests cover it).",
+    "Seams: IndiFilterWheelAdapter has no client injection (the private _client is swapped) and its 2 s refresh throttle reads time.monotonic(); TouptekCameraAdapter has no clock (its module-level `time` is replaced; a no-frame timeout would still wait real time and is untested); FocuserPanel/FilterWheelPanel confirmation timeouts read time.monotonic() (tests age the issued-at stamp).",
+    "Mount Align workflow (test_mount_test_move_runner_simulated.py) is an AC gap pending S3b: MountTestMoveRunner sleeps/stamps on the real clock, so the test drains with a bounded real-time poll (5 ms, 120 s deadline, ~5.5 s per run).",
+    "OnStep focuser simulator vs 0.4.1 IndiFocuser: no focuser_property_alert blocker after an Alert, revision/fresh-poll mechanics are not modeled (a move completes after travel time), reject_moves reports the stop as confirmed immediately.",
+    "touptek_adapter's fallback constants for OPTION_RGB/FLUSH/NOFRAME_TIMEOUT/AUTOEXPO_TRIGGER and _FLAG_MONO differ from the SDK (S6.5a); only _FLAG_MONO is used directly and is pinned by strict xfails.",
+]
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_simulator.py::TestCompoundOperationSerialization::test_a_status_poll_during_a_focuser_move_waits_for_the_move"
+failed_before_fix = true
+evidence = "Defect 7b21bdf1, fix 9cea2e9. Revert-proof 2026-10-01, separate worktree at 128dc53 + S4 files, `git revert -n 9cea2e9` with tests/core/onstep/test_onstep_adapters.py kept at HEAD, PYTHONPATH=packages;apps (__file__ checked): tests/core/onstep/test_onstep_simulator.py:445: AssertionError: assert [('focuser.move', 'focuser.status')] == [] -- failed 3/3 runs after the final edits (earlier runs: 10/10, 5/5)."
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_simulator.py::TestCompoundOperationSerialization::test_a_mount_status_poll_during_a_focuser_move_waits_for_the_move"
+failed_before_fix = true
+evidence = "Same 9cea2e9 revert-proof: tests/core/onstep/test_onstep_simulator.py:448: AssertionError: assert [('focuser.move', 'mount.status')] == []"
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_adapter_simulated.py::TestUnsupportedCapabilityIsNeverCalled::test_no_tec_model_survives_a_session_of_per_frame_descriptor_reads"
+failed_before_fix = true
+evidence = "Field report 2026-09-29, fix 531a952. Revert-proof 2026-10-01, separate worktree, `git revert -n 531a952` (camera tests kept at HEAD): tests/core/camera/test_touptek_adapter_simulated.py:154: AssertionError: assert ['put_Option(0x08)', ..., 'get_TecTargetRange', ...] == []"
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_adapter_simulated.py::TestUnsupportedCapabilityIsNeverCalled::test_missing_temperature_sensor_is_probed_once_per_connect"
+failed_before_fix = true
+evidence = "GPCMOS02000KPA E_NOTIMPL spam, fix 4730c55. Revert-proof 2026-10-01, separate worktree, `git revert -n 4730c55` (adapter reverted cleanly, no conflict markers; conflicting test files kept at HEAD): tests/core/camera/test_touptek_adapter_simulated.py:162: AssertionError: assert ['get_Temperature', 'get_Temperature', ...] == ['get_Temperature']"
+
+[[regression_tests]]
+node = "tests/core/acquisition/test_stable_frame_acquisition_simulated.py::TestExposureOverlappingMotionIsNeverUsed::test_a_frame_delivered_after_the_move_but_exposed_during_it_is_skipped"
+failed_before_fix = true
+evidence = "Diagnostic c7dc2c3d, fix c4847ab (since moved into stable_frame_acquisition.acquire_stable_frame by #27). Revert-proof 2026-10-01, separate worktree, fix hunk undone by hand (`exposure_start >= reference` -> `frame.captured_at_monotonic >= reference`): tests/core/acquisition/test_stable_frame_acquisition_simulated.py:51: AssertionError: assert 10.5 == 12.5"
+
+[[regression_tests]]
+node = "tests/core/acquisition/test_stable_frame_acquisition_simulated.py::TestExposureOverlappingMotionIsNeverUsed::test_only_overlapping_frames_before_the_deadline_is_its_own_status"
+failed_before_fix = true
+evidence = "Same c4847ab hand revert: tests/core/acquisition/test_stable_frame_acquisition_simulated.py:60: AssertionError: assert <FrameAcquisitionStatus.OK: 'ok'> is <FrameAcquisitionStatus.EXPOSURE_OVERLAPPED_MOTION>"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_focuser_panel_simulated.py::TestStuckBusyRecovers::test_a_focuser_stuck_busy_forever_releases_the_move_lock_after_the_timeout"
+failed_before_fix = true
+evidence = "Diagnostic 73c7d59d, FocuserPanel half of 3fc09ae (listed as a gap in diag-73c7d59d). Revert-proof 2026-10-01, separate worktree, 3fc09ae's focuser_panel hunk undone by hand: tests/collimation/ui/test_focuser_panel_simulated.py:111: assert True is False (panel._move_in_flight)"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_filter_wheel_panel_simulated.py::TestStuckBusyRecovers::test_a_filter_wheel_stuck_busy_forever_re_enables_the_selector"
+failed_before_fix = true
+evidence = "Same 3fc09ae revert-proof, filter_wheel_panel hunk undone by hand: tests/collimation/ui/test_filter_wheel_panel_simulated.py:44: assert False (panel._slot_combo.isEnabled())"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_focuser_panel_simulated.py::TestConnectErrorVariantsAreShownNotRaised::test_the_failure_is_shown_and_a_retry_connects"
+failed_before_fix = true
+evidence = "Diagnostic 11e564ad, fix 7bb7b68 (FocuserPanel only). Revert-proof 2026-10-01, separate worktree, FocuserPanel `except Exception` -> `except ConnectionError` by hand: tests/collimation/ui/test_focuser_panel_simulated.py:72: AssertionError: assert 'Connect failed' in 'Not connected.' -- TimeoutError, RuntimeError, ValueError and KeyError variants fail; ConnectionError passes as expected."
+
+[[regression_tests]]
+node = "tests/core/filter_wheel/test_indi_filter_wheel_adapter.py::TestSetSlot::test_commands_the_device_and_reports_moving_then_arrived"
+failed_before_fix = false
+reason_no_prefix_repro = "Flake replacement, not a defect fix: the old version raced a 50 ms real-time Busy against a 10 ms poll (CI run 36784794838). The new one holds Busy on fake time; 20/20 local runs green."
+
+[[regression_tests]]
+node = "tests/core/filter_wheel/test_indi_filter_wheel_adapter.py::TestSetSlot::test_a_second_move_while_the_first_is_in_progress_is_refused"
+failed_before_fix = false
+reason_no_prefix_repro = "Sibling flake replacement (same real-time Busy race); 20/20 local runs green."
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_simulator.py::TestConnectErrorVariants::test_a_failed_connect_leaves_nothing_open_and_a_retry_succeeds"
+failed_before_fix = true
+evidence = "Guards OnStepConnection.acquire()'s client.close() on a failed connect (304178e). Proven 2026-10-01 in a separate worktree (128dc53 + S4 files) by deleting that close() call: tests/core/onstep/test_onstep_simulator.py:94: AssertionError: assert 0 == 1 for the TimeoutError, ConnectionError, RuntimeError, ValueError and already-connected (no self-close) variants; KeyError passes as documented (outside acquire()'s except tuple, 0.4.1 self-closes)."
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_simulator.py::TestParkAndTracking::test_tracking_not_confirmed_in_time_is_stopped_and_ends_off"
+failed_before_fix = false
+reason_no_prefix_repro = "Simulator fidelity check against onstep_adapter 0.4.1 indi_tracking.py:115-117 (no application defect)."
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_adapter_simulated.py::TestSimulatorMatchesTheVendoredSdk::test_every_copied_constant_equals_resources_touptek_toupcam_py"
+failed_before_fix = false
+reason_no_prefix_repro = "Simulator fidelity check: the copied SDK constants must equal resources/touptek/toupcam.py."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_autofocus_controller_simulated.py::TestAutofocusWorkflow"
+failed_before_fix = false
+reason_no_prefix_repro = "Component workflow required by #51 (AutofocusController over the simulated focuser + ToupTek camera); no historical defect."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_test_move_runner_simulated.py::TestMountAlignWorkflow"
+failed_before_fix = false
+reason_no_prefix_repro = "Component workflow required by #51 (Mount Align calibration over the production OnStep adapters on the simulated controller); no historical defect. Real-time drain pending S3b (see gaps)."
