@@ -31,6 +31,7 @@ import math
 import threading
 
 from onstep_adapter import IndiMount
+from onstep_adapter.indi_axis_motion import MAX_AXIS_MOVE_DEG, MIN_AXIS_MOVE_ARCSEC
 
 from astrotool_core.mount.port import (
     AxisDirection,
@@ -41,9 +42,11 @@ from astrotool_core.mount.port import (
 )
 from astrotool_core.onstep.connection import OnStepConnection
 
-#: OnStepAdapter's own `IndiAxisMover` bound (30"..10 degrees).
-_MIN_AXIS_ARCSEC = 30.0
-_MAX_AXIS_ARCSEC = 36000.0
+#: OnStepAdapter's own `IndiAxisMover` bound (30"..10 degrees), taken from OnStepAdapter
+#: itself (single source). `MIN_AXIS_ARCSEC` is re-exported for this app and reported to
+#: callers through `OnStepMountPulseAdapter.min_angular_arcsec` (S6.0).
+MIN_AXIS_ARCSEC = float(MIN_AXIS_MOVE_ARCSEC)
+_MAX_AXIS_ARCSEC = float(MAX_AXIS_MOVE_DEG) * 3600.0
 
 _NO_PULSE_PRIMITIVE = (
     "OnStepAdapter has no timed pulse primitive over INDI yet "
@@ -100,6 +103,12 @@ class OnStepMountPulseAdapter:
                 mount.stop()
 
     # ---- AngularMotionPort ------------------------------------------------
+    @property
+    def min_angular_arcsec(self) -> float:
+        """Reported capability (S6.0): the smallest `move_angular` size OnStepAdapter accepts.
+        Callers size moves against it up front instead of discovering it from a refusal."""
+        return MIN_AXIS_ARCSEC
+
     def installed_rate(self, axis: MountAxis, direction: AxisDirection) -> float | None:
         return self._rates.get((axis, direction))
 
@@ -118,12 +127,12 @@ class OnStepMountPulseAdapter:
             return CommandResult(accepted=False, message="not connected")
         if not (arcsec > 0.0) or not math.isfinite(arcsec):
             return CommandResult(accepted=False, message=f"invalid angular size {arcsec!r}")
-        if arcsec < _MIN_AXIS_ARCSEC or arcsec > _MAX_AXIS_ARCSEC:
+        if arcsec < MIN_AXIS_ARCSEC or arcsec > _MAX_AXIS_ARCSEC:
             return CommandResult(
                 accepted=False,
                 message=(
                     f"{arcsec:.1f}\" is outside OnStepAdapter's supported axis-move range "
-                    f"({_MIN_AXIS_ARCSEC:.0f}\"-{_MAX_AXIS_ARCSEC:.0f}\")"
+                    f"({MIN_AXIS_ARCSEC:.0f}\"-{_MAX_AXIS_ARCSEC:.0f}\")"
                 ),
             )
         positive = direction is AxisDirection.POSITIVE

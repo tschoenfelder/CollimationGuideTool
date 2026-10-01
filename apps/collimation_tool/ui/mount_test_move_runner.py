@@ -85,8 +85,8 @@ _PULSE_REJECTION_RETRY_DELAY_S = 0.3
 #: One pulse within a submitted sequence: (axis, direction, duration_ms).
 PulseStep = tuple[MountAxis, AxisDirection, int]
 #: The same, but executed as an ANGULAR move of `arcsec` through OnStepAdapter when the
-#: mount offers `AngularMotionPort` (and a rate is installed); `duration_ms` is then the
-#: equivalent timed duration, used only for the fallback below.
+#: mount offers `AngularMotionPort`; `duration_ms` is then the equivalent timed duration, used
+#: only for the fallback below (and never on a mount that reports no timed pulses, S6.0).
 AngularPulseStep = tuple[MountAxis, AxisDirection, int, float]
 
 #: OnStepAdapter's reasons for refusing an angular (center-mode, astronomy-grade) move that
@@ -153,6 +153,22 @@ def _pulse_with_retry(
 _log = logging.getLogger(__name__)
 
 
+def supports_timed_pulse(mount: MountPort) -> bool:
+    """Whether `mount.pulse_axis` (a timed move) can move this mount at all.
+
+    S6.0 (#46/#31): the single authoritative source is the adapter's own reported capability,
+    `capabilities().supports_pulse_guiding` -- `OnStepMountPulseAdapter` (OnStepAdapter >= 0.4
+    over INDI) reports False because no timed primitive exists there; its only motion is the
+    angular `move_angular`. Callers never infer this from a refusal message."""
+    return bool(mount.capabilities().supports_pulse_guiding)
+
+
+_NO_TIMED_PULSE = (
+    "this mount reports no timed pulse support (capabilities().supports_pulse_guiding is "
+    "False) and the move carried no angular size -- nothing was sent to the mount"
+)
+
+
 def _move_with_retry(
     mount: MountPort,
     step: PulseStep | AngularPulseStep,
@@ -160,21 +176,29 @@ def _move_with_retry(
 ) -> tuple[CommandResult, str]:
     """One step: angular through OnStepAdapter when asked and supported, else timed. An
     angular refusal because the mount is still at home falls back to the timed move of
-    the same equivalent duration (recorded in the path); any other refusal is final."""
+    the same equivalent duration (recorded in the path) -- ONLY on a mount that reports timed
+    pulses; any other refusal, and every refusal on a mount without timed pulses, is final and
+    reported as the adapter gave it (S6.0, audit P02: a fallback onto a path known to be
+    unsupported only replaced the real refusal reason)."""
     axis, direction, pulse_ms = step[0], step[1], step[2]
     arcsec = step[3] if len(step) > 3 else None
+    timed_supported = supports_timed_pulse(mount)
     move_angular = getattr(mount, "move_angular", None)
     if arcsec is not None and move_angular is not None:
         result = move_angular(axis, direction, arcsec)
         if result.accepted:
             return result, MOTION_ANGULAR
-        if not any(token in result.message for token in _TIMED_FALLBACK_REFUSALS):
+        if not timed_supported or not any(
+            token in result.message for token in _TIMED_FALLBACK_REFUSALS
+        ):
             return result, MOTION_ANGULAR
         _log.warning("angular move refused -- timed fallback: %s", result.message)
         return (
             _pulse_with_retry(mount, axis, direction, pulse_ms, rate_preset),
             MOTION_TIMED_FALLBACK,
         )
+    if not timed_supported:
+        return CommandResult(accepted=False, message=_NO_TIMED_PULSE), MOTION_TIMED
     return _pulse_with_retry(mount, axis, direction, pulse_ms, rate_preset), MOTION_TIMED
 
 

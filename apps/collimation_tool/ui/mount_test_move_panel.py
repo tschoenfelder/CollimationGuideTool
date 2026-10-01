@@ -241,12 +241,13 @@ is a new, additional control, not a replacement.
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 import traceback
 from collections import deque
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import Enum
 from typing import Any, Literal
 
@@ -278,6 +279,7 @@ from astrotool_core.mount import (
     solve_screen_move,
 )
 from astrotool_core.mount.movement_sizing import (
+    RATE_PRESET_X,
     CameraGeometry,
     SizingPolicy,
     SizingStatus,
@@ -287,6 +289,8 @@ from astrotool_core.mount.movement_sizing import (
     measured_rate_arcsec_per_s,
     plan_first_move,
     plan_followup,
+    rate_arcsec_per_s,
+    seed_rate_arcsec_per_s,
 )
 from astrotool_core.mount.operating_mode import OperatingMode, TrackingEnforcer
 from astrotool_core.target.detector import detect_sources
@@ -302,7 +306,12 @@ from PySide6.QtWidgets import (
 )
 
 from collimation_tool.ui.flow_layout import FlowLayout
-from collimation_tool.ui.mount_test_move_runner import MountTestMoveRunner
+from collimation_tool.ui.mount_test_move_runner import (
+    AngularPulseStep,
+    MountTestMoveRunner,
+    PulseStep,
+    supports_timed_pulse,
+)
 
 FrameGetter = Callable[[], np.ndarray | None]
 #: How long an "after" capture waits for a frame that's provably fresh
@@ -473,6 +482,12 @@ _REFERENCE_MAX_AGE_S = 60.0
 #: Issue #43: a measured shift below this is 'the image did not move'.
 _NO_MOTION_MIN_PX = 1.0
 _NO_MOTION_WIDTH_FRACTION = 0.0025
+#: S6.0: a screen-move component below the mount's smallest angular move may be skipped only
+#: when the image error it leaves is at most this fraction of the requested shift. Screen
+#: moves are fire-and-forget positioning clicks whose sizes step 5/15/30% of the frame, so a
+#: <=25% error stays well inside one size step and the next click corrects it; anything
+#: larger is refused up front instead of landing somewhere the user did not ask for.
+_SCREEN_MOVE_DROP_TOLERANCE = 0.25
 
 
 @dataclass(frozen=True)
@@ -713,6 +728,8 @@ class _NudgeMove:
     direction: AxisDirection
     duration_ms: int
     clamped: bool
+    #: S6.0: the angular size (arcsec) on a mount without timed pulses; None = timed.
+    arcsec: float | None = None
 
 
 @dataclass
@@ -877,6 +894,10 @@ class MountTestMovePanel(QWidget):
         #: is ANGULAR (`_axis_arcsec` = the calculated ~25%-frame size, rescaled from measured
         #: pixels). Off when the mount lacks the capability or the optics are unknown.
         self._angular_active = False
+        #: S6.0 (#46/#31, audit P01): the mount moves ONLY angularly (it reports no timed
+        #: pulses -- OnStepAdapter >= 0.4 over INDI). Every calibration step is then an angular
+        #: move sized up front from the optics; no timed bootstrap, no rate learning needed.
+        self._angular_only = False
         self._axis_arcsec: dict[MountAxis, float] = {}
         #: Net commanded SKY displacement per axis in arcsec (angular runs): opposite
         #: directions rarely share a rate, so the return to the start is sized from this,
@@ -1918,31 +1939,34 @@ class MountTestMovePanel(QWidget):
         own retry logic, which already covers transient rejection but
         not every possible failure).
         """
-        correction: tuple[AxisDirection, int] | None = None
         return_direction, return_ms = self._net_return(axis)
-        if return_ms != 0:
-            correction = (return_direction, return_ms)
+        # Issue #43/#46: never one pulse beyond the normal envelope -- the net left by
+        # several growth probes is returned as capped pulses run back-to-back.
+        chunks = self._return_chunks(return_ms, self._settings.max_calibration_pulse_ms)
         self._calibration_queue = []
         self._pending = None
         self._last_error = message
-        suffix = " (returning mount to start position…)" if correction is not None else ""
+        if chunks:
+            suffix = " (returning mount to start position…)"
+        elif return_ms != 0:
+            suffix = (
+                f" (residual {self._format_size(return_ms)} is below the mount's smallest "
+                "move -- not returned)"
+            )
+        else:
+            suffix = ""
         self._result_label.setText(f"Calibration failed: {message}{suffix}")
         self._resume_auto_exposure()
-        if correction is not None:
-            correction_direction, correction_ms = correction
+        if chunks:
+            correction_direction = return_direction
             self._awaiting_stranded_return = True
-            # Issue #43/#46: never one pulse beyond the normal envelope -- the net left by
-            # several growth probes is returned as capped pulses run back-to-back.
-            cap = max(1, self._settings.max_calibration_pulse_ms)
-            chunks: list[int] = []
-            remaining = correction_ms
-            while remaining > 0:
-                chunks.append(min(remaining, cap))
-                remaining -= chunks[-1]
             self._runner.submit_sequence(
                 self._mount_park,
                 self._mount,
-                [(axis, correction_direction, chunk) for chunk in chunks],
+                [
+                    self._calibration_motion_step(axis, correction_direction, chunk)
+                    for chunk in chunks
+                ],
                 rate_preset=self._calibration_rate_preset,
                 park_after=False,
                 settle_ms=self._settings.settle_ms,
@@ -2093,7 +2117,7 @@ class MountTestMovePanel(QWidget):
         net_arcsec = self._axis_net_arcsec.get(axis, 0.0)
         if self._angular_active and net_arcsec != 0.0:
             direction = AxisDirection.NEGATIVE if net_arcsec > 0 else AxisDirection.POSITIVE
-            rate = self._mount.installed_rate(axis, direction)  # type: ignore[attr-defined]
+            rate = self._rate_for(axis, direction)
             if rate:
                 return direction, int(round(abs(net_arcsec) / rate * 1000.0))
         net_ms = self._axis_net_pulse_ms[axis]
@@ -2231,6 +2255,12 @@ class MountTestMovePanel(QWidget):
         self._sizing_log = []
         self._calibration_rate_preset = settings.rate_preset
         self._angular_active = False
+        self._angular_only = self._mount_is_angular_only()
+        if self._angular_only:
+            # S6.0: no timed primitive exists, so every step -- even without known optics
+            # (then the fixed `pulse_ms` size, expressed angularly) -- is an angular move.
+            self._angular_active = True
+            self._calibration_rate_preset = None
         self._axis_arcsec = {}
         self._sizing_distance_m = None
         self._axis_duration_ms = {
@@ -2250,11 +2280,9 @@ class MountTestMovePanel(QWidget):
             min_duration_ms=settings.min_calibration_pulse_ms,
         )
         mode = self._target_mode()
-        distance_m: float | None
-        if self._calibration_distance_m is not None:
-            distance_m = self._calibration_distance_m(mode)
-        else:
-            distance_m = 10_000.0 if mode == "terrestrial" else None
+        distance_m = self._sizing_distance_for(mode)
+        if self._angular_only:
+            policy = self._angular_only_policy(policy, cameras, distance_m)
         plan = plan_first_move(
             cameras, policy, distance_m=distance_m, fallback_ms=settings.pulse_ms
         )
@@ -2295,11 +2323,140 @@ class MountTestMovePanel(QWidget):
             for name in ("installed_rate", "install_rate", "move_angular")
         )
 
-    def _installed_rate(self, step: _CalibrationStep) -> float | None:
+    def _mount_is_angular_only(self) -> bool:
+        """S6.0: angular moves exist but timed pulses do not (the adapter's own reported
+        capability -- see `supports_timed_pulse`, the single authoritative reader)."""
+        return self._mount_supports_angular() and not supports_timed_pulse(self._mount)
+
+    def _angular_unit_rate(self) -> float:
+        """Angular-only mounts: arcsec per second of 'equivalent duration'. The sizing
+        machinery (and every `AxisResponse.duration_ms`) still speaks durations; on a mount
+        that only moves by angle they are converted at this ONE fixed factor -- the same
+        centering-rate seed `plan_first_move` sizes with -- so a sized duration maps back to
+        exactly the calculated arcsec. A unit conversion, not a mount-rate model."""
+        return seed_rate_arcsec_per_s(
+            SizingPolicy(center_rate_x=self._settings.calibration_center_rate_x)
+        )
+
+    def _angular_only_policy(
+        self, policy: SizingPolicy, cameras: list[CameraGeometry], distance_m: float | None
+    ) -> SizingPolicy:
+        """Angular-only mounts: the duration envelope (`max_calibration_pulse_ms`) guarded a
+        TIMED move; an angular move's size is explicit. Widen it, from the configured optics
+        only, so the widest participating camera can still get the one larger follow-up the
+        #46 smallest-FOV-first strategy gives it (up to the band's upper edge of ITS frame).
+
+        The lower bound is raised to the mount's own smallest accepted angular move
+        (`min_angular_arcsec`, reported by the adapter): a resized probe can never be
+        commanded below it (review of S6.0: a 25%-of-110" Dec probe = 27.4" was refused)."""
+        policy = replace(
+            policy, min_duration_ms=max(policy.min_duration_ms, self._min_angular_ms())
+        )
+        widths = [fov[0] for camera in cameras if (fov := camera.fov_arcsec(distance_m))]
+        if not widths:
+            return policy
+        unit = self._angular_unit_rate()
+        needed_ms = math.ceil(policy.band_high * max(widths) / unit * 1000.0)
+        return replace(policy, max_duration_ms=max(policy.max_duration_ms, needed_ms))
+
+    def _min_angular_arcsec(self) -> float:
+        """The smallest angular move the mount accepts, as REPORTED by the adapter
+        (`OnStepMountPulseAdapter.min_angular_arcsec` <- OnStepAdapter's own bound); 0 for a
+        mount that reports none."""
+        return float(getattr(self._mount, "min_angular_arcsec", 0.0) or 0.0)
+
+    def _min_angular_ms(self) -> int:
+        """`_min_angular_arcsec` in the angular-only duration unit, rounded UP so the
+        converted move never falls below the floor."""
+        return math.ceil(self._min_angular_arcsec() / self._angular_unit_rate() * 1000.0)
+
+    def _return_chunks(self, total_ms: int, cap_ms: int) -> list[int]:
+        """Split an unmeasured return move into back-to-back chunks of at most `cap_ms`.
+
+        Angular-only mounts: chunks are sized EVENLY so no remainder falls below the mount's
+        smallest move; a total below that floor cannot be commanded at all and yields []
+        (the caller reports the unreturned residual). Other mounts: unchanged (full chunks
+        plus the remainder)."""
+        cap = max(1, cap_ms)
+        if total_ms <= 0:
+            return []
+        if self._angular_only:
+            floor_ms = self._min_angular_ms()
+            if total_ms < floor_ms:
+                return []
+            count = math.ceil(total_ms / max(cap, floor_ms))
+            base, extra = divmod(total_ms, count)
+            return [base + (1 if index < extra else 0) for index in range(count)]
+        chunks: list[int] = []
+        remaining = total_ms
+        while remaining > 0:
+            chunks.append(min(remaining, cap))
+            remaining -= chunks[-1]
+        return chunks
+
+    def _format_size(self, duration_ms: int) -> str:
+        """A move size for a message: arcsec on an angular-only mount, else ms."""
+        if self._angular_only:
+            return f'{duration_ms * self._angular_unit_rate() / 1000.0:.0f}"'
+        return f"{duration_ms} ms"
+
+    def _sizing_distance_for(self, mode: TargetMode) -> float | None:
+        if self._calibration_distance_m is not None:
+            return self._calibration_distance_m(mode)
+        return 10_000.0 if mode == "terrestrial" else None
+
+    def _rate_for(self, axis: MountAxis, direction: AxisDirection) -> float | None:
+        """Arcsec per second used to express this direction's moves as durations: the fixed
+        unit rate on an angular-only mount, else the MEASURED rate installed by a timed
+        bootstrap (None until then, or when angular moves are off)."""
         if not self._angular_active:
             return None
-        rate = self._mount.installed_rate(step.axis, step.direction)  # type: ignore[attr-defined]
+        if self._angular_only:
+            return self._angular_unit_rate()
+        rate = self._mount.installed_rate(axis, direction)  # type: ignore[attr-defined]
         return float(rate) if rate else None
+
+    def _installed_rate(self, step: _CalibrationStep) -> float | None:
+        return self._rate_for(step.axis, step.direction)
+
+    def _calibration_motion_step(
+        self, axis: MountAxis, direction: AxisDirection, duration_ms: int
+    ) -> PulseStep | AngularPulseStep:
+        """An unmeasured corrective step: angular on an angular-only mount, else timed."""
+        if self._angular_only:
+            arcsec = self._angular_unit_rate() * duration_ms / 1000.0
+            return (axis, direction, duration_ms, arcsec)
+        return (axis, direction, duration_ms)
+
+    # ---- S6.0: manual moves on a mount without timed pulses ------------------
+    def _nudge_cap_arcsec(self) -> float:
+        """The farthest one nudge/screen step may move on an angular-only mount: the same
+        envelope a timed nudge had (`max_nudge_pulse_ms` at the nudge `rate_preset`)."""
+        return self._settings.max_nudge_pulse_ms * self._nudge_rate_arcsec_per_s() / 1000.0
+
+    def _nudge_rate_arcsec_per_s(self) -> float:
+        preset = self._settings.rate_preset
+        if preset in RATE_PRESET_X:
+            return rate_arcsec_per_s(preset)
+        return self._angular_unit_rate()
+
+    def _uncalibrated_nudge_arcsec(self, camera_key: str) -> float:
+        """AGENTS.md / #31 Phase A: a pre-calibration nudge specified in frame terms
+        (`nudge_target_fraction` of the clicked camera's frame width), converted to an angle
+        from that camera's configured optics. Without optics: the size the configured timed
+        nudge (`pulse_ms` at `rate_preset`) used to command."""
+        if self._camera_geometry is not None:
+            distance_m = self._sizing_distance_for(self._target_mode())
+            for camera in self._camera_geometry():
+                fov = camera.fov_arcsec(distance_m) if camera.key == camera_key else None
+                if fov is not None:
+                    return self._settings.nudge_target_fraction * fov[0]
+        return self._settings.pulse_ms * self._nudge_rate_arcsec_per_s() / 1000.0
+
+    def _cap_text(self, angular: bool) -> str:
+        if angular:
+            return f'{self._nudge_cap_arcsec():.0f}"'
+        return f"{self._settings.max_nudge_pulse_ms}ms"
 
     def _step_duration_ms(self, step: _CalibrationStep) -> int:
         """The step's size as a duration. With an installed rate an axis-sized step is the
@@ -2317,7 +2474,8 @@ class MountTestMovePanel(QWidget):
 
     def _step_arcsec(self, step: _CalibrationStep, duration_ms: int) -> float | None:
         """Angular size of this step, or None = run it as a timed (bootstrap) move: no
-        angular capability/optics, or no rate installed yet for this direction."""
+        angular capability/optics, or no rate installed yet for this direction. Never None on
+        an angular-only mount (S6.0): its first move is sized up front, never bootstrapped."""
         rate = self._installed_rate(step)
         if rate is None:
             return None
@@ -2436,12 +2594,15 @@ class MountTestMovePanel(QWidget):
         axis = step.axis
         inserts: list[_CalibrationStep] = []
         direction, remaining = self._net_return(axis)
-        while remaining > 0:
-            chunk = min(remaining, policy.max_duration_ms)
+        chunks = self._return_chunks(remaining, policy.max_duration_ms)
+        if remaining > 0 and not chunks:
+            self._sizing_log.append(
+                {"event": "return_skipped", "axis": axis.name, "duration_ms": remaining}
+            )
+        for chunk in chunks:
             inserts.append(
                 _CalibrationStep(axis, direction, _CalibrationStepRole.RETURN, duration_ms=chunk)
             )
-            remaining -= chunk
         accepted_ms = self._axis_duration_ms[axis]
         for key in ("left", "right"):
             if key in self._calibration_failed_cameras:
@@ -2702,9 +2863,34 @@ class MountTestMovePanel(QWidget):
         # instead -- a real, smaller step now, not a refusal -- clicking
         # again genuinely continues toward the original target, matching
         # what the message already told the user to expect.
-        clamped = duration_ms > self._settings.max_nudge_pulse_ms
-        if clamped:
-            duration_ms = self._settings.max_nudge_pulse_ms
+        arcsec: float | None = None
+        if self._mount_is_angular_only():
+            # S6.0: no timed pulse exists -- the nudge is an angular move. Uncalibrated: sized
+            # from the camera's optics; calibrated: the solved duration is in the calibration's
+            # own unit (see _angular_unit_rate), so it converts back to the exact angle.
+            unit = self._angular_unit_rate()
+            arcsec = (
+                self._uncalibrated_nudge_arcsec(camera_key)
+                if matrix is None
+                else duration_ms * unit / 1000.0
+            )
+            cap = self._nudge_cap_arcsec()
+            clamped = arcsec > cap
+            arcsec = min(arcsec, cap)
+            floor = self._min_angular_arcsec()
+            if arcsec < floor:
+                # Refused before anything is sent: the mount cannot make a move this small.
+                self._last_error = (
+                    f'{_AXIS_LABELS[axis]} move of {arcsec:.1f}" is below the mount\'s '
+                    f'smallest angular move ({floor:.0f}") -- nothing was sent'
+                )
+                self._result_label.setText(f"Move failed: {self._last_error}")
+                return
+            duration_ms = max(1, round(arcsec / unit * 1000.0))
+        else:
+            clamped = duration_ms > self._settings.max_nudge_pulse_ms
+            if clamped:
+                duration_ms = self._settings.max_nudge_pulse_ms
 
         mode = self._target_mode()
         self._last_failure_classes = {}
@@ -2720,7 +2906,7 @@ class MountTestMovePanel(QWidget):
         # reference, provably still valid because the runner has accepted no sequence since
         # (so repeated nudges stay instant), or (b) a fresh verified capture (a single wait
         # after any other movement / on the first nudge). Never the latest displayed frame.
-        move = _NudgeMove(camera_key, axis, direction, duration_ms, clamped)
+        move = _NudgeMove(camera_key, axis, direction, duration_ms, clamped, arcsec)
         reference = self._reusable_reference(mode)
         if reference is not None:
             self._after_nudge_before_capture(move, mode, reference)
@@ -2742,11 +2928,19 @@ class MountTestMovePanel(QWidget):
             )
             self._result_label.setText(f"Move failed: {self._last_error}")
             return
-        started = self._runner.submit(
-            self._mount_park, self._mount, move.axis, move.direction, move.duration_ms,
-            rate_preset=self._settings.rate_preset, park_after=False,
-            settle_ms=self._settings.settle_ms,
-        )
+        if move.arcsec is None:
+            started = self._runner.submit(
+                self._mount_park, self._mount, move.axis, move.direction, move.duration_ms,
+                rate_preset=self._settings.rate_preset, park_after=False,
+                settle_ms=self._settings.settle_ms,
+            )
+        else:  # S6.0: an angular nudge on a mount without timed pulses
+            started = self._runner.submit_sequence(
+                self._mount_park, self._mount,
+                [(move.axis, move.direction, move.duration_ms, move.arcsec)],
+                rate_preset=self._settings.rate_preset, park_after=False,
+                settle_ms=self._settings.settle_ms,
+            )
         if not started:
             self._resume_auto_exposure()
             return  # a move is already running
@@ -2760,7 +2954,8 @@ class MountTestMovePanel(QWidget):
             direction=move.direction,
         )
         suffix = (
-            f" (safety-capped at {self._settings.max_nudge_pulse_ms}ms -- click again to continue)"
+            f" (safety-capped at {self._cap_text(move.arcsec is not None)} -- "
+            "click again to continue)"
             if move.clamped
             else ""
         )
@@ -2872,8 +3067,8 @@ class MountTestMovePanel(QWidget):
             if key in responses or key in unconfirmed
         ]
         suffix = (
-            f" (safety-capped at {self._settings.max_nudge_pulse_ms}ms -- click again to "
-            "continue toward the target)"
+            f" (safety-capped at {self._cap_text(self._mount_is_angular_only())} -- "
+            "click again to continue toward the target)"
             if pending.clamped
             else ""
         )
@@ -2928,15 +3123,31 @@ class MountTestMovePanel(QWidget):
         # risk _on_nudge_clicked's own docstring already covers) --
         # clamp rather than refuse, same established philosophy, reusing
         # the same setting (no separate safety cap for this control).
-        clamped = any(
-            duration_ms > self._settings.max_nudge_pulse_ms for _, _, duration_ms in steps
-        )
-        steps = [
-            (axis, direction, min(duration_ms, self._settings.max_nudge_pulse_ms))
-            for axis, direction, duration_ms in steps
-        ]
+        angular = self._mount_is_angular_only()
+        motion: list[PulseStep | AngularPulseStep]
+        skipped_note = ""
+        if angular:
+            planned = self._plan_angular_screen_move(
+                matrix, steps, math.hypot(target_dx_px, target_dy_px)
+            )
+            if isinstance(planned, str):
+                # Refused BEFORE anything is sent -- never a partially executed sequence.
+                self._last_error = planned
+                self._result_label.setText(f"Move failed: {self._last_error}")
+                return
+            motion, clamped, skipped = planned
+            if skipped:
+                skipped_note = f" (skipped a {skipped} component below the mount's smallest move)"
+        else:
+            clamped = any(
+                duration_ms > self._settings.max_nudge_pulse_ms for _, _, duration_ms in steps
+            )
+            motion = [
+                (axis, direction, min(duration_ms, self._settings.max_nudge_pulse_ms))
+                for axis, direction, duration_ms in steps
+            ]
         started = self._runner.submit_sequence(
-            self._mount_park, self._mount, steps,
+            self._mount_park, self._mount, motion,
             rate_preset=self._settings.rate_preset, park_after=False,
             settle_ms=self._settings.settle_ms,
         )
@@ -2947,11 +3158,53 @@ class MountTestMovePanel(QWidget):
         self._pending = _PendingAction(
             kind="screen_move", before={}, mode=self._target_mode(), label=label, clamped=clamped,
         )
-        suffix = (
-            f" (safety-capped at {self._settings.max_nudge_pulse_ms}ms/step)" if clamped else ""
-        )
-        self._result_label.setText(f"Moving {label}…{suffix}")
+        suffix = f" (safety-capped at {self._cap_text(angular)}/step)" if clamped else ""
+        self._result_label.setText(f"Moving {label}…{suffix}{skipped_note}")
         self._update_buttons_enabled()
+
+    def _plan_angular_screen_move(
+        self,
+        matrix: CalibrationMatrix,
+        steps: list[tuple[MountAxis, AxisDirection, int]],
+        target_px: float,
+    ) -> tuple[list[PulseStep | AngularPulseStep], bool, str] | str:
+        """S6.0: the whole angular sequence for a screen move, validated BEFORE anything is
+        sent. Returns (steps, clamped, skipped axis label) or a refusal message.
+
+        Each solved component (calibration duration unit) becomes arcsec and is capped like a
+        nudge. A component below the mount's smallest angular move cannot be commanded: it is
+        DROPPED when the image error that leaves (its own share of the solved shift, from the
+        measured matrix) is within `_SCREEN_MOVE_DROP_TOLERANCE` of the requested shift --
+        a fire-and-forget positioning click lands close enough and the next click corrects
+        the rest; otherwise the whole move is refused with nothing sent. Never a partially
+        executed sequence (a refused second component used to strand the first)."""
+        unit = self._angular_unit_rate()
+        cap = self._nudge_cap_arcsec()
+        floor = self._min_angular_arcsec()
+        kept: list[PulseStep | AngularPulseStep] = []
+        clamped = False
+        dropped: list[str] = []
+        residual_dx = residual_dy = 0.0
+        for axis, direction, duration_ms in steps:
+            arcsec = duration_ms * unit / 1000.0
+            if arcsec < floor:
+                response = matrix.response_for(axis, direction)
+                residual_dx += response.dx_px / response.duration_ms * duration_ms
+                residual_dy += response.dy_px / response.duration_ms * duration_ms
+                dropped.append(f'{_AXIS_LABELS[axis]} {arcsec:.1f}"')
+                continue
+            if arcsec > cap:
+                clamped, arcsec = True, cap
+            kept.append((axis, direction, max(1, round(arcsec / unit * 1000.0)), arcsec))
+        if not dropped:
+            return kept, clamped, ""
+        residual_px = math.hypot(residual_dx, residual_dy)
+        if not kept or residual_px > _SCREEN_MOVE_DROP_TOLERANCE * target_px:
+            return (
+                f"this move needs {', '.join(dropped)}, below the mount's smallest angular "
+                f'move ({floor:.0f}") -- nothing was sent; choose a larger size'
+            )
+        return kept, clamped, ", ".join(dropped)
 
     def _finish_screen_move(
         self,
@@ -2970,9 +3223,10 @@ class MountTestMovePanel(QWidget):
             self._result_label.setText(f"Move failed: {self._last_error}")
             return
         self._last_pulse_completed_at = completed_at
+        self._last_error = None  # a completed move must not keep an earlier move's error
         suffix = (
-            f" (safety-capped at {self._settings.max_nudge_pulse_ms}ms/step -- click again to "
-            "continue toward the target)"
+            f" (safety-capped at {self._cap_text(self._mount_is_angular_only())}/step -- "
+            "click again to continue toward the target)"
             if pending.clamped
             else ""
         )
@@ -2988,9 +3242,18 @@ class MountTestMovePanel(QWidget):
         # queued or in flight may carry on afterwards, and the panel is retryable at once.
         in_flight = self._capture_job is not None
         if self._calibration_queue or self._pending is not None or in_flight:
-            net = {a.name: ms for a, ms in self._axis_net_pulse_ms.items() if ms}
+            if self._angular_only:  # S6.0: angular moves -- report the net sky angle
+                net: dict[str, object] = {
+                    a.name: round(arcsec) for a, arcsec in self._axis_net_arcsec.items() if arcsec
+                }
+                unit = "arcsec"
+            else:
+                net = {a.name: ms for a, ms in self._axis_net_pulse_ms.items() if ms}
+                unit = "ms"
             self._cancel_activity()
-            note = f" (mount may be off its start position: net commanded ms {net})" if net else ""
+            note = (
+                f" (mount may be off its start position: net commanded {unit} {net})" if net else ""
+            )
             self._last_error = "stopped by the user"
             self._result_label.setText(f"Stopped by the user{note}.")
             self._update_buttons_enabled()
