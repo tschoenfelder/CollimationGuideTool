@@ -5,10 +5,28 @@ turned off); ASTRONOMICAL => the policy never forces tracking."""
 
 from __future__ import annotations
 
-from astrotool_core.mount.operating_mode import OperatingMode, TrackingEnforcer
+import threading
+from collections.abc import Callable
+
+import pytest
+from astrotool_core.mount.operating_mode import OperatingMode, TrackingEnforcer, TrackingGate
 from astrotool_core.mount.park_port import MountParkStatus
-from astrotool_core.mount.tracking_mode import TrackingMode, ensure_tracking_mode
+from astrotool_core.mount.tracking_mode import (
+    MOUNT_BUSY_REASON,
+    TrackingMode,
+    TrackingVerificationResult,
+    TrackingVerificationStatus,
+    ensure_tracking_mode,
+)
+from astrotool_core.onstep import OnStepMountParkAdapter
+from astrotool_core.testing import (
+    install_observable_operation_lock,
+    make_simulated_onstep_connection,
+)
 from astrotool_core.testing.fake_mount_park import FakeMountPark
+from astrotool_core.testing.sim_onstep import OnStepScenario
+
+_JOIN_S = 5.0  # real-time safety bound for test threads, never a policy wait
 
 
 def _enforcer(mount: FakeMountPark, mode: OperatingMode) -> TrackingEnforcer:
@@ -194,3 +212,137 @@ class TestEnsureTrackingModeSettling:
         result = ensure_tracking_mode(mount, TrackingMode.OFF)
 
         assert not result.ok
+
+
+# ---------------------------------------------------------------------------------------------
+# S6.0c review C1/C2 (#44): while another operation holds the OnStep connection (e.g. a Mount
+# Align GOTO), the park adapter serves a HELD-OVER reading (or "not known yet") so GUI polls
+# never block. A DECISION must never treat that as verified: the gate fails CLOSED with an
+# actionable reason, records no held-over value as the mount's state, sends no correction (it
+# would queue behind that operation) -- and still never blocks the calling thread. "No mount"
+# (an adapter that is not connected) keeps today's allow. Production park adapter on the #51
+# simulator; `ObservableRLock` tells deterministically whether the decision got through
+# ("done") or queued behind the held connection ("blocked").
+# ---------------------------------------------------------------------------------------------
+
+
+class _BusyConnection:
+    """The real park adapter on a simulated OnStep whose connection another thread holds."""
+
+    def __init__(self, *, read_first: bool) -> None:
+        self.connection, made = make_simulated_onstep_connection(OnStepScenario(parked=False))
+        self.lock = install_observable_operation_lock(self.connection)
+        self.park = OnStepMountParkAdapter(self.connection)
+        self.park.connect()
+        self.client = made[0]
+        self.client.tracking = False
+        if read_first:
+            assert self.park.status().fresh  # a GUI poll read tracking OFF ...
+        self.client.tracking = True  # ... then the mount started tracking (e.g. OnStep's
+        # delayed post-UNPARK auto-tracking) while another operation holds the connection
+        self._release = threading.Event()
+        held = threading.Event()
+
+        def hold() -> None:
+            with self.lock:
+                held.set()
+                self._release.wait(_JOIN_S)
+
+        self._holder = threading.Thread(target=hold, daemon=True)
+        self._holder.start()
+        assert held.wait(_JOIN_S)
+
+    def decide(self, decision: Callable[[], object]) -> tuple[str, list[object]]:
+        """Runs `decision` on another thread while the connection is held: "done" (never
+        queued) or "blocked" (queued behind the held operation), and what it returned."""
+        got: list[object] = []
+        worker = threading.Thread(target=lambda: got.append(decision()), daemon=True)
+        worker.start()
+        outcome = self.lock.wait_until_blocked_or_done(worker)
+        self.release()
+        worker.join(_JOIN_S)
+        return outcome, got
+
+    def release(self) -> None:
+        self._release.set()
+        self._holder.join(_JOIN_S)
+
+
+class TestDecisionsNeverUseHeldOverReadings:
+    @pytest.mark.parametrize("read_first", [True, False], ids=["held_over", "nothing_read_yet"])
+    def test_terrestrial_gate_fails_closed_while_the_mount_is_busy(self, read_first: bool) -> None:
+        busy = _BusyConnection(read_first=read_first)
+        enforcer = TrackingEnforcer(busy.park, OperatingMode.TERRESTRIAL, settle_timeout_s=0)
+
+        outcome, got = busy.decide(lambda: enforcer.enforce("autofocus"))
+
+        assert outcome == "done", "the gate queued behind the held connection"
+        (gate,) = got
+        assert gate == TrackingGate(False, MOUNT_BUSY_REASON)
+        assert not enforcer.measurement_allowed()
+        step = enforcer.evidence()["transitions"][-1]
+        assert step["allowed"] is False and step["reason"] == MOUNT_BUSY_REASON
+        assert "verified (" not in step["reason"]  # never "tracking off verified (...)"
+        assert step["tracking_before"] is None and step["tracking_after"] is None
+        assert busy.client.emergency_stop_calls == 0  # no correction queued behind it
+
+    def test_entering_terrestrial_mode_while_busy_is_denied_not_verified(self) -> None:
+        busy = _BusyConnection(read_first=True)
+        enforcer = TrackingEnforcer(busy.park, OperatingMode.ASTRONOMICAL, settle_timeout_s=0)
+
+        outcome, got = busy.decide(lambda: enforcer.set_mode(OperatingMode.TERRESTRIAL))
+
+        assert outcome == "done"
+        assert got == [TrackingGate(False, MOUNT_BUSY_REASON)]
+
+    @pytest.mark.parametrize("read_first", [True, False], ids=["held_over", "nothing_read_yet"])
+    def test_ensure_tracking_mode_reports_busy_and_sends_nothing(self, read_first: bool) -> None:
+        busy = _BusyConnection(read_first=read_first)
+
+        outcome, got = busy.decide(lambda: ensure_tracking_mode(busy.park, TrackingMode.OFF))
+
+        assert outcome == "done"
+        assert got == [TrackingVerificationResult(TrackingVerificationStatus.BUSY, None)]
+        assert busy.client.emergency_stop_calls == 0
+
+    def test_once_the_connection_is_free_the_gate_verifies_and_repairs_again(self) -> None:
+        busy = _BusyConnection(read_first=True)
+        busy.release()
+        enforcer = TrackingEnforcer(busy.park, OperatingMode.TERRESTRIAL, settle_timeout_s=0)
+
+        gate = enforcer.enforce("autofocus")
+
+        assert gate.allowed and gate.reason == "tracking off verified (repaired)"
+        assert busy.client.tracking is False and busy.client.emergency_stop_calls == 1
+
+    def test_no_mount_configured_keeps_todays_allow(self) -> None:
+        connection, _made = make_simulated_onstep_connection(OnStepScenario(parked=False))
+        park = OnStepMountParkAdapter(connection)  # never connected: there is no mount
+        enforcer = TrackingEnforcer(park, OperatingMode.TERRESTRIAL, settle_timeout_s=0)
+
+        gate = enforcer.enforce("autofocus")
+
+        assert gate == TrackingGate(True, "mount unavailable: no tracking to enforce")
+
+    def test_off_the_gui_thread_a_decision_waits_briefly_for_a_fresh_reading(self) -> None:
+        """Re-review R1: a momentary hold (e.g. another thread's status poll) released within
+        the decision's wait yields a fresh, real verification -- here a repair."""
+        busy = _BusyConnection(read_first=True)
+
+        outcome, got = busy.decide(
+            lambda: ensure_tracking_mode(busy.park, TrackingMode.OFF, fresh_wait_s=5.0)
+        )
+
+        assert outcome == "blocked"  # it waited for the holder, which then let go
+        assert got == [
+            TrackingVerificationResult(TrackingVerificationStatus.REPAIRED, TrackingMode.OFF)
+        ]
+
+    def test_a_hold_longer_than_the_wait_is_still_busy(self) -> None:
+        busy = _BusyConnection(read_first=True)
+        try:
+            result = ensure_tracking_mode(busy.park, TrackingMode.OFF, fresh_wait_s=0.05)
+        finally:
+            busy.release()
+        assert result == TrackingVerificationResult(TrackingVerificationStatus.BUSY, None)
+        assert busy.client.emergency_stop_calls == 0

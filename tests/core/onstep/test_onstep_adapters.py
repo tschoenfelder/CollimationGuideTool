@@ -13,12 +13,15 @@ no INDI equivalent -- see each adapter's own module docstring.
 
 from __future__ import annotations
 
+import logging
 import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
+from typing import Any
 
 import pytest
+from astrotool_core.mount.park_port import MountParkStatus
 from astrotool_core.mount.port import AxisDirection, MountAxis
 from astrotool_core.onstep import (
     OnStepConnection,
@@ -27,11 +30,20 @@ from astrotool_core.onstep import (
     OnStepMountPulseAdapter,
     load_onstep_indi_config,
 )
+from astrotool_core.testing import (
+    ObservableRLock,
+    OnStepScenario,
+    install_observable_operation_lock,
+    make_simulated_onstep_connection,
+)
 from astrotool_core.testing.fake_onstep_indi_client import (
     FakeOnStepIndiClient,
     fake_indi_runtime_config,
     make_fake_onstep_indi_connection,
 )
+from astrotool_core.timing import FakeClock
+
+_JOIN_S = 5.0  # real-time safety bound for test threads, never a policy wait
 
 
 def _connection() -> tuple[OnStepConnection, list[FakeOnStepIndiClient]]:
@@ -643,3 +655,446 @@ class TestOperationSerialization:
         t2.join()
 
         assert not overlap_detected.is_set()
+
+
+class TestStopDuringAngularGoto:
+    """S6.0c (#49; AGENTS.md "Manual movement versus measurement": bounded, cancellable, Qt
+    event loop responsive). OnStepAdapter 0.4.1's `move_*_axis_deg` blocks for the whole GOTO
+    and has no cancel hook; `move_angular` holds `operation_lock` for all of it (9cea2e9). On the
+    #51 simulator with a manual FakeClock the GOTO stays in flight for as long as the test
+    wants, and `ObservableRLock` tells deterministically whether a second thread is queued
+    behind it ("blocked") or got through ("done") -- no timing, no real sleeps."""
+
+    @staticmethod
+    def _goto_in_flight(
+        *, stop_confirm_latency_s: float = 0.0, read_first: bool = False
+    ) -> tuple[
+        FakeClock, ObservableRLock, OnStepMountPulseAdapter, Any, threading.Thread, list[Any]
+    ]:
+        clock = FakeClock(auto_advance=False)
+        connection, made = make_simulated_onstep_connection(
+            OnStepScenario(
+                parked=False,
+                axis_rate_deg_per_s=0.1,
+                stop_confirm_latency_s=stop_confirm_latency_s,
+            ),
+            clock=clock,
+        )
+        lock = install_observable_operation_lock(connection)
+        mount = OnStepMountPulseAdapter(connection)
+        mount.connect()
+        if read_first:
+            assert mount.status().connected
+        results: list[Any] = []
+        mover = threading.Thread(
+            target=lambda: results.append(
+                mount.move_angular(MountAxis.AXIS1, AxisDirection.POSITIVE, 300.0)
+            ),
+            daemon=True,
+        )
+        mover.start()
+        assert clock.wait_for_sleepers(1), "the GOTO never started"
+        return clock, lock, mount, made[0], mover, results
+
+    @staticmethod
+    def _finish(clock: FakeClock, *threads: threading.Thread) -> None:
+        """Run fake time on until every worker is done (the GOTO's own 30 s deadline, then the
+        stop confirmation waits). Real time only bounds it."""
+        deadline = time.monotonic() + 5.0
+        while any(t.is_alive() for t in threads):
+            assert time.monotonic() < deadline, "workers never finished"
+            clock.advance(30.0)
+            threading.Event().wait(0.002)
+
+    @staticmethod
+    def _until(condition: Callable[[], bool], timeout_s: float = 2.0) -> bool:
+        deadline = time.monotonic() + timeout_s
+        while not condition():
+            if time.monotonic() >= deadline:
+                return False
+            threading.Event().wait(0.001)
+        return True
+
+    def test_abort_does_not_wait_behind_the_running_goto(self) -> None:
+        """Stop is called on the GUI thread: it must neither queue behind the GOTO's lock nor
+        wait out OnStepAdapter's stop confirmation (2 s of fake time here, up to 5 s real)."""
+        clock, lock, mount, _client, mover, _ = self._goto_in_flight(stop_confirm_latency_s=2.0)
+        aborter = threading.Thread(target=mount.abort, daemon=True)
+        aborter.start()
+        try:
+            assert lock.wait_until_blocked_or_done(aborter) == "done"
+        finally:
+            self._finish(clock, mover, aborter)
+
+    def test_abort_reaches_the_mount_while_the_goto_is_still_running(self) -> None:
+        clock, _lock, mount, client, mover, _ = self._goto_in_flight()
+        aborter = threading.Thread(target=mount.abort, daemon=True)
+        aborter.start()
+        try:
+            assert self._until(lambda: client.axis_moves_aborted == 1), (
+                "OnStep's stop never reached the mount while the GOTO was running"
+            )
+        finally:
+            self._finish(clock, mover, aborter)
+
+    def test_a_stopped_goto_is_reported_as_stopped_not_as_a_move(self) -> None:
+        clock, _lock, mount, client, mover, results = self._goto_in_flight()
+        aborter = threading.Thread(target=mount.abort, daemon=True)
+        aborter.start()
+        self._until(lambda: client.axis_moves_aborted == 1)
+        self._finish(clock, mover, aborter)
+
+        (result,) = results
+        assert not result.accepted
+        assert "stopped by the user" in result.message
+
+    def test_a_stop_while_the_move_is_queued_behind_another_operation_cancels_it_unsent(
+        self,
+    ) -> None:
+        """`_cancel` was never checked: a Stop that lands while `move_angular` still waits for
+        the shared connection (e.g. behind a park-panel action) must cancel it unsent."""
+        clock = FakeClock(auto_advance=False)
+        connection, made = make_simulated_onstep_connection(
+            OnStepScenario(parked=False), clock=clock
+        )
+        lock = install_observable_operation_lock(connection)
+        mount = OnStepMountPulseAdapter(connection)
+        mount.connect()
+        results: list[Any] = []
+        mover = threading.Thread(
+            target=lambda: results.append(
+                mount.move_angular(MountAxis.AXIS1, AxisDirection.POSITIVE, 300.0)
+            ),
+            daemon=True,
+        )
+        with lock:  # another operation holds the connection
+            mover.start()
+            assert lock.wait_until_blocked_or_done(mover) == "blocked"
+            mount.abort()
+        self._finish(clock, mover)
+
+        assert made[0].axis_move_calls == []
+        (result,) = results
+        assert not result.accepted and "stopped by the user" in result.message
+
+    def test_a_status_poll_during_the_goto_does_not_wait_and_reports_slewing(self) -> None:
+        clock, lock, mount, client, mover, _ = self._goto_in_flight(read_first=True)
+        statuses: list[Any] = []
+        poller = threading.Thread(target=lambda: statuses.append(mount.status()), daemon=True)
+        poller.start()
+        try:
+            assert lock.wait_until_blocked_or_done(poller) == "done"
+            (status,) = statuses
+            assert status.connected and status.slewing
+            # 9cea2e9 still holds: the poll never read the controller mid-GOTO
+            assert client.monitor.interleavings == []
+        finally:
+            self._finish(clock, mover, poller)
+
+    def test_a_stop_is_remembered_until_the_next_command_is_armed(self) -> None:
+        """A Stop between two steps of a sequence must also refuse the next step; the next
+        operator action (`clear_abort`, called by whoever starts it) is not refused."""
+        clock = FakeClock()
+        connection, made = make_simulated_onstep_connection(
+            OnStepScenario(parked=False), clock=clock
+        )
+        mount = OnStepMountPulseAdapter(connection)
+        mount.connect()
+        mount.abort()
+        assert self._until(lambda: made[0].emergency_stop_calls == 1)
+        refused = mount.move_angular(MountAxis.AXIS1, AxisDirection.POSITIVE, 300.0)
+        assert not refused.accepted and "stopped by the user" in refused.message
+        assert made[0].axis_move_calls == []
+
+        mount.clear_abort()
+        assert mount.move_angular(MountAxis.AXIS1, AxisDirection.POSITIVE, 300.0).accepted
+
+
+class TestReadsDuringAGotoDoNotQueue:
+    """S6.0c / D1: the reads the panels poll on the GUI thread -- park `status()`,
+    `home_confirmed`, focuser `status()`/`is_moving()` -- never queue behind a mount GOTO
+    holding `operation_lock`; they serve the last reading (9cea2e9 still holds: nothing reads
+    the controller mid-operation). Before any reading exists they say "not known yet":
+    unavailable / not confirmed. Compound operations still queue."""
+
+    @staticmethod
+    def _rig(
+        *, read_first: bool
+    ) -> tuple[
+        FakeClock,
+        ObservableRLock,
+        OnStepMountParkAdapter,
+        OnStepFocuserAdapter,
+        Any,
+        threading.Thread,
+    ]:
+        clock = FakeClock(auto_advance=False)
+        connection, made = make_simulated_onstep_connection(
+            OnStepScenario(parked=False, axis_rate_deg_per_s=0.1), clock=clock
+        )
+        lock = install_observable_operation_lock(connection)
+        park, focuser = OnStepMountParkAdapter(connection), OnStepFocuserAdapter(connection)
+        mount = OnStepMountPulseAdapter(connection)
+        for adapter in (park, focuser, mount):
+            adapter.connect()
+        if read_first:
+            assert park.status().available and park.home_confirmed
+            assert focuser.status().available
+        mover = threading.Thread(
+            target=mount.move_angular,
+            args=(MountAxis.AXIS1, AxisDirection.POSITIVE, 300.0),
+            daemon=True,
+        )
+        mover.start()
+        assert clock.wait_for_sleepers(1), "the GOTO never started"
+        return clock, lock, park, focuser, made[0], mover
+
+    @staticmethod
+    def _read(lock: ObservableRLock, read: Callable[[], object]) -> tuple[str, list[object]]:
+        got: list[object] = []
+        reader = threading.Thread(target=lambda: got.append(read()), daemon=True)
+        reader.start()
+        return lock.wait_until_blocked_or_done(reader), got
+
+    @staticmethod
+    def _finish(clock: FakeClock, mover: threading.Thread) -> None:
+        deadline = time.monotonic() + 5.0
+        while mover.is_alive():
+            assert time.monotonic() < deadline
+            clock.advance(30.0)
+            threading.Event().wait(0.002)
+
+    def test_park_status_serves_the_last_reading(self) -> None:
+        clock, lock, park, _focuser, client, mover = self._rig(read_first=True)
+        try:
+            outcome, got = self._read(lock, park.status)
+            assert outcome == "done"
+            assert got[0].available and not got[0].parked  # type: ignore[attr-defined]
+            assert not got[0].fresh  # type: ignore[attr-defined]  # held over, never a decision
+            assert client.monitor.interleavings == []
+        finally:
+            self._finish(clock, mover)
+
+    def test_home_confirmed_serves_the_last_reading(self) -> None:
+        clock, lock, park, _focuser, _client, mover = self._rig(read_first=True)
+        try:
+            outcome, got = self._read(lock, lambda: park.home_confirmed)
+            assert outcome == "done" and got == [True]
+        finally:
+            self._finish(clock, mover)
+
+    def test_focuser_status_and_is_moving_serve_the_last_reading(self) -> None:
+        clock, lock, _park, focuser, client, mover = self._rig(read_first=True)
+        try:
+            outcome, got = self._read(lock, focuser.status)
+            assert outcome == "done"
+            assert got[0].available and got[0].position == 5000  # type: ignore[attr-defined]
+            outcome, got = self._read(lock, focuser.is_moving)
+            assert outcome == "done" and got == [False]
+            assert client.monitor.interleavings == []
+        finally:
+            self._finish(clock, mover)
+
+    def test_with_nothing_read_yet_a_busy_read_says_not_known(self) -> None:
+        clock, lock, park, focuser, _client, mover = self._rig(read_first=False)
+        try:
+            assert self._read(lock, park.status) == (
+                "done",
+                [MountParkStatus(available=False, parked=False, tracking=False, fresh=False)],
+            )
+            assert self._read(lock, lambda: park.home_confirmed) == ("done", [False])
+            outcome, got = self._read(lock, focuser.status)
+            assert outcome == "done" and not got[0].available  # type: ignore[attr-defined]
+        finally:
+            self._finish(clock, mover)
+        # once the connection is free, real readings again
+        assert park.status().available and park.home_confirmed and focuser.status().available
+
+    def test_a_focuser_move_still_queues_behind_the_goto(self) -> None:
+        """9cea2e9's compound-operation serialization is untouched by D1."""
+        clock, lock, _park, focuser, client, mover = self._rig(read_first=True)
+        try:
+            outcome, _ = self._read(lock, lambda: focuser.move_absolute(5100))
+            assert outcome == "blocked"
+        finally:
+            self._finish(clock, mover)
+            deadline = time.monotonic() + 5.0
+            while client.monitor.active or client.focuser.move_log == []:
+                assert time.monotonic() < deadline
+                clock.advance(1.0)
+                threading.Event().wait(0.002)
+        assert client.monitor.interleavings == []
+
+    def test_a_focuser_status_during_its_own_move_says_moving(self) -> None:
+        clock = FakeClock(auto_advance=False)
+        connection, _made = make_simulated_onstep_connection(OnStepScenario(), clock=clock)
+        lock = install_observable_operation_lock(connection)
+        focuser = OnStepFocuserAdapter(connection)
+        focuser.connect()
+        assert not focuser.status().moving
+        mover = threading.Thread(target=lambda: focuser.move_absolute(6000), daemon=True)
+        mover.start()
+        assert clock.wait_for_sleepers(1)
+        try:
+            outcome, got = self._read(lock, focuser.status)
+            assert outcome == "done" and got[0].moving  # type: ignore[attr-defined]
+        finally:
+            self._finish(clock, mover)
+
+
+class TestStopWorkerSafety:
+    """S6.0c review C3/P1/P2/P3: the Stop worker must stop what Stop covers -- never the
+    operator's NEXT command -- serve every Stop, and never die silently; cached readings never
+    survive a disconnect. Simulator on a manual FakeClock; OnStep's stop confirmation takes
+    2 s of fake time, so the worker is provably still busy while the test acts."""
+
+    @staticmethod
+    def _rig() -> tuple[FakeClock, OnStepMountPulseAdapter, Any]:
+        clock = FakeClock(auto_advance=False)
+        connection, made = make_simulated_onstep_connection(
+            OnStepScenario(parked=False, axis_rate_deg_per_s=0.01, stop_confirm_latency_s=2.0),
+            clock=clock,
+        )
+        mount = OnStepMountPulseAdapter(connection)
+        mount.connect()
+        return clock, mount, made[0]
+
+    @staticmethod
+    def _move(mount: OnStepMountPulseAdapter, results: list[Any]) -> threading.Thread:
+        mover = threading.Thread(
+            target=lambda: results.append(
+                mount.move_angular(MountAxis.AXIS1, AxisDirection.POSITIVE, 300.0)
+            ),
+            daemon=True,
+        )
+        mover.start()
+        return mover
+
+    @staticmethod
+    def _run_until_done(clock: FakeClock, *threads: threading.Thread) -> None:
+        deadline = time.monotonic() + 5.0
+        while any(t.is_alive() for t in threads):
+            assert time.monotonic() < deadline, "workers never finished"
+            clock.advance(1.0)
+            threading.Event().wait(0.002)
+
+    def test_a_late_second_stop_never_hits_the_operators_next_goto(self) -> None:
+        """C3: Stop with nothing moving; while its stop is still confirming, the operator's
+        next command re-arms and starts a GOTO. The worker's follow-up stop is only for GOTOs
+        the Stop covered -- the new one runs to its target."""
+        clock, mount, client = self._rig()
+        mount.abort()
+        worker = mount._stop_worker
+        assert worker is not None and clock.wait_for_sleepers(1)  # first stop confirming
+        mount.clear_abort()  # runner.submit() of the next nudge
+        results: list[Any] = []
+        mover = self._move(mount, results)
+        assert clock.wait_for_sleepers(2)  # the new GOTO is travelling (300" at 0.01 deg/s)
+
+        clock.advance(2.0)  # the first stop is confirmed; the worker decides about a second
+        assert TestStopDuringAngularGoto._until(
+            lambda: not worker.is_alive() or client.emergency_stop_calls >= 2
+        )
+        self._run_until_done(clock, mover, worker)
+
+        assert client.axis_moves_aborted == 0
+        assert client.emergency_stop_calls == 1
+        (result,) = results
+        assert result.accepted, result.message
+
+    def test_a_stop_while_the_worker_is_busy_still_stops_a_newer_goto(self) -> None:
+        """P1: a second Stop while the worker still confirms the first one is not dropped --
+        a GOTO started (after a re-arm) since the worker's last ABORT is stopped too."""
+        clock, mount, client = self._rig()
+        mount.abort()
+        worker = mount._stop_worker
+        assert worker is not None and clock.wait_for_sleepers(1)
+        mount.clear_abort()
+        results: list[Any] = []
+        mover = self._move(mount, results)
+        assert clock.wait_for_sleepers(2)
+
+        mount.abort()  # the operator stops the new GOTO too, worker still busy
+        self._run_until_done(clock, mover, worker)
+
+        assert client.axis_moves_aborted == 1
+        (result,) = results
+        assert not result.accepted and "stopped by the user" in result.message
+
+    def test_a_failing_stop_is_logged_and_the_stop_stays_latched(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """P3: whatever OnStepAdapter raises, the worker logs it, ends cleanly, and Stop still
+        refuses the next step unsent."""
+        _clock, mount, client = self._rig()
+
+        def broken_stop(**_kwargs: float) -> object:
+            raise KeyError("ABORT")  # not one of the "expected" exception types
+
+        client.emergency_stop = broken_stop
+        with caplog.at_level(logging.ERROR):
+            mount.abort()
+            worker = mount._stop_worker
+            assert worker is not None
+            worker.join(_JOIN_S)
+        assert not worker.is_alive()
+        assert "Stop: OnStep emergency stop failed" in caplog.text
+
+        refused = mount.move_angular(MountAxis.AXIS1, AxisDirection.POSITIVE, 300.0)
+        assert not refused.accepted and "stopped by the user" in refused.message
+        assert client.axis_move_calls == []
+
+    def test_disconnect_drops_every_held_over_reading(self) -> None:
+        """P2: a reading from an earlier session is never served after a reconnect; before
+        the first new reading a busy read claims nothing."""
+        clock = FakeClock()
+        connection, _made = make_simulated_onstep_connection(
+            OnStepScenario(parked=False), clock=clock
+        )
+        lock = install_observable_operation_lock(connection)
+        park, focuser = OnStepMountParkAdapter(connection), OnStepFocuserAdapter(connection)
+        mount = OnStepMountPulseAdapter(connection)
+        for adapter in (park, focuser, mount):
+            adapter.connect()
+        assert park.status().available and focuser.status().available
+        assert mount.status().connected and park.home_confirmed
+        for adapter in (park, focuser, mount):
+            adapter.disconnect()
+        for adapter in (park, focuser, mount):
+            adapter.connect()
+
+        with lock:  # busy, as during a GOTO, and nothing read in this session yet
+            reads: list[object] = []
+            reader = threading.Thread(
+                target=lambda: reads.extend(
+                    [park.status(), park.home_confirmed, focuser.status(), mount.status()]
+                ),
+                daemon=True,
+            )
+            reader.start()
+            reader.join(_JOIN_S)
+        park_status, home, focuser_status, mount_status = reads
+        assert not park_status.available and not park_status.fresh  # type: ignore[attr-defined]
+        assert home is False
+        assert not focuser_status.available  # type: ignore[attr-defined]
+        assert not mount_status.connected  # type: ignore[attr-defined]
+
+    def test_concurrent_stops_never_start_two_workers(self) -> None:
+        """Re-review P-e: the worker is started inside the stop bookkeeping's critical section."""
+        clock, mount, _client = self._rig()
+        barrier = threading.Barrier(8)
+
+        def press_stop() -> None:
+            barrier.wait(_JOIN_S)
+            mount.abort()
+
+        pressers = [threading.Thread(target=press_stop, daemon=True) for _ in range(8)]
+        for presser in pressers:
+            presser.start()
+        for presser in pressers:
+            presser.join(_JOIN_S)
+        workers = [t for t in threading.enumerate() if t.name == "onstep-mount-stop"]
+        try:
+            assert len(workers) == 1, workers
+        finally:
+            self._run_until_done(clock, *workers)

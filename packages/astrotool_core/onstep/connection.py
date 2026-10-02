@@ -29,7 +29,8 @@ so the GUI-thread poll and a worker-thread move can never interleave.
 from __future__ import annotations
 
 import threading
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 
 from onstep_adapter import IndiRuntimeConfig, OnStepIndiClient
 
@@ -54,6 +55,34 @@ class OnStepConnection:
         #: legitimately call back into another of its own locked methods
         #: on the same thread (e.g. move() reading status() first).
         self.operation_lock = threading.RLock()
+
+    @contextmanager
+    def try_operation(self, wait_s: float = 0.0) -> Iterator[bool]:
+        """Enter `operation_lock` only if that does not mean waiting longer than `wait_s`
+        (S6.0c; default: not at all).
+
+        Yields True while holding it (re-entrant like the lock), False -- without
+        touching the lock -- when another thread's operation holds it right now.
+        For a GUI-thread status READ only: an OnStepAdapter axis GOTO holds the
+        lock for its whole blocking duration (up to its 30 s timeout), and a
+        poll that queues behind it freezes the Qt event loop. A caller that gets
+        False must not talk to the controller (that would be exactly the
+        interleaving 9cea2e9 forbids) -- it serves what it last read. Compound
+        operations keep using `with operation_lock` and still serialize.
+
+        `wait_s > 0` is for a DECISION read off the GUI thread (re-review R1): GUI polls
+        hold the lock for a moment on every read, so a decision waits that long for a
+        fresh reading instead of failing on a mere collision -- bounded, never "until the
+        GOTO ends". A lock wait, so it runs on real time, not the injected clock."""
+        if wait_s > 0:
+            entered = self.operation_lock.acquire(timeout=wait_s)
+        else:
+            entered = self.operation_lock.acquire(blocking=False)
+        try:
+            yield entered
+        finally:
+            if entered:
+                self.operation_lock.release()
 
     @property
     def config(self) -> IndiRuntimeConfig:

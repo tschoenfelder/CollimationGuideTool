@@ -64,7 +64,7 @@ import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 
-from astrotool_core.mount.park_port import MountParkPort
+from astrotool_core.mount.park_port import MountParkPort, MountParkStatus
 from astrotool_core.mount.port import AxisDirection, CommandResult, MountAxis, MountPort
 
 _UNPARK_TIMEOUT_S = 5.0
@@ -98,6 +98,8 @@ _AT_HOME_REFUSAL = "axis_motion_refused_at_home"
 _TIMED_FALLBACK_REFUSALS = (_AT_HOME_REFUSAL, "raspberry_time_plausible_not_trusted")
 
 MOTION_ANGULAR = "angular"
+#: Same wording as the OnStep adapter's own Stop refusal, so either reads the same.
+_STOPPED_BY_USER = "stopped by the user"
 MOTION_TIMED = "timed"
 MOTION_TIMED_FALLBACK = "timed_fallback"
 
@@ -120,13 +122,40 @@ class MountPulseOutcome:
     settled_at: float | None = None
 
 
-def _wait_for_parked(mount_park: MountParkPort, *, want_parked: bool, timeout_s: float) -> bool:
+def _wait_for_parked(
+    mount_park: MountParkPort, *, want_parked: bool, timeout_s: float
+) -> str | None:
+    """None once a FRESH reading confirms `want_parked` (S6.0c: never a held-over one), else
+    why not: the mount never confirmed, or its connection stayed busy (no fresh reading)."""
     deadline = time.monotonic() + timeout_s
     while True:
-        if mount_park.status().parked == want_parked:
-            return True
+        status = mount_park.status()
+        if status.fresh and status.parked == want_parked:
+            return None
         if time.monotonic() >= deadline:
-            return False
+            if not status.fresh:
+                return "the mount connection stayed busy (no fresh reading)"
+            return "not confirmed"
+        time.sleep(_PARK_POLL_INTERVAL_S)
+
+
+#: S6.0c: the unpark-or-not decision needs a FRESH park reading; a held-over one (another
+#: operation holds the mount connection) may be wrong.
+_PARK_STATE_UNKNOWN = (
+    "mount busy -- its park state could not be read freshly in time; nothing was sent"
+)
+
+
+def _fresh_park_status(mount_park: MountParkPort, *, timeout_s: float) -> MountParkStatus | None:
+    """A fresh park reading (S6.0c), waiting -- on this worker thread, bounded -- while another
+    operation holds the connection; None if none arrives in time."""
+    deadline = time.monotonic() + timeout_s
+    while True:
+        status = mount_park.status()
+        if status.fresh:
+            return status
+        if time.monotonic() >= deadline:
+            return None
         time.sleep(_PARK_POLL_INTERVAL_S)
 
 
@@ -210,6 +239,8 @@ class MountTestMoveRunner:
         #: Issue #43: how many sequences were ever ACCEPTED -- lets a caller prove no
         #: pulse was commanded since it took a (verified, at-rest) reference frame.
         self.submit_count = 0
+        #: S6.0c: Stop ends the whole submitted sequence -- no further step is sent.
+        self._stop_requested = threading.Event()
 
     def submit(
         self,
@@ -273,6 +304,13 @@ class MountTestMoveRunner:
                 return False
             self._busy = True
             self.submit_count += 1
+            # S6.0c: a new operator command re-arms after an earlier Stop. Only once the
+            # submission is accepted: a refused submit (busy) must not re-arm the sequence
+            # that Stop interrupted.
+            self._stop_requested.clear()
+            clear_abort = getattr(mount, "clear_abort", None)
+            if callable(clear_abort):
+                clear_abort()
         threading.Thread(
             target=self._run,
             args=(mount_park, mount, steps, rate_preset, park_after, settle_ms),
@@ -338,7 +376,10 @@ class MountTestMoveRunner:
         # (a single TRACK_OFF, no UNPARK resend) -- still corrects any
         # tracking that crept back in, without re-arming the driver's own
         # UNPARK-linked quirk again.
-        if mount_park.status().parked:
+        initial = _fresh_park_status(mount_park, timeout_s=_UNPARK_TIMEOUT_S)
+        if initial is None:
+            return MountPulseOutcome(pulsed=False, error=_PARK_STATE_UNKNOWN)
+        if initial.parked:
             mount_park.unpark()
         else:
             mount_park.stop_tracking()
@@ -358,8 +399,9 @@ class MountTestMoveRunner:
             # (below) still covers the rest.
             time.sleep(_PULSE_REJECTION_RETRY_DELAY_S)
         try:
-            if not _wait_for_parked(mount_park, want_parked=False, timeout_s=_UNPARK_TIMEOUT_S):
-                error = "mount did not confirm unparked in time -- aborting test move"
+            why = _wait_for_parked(mount_park, want_parked=False, timeout_s=_UNPARK_TIMEOUT_S)
+            if why is not None:
+                error = f"mount did not confirm unparked in time ({why}) -- aborting test move"
             else:
                 # All-or-nothing `pulsed` flag, same as the single-pulse
                 # contract this generalizes: if a later step in a multi-step
@@ -373,6 +415,9 @@ class MountTestMoveRunner:
                 motion_started_at = time.monotonic()
                 for step in steps:
                     axis, direction = step[0], step[1]
+                    if self._stop_requested.is_set():
+                        error = f"{_STOPPED_BY_USER} -- {axis.name} {direction.name} not sent"
+                        break
                     result, path = _move_with_retry(mount, step, rate_preset)
                     paths.append(path)
                     if not result.accepted:
@@ -384,7 +429,7 @@ class MountTestMoveRunner:
                 else:
                     pulsed = True
                     motion_ended_at = time.monotonic()
-                    if settle_ms > 0:
+                    if settle_ms > 0 and not self._stop_requested.is_set():
                         time.sleep(settle_ms / 1000.0)
                     settled_at = time.monotonic()
         finally:
@@ -392,8 +437,9 @@ class MountTestMoveRunner:
                 # Always try to leave the mount parked again, even if the
                 # pulse failed above -- see module docstring.
                 mount_park.park()
-                if not _wait_for_parked(mount_park, want_parked=True, timeout_s=_REPARK_TIMEOUT_S):
-                    error = error or "mount did not confirm re-parked in time"
+                why = _wait_for_parked(mount_park, want_parked=True, timeout_s=_REPARK_TIMEOUT_S)
+                if why is not None:
+                    error = error or f"mount did not confirm re-parked in time ({why})"
 
         return MountPulseOutcome(
             pulsed=pulsed,
@@ -403,6 +449,12 @@ class MountTestMoveRunner:
             settled_at=settled_at,
             motion_paths=tuple(paths),
         )
+
+    def abort(self) -> None:
+        """Stop (S6.0c, any thread, returns at once): no further step of the running sequence
+        is sent. Stopping the mount itself is the mount adapter's `abort()`; a step already
+        inside the adapter ends there, bounded by the adapter."""
+        self._stop_requested.set()
 
     def take_latest(self) -> MountPulseOutcome | None:
         """Return and clear the latest completed outcome, if any — None

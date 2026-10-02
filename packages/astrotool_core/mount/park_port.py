@@ -27,6 +27,11 @@ class MountParkStatus:
     available: bool
     parked: bool
     tracking: bool
+    #: S6.0c / #44: False when this is NOT a reading taken just now -- a held-over reading
+    #: served while another operation holds the mount connection, or "not known yet" (then
+    #: also `available=False`). Fine for display; a DECISION (tracking gate, unpark choice)
+    #: must never treat it as verified. `available=False` with `fresh=True` means "no mount".
+    fresh: bool = True
 
 
 class MountParkPort(ABC):
@@ -42,6 +47,13 @@ class MountParkPort(ABC):
 
     @abstractmethod
     def status(self) -> MountParkStatus: ...
+
+    def decision_status(self, *, wait_fresh_s: float) -> MountParkStatus:
+        """S6.0c re-review R1: the reading a DECISION off the GUI thread uses -- like
+        `status()`, but an adapter that can serve held-over readings first waits up to
+        `wait_fresh_s` for a fresh one (another thread's momentary read is not "busy").
+        Never called on the GUI thread with a wait. Default: `status()` (always fresh)."""
+        return self.status()
 
     @abstractmethod
     def park(self) -> None: ...

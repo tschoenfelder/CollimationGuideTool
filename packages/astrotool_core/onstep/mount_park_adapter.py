@@ -1,18 +1,38 @@
 """OnStepMountParkAdapter — `MountParkPort` over OnStepAdapter's `IndiMount`
-(>= 0.4.0, INDI-backed)."""
+(>= 0.4.0, INDI-backed).
+
+S6.0c: the two READS polled on the GUI thread (`status()`, `home_confirmed`)
+never queue behind another thread's operation on the shared connection -- an
+OnStepAdapter axis GOTO holds `operation_lock` for its whole blocking duration
+(up to its 30 s timeout), which froze the Qt event loop on every Mount Align
+move. When the lock is busy they serve their last reading instead of reading
+the controller mid-operation (which 9cea2e9 forbids). Before any reading
+exists they report the conservative "not known yet": unavailable / not
+confirmed. Both are marked `fresh=False` (`MountParkStatus.fresh`), so a
+decision -- the #44 tracking gate -- never treats them as verified.
+Compound operations (park/unpark/tracking) still block on the lock.
+"""
 
 from __future__ import annotations
+
+from dataclasses import replace
 
 from onstep_adapter import IndiMount
 
 from astrotool_core.mount.park_port import MountParkPort, MountParkStatus
 from astrotool_core.onstep.connection import OnStepConnection
 
+#: S6.0c: busy connection and nothing read yet -- "not known", never a guessed state.
+_NOT_READ_YET = MountParkStatus(available=False, parked=False, tracking=False, fresh=False)
+
 
 class OnStepMountParkAdapter(MountParkPort):
     def __init__(self, connection: OnStepConnection) -> None:
         self._connection = connection
         self._held = False
+        #: S6.0c: the last readings, served while another operation holds the connection.
+        self._last_status: MountParkStatus | None = None
+        self._last_home_confirmed = False
 
     def connect(self) -> None:
         if not self._held:
@@ -22,6 +42,7 @@ class OnStepMountParkAdapter(MountParkPort):
     def disconnect(self) -> None:
         if self._held:
             self._held = False
+            self._last_status, self._last_home_confirmed = None, False  # S6.0c: no stale carry-over
             self._connection.release()
 
     @property
@@ -38,15 +59,26 @@ class OnStepMountParkAdapter(MountParkPort):
         # on a worker thread (`long_running_actions`) while this status()
         # is polled from the GUI thread; serialize both against every
         # other adapter sharing this connection so they can never
-        # interleave mid-sequence.
-        with self._connection.operation_lock:
+        # interleave mid-sequence. S6.0c: ...without ever queueing behind one (module docstring).
+        return self._read(wait_s=0.0)
+
+    def decision_status(self, *, wait_fresh_s: float) -> MountParkStatus:
+        """See `MountParkPort.decision_status` (S6.0c re-review R1)."""
+        return self._read(wait_s=wait_fresh_s)
+
+    def _read(self, *, wait_s: float) -> MountParkStatus:
+        with self._connection.try_operation(wait_s) as entered:
             mount = self._mount()
             if mount is None:
                 return MountParkStatus(available=False, parked=False, tracking=False)
+            if not entered:
+                last = self._last_status
+                return _NOT_READ_YET if last is None else replace(last, fresh=False)
             snapshot = mount.get_status()
-            return MountParkStatus(
+            self._last_status = MountParkStatus(
                 available=True, parked=snapshot.parked, tracking=snapshot.tracking
             )
+            return self._last_status
 
     def park(self) -> None:
         """Park via OnStepAdapter's own status-confirmed mechanical route --
@@ -140,8 +172,11 @@ class OnStepMountParkAdapter(MountParkPort):
     #: read-only status this enables is still useful, so it stays exposed.
     @property
     def home_confirmed(self) -> bool:
-        with self._connection.operation_lock:
+        with self._connection.try_operation() as entered:  # S6.0c, as status()
             client = self._connection.client
-            return bool(
-                self._held and client is not None and client.home_authority_established
-            )
+            if not self._held or client is None:
+                return False
+            if not entered:
+                return self._last_home_confirmed
+            self._last_home_confirmed = bool(client.home_authority_established)
+            return self._last_home_confirmed

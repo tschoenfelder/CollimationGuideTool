@@ -16,8 +16,10 @@ is validated as a whole before anything is sent.
 from __future__ import annotations
 
 import math
+import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 
 import numpy as np
 import pytest
@@ -29,15 +31,33 @@ from astrotool_core.acquisition.stable_frame_acquisition import (
 from astrotool_core.config import MountAlignmentSettings
 from astrotool_core.mount import AxisDirection, MountAxis
 from astrotool_core.mount.movement_sizing import CameraGeometry
-from astrotool_core.onstep import MIN_AXIS_ARCSEC, OnStepMountParkAdapter, OnStepMountPulseAdapter
+from astrotool_core.mount.operating_mode import OperatingMode, TrackingEnforcer
+from astrotool_core.mount.tracking_mode import MOUNT_BUSY_REASON, TrackingMode
+from astrotool_core.onstep import (
+    MIN_AXIS_ARCSEC,
+    OnStepFocuserAdapter,
+    OnStepMountParkAdapter,
+    OnStepMountPulseAdapter,
+)
+from astrotool_core.testing import (
+    ObservableRLock,
+    OnStepScenario,
+    install_observable_operation_lock,
+    make_simulated_onstep_connection,
+)
 from astrotool_core.testing.fake_onstep_indi_client import (
     FakeOnStepIndiClient,
     make_fake_onstep_indi_connection,
 )
+from astrotool_core.testing.sim_onstep import SimulatedOnStepIndiClient
+from astrotool_core.timing import FakeClock
+from collimation_tool.ui.focuser_panel import FocuserPanel
+from collimation_tool.ui.mount_park_panel import MountParkPanel
 from collimation_tool.ui.mount_test_move_panel import (
     MountTestMovePanel,
     MovementSize,
     ScreenDirection,
+    _CaptureJob,
 )
 from collimation_tool.ui.mount_test_move_runner import MountTestMoveRunner
 
@@ -81,8 +101,14 @@ class _Rig:
         rot_deg: float = 0.0,
         ra_sign: float = 1.0,
         dec_sign: float = 1.0,
+        clock: FakeClock | None = None,
     ) -> None:
-        connection, made = make_fake_onstep_indi_connection()
+        # S6.0c: with a clock, the #51 simulator (a GOTO takes |offset| / rate of that clock)
+        connection, made = (
+            make_simulated_onstep_connection(OnStepScenario(axis_rate_deg_per_s=0.1), clock=clock)
+            if clock is not None
+            else make_fake_onstep_indi_connection()
+        )
         self.park = OnStepMountParkAdapter(connection)
         self.mount = OnStepMountPulseAdapter(connection)
         self.park.connect()
@@ -135,11 +161,12 @@ class _Rig:
     def sizes_arcsec(self) -> list[float]:
         return [abs(offset) * 3600.0 for _axis, offset in self.client.axis_move_calls]
 
-    def panel(self) -> MountTestMovePanel:
+    def panel(self, *, tracking_enforcer: TrackingEnforcer | None = None) -> MountTestMovePanel:
         cameras = list(self.cameras.values())
         panel = MountTestMovePanel(
             self.mount,
             mount_park=self.park,
+            tracking_enforcer=tracking_enforcer,
             get_left_frame=self.getter("left"),
             get_right_frame=self.getter("right"),
             wait_for_left_frame=self.waiter("left"),
@@ -454,3 +481,403 @@ class TestRunnerAgainstTheRealAdapter:
         assert outcome.error is not None and "angular size" in outcome.error
         assert time.monotonic() - started < 1.5  # not 6 x 0.3 s of doomed pulse retries
         assert rig.client.axis_move_calls == []
+
+
+# ---------------------------------------------------------------------------------------------
+# S6.0c -- Stop during an angular GOTO (#49; AGENTS.md "Manual movement versus measurement":
+# bounded, cancellable, Qt event loop responsive), production adapters end-to-end (D1 included:
+# no GUI-thread read queues behind the GOTO). The GOTO runs on the #51 simulator with a
+# MANUAL FakeClock, so it stays in flight until the test advances time. A GUI-thread call that
+# queues behind it would hang the test: a real-time watchdog then ends the GOTO (advances fake
+# time) and the test fails on `fired` -- the watchdog is a safety bound, never the measurement.
+# ---------------------------------------------------------------------------------------------
+
+_WATCHDOG_S = 2.0
+
+
+@contextmanager
+def _watchdog(clock: FakeClock) -> Iterator[threading.Event]:
+    fired = threading.Event()
+
+    def fire() -> None:
+        fired.set()
+        clock.advance(60.0)  # ends the GOTO, so the blocked GUI call can return and fail
+
+    timer = threading.Timer(_WATCHDOG_S, fire)
+    timer.daemon = True
+    timer.start()
+    try:
+        yield fired
+    finally:
+        timer.cancel()
+
+
+def _until(condition: Callable[[], bool], timeout_s: float = 5.0) -> bool:
+    """Barrier on another thread's progress (real time is only the safety bound)."""
+    deadline = time.monotonic() + timeout_s
+    while not condition():
+        if time.monotonic() >= deadline:
+            return False
+        threading.Event().wait(0.001)
+    return True
+
+
+def _run_fake_time_until_idle(clock: FakeClock, runner: MountTestMoveRunner) -> None:
+    """Let every GOTO / stop confirmation in flight finish on fake time."""
+    deadline = time.monotonic() + 10.0
+    while runner.is_busy:
+        assert time.monotonic() < deadline, "the runner never finished"
+        clock.advance(30.0)
+        threading.Event().wait(0.002)
+
+
+class _StopRecorder:
+    """Records on which thread OnStepAdapter's emergency stop was called."""
+
+    def __init__(self, client: SimulatedOnStepIndiClient) -> None:
+        self.threads: list[str] = []
+        real = client.emergency_stop
+
+        def stop(**kwargs: float) -> object:
+            self.threads.append(threading.current_thread().name)
+            return real(**kwargs)
+
+        client.emergency_stop = stop  # type: ignore[method-assign]
+
+
+def _sim_rig() -> tuple[_Rig, FakeClock, SimulatedOnStepIndiClient]:
+    """Production adapters (pulse, park) over the #51 simulator on a manual FakeClock."""
+    clock = FakeClock(auto_advance=False)
+    rig = _Rig(clock=clock)
+    assert isinstance(rig.client, SimulatedOnStepIndiClient)
+    return rig, clock, rig.client
+
+
+def _goto_in_flight_from_a_nudge(rig: _Rig, clock: FakeClock) -> MountTestMovePanel:
+    """An uncalibrated RA+ nudge (300" at 0.1 deg/s) whose GOTO now blocks in OnStepAdapter."""
+    panel = rig.panel()
+    with _watchdog(clock) as fired:
+        panel._on_nudge_clicked("left", MountAxis.AXIS1, AxisDirection.POSITIVE)
+        deadline = time.monotonic() + 10.0
+        while not panel._runner.is_busy and not fired.is_set():  # pre-move work, then runner
+            assert time.monotonic() < deadline, panel._result_label.text()
+            panel._poll()
+    assert not fired.is_set(), "the nudge click blocked the GUI thread behind its own GOTO"
+    assert clock.wait_for_sleepers(1), "the GOTO never started"
+    return panel
+
+
+class TestStopDuringABlockingAngularGoto:
+    def test_runner_abort_sends_no_further_step_of_the_sequence(self) -> None:
+        """A composed two-axis nudge: Stop during the first GOTO must not send the second."""
+        rig, clock, client = _sim_rig()
+        runner = MountTestMoveRunner()
+        assert runner.submit_sequence(
+            rig.park,
+            rig.mount,
+            [
+                (MountAxis.AXIS1, AxisDirection.POSITIVE, 1000, 300.0),
+                (MountAxis.AXIS2, AxisDirection.POSITIVE, 1000, 300.0),
+            ],
+            park_after=False,
+        )
+        assert clock.wait_for_sleepers(1)
+
+        runner.abort()
+        rig.mount.abort()
+        _run_fake_time_until_idle(clock, runner)
+        outcome = runner.take_latest()
+
+        assert [axis for axis, _ in client.axis_move_calls] == ["ra"]  # Dec never sent
+        assert outcome is not None and not outcome.pulsed
+        assert outcome.error is not None and "stopped by the user" in outcome.error
+
+    def test_stop_during_a_goto_returns_at_once_and_stops_the_mount_off_the_gui_thread(
+        self, qapp: object
+    ) -> None:
+        rig, clock, client = _sim_rig()
+        stops = _StopRecorder(client)
+        panel = _goto_in_flight_from_a_nudge(rig, clock)
+
+        with _watchdog(clock) as fired:
+            panel._stop_button.click()
+        reached = _until(lambda: client.axis_moves_aborted == 1, timeout_s=2.0)
+
+        _run_fake_time_until_idle(clock, panel._runner)
+        assert not fired.is_set(), "Stop blocked the GUI thread behind the running GOTO"
+        assert reached, "OnStep's stop never reached the mount while the GOTO was running"
+        assert stops.threads and "MainThread" not in stops.threads, stops.threads
+        assert "Stopped by the user" in panel._result_label.text()
+        panel.stop()
+
+    def test_after_the_stopped_goto_ends_the_panel_is_idle_and_the_next_nudge_moves(
+        self, qapp: object
+    ) -> None:
+        rig, clock, client = _sim_rig()
+        panel = _goto_in_flight_from_a_nudge(rig, clock)
+        with _watchdog(clock):
+            panel._stop_button.click()
+        _until(lambda: client.axis_moves_aborted == 1, timeout_s=2.0)
+        _run_fake_time_until_idle(clock, panel._runner)
+        panel._poll()
+
+        assert panel.is_idle()
+        assert panel._last_error == "stopped by the user"
+        assert all(button.isEnabled() for button in panel._nudge_buttons["left"].values())
+        ha_after_stop = client.ha_deg
+
+        panel._on_nudge_clicked("left", MountAxis.AXIS1, AxisDirection.POSITIVE)
+        deadline = time.monotonic() + 10.0
+        while not panel._runner.is_busy:
+            assert time.monotonic() < deadline, panel._result_label.text()
+            panel._poll()
+        _run_fake_time_until_idle(clock, panel._runner)
+        _drain(panel)
+        # the earlier Stop is not held against the operator's next action
+        assert (client.ha_deg - ha_after_stop) * 3600.0 == pytest.approx(300.0)
+        assert "Move failed" not in panel._result_label.text()
+        panel.stop()
+
+    def test_the_nudge_click_that_starts_a_goto_does_not_block_the_gui_thread(
+        self, qapp: object
+    ) -> None:
+        """Found while characterizing S6.0c (D1): the click handler submits the move and then
+        refreshes its buttons via `interface_state()` -> `OnStepMountParkAdapter.status()`,
+        which queued behind the GOTO the click just started (and so did every poll tick)."""
+        rig, clock, _client = _sim_rig()
+        panel = rig.panel()
+        with _watchdog(clock) as fired:
+            panel._on_nudge_clicked("left", MountAxis.AXIS1, AxisDirection.POSITIVE)
+            deadline = time.monotonic() + 10.0
+            while not panel._runner.is_busy and not fired.is_set():
+                assert time.monotonic() < deadline, panel._result_label.text()
+                panel._poll()
+            if not fired.is_set():
+                assert clock.wait_for_sleepers(1)
+                panel._poll()  # one ordinary poll tick while the GOTO runs
+        _run_fake_time_until_idle(clock, panel._runner)
+        panel.stop()
+        assert not fired.is_set()
+
+    def test_a_park_panel_poll_during_a_goto_does_not_block_the_gui_thread(
+        self, qapp: object
+    ) -> None:
+        rig, clock, _client = _sim_rig()
+        park_panel = MountParkPanel(rig.park)
+        park_panel._connect_button.setChecked(True)
+        runner = MountTestMoveRunner()
+        assert runner.submit_sequence(
+            rig.park,
+            rig.mount,
+            [(MountAxis.AXIS1, AxisDirection.POSITIVE, 1000, 300.0)],
+            park_after=False,
+        )
+        assert clock.wait_for_sleepers(1)
+        with _watchdog(clock) as fired:
+            park_panel._poll_status()
+        _run_fake_time_until_idle(clock, runner)
+        park_panel.stop()
+        assert not fired.is_set()
+
+    def test_a_focuser_panel_poll_during_a_goto_does_not_block_the_gui_thread(
+        self, qapp: object
+    ) -> None:
+        """The OnStep focuser shares the mount's connection: FocuserPanel's poll (status() and
+        is_moving()) must not wait out a Mount Align GOTO either."""
+        rig, clock, _client = _sim_rig()
+        focuser = OnStepFocuserAdapter(rig.mount._connection)
+        focuser_panel = FocuserPanel(focuser)
+        focuser_panel._connect_button.setChecked(True)
+        runner = MountTestMoveRunner()
+        assert runner.submit_sequence(
+            rig.park,
+            rig.mount,
+            [(MountAxis.AXIS1, AxisDirection.POSITIVE, 1000, 300.0)],
+            park_after=False,
+        )
+        assert clock.wait_for_sleepers(1)
+        with _watchdog(clock) as fired:
+            focuser_panel._poll_status()
+        _run_fake_time_until_idle(clock, runner)
+        focuser_panel.stop()
+        assert not fired.is_set()
+        assert "Position" in focuser_panel._status_label.text()
+
+
+class TestTrackingDecisionsWhileTheMountIsBusy:
+    """S6.0c review C1/C2 (#44), at the panels that decide: with another operation holding the
+    OnStep connection, Mount Align's tracking check and the Mount panel's enforcement deny
+    with the actionable busy reason -- never "verified" from a held-over or unknown reading --
+    and return without waiting for that operation (watchdog: real-time safety bound only)."""
+
+    @contextmanager
+    def _connection_held(self, rig: _Rig) -> Iterator[threading.Event]:
+        """Another thread holds the connection; if a GUI-thread call queues behind it, the
+        watchdog releases it after 2 s so the test fails on `fired` instead of hanging."""
+        connection = rig.mount._connection
+        release, held, fired = threading.Event(), threading.Event(), threading.Event()
+
+        def hold() -> None:
+            with connection.operation_lock:
+                held.set()
+                if not release.wait(_WATCHDOG_S):
+                    fired.set()
+
+        holder = threading.Thread(target=hold, daemon=True)
+        holder.start()
+        assert held.wait(5.0)
+        try:
+            yield fired
+        finally:
+            release.set()
+            holder.join(5.0)
+
+    @staticmethod
+    def _tracking_rig(*, read_first: bool) -> _Rig:
+        rig = _Rig(clock=FakeClock())
+        rig.client.parked = False
+        rig.client.tracking = False
+        if read_first:
+            assert rig.park.status().fresh
+        rig.client.tracking = True  # real tracking ON, but no fresh reading can be taken
+        return rig
+
+    @pytest.mark.parametrize("with_enforcer", [True, False], ids=["enforcer", "no_enforcer"])
+    def test_mount_align_tracking_check_denies_with_the_busy_reason(
+        self, qapp: object, with_enforcer: bool
+    ) -> None:
+        """The panel reads the mount when it connects (tracking ON); with the connection held,
+        that held-over reading must neither pass nor trigger a correction that queues behind
+        the held operation. (A held-over OFF passing as "verified" is pinned at the enforcer:
+        tests/core/mount/test_operating_mode.py.)"""
+        rig = self._tracking_rig(read_first=False)
+        enforcer = (
+            TrackingEnforcer(rig.park, OperatingMode.TERRESTRIAL, settle_timeout_s=0)
+            if with_enforcer
+            else None
+        )
+        panel = rig.panel(tracking_enforcer=enforcer)
+        with self._connection_held(rig) as fired:
+            message = panel._tracking_failure_message(TrackingMode.OFF, "terrestrial")
+        assert not fired.is_set(), "the tracking check queued behind the held connection"
+        assert message is not None and MOUNT_BUSY_REASON in message
+        assert rig.client.emergency_stop_calls == 0  # type: ignore[attr-defined]  # simulator client
+        panel.stop()
+
+    @pytest.mark.parametrize("read_first", [True, False], ids=["held_over", "nothing_read_yet"])
+    def test_mount_panel_enforcement_records_a_denial_not_a_verification(
+        self, qapp: object, read_first: bool
+    ) -> None:
+        rig = self._tracking_rig(read_first=read_first)
+        enforcer = TrackingEnforcer(rig.park, OperatingMode.TERRESTRIAL, settle_timeout_s=0)
+        park_panel = MountParkPanel(rig.park, tracking_enforcer=enforcer)
+        with self._connection_held(rig) as fired:
+            park_panel._enforce_tracking("unpark")
+        assert not fired.is_set(), "the enforcement queued behind the held connection"
+        assert not enforcer.measurement_allowed()
+        assert enforcer.evidence()["last_reason"] == MOUNT_BUSY_REASON
+        assert rig.client.emergency_stop_calls == 0  # type: ignore[attr-defined]  # simulator client
+
+
+class TestWorkerDecisionsWaitBrieflyForAFreshReading:
+    """S6.0c re-review R1: GUI polls hold `operation_lock` for a moment on every read, so the
+    tracking check Mount Align's capture WORKER runs before every BEFORE/AFTER capture used to
+    find it busy by plain collision -- a spurious "mount busy" calibration failure with nothing
+    moving. Off the GUI thread a decision now waits briefly (bounded) for a fresh reading.
+    `ObservableRLock` makes the collision deterministic: the lock is released exactly once the
+    worker is provably waiting for it."""
+
+    @staticmethod
+    def _job(rig: _Rig) -> tuple[MountTestMovePanel, ObservableRLock, _CaptureJob]:
+        rig.client.parked = False
+        rig.client.tracking = False
+        lock = install_observable_operation_lock(rig.mount._connection)
+        enforcer = TrackingEnforcer(rig.park, OperatingMode.TERRESTRIAL, settle_timeout_s=0)
+        panel = rig.panel(tracking_enforcer=enforcer)
+        request = panel._snapshot_capture_request("terrestrial", "before", None, False)
+        job = _CaptureJob(1, "before", request, lambda _result: None, time.monotonic())
+        return panel, lock, job
+
+    def test_a_momentary_poll_collision_does_not_fail_the_capture(self, qapp: object) -> None:
+        rig = _Rig(clock=FakeClock())
+        panel, lock, job = self._job(rig)
+        held, release = threading.Event(), threading.Event()
+
+        def poll_holding_the_lock() -> None:  # a GUI-thread read, frozen mid-read
+            with lock:
+                held.set()
+                release.wait(5.0)
+
+        poller = threading.Thread(target=poll_holding_the_lock, daemon=True)
+        poller.start()
+        assert held.wait(5.0)
+        worker = threading.Thread(target=panel._run_capture_job, args=(job,), daemon=True)
+        worker.start()
+        outcome = lock.wait_until_blocked_or_done(worker)  # waiting for the poll to finish ...
+        release.set()  # ... which it now does, well within the decision's wait
+        worker.join(5.0)
+        poller.join(5.0)
+
+        assert outcome == "blocked", "the worker decided without waiting for a fresh reading"
+        assert job.error is None and job.result is not None
+        assert job.result.tracking_error is None, job.result.tracking_error
+        panel.stop()
+
+    def test_a_connection_held_beyond_the_wait_still_fails_closed(self, qapp: object) -> None:
+        rig = _Rig(clock=FakeClock())
+        panel, lock, job = self._job(rig)
+        with self._held_for_a_goto(lock):
+            started = time.monotonic()
+            panel._run_capture_job(job)
+            elapsed = time.monotonic() - started
+
+        assert job.result is not None and job.result.tracking_error is not None
+        assert MOUNT_BUSY_REASON in job.result.tracking_error
+        from astrotool_core.mount.tracking_mode import WORKER_DECISION_FRESH_WAIT_S
+
+        assert elapsed < WORKER_DECISION_FRESH_WAIT_S + 1.0  # bounded, not "until the GOTO ends"
+        panel.stop()
+
+    @staticmethod
+    @contextmanager
+    def _held_for_a_goto(lock: ObservableRLock) -> Iterator[None]:
+        held, release = threading.Event(), threading.Event()
+
+        def hold() -> None:
+            with lock:
+                held.set()
+                release.wait(10.0)
+
+        holder = threading.Thread(target=hold, daemon=True)
+        holder.start()
+        assert held.wait(5.0)
+        try:
+            yield
+        finally:
+            release.set()
+            holder.join(5.0)
+
+
+class TestBusyIsShownAsBusy:
+    """S6.0c re-review P-b/P-c: a busy mount is reported to the operator as busy -- never as
+    "not available", and a busy denial of the Mount panel's enforcement is not dropped."""
+
+    def test_mount_align_says_busy_not_unavailable_before_the_first_reading(
+        self, qapp: object
+    ) -> None:
+        rig = _Rig(clock=FakeClock())
+        panel = rig.panel()
+        rig.park._last_status = None  # nothing read yet in this situation
+        with TestTrackingDecisionsWhileTheMountIsBusy()._connection_held(rig):
+            state = panel.interface_state()
+        assert (state.available, state.code) == (False, "mount_busy")
+        assert "busy" in state.detail and "not available" not in state.detail
+        panel.stop()
+
+    def test_the_mount_panel_shows_a_busy_denial(self, qapp: object) -> None:
+        rig = _Rig(clock=FakeClock())
+        enforcer = TrackingEnforcer(rig.park, OperatingMode.TERRESTRIAL, settle_timeout_s=0)
+        park_panel = MountParkPanel(rig.park, tracking_enforcer=enforcer)
+        with TestTrackingDecisionsWhileTheMountIsBusy()._connection_held(rig):
+            park_panel._enforce_tracking("unpark")
+        assert MOUNT_BUSY_REASON in park_panel._policy_suffix(False)

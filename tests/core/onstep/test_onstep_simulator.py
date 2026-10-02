@@ -14,6 +14,8 @@ schedule every run.
 from __future__ import annotations
 
 import threading
+import time
+from collections.abc import Callable
 
 import pytest
 from astrotool_core.mount import AxisDirection, MountAxis
@@ -33,6 +35,18 @@ from astrotool_core.testing.sim_onstep import AXIS_BUSY
 from astrotool_core.timing import FakeClock
 
 _JOIN_S = 5.0  # real-time safety bound for joining test threads, never a policy wait
+
+
+def _until(condition: Callable[[], bool], *, timeout_s: float = _JOIN_S) -> bool:
+    """Barrier: True as soon as `condition()` holds (another thread got there); a real-time
+    safety bound only, never a policy wait."""
+    done = threading.Event()
+    deadline = time.monotonic() + timeout_s
+    while not condition():
+        if time.monotonic() >= deadline:
+            return False
+        done.wait(0.001)
+    return True
 
 
 class TestConnectErrorVariants:
@@ -316,6 +330,58 @@ class TestAxisMoves:
         assert axis == "dec"
         assert offset_deg * 3600.0 == pytest.approx(-120.0)
         assert clock.monotonic() > 0.0
+
+    def test_a_stop_mid_move_stops_short_but_the_call_runs_to_its_own_deadline(self) -> None:
+        """S6.0c, 0.4.1 source: ABORT stops the mount at once, but `move_*_axis_deg` has no
+        cancel hook -- it polls on to its deadline, raises TimeoutError and stops again."""
+        clock = FakeClock()
+        connection, made = make_simulated_onstep_connection(
+            OnStepScenario(parked=False, axis_rate_deg_per_s=0.5), clock=clock
+        )
+        OnStepMountParkAdapter(connection).connect()
+        client = made[0]
+        clock.call_at(1.0, client.emergency_stop)  # half-way through a 2 s move
+        with pytest.raises(TimeoutError, match="did not reach its finite target"):
+            client.mount.move_dec_axis_deg(1.0, timeout_s=30.0)
+        assert clock.monotonic() == pytest.approx(30.0)
+        assert client.dec_deg == pytest.approx(20.5)  # stopped half-way
+        assert client.axis_moves_aborted == 1 and client.emergency_stop_calls == 2
+        assert not client.slewing
+
+    def test_a_stop_from_another_thread_while_the_move_blocks(self) -> None:
+        clock = FakeClock(auto_advance=False)
+        connection, made = make_simulated_onstep_connection(
+            OnStepScenario(parked=False, axis_rate_deg_per_s=0.5, stop_confirm_latency_s=2.0),
+            clock=clock,
+        )
+        OnStepMountParkAdapter(connection).connect()
+        client = made[0]
+        errors: list[BaseException] = []
+
+        def move() -> None:
+            try:
+                client.mount.move_dec_axis_deg(1.0, timeout_s=30.0)
+            except TimeoutError as exc:
+                errors.append(exc)
+
+        mover = threading.Thread(target=move, daemon=True)
+        mover.start()
+        assert clock.wait_for_sleepers(1)
+        assert client.slewing
+        stopper = threading.Thread(target=client.emergency_stop, daemon=True)
+        stopper.start()
+        # ABORT went out at once (the mover stops short at fake t=0); the stopper still waits
+        # for its confirmation and the mover polls on to its deadline -- both on fake time
+        assert _until(lambda: client.axis_moves_aborted == 1 and clock.blocked_sleepers == 2)
+        assert not client.slewing and stopper.is_alive()
+        assert client.dec_deg == pytest.approx(20.0)
+        clock.advance(30.0)  # the deadline: TimeoutError, then 0.4.1's own second stop ...
+        assert _until(lambda: client.emergency_stop_calls == 2 and clock.blocked_sleepers == 1)
+        clock.advance(2.0)  # ... whose confirmation wait ends here
+        mover.join(_JOIN_S)
+        stopper.join(_JOIN_S)
+        assert not mover.is_alive() and not stopper.is_alive()
+        assert len(errors) == 1 and client.emergency_stop_calls == 2
 
     def test_emergency_stop_stops_tracking(self) -> None:
         clock = FakeClock()

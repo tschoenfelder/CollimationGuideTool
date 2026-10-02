@@ -265,6 +265,8 @@ from astrotool_core.acquisition import (
 )
 from astrotool_core.config import MountAlignmentSettings
 from astrotool_core.mount import (
+    MOUNT_BUSY_REASON,
+    WORKER_DECISION_FRESH_WAIT_S,
     AxisDirection,
     AxisResponse,
     CalibrationMatrix,
@@ -273,6 +275,7 @@ from astrotool_core.mount import (
     MountParkPort,
     MountPort,
     TrackingMode,
+    TrackingVerificationStatus,
     ensure_tracking_mode,
     is_degenerate,
     response_from_positions,
@@ -1220,23 +1223,33 @@ class MountTestMovePanel(QWidget):
             return TrackingMode.OFF  # policy wins over the panel's own toggle
         return TrackingMode.OFF if self._target_mode() == "terrestrial" else TrackingMode.ON
 
-    def _tracking_failure_message(self, required: TrackingMode, mode: TargetMode) -> str | None:
+    def _tracking_failure_message(
+        self, required: TrackingMode, mode: TargetMode, *, fresh_wait_s: float = 0.0
+    ) -> str | None:
         """Verifies (and, if needed, repairs) the mount's tracking state against `required` --
         None if OK, else a human-readable failure message. Side-effect free with respect to the
         panel (issue #49: it runs on the capture worker thread); callers that record failure
-        classes do so themselves (`_verify_tracking_mode`, `_apply_capture`)."""
+        classes do so themselves (`_verify_tracking_mode`, `_apply_capture`). `fresh_wait_s`:
+        0 on the GUI thread; the capture worker passes `WORKER_DECISION_FRESH_WAIT_S` (S6.0c
+        re-review R1: a momentary GUI poll on the shared connection is not "mount busy")."""
         enforcer = self._tracking_enforcer
-        if enforcer is not None and self._mount_park.status().available:
-            gate = enforcer.verify(required, "mount_align")
+        status = self._mount_park.status()
+        # S6.0c: a busy mount (no fresh reading) is not "no mount" -- the enforcer denies it.
+        if enforcer is not None and (status.available or not status.fresh):
+            gate = enforcer.verify(required, "mount_align", fresh_wait_s=fresh_wait_s)
             if gate.allowed:
                 return None
             return (
                 f"mount tracking must be {required.value} for {mode} "
                 f"calibration -- {gate.reason}"
             )
-        result = ensure_tracking_mode(self._mount_park, required)
+        result = ensure_tracking_mode(self._mount_park, required, fresh_wait_s=fresh_wait_s)
         if result.ok:
             return None
+        if result.status is TrackingVerificationStatus.BUSY:
+            return f"mount tracking must be {required.value} for {mode} calibration -- " + (
+                MOUNT_BUSY_REASON
+            )
         observed = result.observed_mode.value if result.observed_mode is not None else "unavailable"
         return (
             f"mount tracking must be {required.value} for {mode} calibration "
@@ -1417,13 +1430,18 @@ class MountTestMovePanel(QWidget):
         )
 
     def _capture_blocking(
-        self, request: _CaptureRequest, cancelled: Callable[[], bool] | None = None
+        self,
+        request: _CaptureRequest,
+        cancelled: Callable[[], bool] | None = None,
+        *,
+        fresh_wait_s: float = 0.0,
     ) -> _CaptureResult:
         """The slow part -- tracking verification and the stability-verified frame waits. Touches
-        no widget and mutates no panel state, so it is safe on a worker thread."""
+        no widget and mutates no panel state, so it is safe on a worker thread (which passes a
+        `fresh_wait_s`, see `_tracking_failure_message`)."""
         result = _CaptureResult(request)
         result.tracking_error = self._tracking_failure_message(
-            request.required_tracking, request.mode
+            request.required_tracking, request.mode, fresh_wait_s=fresh_wait_s
         )
         if result.tracking_error is not None:
             return result
@@ -1577,7 +1595,9 @@ class MountTestMovePanel(QWidget):
 
     def _run_capture_job(self, job: _CaptureJob) -> None:
         try:
-            job.result = self._capture_blocking(job.request, job.cancel.is_set)
+            job.result = self._capture_blocking(
+                job.request, job.cancel.is_set, fresh_wait_s=WORKER_DECISION_FRESH_WAIT_S
+            )
         except BaseException as exc:  # noqa: BLE001 -- reported on the GUI thread by _poll
             job.error = exc
         finally:
@@ -3233,8 +3253,11 @@ class MountTestMovePanel(QWidget):
         self._result_label.setText(f"{pending.label} — done.{suffix}")
 
     def _on_stop(self) -> None:
-        # Duck-typed -- see module docstring's "Stop" section for why
-        # this isn't a MountPort Protocol method.
+        # S6.0c: every call here returns at once -- the runner sends no further step, and the
+        # mount adapter's abort() hands OnStep's stop to a worker (it never queues behind the
+        # GOTO it stops). Duck-typed -- see module docstring's "Stop" section for why this
+        # isn't a MountPort Protocol method.
+        self._runner.abort()
         abort = getattr(self._mount, "abort", None)
         if callable(abort):
             abort()
@@ -3255,7 +3278,15 @@ class MountTestMovePanel(QWidget):
                 f" (mount may be off its start position: net commanded {unit} {net})" if net else ""
             )
             self._last_error = "stopped by the user"
-            self._result_label.setText(f"Stopped by the user{note}.")
+            if self._runner.is_busy:
+                # The interrupted adapter call is still ending (OnStepAdapter has no cancel
+                # hook; it ends at its own timeout); the poll loop re-enables the controls then.
+                self._result_label.setText(
+                    f"Stopped by the user{note} -- stop sent to the mount; the controls return "
+                    "once the interrupted move call has ended."
+                )
+            else:
+                self._result_label.setText(f"Stopped by the user{note}.")
             self._update_buttons_enabled()
 
     def _poll(self) -> None:
@@ -3361,13 +3392,23 @@ class MountTestMovePanel(QWidget):
         directional pulse side (the pulses themselves)."""
         if not self._connected:
             return MountInterfaceState(False, "not_connected", "Mount Align is not connected.")
-        if not self._mount_park.status().available:
+        park_status = self._mount_park.status()
+        if not park_status.available and not park_status.fresh:
+            # S6.0c: busy before the first reading -- not "unavailable" (re-review P-c).
+            return MountInterfaceState(
+                False, "mount_busy", "mount busy / status not read yet (another operation)"
+            )
+        if not park_status.available:
             return MountInterfaceState(
                 False,
                 "park_interface_unavailable",
                 "the mount park/unpark interface is not available (connect the Mount panel)",
             )
         if not self._mount.status().connected:
+            if getattr(self._mount, "status_pending", False):  # duck-typed, OnStep adapter
+                return MountInterfaceState(
+                    False, "mount_busy", "mount busy / status not read yet (another operation)"
+                )
             return MountInterfaceState(
                 False,
                 "pulse_interface_unavailable",

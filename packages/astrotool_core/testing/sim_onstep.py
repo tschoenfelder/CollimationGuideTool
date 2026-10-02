@@ -70,9 +70,24 @@ with real sleeps. Source references are to the installed 0.4.1 wheel
   that arrived from another thread while a compound operation was active
   (`interleavings`) -- the 7b21bdf1 hazard 9cea2e9 closed.
 
-Deliberately NOT modeled (unknown or owned elsewhere): what 0.4.1 does when
-`emergency_stop` arrives while `move_*_axis_deg` blocks (S6.0c establishes it
-from the adapter source), meridian phase/limit geometry, the
+- **stop during a blocking axis move** (S6.0c, from the 0.4.1 source):
+  `emergency_stop` may be called from any thread while `move_*_axis_deg`
+  blocks -- 0.4.1's own meridian supervisor does exactly that from its
+  thread (indi_meridian.py:113-115, 122-125), and `stop_mount_via_indi`
+  takes none of `IndiAxisMover`'s locks (indi_stop.py:22-88 vs
+  indi_axis_motion.py:64, 134). It sends ABORT (+ TRACK_OFF) first
+  (indi_stop.py:37-50), so the mount stops short of the target at once, then
+  waits for two fresh stopped status samples (:52-80) --
+  `stop_confirm_latency_s` of clock time here. The blocked move has NO
+  cancel hook (indi_axis_motion.py:108-112): its poll loop never sees the
+  target (:184-208) and runs on to its own deadline (`timeout_s` after the
+  goto, :164, :170-171), raises TimeoutError, and on the way out calls
+  `emergency_stop()` once more (:246-248). `axis_moves_aborted` counts moves
+  a stop cut short.
+
+Deliberately NOT modeled (unknown or owned elsewhere): whether the real
+controller/driver honours INDI ABORT mid-GOTO exactly like this (field
+only), meridian phase/limit geometry, the
 `focuser_property_alert` blocker (whether the driver leaves ABS_FOCUS_POSITION
 in Alert after a rejection is driver behaviour), and the INDI wire protocol
 underneath `OnStepIndiClient` (OnStepConnection never sees it).
@@ -226,6 +241,9 @@ class OnStepScenario:
     axis_rate_deg_per_s: float = 2.0
     #: Raised by the next axis moves (after the move was issued), one per move.
     axis_move_errors: list[BaseException] = field(default_factory=list)
+    #: `emergency_stop` waits this long (clock time) for its stopped-status
+    #: confirmation after sending ABORT (0.4.1: two fresh samples, <= 5 s).
+    stop_confirm_latency_s: float = 0.0
     focuser: FocuserScenario = field(default_factory=FocuserScenario)
 
 
@@ -380,6 +398,10 @@ class SimulatedOnStepIndiClient(FakeOnStepIndiClient):
         #: of its transport inside a failed connect.
         self.close_calls = 0
         self.self_closes = 0
+        #: Set by `emergency_stop` while an axis move is in motion (see module docstring).
+        self._axis_abort = threading.Event()
+        self._axis_in_motion = False
+        self.axis_moves_aborted = 0
 
     # ---- connection lifecycle -----------------------------------------
     def connect(self, *, timeout: float = 5.0) -> IndiStartupStatus:
@@ -428,8 +450,14 @@ class SimulatedOnStepIndiClient(FakeOnStepIndiClient):
             return super().park(timeout=timeout)
 
     def emergency_stop(self, *, timeout: float = 5.0) -> IndiStopResult:
+        """ABORT first (an axis move in motion stops short at once), then the
+        confirmation wait (indi_stop.py:37-80; see module docstring)."""
         self.emergency_stop_calls += 1
-        return super().emergency_stop(timeout=timeout)
+        if self._axis_in_motion:
+            self._axis_abort.set()
+        result = super().emergency_stop(timeout=timeout)
+        self.clock.sleep(min(self.scenario.stop_confirm_latency_s, timeout))
+        return result
 
     def enable_tracking(self, *, timeout: float = 8.0) -> FakeIndiTrackingResult:
         """indi_tracking.py `enable_tracking_via_indi` (see module docstring)."""
@@ -495,19 +523,37 @@ class SimulatedOnStepIndiClient(FakeOnStepIndiClient):
                     self.clock.sleep(timeout_s)
                     self.emergency_stop()
                     raise TimeoutError("Axis move did not reach its finite target")
+                started = self.clock.monotonic()
+                self._axis_abort.clear()
                 self.slewing = True
+                self._axis_in_motion = True
                 try:
-                    self.clock.sleep(duration)
+                    arrived = self.clock.sleep(duration, self._axis_abort)
                 finally:
+                    self._axis_in_motion = False
                     self.slewing = False
-                if axis == "ra":
-                    self.ha_deg += offset_deg
-                else:
-                    self.dec_deg += offset_deg
+                travelled = offset_deg
+                if not arrived:
+                    # Stopped short; 0.4.1 polls on to its own deadline, then
+                    # raises and stops once more (indi_axis_motion.py:170-171, :246-248).
+                    self.axis_moves_aborted += 1
+                    elapsed = self.clock.monotonic() - started
+                    travelled = offset_deg * min(1.0, elapsed / duration)
+                    self._shift(axis, travelled)
+                    self.clock.sleep(max(0.0, started + timeout_s - self.clock.monotonic()))
+                    self.emergency_stop()
+                    raise TimeoutError("Axis move did not reach its finite target")
+                self._shift(axis, travelled)
                 self.tracking = False
                 return FakeIndiAxisMoveResult(axis, offset_deg, offset_deg)
         finally:
             self._axis_lock.release()
+
+    def _shift(self, axis: str, offset_deg: float) -> None:
+        if axis == "ra":
+            self.ha_deg += offset_deg
+        else:
+            self.dec_deg += offset_deg
 
 
 class ObservableRLock:

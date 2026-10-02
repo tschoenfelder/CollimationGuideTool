@@ -146,6 +146,10 @@ class MountParkPanel(QWidget):
             return ""
         if tracking:
             return " — TRACKING ON, terrestrial measurement blocked"
+        if not enforcer.measurement_allowed():
+            # S6.0c re-review P-b: e.g. the connect/unpark check found the mount busy -- the
+            # denial is shown, never silently dropped.
+            return f" — terrestrial measurement blocked: {enforcer.last_gate.reason}"
         return " — tracking OFF (required, terrestrial)"
 
     def _begin_action(self, action: str) -> None:

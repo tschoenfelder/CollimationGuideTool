@@ -24,6 +24,7 @@ from typing import Any
 
 from astrotool_core.mount.park_port import MountParkPort
 from astrotool_core.mount.tracking_mode import (
+    MOUNT_BUSY_REASON,
     TrackingMode,
     TrackingVerificationResult,
     TrackingVerificationStatus,
@@ -85,21 +86,27 @@ class TrackingEnforcer:
     def last_gate(self) -> TrackingGate:
         return self._last_gate
 
-    def enforce(self, context: str) -> TrackingGate:
-        """Check (and, in TERRESTRIAL mode, repair) tracking for `context`."""
+    def enforce(self, context: str, *, fresh_wait_s: float = 0.0) -> TrackingGate:
+        """Check (and, in TERRESTRIAL mode, repair) tracking for `context`. `fresh_wait_s`:
+        0 on the GUI thread; off it, see `ensure_tracking_mode` (S6.0c re-review R1)."""
         required = self.required_tracking(self._mode)
         if required is None:
             gate = TrackingGate(True, "astronomical mode: tracking is workflow-dependent")
             self._record(context, before=self._tracking_now(), command=None, after=None, gate=gate)
             return self._remember(gate)
-        return self.verify(required, context)
+        return self.verify(required, context, fresh_wait_s=fresh_wait_s)
 
-    def verify(self, required: TrackingMode, context: str) -> TrackingGate:
+    def verify(
+        self, required: TrackingMode, context: str, *, fresh_wait_s: float = 0.0
+    ) -> TrackingGate:
         """Verify `required` tracking for `context` (used by callers whose
         workflow-specific requirement is stricter than the mode policy)."""
         before = self._tracking_now()
         result = ensure_tracking_mode(
-            self._mount, required, settle_timeout_s=self._settle_timeout_s
+            self._mount,
+            required,
+            settle_timeout_s=self._settle_timeout_s,
+            fresh_wait_s=fresh_wait_s,
         )
         gate = self._gate_for(result, required)
         command = None
@@ -124,11 +131,15 @@ class TrackingEnforcer:
 
     # ---- internals
     def _tracking_now(self) -> bool | None:
+        """For the evidence trail: None unless a FRESH reading exists (S6.0c -- a held-over
+        value is never recorded as the mount's state)."""
         status = self._mount.status()
-        return status.tracking if status.available else None
+        return status.tracking if status.available and status.fresh else None
 
     def _gate_for(self, result: TrackingVerificationResult, required: TrackingMode) -> TrackingGate:
         status = result.status
+        if status is TrackingVerificationStatus.BUSY:  # S6.0c: fail CLOSED, never "verified"
+            return TrackingGate(False, MOUNT_BUSY_REASON)
         if status is TrackingVerificationStatus.UNAVAILABLE:
             return TrackingGate(True, "mount unavailable: no tracking to enforce")
         if result.ok:
