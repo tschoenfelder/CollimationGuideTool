@@ -197,6 +197,43 @@ not change · dependencies · non-goals · proof required.
 - **Non-goals:** recenter_policy (S6.0b), runner clock migration (S3b).
 - **Proof:** failing-then-passing tests; proof manifest draft; field-only assumptions.
 
+### S3b — #53 time abstraction (second half)
+
+- **Allowed files:** `apps/collimation_tool/ui/mount_test_move_runner.py`,
+  `apps/collimation_tool/application/recenter_policy.py` (timing only — its `pulse_axis` move path is
+  S6.0b), the wall-clock confirmation timeouts in `focuser_panel.py` / `filter_wheel_panel.py` /
+  `mount_park_panel.py` (timing only), their tests, `tests/core/testing/test_no_policy_sleep.py`
+  (allowlist shrinks; extend detection to `time.monotonic()` deadline polling and `Event.wait` used as a
+  sleep in policy modules if feasible), `tests/conftest.py` tier table only.
+- **Behavior changed:** none (clock is an optional keyword, default real clock).
+- **Tests:** fake-time tests for runner retry/unpark/park polling/settle, deadline boundaries
+  before/at/after, cancellation in each wait state; the slow Mount Align tests
+  (`test_calibration_failure_recovery.py` ~80 s, `test_calibration_sizing.py` ~5.5 s/test,
+  `TestMountTestMovePanel` ~8.5 min) moved to fake time where the runner was the cause — measure before/after.
+- **Frozen:** S6.0/S6.0c behaviour and tests; no hardware op on the Qt main thread.
+- **Dependencies:** S3a, S6.0, S6.0c (done). Blocks S6.0b (recenter_policy) and S6.6.
+- **Non-goals:** recenter_policy's angular move path (S6.0b); interruptible waits beyond what the clock
+  migration gives for free (S6.3).
+- **Proof:** allowlist entries for the runner and recenter_policy deleted; wall-time before/after; ≥15
+  new fake-time tests; manifest for #53 (part B) and #13 if touched.
+
+### S6.5a — ToupTek mono flag / SDK constants (production defect)
+
+- **Allowed files:** `packages/astrotool_core/camera/touptek_adapter.py` (constants and their use),
+  its tests, `tests/core/camera/test_touptek_adapter_simulated.py` (flip the two strict xfails).
+- **Behavior changed:** `is_color_sensor()` uses the SDK's real `TOUPCAM_FLAG_MONO` (0x10), looked up by
+  name from the SDK module like the options (single source = the SDK), with fallbacks equal to the
+  vendored SDK values; wrong option fallbacks corrected.
+- **First:** the two strict xfails are the failing regression; also check every other `_FLAG_*` /
+  `_OPTION_*` / event constant in the adapter against `resources/touptek/toupcam.py`.
+- **Investigate & report (no assumptions):** which real rig cameras were mis-classified before (model
+  flags from the vendored SDK's model table if present, else say unknown) and what downstream path
+  (debayer / colour handling) that affected; link to the open guide-camera colour/star-detection issue if
+  relevant.
+- **Frozen:** capture pipeline behaviour for correctly-classified cameras.
+- **Non-goals:** the S6.5 capability table refactor.
+- **Proof:** xfails flip to passing tests; manifest.
+
 ### S5 — #55 + #52 duplication inventory (analysis only)
 
 - **Allowed files:** new `docs/quality/duplication-audit.md` only.
