@@ -50,11 +50,11 @@ Status: `todo` · `in-progress` · `done` · `field-only` (only real hardware ca
 | S5 | #55, #52 | Duplication inventory + size/dependency baseline (`docs/quality/duplication-audit.md`) | analysis agent | coordinator spot-check (P01 confirmed in code) | done | (this commit) | docs only |
 | S6.0 | #46, #31, #55 (P01/P02) | **CRITICAL, promoted:** Mount Align bootstrap/nudge/screen moves go through `pulse_axis`, which production `OnStepMountPulseAdapter` always refuses; no rate is ever installed, so angular moves never start on the rig. Size the first move angularly from the optics seeds instead of a timed bootstrap; failing regression against the real adapter + fake OnStep connection first | issue agent | 2 rounds: APPROVE-WITH-FIXES → APPROVE | done | 787ceed | `python scripts/prove.py 46-mount-align-angular-path` |
 | S6.0b | #39, P01 | Guide-assisted reacquisition (`recenter_policy.py:113`) calls `pulse_axis` on the production OnStep adapter → always `pulse_rejected`, adapter message dropped; move to the angular path (after S6.0). **Must use the same ms↔arcsec factor S6.0 stores the matrix in (equivalent ms at `calibration_center_rate_x`·sidereal) — that factor needs one public owner first** | | | todo | | |
-| S6.0c | #49, AGENTS manual-move rule | `OnStepMountPulseAdapter.move_angular` holds `connection.operation_lock` for the whole blocking GOTO (up to 30 s); `abort()` takes the same lock on the GUI thread before `stop()`, and park-panel status polls also take it → Stop would freeze the UI and not cancel; `_cancel` never checked. Characterize with a failing component test, then decide stop/lock semantics (verify OnStepAdapter's real abort semantics — no assumptions) | | | todo | | |
+| S6.0c | #49, AGENTS manual-move rule | `OnStepMountPulseAdapter.move_angular` holds `connection.operation_lock` for the whole blocking GOTO (up to 30 s); `abort()` takes the same lock on the GUI thread before `stop()`, and park-panel status polls also take it → Stop would freeze the UI and not cancel; `_cancel` never checked. Characterize with a failing component test, then decide stop/lock semantics (verify OnStepAdapter's real abort semantics — no assumptions) | issue agent | 3 rounds: APPROVE-WITH-FIXES (C1/C2 #44 regressions, C3) → APPROVE-WITH-FIXES (R1) → fixed | done | 52fd72f | `python scripts/prove.py 49-stop-during-angular-goto` |
 | S6.1 | #55 | Single-source device defaults + config-source contract test | | | todo | | |
 | S6.2 | #52 | `DeviceConnectionService` (Focuser → MountPark → MountTestMove) | | | todo | | |
 | S6.3 | #52 | `OperationLifecycle` + bounded Busy timeout (FilterWheel, Focuser) | | | todo | | |
-| S6.4 | #48 | Remove Mount Align **and autofocus** local Star/Terrestrial toggles; derive from global OperatingMode (M04 decided) | | | todo | | |
+| S6.4 | #48 | Remove Mount Align **and autofocus** local Star/Terrestrial toggles; derive from global OperatingMode (M04 decided). Also (from S6.0c review P-a): switching to Terrestrial while the mount is busy stores the mode but the gate stays BLOCKED until the next measurement gate — add a one-shot re-enforce when the busy period ends | | | todo | | |
 | S6.5 | #55 | ToupTek capability table (unsupported features contract-driven) | | | todo | | |
 | S6.5a | production defect (found by S4 review) | `touptek_adapter.py:54` `_FLAG_MONO = 0x40` is the SDK's `TOUPCAM_FLAG_USB30`; real `TOUPCAM_FLAG_MONO` is `0x10` (resources/touptek/toupcam.py:24/26). `is_color_sensor()` (line 639) therefore answers "not USB3": a colour USB3 camera would be treated as mono (no debayer). Option fallbacks also wrong (RGB 0x16→0x0c, FLUSH 0x36→0x3d, NOFRAME_TIMEOUT 0x3F→0x01, AUTOEXPO_TRIGGER 0x5A→0x51) — only used when the SDK lacks the name. Failing regression first (S4 leaves a strict xfail), then fix; check which rig cameras are affected | | | todo | | |
 | S6.6 | #52 | Mount Align orchestration out of `mount_test_move_panel.py` into application layer | | | todo | | |
@@ -188,6 +188,12 @@ not change · dependencies · non-goals · proof required.
 - **Frozen:** the 9cea2e9 serialization guarantee (no interleaving of compound operations) must keep
   its tests green — stop is the deliberate exception and must be justified.
 - **Dependencies:** S6.0 (done). Not S4 (uses the existing fake OnStep client).
+- **Contract extensions (coordinator, 2026-10-01/02):** D1 — `onstep/mount_park_adapter.py` and
+  `onstep/focuser_adapter.py` status reads via `try_operation()` (same goal: a Stop click must reach the
+  GUI thread during a GOTO); `testing/sim_onstep.py` stop model; after review (#44 safety): one
+  freshness field on the park status type + decision logic in `mount/tracking_mode.py` /
+  `mount/operating_mode.py` and the minimal callers surfacing the fail-closed message.
+  `mount_park_panel.py` ended up unchanged.
 - **Non-goals:** recenter_policy (S6.0b), runner clock migration (S3b).
 - **Proof:** failing-then-passing tests; proof manifest draft; field-only assumptions.
 
@@ -208,6 +214,7 @@ not change · dependencies · non-goals · proof required.
 
 | Date | Task | Commit | What was proven |
 |------|------|--------|-----------------|
+| 2026-10-02 | S6.0c | 52fd72f | Stop is lock-free and reaches the mount mid-GOTO; GUI polls never queue (held-over readings marked not fresh); #44 gate fails closed on busy/unknown; worker decisions wait ≤0.5 s for a fresh read; next move never hit by a late stop. Tests on the OnStep simulator fail pre-fix / on the intermediate state. Field-only: real ABORT mid-GOTO; ≤~35 s until the interrupted OnStepAdapter call returns (OnStepAdapter cancel hook needed) |
 | 2026-10-01 | S4 | 0fdf781 | Simulators for OnStep (0.4.1 semantics, cited), filter wheel, ToupTek (real SDK constants), frame timelines; 5 defect classes reproduced, 6 fixes revert-proven; both filter-wheel wall-clock flakes gone; regressions selectable by the changed-module gate; production ToupTek mono-flag bug pinned for S6.5a |
 | 2026-10-01 | S6.0 | 787ceed | Mount Align moves the production OnStep adapter: 21 component tests (realistic optics, rotation, inverted signs) all fail pre-fix (coordinator-reproduced) and pass now; no command < 30″; no partial screen moves; refusals unmasked. Field: confidence ~85–90 % (nudges/calibration), S6.0c Stop-freeze risk open |
 | 2026-10-01 | S2 | (this commit) | 6 manifests (#49, #43, #47, filter stuck Busy, OnStep serialization, connect exception); 5 revert-proven in a separate worktree, 2 of them re-reproduced by the reviewer; CI fast job validates every manifest and rejects focused commands that could skip their tests; proof gaps recorded for S7 |

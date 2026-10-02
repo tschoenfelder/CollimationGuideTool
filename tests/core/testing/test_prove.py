@@ -423,7 +423,11 @@ class TestSelectionOfTheRealManifests:
         return [m.proof_id for m in prove.select_manifests(proof_id, self._REAL)]
 
     def test_the_documented_examples_work(self) -> None:
-        assert self._ids("49") == ["49"]
+        # A bare issue number selects every manifest whose `issues` lists it (README rule) --
+        # pinned as the rule, not a frozen list, so a new manifest for #49 can't break it.
+        listing_49 = {m.proof_id for m in self._REAL if 49 in m.issues}
+        assert "49" in listing_49
+        assert set(self._ids("49")) == listing_49
         assert self._ids("diag-7b21bdf1") == ["diag-7b21bdf1-onstep-serialization"]
         assert self._ids("7b21bdf1") == ["diag-7b21bdf1-onstep-serialization"]
         assert self._ids("47") == ["47-efw-device-name", "diag-73c7d59d-filter-stuck-busy"]

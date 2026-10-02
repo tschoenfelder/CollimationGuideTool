@@ -1,0 +1,247 @@
+# Proof manifest -- schema in proofs/README.md.
+# Run: python scripts/prove.py 49-stop-during-angular-goto
+issues = [49, 44]
+summary = """S6.0c: OnStepAdapter 0.4.1's move_*_axis_deg blocks for the whole GOTO with no cancel \
+hook, and OnStepMountPulseAdapter.move_angular holds operation_lock for all of it (9cea2e9). Stop took \
+the same lock on the GUI thread, GUI status polls (pulse, park, home, focuser) queued behind every GOTO \
+(the Mount Align nudge click itself froze), and _cancel was never checked. Fix: Stop is the deliberate \
+exception to serialization -- lock-free abort(), latched cancel checked atomically before sending, \
+OnStep's emergency stop from one worker whose follow-up stop covers only GOTOs issued up to that Stop; \
+GUI reads never queue (try_operation; held-over or 'not known' readings, cleared on disconnect); the \
+runner sends no further step. #44 safety: display may use held-over readings but no decision does -- \
+MountParkStatus.fresh; ensure_tracking_mode/TrackingEnforcer answer BUSY and fail CLOSED with an \
+actionable reason, never 'verified'; 'no mount configured' keeps today's allow; off the GUI thread a \
+decision waits up to WORKER_DECISION_FRESH_WAIT_S for a fresh reading; GUI gates never wait."""
+modules = [
+    "packages/astrotool_core/onstep/mount_pulse_adapter.py",
+    "packages/astrotool_core/onstep/connection.py",
+    "packages/astrotool_core/onstep/mount_park_adapter.py",
+    "packages/astrotool_core/onstep/focuser_adapter.py",
+    "packages/astrotool_core/mount/park_port.py",
+    "packages/astrotool_core/mount/tracking_mode.py",
+    "packages/astrotool_core/mount/operating_mode.py",
+    "packages/astrotool_core/mount/__init__.py",
+    "apps/collimation_tool/ui/mount_test_move_runner.py",
+    "apps/collimation_tool/ui/mount_test_move_panel.py",
+    "apps/collimation_tool/ui/mount_park_panel.py",
+]
+fix_commits = ["52fd72f"]
+dataset_uuids = []
+focused_command = "pytest -q tests/core/onstep/test_onstep_adapters.py::TestStopDuringAngularGoto tests/core/onstep/test_onstep_adapters.py::TestReadsDuringAGotoDoNotQueue tests/core/onstep/test_onstep_adapters.py::TestStopWorkerSafety tests/core/onstep/test_onstep_adapters.py::TestOperationSerialization tests/core/onstep/test_onstep_simulator.py::TestAxisMoves tests/core/mount/test_operating_mode.py::TestDecisionsNeverUseHeldOverReadings tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestStopDuringABlockingAngularGoto tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestTrackingDecisionsWhileTheMountIsBusy tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestWorkerDecisionsWaitBrieflyForAFreshReading tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestBusyIsShownAsBusy"
+broader_tier = "component"
+field_only_assumptions = [
+    "The real OnStep/lx200_OnStep honours INDI TELESCOPE_ABORT_MOTION during a finite axis GOTO (stops short at once) -- OnStepAdapter claims it (indi_stop.py:29); the simulator models it.",
+    "After Stop the interrupted OnStepAdapter call still ends only at its own deadline (30 s) plus up to 5 s of stop confirmation (no cancel hook); Mount Align controls stay disabled for that time.",
+    "TELESCOPE_ABORT_MOTION does not also stop a concurrently running OnStep focuser move.",
+    "WORKER_DECISION_FRESH_WAIT_S (0.5 s) comfortably covers real GUI-poll read times on the Pi.",
+]
+gaps = [
+    "D2: OnStepAdapter has no cooperative cancel for move_*_axis_deg (enhancement request); the interrupted call runs to its own deadline.",
+    "MountStatus/FocuserStatus cannot mark a held-over reading (S6.5 capability item); they are used for display only.",
+    "The R1 fresh-reading wait is a lock wait on real time (a lock cannot run on a FakeClock).",
+    "If the connection becomes busy between a fresh wrong-tracking reading and the repair command, the repair waits for that operation (bounded by it).",
+    "No isolating test for the runner's own between-step stop flag (the adapter's latched cancel also refuses the next step); P-d (busy reason in _wait_for_parked) and the P-c pulse-only branch are untested.",
+    "FocuserPanel's Stop button and the blockers() diagnostic still wait behind a running mount GOTO on the GUI thread.",
+    "P-a (one-shot Terrestrial re-enforce when the busy period ends) deferred to S6.4.",
+    "Panel-level pre-fix failures of the Stop tests occur in setup (the nudge click froze at 1ea9ac0), not at the Stop click itself.",
+]
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_adapters.py::TestStopDuringAngularGoto::test_abort_does_not_wait_behind_the_running_goto"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-02, worktree at 1ea9ac0 with the new tests and simulator copied in and name-only shims (MountParkStatus.fresh=True default, TrackingVerificationStatus.BUSY, MOUNT_BUSY_REASON; no logic), production unchanged: tests/core/onstep/test_onstep_adapters.py:725: AssertionError: assert 'blocked' == 'done'"
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_adapters.py::TestStopDuringAngularGoto::test_abort_reaches_the_mount_while_the_goto_is_still_running"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-02, worktree at 1ea9ac0 with the new tests and simulator copied in and name-only shims (MountParkStatus.fresh=True default, TrackingVerificationStatus.BUSY, MOUNT_BUSY_REASON; no logic), production unchanged: tests/core/onstep/test_onstep_adapters.py:734: AssertionError: OnStep's stop never reached the mount while the GOTO was running"
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_adapters.py::TestStopDuringAngularGoto::test_a_stopped_goto_is_reported_as_stopped_not_as_a_move"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-02, worktree at 1ea9ac0 with the new tests and simulator copied in and name-only shims (MountParkStatus.fresh=True default, TrackingVerificationStatus.BUSY, MOUNT_BUSY_REASON; no logic), production unchanged: tests/core/onstep/test_onstep_adapters.py:748: AssertionError: assert not True"
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_adapters.py::TestStopDuringAngularGoto::test_a_stop_while_the_move_is_queued_behind_another_operation_cancels_it_unsent"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-02, worktree at 1ea9ac0 with the new tests and simulator copied in and name-only shims (MountParkStatus.fresh=True default, TrackingVerificationStatus.BUSY, MOUNT_BUSY_REASON; no logic), production unchanged: tests/core/onstep/test_onstep_adapters.py:776: AssertionError: assert [('ra', 0.08333333333333333)] == []"
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_adapters.py::TestStopDuringAngularGoto::test_a_status_poll_during_the_goto_does_not_wait_and_reports_slewing"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-02, worktree at 1ea9ac0 with the new tests and simulator copied in and name-only shims (MountParkStatus.fresh=True default, TrackingVerificationStatus.BUSY, MOUNT_BUSY_REASON; no logic), production unchanged: tests/core/onstep/test_onstep_adapters.py:786: AssertionError: assert 'blocked' == 'done'"
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_adapters.py::TestStopDuringAngularGoto::test_a_stop_is_remembered_until_the_next_command_is_armed"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-02, worktree at 1ea9ac0 with the new tests and simulator copied in and name-only shims (MountParkStatus.fresh=True default, TrackingVerificationStatus.BUSY, MOUNT_BUSY_REASON; no logic), production unchanged: tests/core/onstep/test_onstep_adapters.py:806: AssertionError: assert (not True)"
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_adapters.py::TestReadsDuringAGotoDoNotQueue::test_park_status_serves_the_last_reading"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-02, worktree at 1ea9ac0 with the new tests and simulator copied in and name-only shims (MountParkStatus.fresh=True default, TrackingVerificationStatus.BUSY, MOUNT_BUSY_REASON; no logic), production unchanged: tests/core/onstep/test_onstep_adapters.py:871: AssertionError: assert 'blocked' == 'done'"
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_adapters.py::TestReadsDuringAGotoDoNotQueue::test_home_confirmed_serves_the_last_reading"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-02, worktree at 1ea9ac0 with the new tests and simulator copied in and name-only shims (MountParkStatus.fresh=True default, TrackingVerificationStatus.BUSY, MOUNT_BUSY_REASON; no logic), production unchanged: tests/core/onstep/test_onstep_adapters.py:882: AssertionError: assert ('blocked' == 'done'"
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_adapters.py::TestReadsDuringAGotoDoNotQueue::test_focuser_status_and_is_moving_serve_the_last_reading"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-02, worktree at 1ea9ac0 with the new tests and simulator copied in and name-only shims (MountParkStatus.fresh=True default, TrackingVerificationStatus.BUSY, MOUNT_BUSY_REASON; no logic), production unchanged: tests/core/onstep/test_onstep_adapters.py:890: AssertionError: assert 'blocked' == 'done'"
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_adapters.py::TestReadsDuringAGotoDoNotQueue::test_with_nothing_read_yet_a_busy_read_says_not_known"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-02, worktree at 1ea9ac0 with the new tests and simulator copied in and name-only shims (MountParkStatus.fresh=True default, TrackingVerificationStatus.BUSY, MOUNT_BUSY_REASON; no logic), production unchanged: tests/core/onstep/test_onstep_adapters.py:901: AssertionError: assert ('blocked', []) == ('done', [MountParkStatus(...fresh=False)])"
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_adapters.py::TestReadsDuringAGotoDoNotQueue::test_a_focuser_status_during_its_own_move_says_moving"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-02, worktree at 1ea9ac0 with the new tests and simulator copied in and name-only shims (MountParkStatus.fresh=True default, TrackingVerificationStatus.BUSY, MOUNT_BUSY_REASON; no logic), production unchanged: tests/core/onstep/test_onstep_adapters.py:940: AssertionError: assert ('blocked' == 'done'"
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_adapters.py::TestReadsDuringAGotoDoNotQueue::test_a_focuser_move_still_queues_behind_the_goto"
+failed_before_fix = false
+reason_no_prefix_repro = "Regression guard: D1 must keep 9cea2e9's compound-operation serialization; it passes before and after."
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_adapters.py::TestOperationSerialization::test_a_slow_move_and_concurrent_status_polls_never_overlap"
+failed_before_fix = false
+reason_no_prefix_repro = "9cea2e9's own regression (diag-7b21bdf1 manifest), listed as the frozen guarantee S6.0c must keep."
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_adapters.py::TestOperationSerialization::test_operations_across_different_adapter_types_never_overlap"
+failed_before_fix = false
+reason_no_prefix_repro = "9cea2e9's own regression (diag-7b21bdf1 manifest), listed as the frozen guarantee S6.0c must keep."
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_adapters.py::TestStopWorkerSafety::test_a_late_second_stop_never_hits_the_operators_next_goto"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-02, worktree reconstructing S6.0c+D1 WITHOUT the review fixes (C1/C2/C3/P1-P3 hunks undone, same shims); at 1ea9ac0 the decision blocked instead (hazard introduced by D1): tests/core/onstep/test_onstep_adapters.py:1000: AssertionError: assert 1 == 0 (C3: the operator's next GOTO was aborted). At 1ea9ac0 no stop worker existed (synchronous abort)."
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_adapters.py::TestStopWorkerSafety::test_a_stop_while_the_worker_is_busy_still_stops_a_newer_goto"
+failed_before_fix = false
+reason_no_prefix_repro = "Regression guard of the request-queue design (P1); the D1 state happened to pass via its unconditional second stop."
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_adapters.py::TestStopWorkerSafety::test_a_failing_stop_is_logged_and_the_stop_stays_latched"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-02, worktree reconstructing S6.0c+D1 WITHOUT the review fixes (C1/C2/C3/P1-P3 hunks undone, same shims); at 1ea9ac0 the decision blocked instead (hazard introduced by D1): tests/core/onstep/test_onstep_adapters.py:1041: AssertionError: assert 'Stop: OnStep emergency stop failed' in '' (P3: the worker thread died on KeyError)."
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_adapters.py::TestStopWorkerSafety::test_disconnect_drops_every_held_over_reading"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-02, worktree reconstructing S6.0c+D1 WITHOUT the review fixes (C1/C2/C3/P1-P3 hunks undone, same shims); at 1ea9ac0 the decision blocked instead (hazard introduced by D1): tests/core/onstep/test_onstep_adapters.py:1077: assert (not True) (P2: a reading from the previous session was served)."
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_adapters.py::TestStopWorkerSafety::test_concurrent_stops_never_start_two_workers"
+failed_before_fix = false
+reason_no_prefix_repro = "Re-review P-e guard (worker started inside the critical section); a race window, not reproducible deterministically before the fix."
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_simulator.py::TestAxisMoves::test_a_stop_mid_move_stops_short_but_the_call_runs_to_its_own_deadline"
+failed_before_fix = false
+reason_no_prefix_repro = "Pins the #51 simulator's new 0.4.1-faithful stop model (test infrastructure added with this fix)."
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_simulator.py::TestAxisMoves::test_a_stop_from_another_thread_while_the_move_blocks"
+failed_before_fix = false
+reason_no_prefix_repro = "Pins the #51 simulator's new 0.4.1-faithful stop model (test infrastructure added with this fix)."
+
+[[regression_tests]]
+node = "tests/core/mount/test_operating_mode.py::TestDecisionsNeverUseHeldOverReadings::test_terrestrial_gate_fails_closed_while_the_mount_is_busy"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-02, worktree reconstructing S6.0c+D1 WITHOUT the review fixes (C1/C2/C3/P1-P3 hunks undone, same shims); at 1ea9ac0 the decision blocked instead (hazard introduced by D1): tests/core/mount/test_operating_mode.py:281: AssertionError: assert TrackingGate(... 'tracking off verified (already_correct)') == TrackingGate(False, MOUNT_BUSY_REASON); nothing-read-yet case: 'mount unavailable: no tracking to enforce' (C1/C2). At 1ea9ac0: tests/core/mount/test_operating_mode.py:279: AssertionError: the gate queued behind the held connection."
+
+[[regression_tests]]
+node = "tests/core/mount/test_operating_mode.py::TestDecisionsNeverUseHeldOverReadings::test_entering_terrestrial_mode_while_busy_is_denied_not_verified"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-02, worktree reconstructing S6.0c+D1 WITHOUT the review fixes (C1/C2/C3/P1-P3 hunks undone, same shims); at 1ea9ac0 the decision blocked instead (hazard introduced by D1): tests/core/mount/test_operating_mode.py:296: AssertionError: assert [TrackingGate(...dy_correct)')] == [TrackingGate(...has finished')]. At 1ea9ac0: tests/core/mount/test_operating_mode.py:295: assert 'blocked' == 'done'."
+
+[[regression_tests]]
+node = "tests/core/mount/test_operating_mode.py::TestDecisionsNeverUseHeldOverReadings::test_ensure_tracking_mode_reports_busy_and_sends_nothing"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-02, worktree reconstructing S6.0c+D1 WITHOUT the review fixes (C1/C2/C3/P1-P3 hunks undone, same shims); at 1ea9ac0 the decision blocked instead (hazard introduced by D1): tests/core/mount/test_operating_mode.py:305: AssertionError: ALREADY_CORRECT / UNAVAILABLE instead of BUSY. At 1ea9ac0: tests/core/mount/test_operating_mode.py:304: assert 'blocked' == 'done'."
+
+[[regression_tests]]
+node = "tests/core/mount/test_operating_mode.py::TestDecisionsNeverUseHeldOverReadings::test_once_the_connection_is_free_the_gate_verifies_and_repairs_again"
+failed_before_fix = false
+reason_no_prefix_repro = "Regression guard: fail-closed must not outlive the busy period."
+
+[[regression_tests]]
+node = "tests/core/mount/test_operating_mode.py::TestDecisionsNeverUseHeldOverReadings::test_no_mount_configured_keeps_todays_allow"
+failed_before_fix = false
+reason_no_prefix_repro = "Regression guard: 'no mount configured' keeps #44's existing allow."
+
+[[regression_tests]]
+node = "tests/core/mount/test_operating_mode.py::TestDecisionsNeverUseHeldOverReadings::test_off_the_gui_thread_a_decision_waits_briefly_for_a_fresh_reading"
+failed_before_fix = false
+reason_no_prefix_repro = "Core-level pin of the re-review R1 API (fresh_wait_s did not exist before); the failing-before proof is the UI collision test."
+
+[[regression_tests]]
+node = "tests/core/mount/test_operating_mode.py::TestDecisionsNeverUseHeldOverReadings::test_a_hold_longer_than_the_wait_is_still_busy"
+failed_before_fix = false
+reason_no_prefix_repro = "Regression guard: the R1 wait is bounded and still fails closed."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestStopDuringABlockingAngularGoto::test_runner_abort_sends_no_further_step_of_the_sequence"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-02, worktree at 1ea9ac0 with the new tests and simulator copied in and name-only shims (MountParkStatus.fresh=True default, TrackingVerificationStatus.BUSY, MOUNT_BUSY_REASON; no logic), production unchanged: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:586: AttributeError: 'MountTestMoveRunner' object has no attribute 'abort'"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestStopDuringABlockingAngularGoto::test_stop_during_a_goto_returns_at_once_and_stops_the_mount_off_the_gui_thread"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-02, worktree at 1ea9ac0 with the new tests and simulator copied in and name-only shims (MountParkStatus.fresh=True default, TrackingVerificationStatus.BUSY, MOUNT_BUSY_REASON; no logic), production unchanged: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:565: AssertionError: the nudge click blocked the GUI thread behind its own GOTO (setup: HEAD's status() queues behind the GOTO)"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestStopDuringABlockingAngularGoto::test_after_the_stopped_goto_ends_the_panel_is_idle_and_the_next_nudge_moves"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-02, worktree at 1ea9ac0 with the new tests and simulator copied in and name-only shims (MountParkStatus.fresh=True default, TrackingVerificationStatus.BUSY, MOUNT_BUSY_REASON; no logic), production unchanged: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:565: AssertionError: the nudge click blocked the GUI thread behind its own GOTO"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestStopDuringABlockingAngularGoto::test_the_nudge_click_that_starts_a_goto_does_not_block_the_gui_thread"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-02, worktree at 1ea9ac0 with the new tests and simulator copied in and name-only shims (MountParkStatus.fresh=True default, TrackingVerificationStatus.BUSY, MOUNT_BUSY_REASON; no logic), production unchanged: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:660: assert not True (watchdog fired: the GUI thread queued behind the GOTO)"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestStopDuringABlockingAngularGoto::test_a_park_panel_poll_during_a_goto_does_not_block_the_gui_thread"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-02, worktree at 1ea9ac0 with the new tests and simulator copied in and name-only shims (MountParkStatus.fresh=True default, TrackingVerificationStatus.BUSY, MOUNT_BUSY_REASON; no logic), production unchanged: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:680: assert not True (watchdog fired)"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestStopDuringABlockingAngularGoto::test_a_focuser_panel_poll_during_a_goto_does_not_block_the_gui_thread"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-02, worktree at 1ea9ac0 with the new tests and simulator copied in and name-only shims (MountParkStatus.fresh=True default, TrackingVerificationStatus.BUSY, MOUNT_BUSY_REASON; no logic), production unchanged: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:703: assert not True (watchdog fired)"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestTrackingDecisionsWhileTheMountIsBusy::test_mount_align_tracking_check_denies_with_the_busy_reason"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-02, worktree at 1ea9ac0 with the new tests and simulator copied in and name-only shims (MountParkStatus.fresh=True default, TrackingVerificationStatus.BUSY, MOUNT_BUSY_REASON; no logic), production unchanged: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:762: AssertionError: the tracking check queued behind the held connection. Also fails in the D1-without-fix state (held-over ON triggered a repair that queued); that run predates a +6-line import shift, recorded there as :756."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestTrackingDecisionsWhileTheMountIsBusy::test_mount_panel_enforcement_records_a_denial_not_a_verification"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-02, worktree at 1ea9ac0 with the new tests and simulator copied in and name-only shims (MountParkStatus.fresh=True default, TrackingVerificationStatus.BUSY, MOUNT_BUSY_REASON; no logic), production unchanged: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:776: AssertionError: the enforcement queued behind the held connection. D1-without-fix state: assert not True at the measurement_allowed() check (now :777; recorded as :771 before the +6-line import shift)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestWorkerDecisionsWaitBrieflyForAFreshReading::test_a_momentary_poll_collision_does_not_fail_the_capture"
+failed_before_fix = true
+evidence = "Pre-R1 run 2026-10-02 on the working tree before the re-review R1 fix: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:821: AssertionError: the worker decided without waiting for a fresh reading"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestWorkerDecisionsWaitBrieflyForAFreshReading::test_a_connection_held_beyond_the_wait_still_fails_closed"
+failed_before_fix = false
+reason_no_prefix_repro = "Regression guard: the pre-R1 code already failed closed; this pins that R1's wait is bounded."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestBusyIsShownAsBusy::test_mount_align_says_busy_not_unavailable_before_the_first_reading"
+failed_before_fix = false
+reason_no_prefix_repro = "Re-review P-c message fix; the D1 state's wording ('not available') was not recorded in a revert run."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestBusyIsShownAsBusy::test_the_mount_panel_shows_a_busy_denial"
+failed_before_fix = false
+reason_no_prefix_repro = "Re-review P-b display fix; the D1 state's dropped denial was not recorded in a revert run."
