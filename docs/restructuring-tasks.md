@@ -45,7 +45,7 @@ Status: `todo` · `in-progress` · `done` · `field-only` (only real hardware ca
 | S1 | #50 | Test tier markers, fast/changed gate, coverage split, CI jobs, timing report | issue agent | APPROVE-WITH-FIXES → 4 fixes applied, re-verified | done | (this commit) | `scripts/check.ps1` (default mode) · `pytest tests/core/testing` |
 | S2 | #54 | Proof manifests, `scripts/prove.py`, CI validation, 6 backfills (5 revert-proven) | issue agent | APPROVE-WITH-FIXES → 10 fixes (flag whitelist, tier/skip check, evidence format, fetch-depth 0) | done | (this commit) | `python scripts/prove.py <issue>` · `--validate-all` |
 | S3a | #53, #13 | `astrotool_core.timing` (Clock/FakeClock/Deadline/poll_until); acquisition, autofocus, tracking_mode, guide controller migrated; sleep guard | issue agent | APPROVE-WITH-FIXES → 9 fixes, mutation-proven | done | (this commit) | `pytest tests/core/timing tests/core/acquisition tests/core/mount tests/core/testing tests/guide tests/collimation/application` |
-| S3b | #53 | Migrate `mount_test_move_runner.py`, `recenter_policy.py` (after S6.0); panel wall-clock polling; interruptible waits | | | todo | | |
+| S3b | #53 | Migrate `mount_test_move_runner.py`, `recenter_policy.py` (after S6.0); panel wall-clock polling; interruptible waits | issue agent | APPROVE-WITH-FIXES (xfail raises, guard gaps) → fixed | done | c55b9c6 | `python scripts/prove.py 53-part-b` |
 | S4 | #51 | Scenario simulators (OnStep mount, focuser, filter wheel, ToupTek camera) on FakeClock; 5 defect reproductions | issue agent | 2 rounds: APPROVE-WITH-FIXES (fidelity) → APPROVE-WITH-FIXES (2 minor) → fixed | done | 0fdf781 | `python scripts/prove.py 51` |
 | S5 | #55, #52 | Duplication inventory + size/dependency baseline (`docs/quality/duplication-audit.md`) | analysis agent | coordinator spot-check (P01 confirmed in code) | done | (this commit) | docs only |
 | S6.0 | #46, #31, #55 (P01/P02) | **CRITICAL, promoted:** Mount Align bootstrap/nudge/screen moves go through `pulse_axis`, which production `OnStepMountPulseAdapter` always refuses; no rate is ever installed, so angular moves never start on the rig. Size the first move angularly from the optics seeds instead of a timed bootstrap; failing regression against the real adapter + fake OnStep connection first | issue agent | 2 rounds: APPROVE-WITH-FIXES → APPROVE | done | 787ceed | `python scripts/prove.py 46-mount-align-angular-path` |
@@ -252,6 +252,7 @@ not change · dependencies · non-goals · proof required.
 
 | Date | Task | Commit | What was proven |
 |------|------|--------|-----------------|
+| 2026-10-03 | S3b | c55b9c6 | Runner, recenter settle and panel confirmation timeouts on the injected clock (neutral, characterization-proven); 37 fake-time tests; guard catches deadline arithmetic and timed waits in policy layers, allowlists pinned. Wall time: sizing 55.9→7.1 s, real-adapter Mount Align 95.3→11.8 s, angular 26.5→4.6 s, frame_validity 57→33 s, runner_simulated 6.7→2.4 s; failure_recovery (96 s) and TestMountTestMovePanel (8.6 min) unchanged — panel clock is S6.6 |
 | 2026-10-03 | S6.5a | 4864cc8 | `is_color_sensor()` uses the SDK's real MONO flag (was USB30); all ToupTek constants from one SDK-keyed table, checked against the vendored SDK and AST-guarded; strict xfails flipped. Rig: GPCMOS known colour; G3M678M/ATR585M previous classification unknown (S6.5b flag log) |
 | 2026-10-02 | S6.0c | 52fd72f | Stop is lock-free and reaches the mount mid-GOTO; GUI polls never queue (held-over readings marked not fresh); #44 gate fails closed on busy/unknown; worker decisions wait ≤0.5 s for a fresh read; next move never hit by a late stop. Tests on the OnStep simulator fail pre-fix / on the intermediate state. Field-only: real ABORT mid-GOTO; ≤~35 s until the interrupted OnStepAdapter call returns (OnStepAdapter cancel hook needed) |
 | 2026-10-01 | S4 | 0fdf781 | Simulators for OnStep (0.4.1 semantics, cited), filter wheel, ToupTek (real SDK constants), frame timelines; 5 defect classes reproduced, 6 fixes revert-proven; both filter-wheel wall-clock flakes gone; regressions selectable by the changed-module gate; production ToupTek mono-flag bug pinned for S6.5a |
@@ -329,5 +330,13 @@ not change · dependencies · non-goals · proof required.
   `FakeIndiServer` re-announces FILTER_SLOT as Ok while moving. (e) App-importing simulator workflow tests live
   in `tests/core/testing/`, so `changed_tests.py` won't select them for panel/runner/controller changes →
   move to `tests/collimation/` (S6.6).
+- **S3b findings (2026-10-03).** (a) `_pulse_with_retry` never checks Stop: a rejected timed pulse is
+  re-sent up to 5× (0.3 s apart) after Stop (timed-capable mounts / timed fallback only) — strict xfail
+  `test_stop_during_a_rejection_retry_delay_sends_no_further_attempt` → S6.3. (b) Stop does not shorten
+  waits already running (fresh-park wait, unpark confirmation, gate delay, settle, re-park) → S6.3.
+  (c) `mount_test_move_panel.py` still on the real clock (completed_at, reference max age, capture-job
+  timeout) → S6.6/S6.7; this, not the runner, keeps `TestMountTestMovePanel` (~8.6 min) and
+  `test_calibration_failure_recovery.py` (~96 s) slow. (d) `stream_controller.py` clock seam not taken
+  (allowlisted). (e) CONTRIBUTING "Deterministic time" known-gap note is now outdated for policy layers.
 - **S5 live contradictions (9)** are listed in `docs/quality/duplication-audit.md`; each is owned by an
   S6 step and gets a failing regression before its fix.

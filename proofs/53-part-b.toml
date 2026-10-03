@@ -1,0 +1,42 @@
+# Proof manifest -- schema in proofs/README.md.
+# Run: python scripts/prove.py 53-part-b
+issues = [53]
+summary = """MountTestMoveRunner (retry, fresh-park/unpark/re-park polling, gate delay, settle, outcome stamps), CollimationRecenterPolicy's settle and the Focuser/FilterWheel/MountPark panels' confirmation timeouts read time and wait only through an injected astrotool_core.timing Clock (optional keyword, default SYSTEM_CLOCK). Behaviour-neutral. The sleep guard now also rejects real-clock deadline arithmetic (direct, via local/self stamps, incl. time.time()) and timed Event/Condition waits in policy layers; the runner/recenter_policy allowlist entries are gone and both allowlists are pinned."""
+modules = [
+    "apps/collimation_tool/ui/mount_test_move_runner.py",
+    "apps/collimation_tool/application/recenter_policy.py",
+    "apps/collimation_tool/ui/focuser_panel.py",
+    "apps/collimation_tool/ui/filter_wheel_panel.py",
+    "apps/collimation_tool/ui/mount_park_panel.py",
+]
+fix_commits = ["c55b9c6"]
+dataset_uuids = []
+focused_command = "pytest -q tests/collimation/ui/test_mount_test_move_runner_timing.py tests/collimation/ui/test_panel_confirmation_timeouts.py tests/collimation/application/test_recenter_policy_timing.py tests/core/testing/test_no_policy_sleep.py"
+broader_tier = "component"
+field_only_assumptions = []
+gaps = [
+    "Stop does not interrupt waits in progress, and _pulse_with_retry re-sends a rejected timed pulse after Stop (strict xfail, raises=AssertionError) -> S6.3/S6.6",
+    "mount_test_move_panel.py, stream_controller.py and indi_filter_wheel_adapter.py still on the real clock (POLICY_WALL_CLOCK_ALLOWLIST) -> S6.6/S6.7, S4 seam, S6.3",
+    "Guard blind spots listed in its docstring (stamps via kwargs/fields/returns, tuple/augmented rebinding, datetime.now, join/queue/socket timeouts, adapter packages)",
+    "test_calibration_failure_recovery.py and TestMountTestMovePanel remain slow: real-time camera rig / panel waits, not the runner",
+]
+
+[[regression_tests]]
+node = "tests/core/testing/test_no_policy_sleep.py::test_s3b_modules_wait_only_through_their_clock"
+failed_before_fix = false
+reason_no_prefix_repro = "Behaviour-neutral refactor; the guard's detectors flag every old wall-clock line of the five pre-S3b files (checked against 994bec8), but no defect existed to fail on."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_test_move_runner_timing.py::TestCharacterizationBeforeS3b"
+failed_before_fix = false
+reason_no_prefix_repro = "Characterization written before the change; passes before and after (neutrality proof, confirmed by the reviewer in a HEAD worktree)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_test_move_runner_timing.py::TestUnparkConfirmationDeadline"
+failed_before_fix = false
+reason_no_prefix_repro = "Fake-time boundary tests need the clock seam this change introduces."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_panel_confirmation_timeouts.py::TestFakeClockBoundaries"
+failed_before_fix = false
+reason_no_prefix_repro = "Fake-time boundary tests need the clock seam this change introduces."

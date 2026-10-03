@@ -147,8 +147,12 @@ after the boundary, and make sure it is the *production* check that decides
 the boundary, not the test double. `tests/core/testing/test_no_policy_sleep.py`
 fails on any direct `time.sleep` in production code outside its allowlist and
 on an allowlist entry that no longer sleeps; an exception needs a stated
-external-API reason there. (Known gap: it does not yet catch `Event.wait` used
-as a sleep or wall-clock polling loops — tracked in the restructuring tracker.)
+external-API reason there. In the policy layers (`apps/*/{application,ui,domain}`,
+`packages/astrotool_core/{acquisition,mount,focus,filter_wheel}`) it also fails
+on real-clock deadline arithmetic (`time.monotonic()`/`perf_counter()`/
+`time.time()`, directly or via a stamp) and on timed `Event`/`Condition` waits;
+its remaining blind spots are listed in its docstring, and both allowlists are
+pinned so an addition shows up as a test change.
 
 ## Reproducing a hardware bug locally
 
