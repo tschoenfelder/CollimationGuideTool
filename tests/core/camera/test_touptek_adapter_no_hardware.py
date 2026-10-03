@@ -20,7 +20,7 @@ from astrotool_core.camera.touptek_adapter import (
     _fourcc,
     _is_real_camera,
     _normalise_camera_name,
-    _opt,
+    _sdk_constant,
     _validated_sdk_bit_depth,
     list_devices,
 )
@@ -145,8 +145,20 @@ def test_descriptor_reports_sane_defaults_when_not_connected() -> None:
 def test_is_color_sensor_reflects_model_flag_without_hardware() -> None:
     adapter = TouptekCameraAdapter()
     assert adapter.is_color_sensor() is True  # default model_flag=0 has no MONO bit
-    adapter._model_flag = 0x00000040  # _FLAG_MONO
+    adapter._model_flag = 0x00000010  # TOUPCAM_FLAG_MONO
     assert adapter.is_color_sensor() is False
+    # S6.5a: 0x40 is TOUPCAM_FLAG_USB30 (the old, wrong _FLAG_MONO) -- not mono.
+    adapter._model_flag = 0x00000040
+    assert adapter.is_color_sensor() is True
+
+
+def test_is_color_sensor_uses_the_sdk_modules_mono_flag_by_name() -> None:
+    adapter = TouptekCameraAdapter()
+    adapter._tc = type("_Sdk", (), {"TOUPCAM_FLAG_MONO": 0x1000})()
+    adapter._model_flag = 0x1000
+    assert adapter.is_color_sensor() is False
+    adapter._model_flag = 0x10  # the fallback value, but this SDK module says otherwise
+    assert adapter.is_color_sensor() is True
 
 
 def test_supports_cooling_reflects_model_flag_without_hardware() -> None:
@@ -393,12 +405,15 @@ def test_normalise_camera_name_strips_spaces_and_underscores() -> None:
     assert _normalise_camera_name("G3M 678_M") == "G3M678M"
 
 
-def test_opt_falls_back_when_attribute_missing() -> None:
+def test_sdk_constant_falls_back_when_attribute_missing() -> None:
     class _Module:
         TOUPCAM_OPTION_RAW = 99
 
-    assert _opt(_Module(), "TOUPCAM_OPTION_RAW", 4) == 99
-    assert _opt(_Module(), "TOUPCAM_OPTION_MISSING", 4) == 4
+    assert _sdk_constant(_Module(), "TOUPCAM_OPTION_RAW") == 99
+    assert _sdk_constant(_Module(), "TOUPCAM_OPTION_BITDEPTH") == 0x06  # fallback
+    assert _sdk_constant(None, "TOUPCAM_FLAG_MONO") == 0x10  # SDK not loaded yet
+    with pytest.raises(KeyError):  # a name without a fallback is a programming error
+        _sdk_constant(None, "TOUPCAM_OPTION_MISSING")
 
 
 class TestValidatedSdkBitDepth:

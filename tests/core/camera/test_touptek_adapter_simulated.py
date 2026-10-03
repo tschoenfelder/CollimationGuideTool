@@ -6,12 +6,14 @@ only the vendor module is simulated."""
 
 from __future__ import annotations
 
+import ast
 import re
 from pathlib import Path
 
 import numpy as np
 import pytest
 from astropy.io import fits
+from astrotool_core.camera import touptek_adapter
 from astrotool_core.camera.capabilities import ConversionGain
 from astrotool_core.camera.touptek_adapter import TouptekCameraAdapter
 from astrotool_core.testing import (
@@ -24,14 +26,6 @@ from astrotool_core.testing.sim_touptek import SDK_CONSTANTS, Scene
 from astrotool_core.timing import FakeClock
 
 _VENDORED_SDK = Path(__file__).resolve().parents[3] / "resources" / "touptek" / "toupcam.py"
-
-#: S6.5a: touptek_adapter's `_FLAG_MONO` is the SDK's FLAG_USB30 (0x40); the SDK's
-#: FLAG_MONO is 0x10. Mono/colour is right only by accident on models whose USB3 bit
-#: happens to match. The production fix flips these strict xfails to passes.
-_S65A = pytest.mark.xfail(
-    strict=True,
-    reason="S6.5a: touptek_adapter _FLAG_MONO is FLAG_USB30 (0x40), SDK FLAG_MONO is 0x10",
-)
 
 
 def _connected(
@@ -64,6 +58,95 @@ class TestSimulatorMatchesTheVendoredSdk:
             assert SDK_CONSTANTS[name] in cam.options, name
 
 
+_ADAPTER_SOURCE = Path(touptek_adapter.__file__)
+
+#: Adapter helpers that take an SDK constant's name (first argument after
+#: `self` / the module) and nothing else that could be a fallback.
+_NAME_TAKING_HELPERS = {"_has_flag": 1, "_get_option": 1, "_put_option": 2, "_sdk_constant": 2}
+
+
+def _vendored_value(source: str, name: str) -> int | None:
+    match = re.search(rf"^\s*{name}\s*=\s*(0x[0-9A-Fa-f]+|\d+)", source, re.MULTILINE)
+    return None if match is None else int(match.group(1), 0)
+
+
+class TestAdapterConstantsComeFromTheVendoredSdk:
+    """S6.5a: the SDK is the single source of every flag/option/event/error
+    value. The adapter looks flags and options up by name on the SDK module;
+    its only literals are `_SDK_FALLBACKS`, keyed by SDK name, so a call site
+    names a constant and cannot pair it with a wrong fallback (a copied
+    `_FLAG_MONO = 0x40` was really TOUPCAM_FLAG_USB30)."""
+
+    def test_every_fallback_equals_the_vendored_sdk_value(self) -> None:
+        source = _VENDORED_SDK.read_text(encoding="utf-8")
+        assert {"TOUPCAM_FLAG_MONO", "TOUPCAM_OPTION_RGB", "E_NOTIMPL"} <= set(
+            touptek_adapter._SDK_FALLBACKS
+        )
+        mismatches = []
+        for name, value in sorted(touptek_adapter._SDK_FALLBACKS.items()):
+            sdk_value = _vendored_value(source, name)
+            if sdk_value != value:
+                mismatches.append(f"{name}: adapter 0x{value:X}, vendored SDK {sdk_value}")
+        assert mismatches == []
+
+    def test_no_module_level_int_constant_outside_the_sdk_table(self) -> None:
+        """Any module-level int literal (e.g. `_TEC_ONOFF = 0x40`) would be a
+        second, unchecked copy of SDK knowledge."""
+        tree = ast.parse(_ADAPTER_SOURCE.read_text(encoding="utf-8"))
+        loose = [
+            ast.unparse(node)
+            for node in tree.body
+            if isinstance(node, (ast.Assign, ast.AnnAssign))
+            and node.value is not None
+            and any(
+                isinstance(c, ast.Constant) and type(c.value) is int for c in ast.walk(node.value)
+            )
+            and not (
+                isinstance(node, ast.AnnAssign)
+                and isinstance(node.target, ast.Name)
+                and node.target.id == "_SDK_FALLBACKS"
+            )
+        ]
+        assert loose == []
+
+    def test_every_call_site_names_a_known_constant_and_passes_no_fallback(self) -> None:
+        tree = ast.parse(_ADAPTER_SOURCE.read_text(encoding="utf-8"))
+        problems = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            helper = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", None)
+            if helper not in _NAME_TAKING_HELPERS:
+                continue
+            arity = _NAME_TAKING_HELPERS[helper]
+            args = node.args
+            name_arg = args[0] if helper != "_sdk_constant" else args[1]
+            literal = name_arg.value if isinstance(name_arg, ast.Constant) else None
+            where = f"line {node.lineno}: {ast.unparse(node)}"
+            if len(args) != arity:
+                problems.append(f"{where}: expected {arity} args")
+            elif helper == "_sdk_constant" and isinstance(name_arg, ast.Name):
+                continue  # the helpers' own pass-through of `name`
+            elif literal not in touptek_adapter._SDK_FALLBACKS:
+                problems.append(f"{where}: name not in _SDK_FALLBACKS")
+        assert problems == []
+
+    def test_mono_follows_the_sdk_modules_flag_not_the_fallback(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Single source: with a (deliberately wrong) fallback the SDK module's
+        TOUPCAM_FLAG_MONO still decides."""
+        monkeypatch.setitem(
+            touptek_adapter._SDK_FALLBACKS,
+            "TOUPCAM_FLAG_MONO",
+            SDK_CONSTANTS["TOUPCAM_FLAG_USB30"],
+        )
+        colour, _, _ = _connected(monkeypatch, "SYNTH-COLOR-USB3")
+        mono, _, _ = _connected(monkeypatch, "SYNTH-MONO-USB2")
+        assert (colour.is_color_sensor(), mono.is_color_sensor()) == (True, False)
+
+
 class TestMonoOrColourFollowsTheSdkFlag:
     """`is_color_sensor()` must follow the SDK's TOUPCAM_FLAG_MONO (0x10)."""
 
@@ -73,8 +156,10 @@ class TestMonoOrColourFollowsTheSdkFlag:
             ("G3M678M", True),
             ("GPCMOS02000KPA", False),
             ("ATR585M", True),
-            pytest.param("SYNTH-COLOR-USB3", False, marks=_S65A),
-            pytest.param("SYNTH-MONO-USB2", True, marks=_S65A),
+            # S6.5a: the adapter's old `_FLAG_MONO` (0x40) was the SDK's FLAG_USB30,
+            # so mono/colour followed the USB3 bit. These two models separate them.
+            ("SYNTH-COLOR-USB3", False),
+            ("SYNTH-MONO-USB2", True),
         ],
     )
     def test_is_color_sensor_matches_the_model(

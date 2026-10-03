@@ -40,19 +40,43 @@ from astrotool_core.frames.pixel_format import BayerPattern
 
 _log = logging.getLogger(__name__)
 
-_EVENT_IMAGE = 0x0004
-_EVENT_STILLIMAGE = 0x0005
-_EVENT_TRIGGER_FAIL = 0x0007
-_EVENT_ERROR = 0x0080
-_EVENT_DISCONNECTED = 0x0081
-
-_FLAG_TEC = 0x00000080
-_FLAG_TEC_ONOFF = 0x00020000
-_FLAG_CG = 0x04000000
-_FLAG_CGHDR = 0x0000000800000000
-_FLAG_BLACKLEVEL = 0x00400000
-_FLAG_MONO = 0x00000040
-_FLAG_RAW16 = 0x00008000  # camera has true 16-bit ADC depth
+# SDK constants, keyed by their SDK name. The single source is the SDK module
+# itself: flags and options are looked up there by name (`_sdk_constant`); the
+# values here are only the fallbacks for a module that lacks a name, and the
+# event/HRESULT values the adapter compares against. A call site passes only
+# the name, so it cannot pair a name with the wrong fallback. Every value must
+# equal the vendored resources/touptek/toupcam.py -- enforced by
+# tests/core/camera/test_touptek_adapter_simulated.py (S6.5a: a copied
+# `_FLAG_MONO = 0x40` was really TOUPCAM_FLAG_USB30, so "is it colour?"
+# answered "is it not USB3?").
+_SDK_FALLBACKS: dict[str, int] = {
+    "TOUPCAM_EVENT_IMAGE": 0x0004,
+    "TOUPCAM_EVENT_STILLIMAGE": 0x0005,
+    "TOUPCAM_EVENT_TRIGGERFAIL": 0x0007,
+    "TOUPCAM_EVENT_ERROR": 0x0080,
+    "TOUPCAM_EVENT_DISCONNECTED": 0x0081,
+    "TOUPCAM_FLAG_MONO": 0x00000010,
+    "TOUPCAM_FLAG_TEC": 0x00000080,
+    "TOUPCAM_FLAG_RAW16": 0x00008000,  # camera has true 16-bit ADC depth
+    "TOUPCAM_FLAG_TEC_ONOFF": 0x00020000,
+    "TOUPCAM_FLAG_BLACKLEVEL": 0x00400000,
+    "TOUPCAM_FLAG_CG": 0x04000000,
+    "TOUPCAM_FLAG_CGHDR": 0x0000000800000000,
+    "TOUPCAM_OPTION_NOFRAME_TIMEOUT": 0x01,
+    "TOUPCAM_OPTION_RAW": 0x04,
+    "TOUPCAM_OPTION_BITDEPTH": 0x06,
+    "TOUPCAM_OPTION_TEC": 0x08,
+    "TOUPCAM_OPTION_TRIGGER": 0x0B,
+    "TOUPCAM_OPTION_RGB": 0x0C,
+    "TOUPCAM_OPTION_TECTARGET": 0x0F,
+    "TOUPCAM_OPTION_BLACKLEVEL": 0x15,
+    "TOUPCAM_OPTION_CG": 0x19,
+    "TOUPCAM_OPTION_FLUSH": 0x3D,
+    "TOUPCAM_OPTION_AUTOEXPO_TRIGGER": 0x51,
+    "TOUPCAM_OPTION_TECTARGET_RANGE": 0x6D,
+    "E_NOTIMPL": 0x80004001,  # this camera model has no such feature
+    "E_BUSY": 0x800700AA,  # the device already has an open handle
+}
 
 
 def _fourcc(a: str, b: str, c: str, d: str) -> int:
@@ -73,19 +97,6 @@ _FOURCC_TO_BAYER: dict[int, BayerPattern] = {
     _fourcc("G", "B", "R", "G"): BayerPattern.GBRG,
     _fourcc("Y", "Y", "Y", "Y"): BayerPattern.MONO,
 }
-
-_OPTION_BLACKLEVEL = 0x15
-_OPTION_CG = 0x19
-_OPTION_BITDEPTH = 0x06
-_OPTION_TRIGGER = 0x0B
-_OPTION_RAW = 0x04
-_OPTION_RGB = 0x16
-_OPTION_FLUSH = 0x36
-_OPTION_NOFRAME_TIMEOUT = 0x3F
-_OPTION_AUTOEXPO_TRIGGER = 0x5A
-_OPTION_TEC = 0x08
-_OPTION_TECTARGET = 0x0F
-_OPTION_TECTARGET_RANGE = 0x6D
 
 
 def _detect_pixel_shift(raw: np.ndarray) -> int:
@@ -182,10 +193,6 @@ def _is_real_camera(device: Any) -> bool:  # noqa: ANN401 — untyped SDK device
     return bool(device.model.preview) or bool(device.model.still)
 
 
-_HRESULT_BUSY = 0x800700AA  # ERROR_BUSY: the device already has an open handle
-_HRESULT_NOTIMPL = 0x80004001  # E_NOTIMPL: this camera model has no such feature
-
-
 def _describe_sdk_error(name: str, exc: Exception) -> str:
     """Human-readable text for an SDK failure while opening a camera (issue
     #45). The SDK raises HRESULTException(hr); 0x800700AA means the device is
@@ -196,7 +203,7 @@ def _describe_sdk_error(name: str, exc: Exception) -> str:
             raw = int(str(exc))
         except ValueError:
             raw = None
-    if isinstance(raw, int) and (raw & 0xFFFFFFFF) == _HRESULT_BUSY:
+    if isinstance(raw, int) and (raw & 0xFFFFFFFF) == _SDK_FALLBACKS["E_BUSY"]:
         return (
             f"TouptekCameraAdapter({name}): device busy (0x800700AA) -- it is already "
             "open elsewhere (another panel or an unreleased handle)"
@@ -345,7 +352,7 @@ class TouptekCameraAdapter(CameraPort):
         self._logical_name = str(device.displayname or device.model.name)
         self._device_id = str(device.id)
         self._model_flag = int(getattr(device.model, "flag", 0))
-        if self._model_flag & _FLAG_RAW16:
+        if self._has_flag("TOUPCAM_FLAG_RAW16"):
             self._pixel_shift = 0  # true 16-bit sensor — no shift needed
         try:
             self._serial_number = cam.SerialNumber()
@@ -402,7 +409,7 @@ class TouptekCameraAdapter(CameraPort):
                     # pattern as the mount's stop_tracking()-before-disconnect. Skipped
                     # entirely on hardware with no TEC at all (_supports_cooling False).
                     if self._supports_cooling:
-                        self._put_option("TOUPCAM_OPTION_TEC", _OPTION_TEC, 0)
+                        self._put_option("TOUPCAM_OPTION_TEC", 0)
                     self._cam.Stop()
                 finally:
                     self._cam.Close()
@@ -503,31 +510,31 @@ class TouptekCameraAdapter(CameraPort):
     # it in the first place.
     @property
     def _supports_cooling(self) -> bool:
-        return bool(self._model_flag & (_FLAG_TEC | _FLAG_TEC_ONOFF))
+        return self._has_flag("TOUPCAM_FLAG_TEC") or self._has_flag("TOUPCAM_FLAG_TEC_ONOFF")
 
     @property
     def _supports_hcg(self) -> bool:
-        return bool(self._model_flag & (_FLAG_CG | _FLAG_CGHDR))
+        return self._has_flag("TOUPCAM_FLAG_CG") or self._has_flag("TOUPCAM_FLAG_CGHDR")
 
     @property
     def _supports_black_level(self) -> bool:
-        return bool(self._model_flag & _FLAG_BLACKLEVEL)
+        return self._has_flag("TOUPCAM_FLAG_BLACKLEVEL")
 
     def get_black_level(self) -> int:
         if self._cam is not None and self._supports_black_level:  # pragma: no cover
-            value = self._get_option("TOUPCAM_OPTION_BLACKLEVEL", _OPTION_BLACKLEVEL)
+            value = self._get_option("TOUPCAM_OPTION_BLACKLEVEL")
             if value is not None:
                 return int(value)
         return 0
 
     def set_black_level(self, level: int) -> None:
         if self._cam is not None and self._supports_black_level:  # pragma: no cover
-            self._put_option("TOUPCAM_OPTION_BLACKLEVEL", _OPTION_BLACKLEVEL, max(0, int(level)))
+            self._put_option("TOUPCAM_OPTION_BLACKLEVEL", max(0, int(level)))
             self._pixel_shift = -1  # offset changes 16-bit alignment; re-detect on next frame
 
     def get_conversion_gain(self) -> ConversionGain:
         if self._cam is not None and self._supports_hcg:  # pragma: no cover
-            value = self._get_option("TOUPCAM_OPTION_CG", _OPTION_CG)
+            value = self._get_option("TOUPCAM_OPTION_CG")
             if value is not None:
                 try:
                     return ConversionGain(int(value))
@@ -537,7 +544,7 @@ class TouptekCameraAdapter(CameraPort):
 
     def set_conversion_gain(self, mode: ConversionGain) -> None:
         if self._cam is not None and self._supports_hcg:  # pragma: no cover
-            self._put_option("TOUPCAM_OPTION_CG", _OPTION_CG, int(mode))
+            self._put_option("TOUPCAM_OPTION_CG", int(mode))
 
     def get_temperature(self) -> float | None:
         # Real-field report: GPCMOS02000KPA has no temperature sensor at
@@ -552,7 +559,7 @@ class TouptekCameraAdapter(CameraPort):
             value = self._cam.get_Temperature()  # pragma: no cover
         except Exception as exc:  # noqa: BLE001 -- SDK raises HRESULTException, caught broadly like _try()
             hr = getattr(exc, "hr", None)
-            if isinstance(hr, int) and (hr & 0xFFFFFFFF) == _HRESULT_NOTIMPL:
+            if isinstance(hr, int) and (hr & 0xFFFFFFFF) == _SDK_FALLBACKS["E_NOTIMPL"]:
                 self._temperature_not_implemented = True
             else:
                 _log.warning(
@@ -563,7 +570,7 @@ class TouptekCameraAdapter(CameraPort):
 
     def get_cooling_enabled(self) -> bool:
         if self._cam is not None and self._supports_cooling:  # pragma: no cover
-            value = self._get_option("TOUPCAM_OPTION_TEC", _OPTION_TEC)
+            value = self._get_option("TOUPCAM_OPTION_TEC")
             if value is not None:
                 return bool(value)
         return self._cooling_enabled
@@ -571,11 +578,11 @@ class TouptekCameraAdapter(CameraPort):
     def set_cooling_enabled(self, enabled: bool) -> None:
         self._cooling_enabled = bool(enabled)
         if self._cam is not None and self._supports_cooling:  # pragma: no cover
-            self._put_option("TOUPCAM_OPTION_TEC", _OPTION_TEC, 1 if enabled else 0)
+            self._put_option("TOUPCAM_OPTION_TEC", 1 if enabled else 0)
 
     def get_target_temperature(self) -> float | None:
         if self._cam is not None and self._supports_cooling:  # pragma: no cover
-            value = self._get_option("TOUPCAM_OPTION_TECTARGET", _OPTION_TECTARGET)
+            value = self._get_option("TOUPCAM_OPTION_TECTARGET")
             if value is not None:
                 return round(int(value) / 10.0, 1)
         return self._target_temperature_c
@@ -583,9 +590,7 @@ class TouptekCameraAdapter(CameraPort):
     def set_target_temperature(self, celsius: float) -> None:
         self._target_temperature_c = float(celsius)
         if self._cam is not None and self._supports_cooling:  # pragma: no cover
-            self._put_option(
-                "TOUPCAM_OPTION_TECTARGET", _OPTION_TECTARGET, int(round(celsius * 10))
-            )
+            self._put_option("TOUPCAM_OPTION_TECTARGET", int(round(celsius * 10)))
 
     def _query_target_temp_range(self) -> tuple[float, float] | None:  # pragma: no cover
         if self._cam is None or not self._supports_cooling:
@@ -618,7 +623,7 @@ class TouptekCameraAdapter(CameraPort):
             supports_cooling=self._supports_cooling,
             supports_hcg=self._supports_hcg,
             supports_lcg=True,
-            supports_hdr=bool(self._model_flag & _FLAG_CGHDR),
+            supports_hdr=self._has_flag("TOUPCAM_FLAG_CGHDR"),
             supports_black_level=self._supports_black_level,
             bit_depth=(
                 self._effective_bit_depth(max(0, self._pixel_shift)) if self._bit_depth > 8 else 8
@@ -636,7 +641,12 @@ class TouptekCameraAdapter(CameraPort):
         )
 
     def is_color_sensor(self) -> bool:
-        return not bool(self._model_flag & _FLAG_MONO)
+        return not self._has_flag("TOUPCAM_FLAG_MONO")
+
+    def _has_flag(self, name: str) -> bool:
+        """Whether the connected model's SDK flag word has the SDK flag *name*
+        (see `_sdk_constant`)."""
+        return bool(self._model_flag & _sdk_constant(self._tc, name))
 
     def get_bayer_pattern(self) -> BayerPattern:
         """Query the sensor's actual Bayer layout via get_RawFormat().
@@ -712,50 +722,48 @@ class TouptekCameraAdapter(CameraPort):
             return self._index, devices[self._index]
         return self._index, None
 
-    def _get_option(self, name: str, fallback: int) -> Any:  # noqa: ANN401  # pragma: no cover
-        return self._try(lambda: self._cam.get_Option(_opt(self._tc, name, fallback)))
+    def _get_option(self, name: str) -> Any:  # noqa: ANN401  # pragma: no cover
+        return self._try(lambda: self._cam.get_Option(_sdk_constant(self._tc, name)))
 
-    def _put_option(self, name: str, fallback: int, value: int) -> None:  # pragma: no cover
-        self._try(lambda: self._cam.put_Option(_opt(self._tc, name, fallback), value))
+    def _put_option(self, name: str, value: int) -> None:  # pragma: no cover
+        self._try(lambda: self._cam.put_Option(_sdk_constant(self._tc, name), value))
 
     def _basic_configure(self) -> None:  # pragma: no cover
         self._try(lambda: self._cam.put_AutoExpoEnable(0))
-        self._put_option("TOUPCAM_OPTION_AUTOEXPO_TRIGGER", _OPTION_AUTOEXPO_TRIGGER, 0)
+        self._put_option("TOUPCAM_OPTION_AUTOEXPO_TRIGGER", 0)
         # Never trust a pre-existing TEC state (e.g. left on by a crashed prior
         # session) -- every connect starts with cooling actively forced off.
         # Skipped entirely on hardware with no TEC at all (_supports_cooling
         # False) -- same fix as disconnect()'s TEC-off, above.
         if self._supports_cooling:
-            self._put_option("TOUPCAM_OPTION_TEC", _OPTION_TEC, 0)
+            self._put_option("TOUPCAM_OPTION_TEC", 0)
         self._cooling_enabled = False
-        self._put_option("TOUPCAM_OPTION_RAW", _OPTION_RAW, 1)
-        self._put_option(
-            "TOUPCAM_OPTION_BITDEPTH", _OPTION_BITDEPTH, 1 if self._bit_depth > 8 else 0
-        )
+        self._put_option("TOUPCAM_OPTION_RAW", 1)
+        self._put_option("TOUPCAM_OPTION_BITDEPTH", 1 if self._bit_depth > 8 else 0)
         if not self.is_color_sensor():
-            self._put_option("TOUPCAM_OPTION_RGB", _OPTION_RGB, 4 if self._bit_depth > 8 else 3)
+            self._put_option("TOUPCAM_OPTION_RGB", 4 if self._bit_depth > 8 else 3)
 
     def _prepare_capture_mode(self) -> None:  # pragma: no cover
         self._try(lambda: self._cam.Stop())
         self._drain_state()
-        self._put_option("TOUPCAM_OPTION_FLUSH", _OPTION_FLUSH, 3)
+        self._put_option("TOUPCAM_OPTION_FLUSH", 3)
         # Start in video mode (required by StartPullModeWithCallback), settle
         # briefly, then switch to software-trigger mode so every capture()
         # call is a deterministic single exposure tied to the gain/exposure
         # just set (see smart_telescope M10 hardware history in the source
         # this was ported from — snap mode staying in free-running video
         # cadence produced stale/black frames).
-        self._put_option("TOUPCAM_OPTION_TRIGGER", _OPTION_TRIGGER, 0)
+        self._put_option("TOUPCAM_OPTION_TRIGGER", 0)
         self._cam.StartPullModeWithCallback(_camera_event, self)
         time.sleep(0.2)
         self._drain_state()
-        self._put_option("TOUPCAM_OPTION_TRIGGER", _OPTION_TRIGGER, 1)
-        self._put_option("TOUPCAM_OPTION_NOFRAME_TIMEOUT", _OPTION_NOFRAME_TIMEOUT, 1)
-        self._put_option("TOUPCAM_OPTION_FLUSH", _OPTION_FLUSH, 3)
+        self._put_option("TOUPCAM_OPTION_TRIGGER", 1)
+        self._put_option("TOUPCAM_OPTION_NOFRAME_TIMEOUT", 1)
+        self._put_option("TOUPCAM_OPTION_FLUSH", 3)
 
     def _capture_raw(self, timeout_s: float) -> np.ndarray:  # pragma: no cover
         self._drain_state()
-        self._put_option("TOUPCAM_OPTION_FLUSH", _OPTION_FLUSH, 3)
+        self._put_option("TOUPCAM_OPTION_FLUSH", 3)
         self._cam.Trigger(1)
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
@@ -798,15 +806,15 @@ class TouptekCameraAdapter(CameraPort):
 
 
 def _camera_event(event: int, ctx: TouptekCameraAdapter) -> None:  # pragma: no cover
-    if event in (_EVENT_IMAGE, _EVENT_STILLIMAGE):
+    if event in (_SDK_FALLBACKS["TOUPCAM_EVENT_IMAGE"], _SDK_FALLBACKS["TOUPCAM_EVENT_STILLIMAGE"]):
         ctx._frame_ready.set()
-    elif event == _EVENT_TRIGGER_FAIL:
+    elif event == _SDK_FALLBACKS["TOUPCAM_EVENT_TRIGGERFAIL"]:
         ctx._capture_error = RuntimeError("Camera trigger failed")
         ctx._frame_ready.set()
-    elif event == _EVENT_DISCONNECTED:
+    elif event == _SDK_FALLBACKS["TOUPCAM_EVENT_DISCONNECTED"]:
         ctx._capture_error = RuntimeError("Camera disconnected during capture")
         ctx._frame_ready.set()
-    elif event == _EVENT_ERROR:
+    elif event == _SDK_FALLBACKS["TOUPCAM_EVENT_ERROR"]:
         ctx._capture_error = RuntimeError("Camera reported error during capture")
         ctx._frame_ready.set()
 
@@ -815,5 +823,9 @@ def _normalise_camera_name(value: str) -> str:
     return value.upper().replace(" ", "").replace("_", "")
 
 
-def _opt(module: Any, name: str, fallback: int) -> int:  # noqa: ANN401
-    return int(getattr(module, name, fallback))
+def _sdk_constant(module: Any, name: str) -> int:  # noqa: ANN401
+    """An SDK constant (flag, option id) by its name on the SDK module --
+    the single source; the `_SDK_FALLBACKS` value (equal to the vendored SDK)
+    only when the module lacks the name or is not loaded (``None``). An
+    unknown *name* raises KeyError: every name used must have a fallback."""
+    return int(getattr(module, name, _SDK_FALLBACKS[name]))

@@ -86,6 +86,9 @@ _DEVICE_A = _FakeDevice("id-g3m678m", "G3M678M")
 _DEVICE_B = _FakeDevice("id-gpcmos", "GPCMOS02000")
 
 
+_OPTION_TEC = adapter_module._SDK_FALLBACKS["TOUPCAM_OPTION_TEC"]
+
+
 def _two_device_module(*, serial_a: str = "SN-A", serial_b: str = "SN-B") -> _FakeToupcamModule:
     return _FakeToupcamModule(
         [_DEVICE_A, _DEVICE_B], {_DEVICE_A.id: serial_a, _DEVICE_B.id: serial_b}
@@ -244,23 +247,27 @@ class TestForceCoolingOffOnConnect:
         # one (_supports_cooling) -- see TestNoTecOnNonCoolingCamera below
         # for the (real, G3M678M-shaped) no-TEC case this device normally
         # represents in this file.
-        monkeypatch.setattr(_DEVICE_A.model, "flag", adapter_module._FLAG_TEC)
+        monkeypatch.setattr(
+            _DEVICE_A.model, "flag", adapter_module._SDK_FALLBACKS["TOUPCAM_FLAG_TEC"]
+        )
         tc = _two_device_module()
         cam = _FakeCam("SN-A")
-        cam._options[adapter_module._OPTION_TEC] = 1  # simulate left on by a crashed session
+        cam._options[_OPTION_TEC] = 1  # simulate left on by a crashed session
         tc.Toupcam.Open = lambda device_id: cam  # type: ignore[method-assign]
         adapter = TouptekCameraAdapter(camera_id=_DEVICE_A.id)
 
         adapter._open_device(tc)
 
-        assert (adapter_module._OPTION_TEC, 0) in cam.put_option_calls
-        assert cam.get_Option(adapter_module._OPTION_TEC) == 0
+        assert (_OPTION_TEC, 0) in cam.put_option_calls
+        assert cam.get_Option(_OPTION_TEC) == 0
 
     def test_tec_is_forced_off_even_when_it_was_already_off(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         _fresh_state(monkeypatch)
-        monkeypatch.setattr(_DEVICE_A.model, "flag", adapter_module._FLAG_TEC)
+        monkeypatch.setattr(
+            _DEVICE_A.model, "flag", adapter_module._SDK_FALLBACKS["TOUPCAM_FLAG_TEC"]
+        )
         tc = _two_device_module()
         cam = _FakeCam("SN-A")
         tc.Toupcam.Open = lambda device_id: cam  # type: ignore[method-assign]
@@ -268,7 +275,7 @@ class TestForceCoolingOffOnConnect:
 
         adapter._open_device(tc)
 
-        assert (adapter_module._OPTION_TEC, 0) in cam.put_option_calls
+        assert (_OPTION_TEC, 0) in cam.put_option_calls
         assert adapter.get_cooling_enabled() is False
 
 
@@ -292,7 +299,7 @@ class TestNoTecOnNonCoolingCamera:
 
         adapter._open_device(tc)
 
-        assert (adapter_module._OPTION_TEC, 0) not in cam.put_option_calls
+        assert (_OPTION_TEC, 0) not in cam.put_option_calls
         assert adapter.get_cooling_enabled() is False  # local state, no doomed SDK call needed
 
 
