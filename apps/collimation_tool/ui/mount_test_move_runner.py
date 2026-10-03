@@ -54,18 +54,26 @@ exactly as it already is for every other unparked action in this app.
 `park_after=True` (e.g. a hypothetical single ad hoc probe) still re-parks
 in a `finally`, even if the pulse itself failed, so a mid-run error can't
 strand the mount unparked in that mode.
+
+Time (issue #53, S3b): every wait and timestamp here -- the fresh park reading,
+the unpark/re-park confirmation polls, the stop_tracking gate delay, rejection
+retries, the settle and the `MountPulseOutcome` stamps -- goes through the
+`Clock` given to the runner (`clock=`, default the real `SYSTEM_CLOCK`), so tests
+drive them on a `FakeClock`. Stop (`abort()`) does not shorten a wait already in
+progress; it is checked between steps, exactly as before the clock injection
+(interruptible waits are S6.3's decision).
 """
 
 from __future__ import annotations
 
 import logging
 import threading
-import time
 from collections.abc import Sequence
 from dataclasses import dataclass
 
 from astrotool_core.mount.park_port import MountParkPort, MountParkStatus
 from astrotool_core.mount.port import AxisDirection, CommandResult, MountAxis, MountPort
+from astrotool_core.timing import SYSTEM_CLOCK, Clock, Deadline
 
 _UNPARK_TIMEOUT_S = 5.0
 _REPARK_TIMEOUT_S = 5.0
@@ -112,7 +120,8 @@ class MountPulseOutcome:
 
     pulsed: bool
     error: str | None = None
-    #: Issue #43 evidence (time.monotonic()): when the first pulse was commanded,
+    #: Issue #43 evidence (on the runner's clock -- the real `time.monotonic()` in
+    #: production): when the first pulse was commanded,
     #: when the last pulse's motion-off was confirmed, and when the settle finished.
     #: None when the sequence never got that far.
     motion_started_at: float | None = None
@@ -123,20 +132,27 @@ class MountPulseOutcome:
 
 
 def _wait_for_parked(
-    mount_park: MountParkPort, *, want_parked: bool, timeout_s: float
+    mount_park: MountParkPort,
+    *,
+    want_parked: bool,
+    timeout_s: float,
+    clock: Clock = SYSTEM_CLOCK,
 ) -> str | None:
     """None once a FRESH reading confirms `want_parked` (S6.0c: never a held-over one), else
-    why not: the mount never confirmed, or its connection stayed busy (no fresh reading)."""
-    deadline = time.monotonic() + timeout_s
+    why not: the mount never confirmed, or its connection stayed busy (no fresh reading).
+
+    Order per round: read -> deadline check -> wait one poll interval, so a reading taken
+    exactly at the deadline still counts (`Deadline` convention: expired once now >= it)."""
+    deadline = Deadline.after(timeout_s, clock=clock)
     while True:
         status = mount_park.status()
         if status.fresh and status.parked == want_parked:
             return None
-        if time.monotonic() >= deadline:
+        if deadline.expired():
             if not status.fresh:
                 return "the mount connection stayed busy (no fresh reading)"
             return "not confirmed"
-        time.sleep(_PARK_POLL_INTERVAL_S)
+        clock.sleep(_PARK_POLL_INTERVAL_S)
 
 
 #: S6.0c: the unpark-or-not decision needs a FRESH park reading; a held-over one (another
@@ -146,17 +162,20 @@ _PARK_STATE_UNKNOWN = (
 )
 
 
-def _fresh_park_status(mount_park: MountParkPort, *, timeout_s: float) -> MountParkStatus | None:
+def _fresh_park_status(
+    mount_park: MountParkPort, *, timeout_s: float, clock: Clock = SYSTEM_CLOCK
+) -> MountParkStatus | None:
     """A fresh park reading (S6.0c), waiting -- on this worker thread, bounded -- while another
-    operation holds the connection; None if none arrives in time."""
-    deadline = time.monotonic() + timeout_s
+    operation holds the connection; None if none arrives in time. Same round order as
+    `_wait_for_parked`."""
+    deadline = Deadline.after(timeout_s, clock=clock)
     while True:
         status = mount_park.status()
         if status.fresh:
             return status
-        if time.monotonic() >= deadline:
+        if deadline.expired():
             return None
-        time.sleep(_PARK_POLL_INTERVAL_S)
+        clock.sleep(_PARK_POLL_INTERVAL_S)
 
 
 def _pulse_with_retry(
@@ -165,6 +184,7 @@ def _pulse_with_retry(
     direction: AxisDirection,
     pulse_ms: int,
     rate_preset: str | None,
+    clock: Clock = SYSTEM_CLOCK,
 ) -> CommandResult:
     """Retries a *rejected* pulse_axis() call a few times before giving
     up -- see `_PULSE_REJECTION_RETRIES`'s own docstring for why. An
@@ -173,7 +193,7 @@ def _pulse_with_retry(
     result = mount.pulse_axis(axis, direction, pulse_ms, rate_preset=rate_preset)
     attempt = 1
     while not result.accepted and attempt < _PULSE_REJECTION_RETRIES:
-        time.sleep(_PULSE_REJECTION_RETRY_DELAY_S)
+        clock.sleep(_PULSE_REJECTION_RETRY_DELAY_S)
         result = mount.pulse_axis(axis, direction, pulse_ms, rate_preset=rate_preset)
         attempt += 1
     return result
@@ -202,6 +222,7 @@ def _move_with_retry(
     mount: MountPort,
     step: PulseStep | AngularPulseStep,
     rate_preset: str | None,
+    clock: Clock = SYSTEM_CLOCK,
 ) -> tuple[CommandResult, str]:
     """One step: angular through OnStepAdapter when asked and supported, else timed. An
     angular refusal because the mount is still at home falls back to the timed move of
@@ -223,16 +244,23 @@ def _move_with_retry(
             return result, MOTION_ANGULAR
         _log.warning("angular move refused -- timed fallback: %s", result.message)
         return (
-            _pulse_with_retry(mount, axis, direction, pulse_ms, rate_preset),
+            _pulse_with_retry(mount, axis, direction, pulse_ms, rate_preset, clock),
             MOTION_TIMED_FALLBACK,
         )
     if not timed_supported:
         return CommandResult(accepted=False, message=_NO_TIMED_PULSE), MOTION_TIMED
-    return _pulse_with_retry(mount, axis, direction, pulse_ms, rate_preset), MOTION_TIMED
+    return (
+        _pulse_with_retry(mount, axis, direction, pulse_ms, rate_preset, clock),
+        MOTION_TIMED,
+    )
 
 
 class MountTestMoveRunner:
-    def __init__(self) -> None:
+    def __init__(self, *, clock: Clock | None = None) -> None:
+        """`clock` (#53): every wait and outcome timestamp of the worker; default the real
+        clock. Tests pass a `FakeClock` -- auto-advance runs a sequence's waits instantly,
+        manual mode lets a test watch the worker inside a wait (`wait_for_sleepers`)."""
+        self._clock: Clock = clock if clock is not None else SYSTEM_CLOCK
         self._lock = threading.Lock()
         self._busy = False
         self._latest_outcome: MountPulseOutcome | None = None
@@ -376,7 +404,8 @@ class MountTestMoveRunner:
         # (a single TRACK_OFF, no UNPARK resend) -- still corrects any
         # tracking that crept back in, without re-arming the driver's own
         # UNPARK-linked quirk again.
-        initial = _fresh_park_status(mount_park, timeout_s=_UNPARK_TIMEOUT_S)
+        clock = self._clock
+        initial = _fresh_park_status(mount_park, timeout_s=_UNPARK_TIMEOUT_S, clock=clock)
         if initial is None:
             return MountPulseOutcome(pulsed=False, error=_PARK_STATE_UNKNOWN)
         if initial.parked:
@@ -397,9 +426,11 @@ class MountTestMoveRunner:
             # Reusing that same already-proven-sufficient delay here, up
             # front, avoids that round trip in the common case; retry
             # (below) still covers the rest.
-            time.sleep(_PULSE_REJECTION_RETRY_DELAY_S)
+            clock.sleep(_PULSE_REJECTION_RETRY_DELAY_S)
         try:
-            why = _wait_for_parked(mount_park, want_parked=False, timeout_s=_UNPARK_TIMEOUT_S)
+            why = _wait_for_parked(
+                mount_park, want_parked=False, timeout_s=_UNPARK_TIMEOUT_S, clock=clock
+            )
             if why is not None:
                 error = f"mount did not confirm unparked in time ({why}) -- aborting test move"
             else:
@@ -412,13 +443,13 @@ class MountTestMoveRunner:
                 # only happens if the mount disconnects mid-run, and the
                 # caller treating "not fully pulsed" as "don't trust an
                 # after-measurement" is the safer default.
-                motion_started_at = time.monotonic()
+                motion_started_at = clock.monotonic()
                 for step in steps:
                     axis, direction = step[0], step[1]
                     if self._stop_requested.is_set():
                         error = f"{_STOPPED_BY_USER} -- {axis.name} {direction.name} not sent"
                         break
-                    result, path = _move_with_retry(mount, step, rate_preset)
+                    result, path = _move_with_retry(mount, step, rate_preset, clock)
                     paths.append(path)
                     if not result.accepted:
                         error = (
@@ -428,16 +459,18 @@ class MountTestMoveRunner:
                         break
                 else:
                     pulsed = True
-                    motion_ended_at = time.monotonic()
+                    motion_ended_at = clock.monotonic()
                     if settle_ms > 0 and not self._stop_requested.is_set():
-                        time.sleep(settle_ms / 1000.0)
-                    settled_at = time.monotonic()
+                        clock.sleep(settle_ms / 1000.0)
+                    settled_at = clock.monotonic()
         finally:
             if park_after:
                 # Always try to leave the mount parked again, even if the
                 # pulse failed above -- see module docstring.
                 mount_park.park()
-                why = _wait_for_parked(mount_park, want_parked=True, timeout_s=_REPARK_TIMEOUT_S)
+                why = _wait_for_parked(
+                    mount_park, want_parked=True, timeout_s=_REPARK_TIMEOUT_S, clock=clock
+                )
                 if why is not None:
                     error = error or f"mount did not confirm re-parked in time ({why})"
 

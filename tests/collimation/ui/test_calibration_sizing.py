@@ -6,7 +6,10 @@ symmetric (+/-) and bounded (3 s cap, mount returned to its start).
 The rig is a physics-style fake: every camera frame is the same textured scene
 rolled by (cumulative signed pulse duration x that camera's px/ms vector), so
 ANY retry / follow-up sequence just works -- unlike the scripted
-`_stepped_frame_pair` helpers, which fix the number of captures up front."""
+`_stepped_frame_pair` helpers, which fix the number of captures up front.
+
+The mount runner's waits run on a FakeClock (#53, S3b): on the real clock its stop_tracking
+gate delay alone cost ~0.3 s per calibration move."""
 
 from __future__ import annotations
 
@@ -24,7 +27,9 @@ from astrotool_core.mount import AxisDirection, MountAxis
 from astrotool_core.mount.movement_sizing import CameraGeometry
 from astrotool_core.testing.fake_mount import FakeMountAdapter
 from astrotool_core.testing.fake_mount_park import FakeMountPark
+from astrotool_core.timing import FakeClock
 from collimation_tool.ui.mount_test_move_panel import MountTestMovePanel
+from collimation_tool.ui.mount_test_move_runner import MountTestMoveRunner
 
 _SETTINGS = MountAlignmentSettings(
     settle_ms=0,
@@ -109,6 +114,7 @@ def _panel(
         wait_for_right_frame=rig.waiter("right"),
         settings=settings,
         camera_geometry=(lambda: [_LEFT, _RIGHT]) if geometry else None,
+        runner=MountTestMoveRunner(clock=FakeClock()),
     )
     panel._terrestrial_button.click()  # texture-based (cross-correlation) measurement
     panel._connect_button.setChecked(True)

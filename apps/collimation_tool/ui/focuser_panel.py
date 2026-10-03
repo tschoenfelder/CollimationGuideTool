@@ -39,13 +39,13 @@ done.
 from __future__ import annotations
 
 import logging
-import time
 from collections.abc import Callable
 from typing import Any
 
 import numpy as np
 from astrotool_core.acquisition.stable_frame_acquisition import FrameAcquisitionResult
 from astrotool_core.focus.port import FocuserPort
+from astrotool_core.timing import SYSTEM_CLOCK, Clock
 from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -124,8 +124,12 @@ class FocuserPanel(QWidget):
         optical_train_label: str = "Main",
         exposure_control: ExposureControl | None = None,
         measurement_gate: Callable[[str], str | None] | None = None,
+        clock: Clock | None = None,
     ) -> None:
         super().__init__()
+        #: Issue #53 (S3b): the time the confirmation-timeout safety net reads. The Qt
+        #: poll timer stays the tick source; tests inject a `FakeClock`.
+        self._clock: Clock = clock if clock is not None else SYSTEM_CLOCK
         #: Issue #44: returns a reason string when measurement is blocked
         #: (terrestrial mode + mount tracking not OFF), else None.
         self._measurement_gate = measurement_gate
@@ -310,7 +314,7 @@ class FocuserPanel(QWidget):
         # click before this handler returns.
         self._set_move_in_flight(True)
         self._seen_busy_since_move = False
-        self._move_issued_at = time.monotonic()
+        self._move_issued_at = self._clock.monotonic()
         self._update_move_buttons_enabled()
         self._focuser.move(steps)
 
@@ -437,7 +441,7 @@ class FocuserPanel(QWidget):
             # stuck state ever clearing on its own.
             timed_out = (
                 self._move_issued_at is not None
-                and time.monotonic() - self._move_issued_at > _MOVE_CONFIRMATION_TIMEOUT_S
+                and self._clock.monotonic() - self._move_issued_at > _MOVE_CONFIRMATION_TIMEOUT_S
             )
             if status.moving:
                 self._seen_busy_since_move = True

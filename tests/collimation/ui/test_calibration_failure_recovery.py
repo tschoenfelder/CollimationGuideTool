@@ -8,7 +8,11 @@ event loop was blocked for minutes with no status text, and the operator retried
 The rig feeds the REAL `acquire_stable_frame` (exposure-start freshness) with frame streams whose
 exposure time makes captures take real (short) time; the panel runs in threaded-capture mode with
 its real QTimer, driven by `QTest.qWait` (the real event loop). A heartbeat QTimer proves the
-loop is never blocked while a capture is in flight."""
+loop is never blocked while a capture is in flight.
+
+The mount runner's own waits (stop_tracking gate delay, retries, settle) run on a FakeClock
+(#53, S3b): they are not what these tests observe, and on the real clock they only added
+wall time. Captures and the panel's own timeouts stay on the real clock (S6.6/S6.7)."""
 
 from __future__ import annotations
 
@@ -29,8 +33,10 @@ from astrotool_core.mount.movement_sizing import CameraGeometry
 from astrotool_core.mount.operating_mode import OperatingMode, TrackingEnforcer
 from astrotool_core.testing.fake_mount import FakeMountAdapter
 from astrotool_core.testing.fake_mount_park import FakeMountPark
+from astrotool_core.timing import FakeClock
 from collimation_tool.ui import mount_test_move_runner as runner_module
 from collimation_tool.ui.mount_test_move_panel import MountTestMovePanel
+from collimation_tool.ui.mount_test_move_runner import MountTestMoveRunner
 from PySide6.QtCore import QTimer
 from PySide6.QtTest import QTest
 
@@ -143,6 +149,7 @@ def _panel(
         tracking_enforcer=enforcer,
         camera_geometry=geometry,
         threaded_captures=True,
+        runner=MountTestMoveRunner(clock=FakeClock()),
     )
     panel._terrestrial_button.click()
     panel._connect_button.setChecked(True)

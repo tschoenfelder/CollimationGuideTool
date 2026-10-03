@@ -111,6 +111,11 @@ class _Rig:
         )
         self.park = OnStepMountParkAdapter(connection)
         self.mount = OnStepMountPulseAdapter(connection)
+        #: S3b (#53): on the instant fake connection the runner's own waits (stop_tracking gate
+        #: delay, settle) run on a private FakeClock -- they cost ~0.3 s real time per move and
+        #: are not what these tests observe. With the simulator clock (S6.0c's cross-thread
+        #: Stop tests) the runner keeps the real clock, as before.
+        self.runner_clock: FakeClock | None = FakeClock() if clock is None else None
         self.park.connect()
         self.mount.connect()
         self.client: FakeOnStepIndiClient = made[0]
@@ -173,6 +178,7 @@ class _Rig:
             wait_for_right_frame=self.waiter("right"),
             settings=_SETTINGS,
             camera_geometry=lambda: cameras,
+            runner=MountTestMoveRunner(clock=self.runner_clock),
         )
         panel._terrestrial_button.click()  # texture-based (cross-correlation) measurement
         panel._connect_button.setChecked(True)

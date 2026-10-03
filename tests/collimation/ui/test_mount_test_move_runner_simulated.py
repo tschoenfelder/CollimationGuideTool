@@ -2,17 +2,19 @@
 MountTestMovePanel -> MountTestMoveRunner -> production OnStep park/pulse
 adapters -> OnStepConnection -> simulated OnStep controller.
 
-Acceptance gap pending S3b: MountTestMoveRunner still sleeps and stamps on the
-real clock, so this test drains the runner with a bounded real-time poll
-(5 ms steps, 120 s safety deadline; ~5.5 s per run, like the existing Mount
-Align tests) and stamps frames with `time.monotonic()`. The simulated mount
-itself runs on fake time. Once S3b injects the clock, this becomes a pure
-fake-time test.
+Since S3b (#53) the runner waits on the SAME FakeClock as the simulated
+controller: its stop_tracking gate delays, park polls and settles advance the
+one simulated timeline instead of costing real seconds (~5.5 s per run before).
+The test still drains the worker thread with a bounded real-time poll (a thread
+barrier, not a policy wait). Frames are stamped with `time.monotonic()` because
+the panel itself still measures its capture references on the real clock
+(panel clock injection: S6.6).
 """
 
 from __future__ import annotations
 
 import math
+import threading
 import time
 
 import numpy as np
@@ -50,6 +52,21 @@ def _texture(seed: int, shape: tuple[int, int]) -> np.ndarray:
     return np.asarray(smooth / 16.0 * 1000.0 + 100.0, dtype=np.float32)
 
 
+class _RecordingClock:
+    """Delegates to the shared FakeClock; records only the runner's own waits."""
+
+    def __init__(self, clock: FakeClock) -> None:
+        self._clock = clock
+        self.sleeps: list[float] = []
+
+    def monotonic(self) -> float:
+        return self._clock.monotonic()
+
+    def sleep(self, seconds: float, cancel: threading.Event | None = None) -> bool:
+        self.sleeps.append(seconds)
+        return self._clock.sleep(seconds, cancel)
+
+
 class TestMountAlignWorkflow:
     """Mount Align calibration: MountTestMovePanel -> MountTestMoveRunner ->
     production OnStep park/pulse adapters -> OnStepConnection -> simulated
@@ -58,6 +75,7 @@ class TestMountAlignWorkflow:
 
     def test_calibration_runs_end_to_end_on_the_simulated_controller(self, qapp: object) -> None:
         clock = FakeClock()
+        runner_clock = _RecordingClock(clock)  # the same timeline, its own waits recorded
         connection, made = make_simulated_onstep_connection(OnStepScenario(), clock=clock)
         park = OnStepMountParkAdapter(connection)
         mount = OnStepMountPulseAdapter(connection)
@@ -79,7 +97,7 @@ class TestMountAlignWorkflow:
 
         def waiter(key: str):  # type: ignore[no-untyped-def]  # noqa: ANN202
             def wait(_reference: float, _timeout: float) -> FrameAcquisitionResult:
-                # real-clock stamp: the runner still references time.monotonic() (S3b)
+                # real-clock stamp: the panel's capture reference is still real time (S6.6)
                 return FrameAcquisitionResult(
                     FrameAcquisitionStatus.OK,
                     DeliveredFrame(frame(key), time.monotonic(), 0.01),
@@ -96,7 +114,7 @@ class TestMountAlignWorkflow:
             wait_for_right_frame=waiter("right"),
             settings=_SETTINGS,
             camera_geometry=lambda: list(cameras.values()),
-            runner=MountTestMoveRunner(),
+            runner=MountTestMoveRunner(clock=runner_clock),
         )
         panel._terrestrial_button.click()
         panel._connect_button.setChecked(True)
@@ -115,7 +133,11 @@ class TestMountAlignWorkflow:
         assert panel.calibration_for("right") is not None, panel._result_label.text()
         assert client.parked is False  # the runner unparked the simulated mount
         moved = sum(abs(offset) for _axis, offset in client.axis_move_calls)
-        assert clock.monotonic() == pytest.approx(moved / 2.0)  # every move took fake time
+        # fake time = every simulated move + exactly the runner's own waits, nothing real
+        assert runner_clock.sleeps  # its gate delays ran on the shared fake timeline
+        assert clock.monotonic() == pytest.approx(
+            moved / OnStepScenario().axis_rate_deg_per_s + sum(runner_clock.sleeps)
+        )
         assert math.hypot(client.ha_deg - ha0, client.dec_deg - dec0) * 3600.0 < 6.0
         assert client.monitor.interleavings == []
         panel.stop()

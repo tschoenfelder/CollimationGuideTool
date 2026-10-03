@@ -19,11 +19,11 @@ actually done -- never inferred from an acknowledgement alone.
 
 from __future__ import annotations
 
-import time
 from collections.abc import Sequence
 from typing import Any
 
 from astrotool_core.filter_wheel.port import FilterWheelPort, FilterWheelState
+from astrotool_core.timing import SYSTEM_CLOCK, Clock
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QComboBox,
@@ -66,8 +66,12 @@ class FilterWheelPanel(QWidget):
         title: str = "Filter Wheel",
         used_by: Sequence[str] = (),
         selectable: bool = False,
+        clock: Clock | None = None,
     ) -> None:
         super().__init__()
+        #: Issue #53 (S3b): the time the confirmation-timeout safety net reads. The Qt
+        #: poll timer stays the tick source; tests inject a `FakeClock`.
+        self._clock: Clock = clock if clock is not None else SYSTEM_CLOCK
         self._filter_wheel = filter_wheel
         #: Issue #41: the optical trains that share this ONE physical wheel.
         self._used_by: tuple[str, ...] = tuple(used_by)
@@ -208,7 +212,7 @@ class FilterWheelPanel(QWidget):
         self._set_slot_change_in_flight(True)
         self._seen_busy_since_request = False
         self._requested_slot = slot
-        self._slot_change_issued_at = time.monotonic()
+        self._slot_change_issued_at = self._clock.monotonic()
         self._last_failure = None
         self._update_selector_enabled()
         try:
@@ -238,7 +242,7 @@ class FilterWheelPanel(QWidget):
             # a4ffe048).
             timed_out = (
                 self._slot_change_issued_at is not None
-                and time.monotonic() - self._slot_change_issued_at
+                and self._clock.monotonic() - self._slot_change_issued_at
                 > _SLOT_CHANGE_CONFIRMATION_TIMEOUT_S
             )
             if status.moving:

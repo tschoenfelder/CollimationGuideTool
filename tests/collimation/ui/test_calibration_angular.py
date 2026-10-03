@@ -23,7 +23,9 @@ from astrotool_core.mount import AxisDirection, MountAxis
 from astrotool_core.mount.movement_sizing import CameraGeometry
 from astrotool_core.testing.fake_mount import FakeAngularMountAdapter, FakeMountAdapter
 from astrotool_core.testing.fake_mount_park import FakeMountPark
+from astrotool_core.timing import FakeClock
 from collimation_tool.ui.mount_test_move_panel import MountTestMovePanel
+from collimation_tool.ui.mount_test_move_runner import MountTestMoveRunner
 
 _SETTINGS = MountAlignmentSettings(
     settle_ms=0,
@@ -89,6 +91,7 @@ def _panel(rig: _SkyRig) -> MountTestMovePanel:
         wait_for_right_frame=rig.waiter("right"),
         settings=_SETTINGS,
         camera_geometry=lambda: [_LEFT, _RIGHT],
+        runner=MountTestMoveRunner(clock=FakeClock()),  # S3b: runner waits on fake time
     )
     panel._terrestrial_button.click()  # texture-based (cross-correlation) measurement
     panel._connect_button.setChecked(True)

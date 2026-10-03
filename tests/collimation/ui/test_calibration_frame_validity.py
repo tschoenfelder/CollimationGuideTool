@@ -32,11 +32,13 @@ from astrotool_core.mount.movement_sizing import CameraGeometry
 from astrotool_core.target.translation_offset import measure_translation_offset
 from astrotool_core.testing.fake_mount import FakeMountAdapter
 from astrotool_core.testing.fake_mount_park import FakeMountPark
+from astrotool_core.timing import FakeClock
 from collimation_tool.ui import mount_test_move_panel as panel_module
 from collimation_tool.ui.mount_test_move_panel import (
     MeasurementFailureClass,
     MountTestMovePanel,
 )
+from collimation_tool.ui.mount_test_move_runner import MountTestMoveRunner
 
 _MARKER = 60000.0
 _EXPOSURE_S = 0.005
@@ -186,6 +188,7 @@ def _panel(
         wait_for_right_frame=rig.waiter("right"),
         settings=settings,
         camera_geometry=(lambda: geometry) if geometry is not None else None,
+        runner=MountTestMoveRunner(clock=FakeClock()),  # S3b: runner waits on fake time
     )
     panel._terrestrial_button.click()
     panel._connect_button.setChecked(True)

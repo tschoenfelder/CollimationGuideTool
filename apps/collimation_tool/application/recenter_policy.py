@@ -19,17 +19,21 @@ Tolerance/settle/divergence-guard fields port near-verbatim from
 docs/porting-notes.md): a rejected pulse now aborts immediately instead
 of being silently ignored — the original never checked `guide()`'s
 returned bool.
+
+Time (issue #53, S3b): the settle after each accepted pulse waits on the injected
+`Clock` (`clock=`, default the real `SYSTEM_CLOCK`); `cancel_check` is still consulted
+between iterations only, never inside a settle.
 """
 
 from __future__ import annotations
 
-import time
 from collections.abc import Callable
 from dataclasses import dataclass
 
 from astrotool_core.mount.axis_calibration import CalibrationMatrix
 from astrotool_core.mount.port import AxisDirection, MountAxis, MountPort
 from astrotool_core.target.roi_tracker import TrackingResult, TrackingState
+from astrotool_core.timing import SYSTEM_CLOCK, Clock
 
 _LOCKED_STATES = (TrackingState.LOCKED, TrackingState.REACQUIRED)
 
@@ -63,10 +67,13 @@ class CollimationRecenterPolicy:
         mount: MountPort,
         calibration: CalibrationMatrix,
         config: RecenterConfig | None = None,
+        *,
+        clock: Clock | None = None,
     ) -> None:
         self._mount = mount
         self._calibration = calibration
         self._config = config or RecenterConfig()
+        self._clock: Clock = clock if clock is not None else SYSTEM_CLOCK
 
     def center(
         self,
@@ -116,7 +123,7 @@ class CollimationRecenterPolicy:
                 return MountCorrectionResult(False, pulses, dist, "pulse_rejected")
 
             if cfg.settle_ms > 0:
-                time.sleep(cfg.settle_ms / 1000.0)
+                self._clock.sleep(cfg.settle_ms / 1000.0)
 
         final = measure()
         if final.state in _LOCKED_STATES and final.x is not None and final.y is not None:

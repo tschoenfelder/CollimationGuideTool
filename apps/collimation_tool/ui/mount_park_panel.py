@@ -16,12 +16,12 @@ from __future__ import annotations
 
 import logging
 import threading
-import time
 from collections.abc import Callable
 from typing import Any
 
 from astrotool_core.mount.operating_mode import OperatingMode, TrackingEnforcer
 from astrotool_core.mount.park_port import MountParkPort
+from astrotool_core.timing import SYSTEM_CLOCK, Clock
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
@@ -41,8 +41,12 @@ class MountParkPanel(QWidget):
         *,
         title: str = "Mount",
         tracking_enforcer: TrackingEnforcer | None = None,
+        clock: Clock | None = None,
     ) -> None:
         super().__init__()
+        #: Issue #53 (S3b): the time the confirmation-timeout safety net reads. The Qt
+        #: poll timer stays the tick source; tests inject a `FakeClock`.
+        self._clock: Clock = clock if clock is not None else SYSTEM_CLOCK
         self._mount = mount
         #: Issue #44: terrestrial mode => tracking OFF, enforced on connect
         #: and after unpark, and surfaced in the status line.
@@ -160,7 +164,7 @@ class MountParkPanel(QWidget):
         self._action_in_flight = True
         self._pending_action = action
         self._seen_busy_since_action = False
-        self._action_issued_at = time.monotonic()
+        self._action_issued_at = self._clock.monotonic()
         self._action_error = None
         self._update_buttons_enabled()
         run = self._mount.park if action == "park" else self._mount.unpark
@@ -248,7 +252,8 @@ class MountParkPanel(QWidget):
                     self._enforce_tracking("unpark")
             elif (
                 self._action_issued_at is not None
-                and time.monotonic() - self._action_issued_at > _TRANSITION_CONFIRMATION_TIMEOUT_S
+                and self._clock.monotonic() - self._action_issued_at
+                > _TRANSITION_CONFIRMATION_TIMEOUT_S
             ):
                 # Safety net — see _TRANSITION_CONFIRMATION_TIMEOUT_S's docstring.
                 self._action_in_flight = False
