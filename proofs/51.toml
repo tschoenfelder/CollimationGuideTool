@@ -11,7 +11,7 @@ motion-overlapping frames) are reproduced through six historical fixes, all six 
 both filter-wheel TestSetSlot wall-clock flakes are replaced by fake-time scenario tests. \
 Review fidelity corrections: tracking not confirmed in time ends OFF (0.4.1 emergency_stop) and is confirmed poll-exact (2nd seeing poll, pre-poll deadline check; boundary-tested), no \
 unpark tracking side effect (0.4.1 issues TRACK_OFF), real SDK flag/option values (the adapter's \
-wrong _FLAG_MONO is pinned by a strict xfail for S6.5a), connect failures count OnStepConnection.acquire()'s close() apart from 0.4.1's own transport self-close."""
+wrong _FLAG_MONO was pinned by a strict xfail and fixed in S6.5a, 4864cc8), connect failures count OnStepConnection.acquire()'s close() apart from 0.4.1's own transport self-close."""
 modules = [
     "packages/astrotool_core/testing/sim_onstep.py",
     "packages/astrotool_core/testing/sim_indi_filter_wheel.py",
@@ -45,7 +45,6 @@ gaps = [
     "Seams: IndiFilterWheelAdapter has no client injection (the private _client is swapped) and its 2 s refresh throttle reads time.monotonic(); TouptekCameraAdapter has no clock (its module-level `time` is replaced; a no-frame timeout would still wait real time and is untested); FocuserPanel/FilterWheelPanel confirmation timeouts read time.monotonic() (tests age the issued-at stamp).",
     "Mount Align workflow (test_mount_test_move_runner_simulated.py) is an AC gap pending S3b: MountTestMoveRunner sleeps/stamps on the real clock, so the test drains with a bounded real-time poll (5 ms, 120 s deadline, ~5.5 s per run).",
     "OnStep focuser simulator vs 0.4.1 IndiFocuser: no focuser_property_alert blocker after an Alert, revision/fresh-poll mechanics are not modeled (a move completes after travel time), reject_moves reports the stop as confirmed immediately.",
-    "touptek_adapter's fallback constants for OPTION_RGB/FLUSH/NOFRAME_TIMEOUT/AUTOEXPO_TRIGGER and _FLAG_MONO differ from the SDK (S6.5a); only _FLAG_MONO is used directly and is pinned by strict xfails.",
 ]
 
 [[regression_tests]]

@@ -11,10 +11,9 @@ adapter's real `connect()` -> `_open_device()` -> `_basic_configure()` ->
   `resources/touptek/toupcam.py` and exported both here and as attributes of
   the simulated module (the adapter looks option ids up by name there);
   `tests/core/camera/test_touptek_adapter_simulated.py` asserts every copied
-  value equals that file. NOTE: some of `touptek_adapter`'s own fallback
-  constants differ from the SDK (its `_FLAG_MONO` 0x40 is the SDK's
-  `TOUPCAM_FLAG_USB30`; MONO is 0x10) -- the simulator follows the SDK, never
-  the adapter (tracked as S6.5a);
+  value equals that file. The simulator follows the SDK, never the adapter
+  (the adapter's own fallback table is checked against the same file since
+  S6.5a);
 - a **capability matrix per representative camera model** (`CAMERA_MODELS`):
   SDK flag bits (mono, USB3, TEC, conversion gain, black level, RAW16), sensor
   size, raw FourCC + ADC bit depth, gain/exposure ranges, whether a

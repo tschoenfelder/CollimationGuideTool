@@ -1,0 +1,61 @@
+# Proof manifest -- schema in proofs/README.md. Run: python scripts/prove.py 51-touptek
+issues = [51]
+summary = """touptek_adapter's _FLAG_MONO was 0x40, which is the SDK's TOUPCAM_FLAG_USB30 (TOUPCAM_FLAG_MONO \
+is 0x10), so is_color_sensor() answered 'not USB3': a USB3 colour camera was treated as mono (no demosaic) and \
+a mono camera without the USB3 bit as colour. Four option fallbacks were wrong too (RGB, FLUSH, NOFRAME_TIMEOUT, \
+AUTOEXPO_TRIGGER; on the rig unused, the real SDK module supplies option ids by name). Fix: one table \
+_SDK_FALLBACKS keyed by SDK name; flags and options are looked up by name on the SDK module, a call site passes \
+only the name (it cannot pair a wrong fallback), and every table value is checked against the vendored SDK."""
+modules = ["packages/astrotool_core/camera/touptek_adapter.py"]
+fix_commits = ["4864cc8"]
+dataset_uuids = []
+focused_command = """pytest -q \
+tests/core/camera/test_touptek_adapter_simulated.py::TestMonoOrColourFollowsTheSdkFlag \
+tests/core/camera/test_touptek_adapter_simulated.py::TestAdapterConstantsComeFromTheVendoredSdk \
+tests/core/camera/test_touptek_adapter_no_hardware.py"""
+broader_tier = "component"
+field_only_assumptions = [
+    "GPCMOS02000KPA is KNOWN to have been on the colour path before the fix (green-tinted Guide view, diagnostics 3bc76175/99926503, b0c46fe), so its USB30 bit is clear; its MONO bit being clear is inferred (colour sensor).",
+    "G3M678M and ATR585M: their real flag words (USB30 and MONO bits) are not recorded anywhere, so how they were classified before the fix is unknown, and that they carry TOUPCAM_FLAG_MONO is inferred. Log device.model.flag once at connect on the Pi to confirm.",
+    "A mono camera whose USB30 bit is clear (previously treated as colour) now receives OPTION_RGB=4 (16-bit grey) at connect and is no longer demosaiced; effect on the real SDK in RAW mode is pending Pi verification.",
+]
+gaps = [
+    "No real-SDK flag dump for the rig cameras; the simulator's per-model USB bits come from the family names and are unverified.",
+    "A call site that names a valid but semantically wrong SDK constant (e.g. FLUSH where NOFRAME_TIMEOUT was meant) cannot be caught by a generic test; only the wrong-fallback pairing is now structurally impossible.",
+    "Separate, unfixed: _prepare_capture_mode puts TOUPCAM_OPTION_NOFRAME_TIMEOUT=1 (ms), below TOUPCAM_NOFRAME_TIMEOUT_MIN=500 (toupcam.py:109/682); rig effect unknown.",
+]
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_adapter_simulated.py::TestMonoOrColourFollowsTheSdkFlag::test_is_color_sensor_matches_the_model"
+failed_before_fix = true
+evidence = "Revert-proof worktree at 994bec8 with today's tests: tests/core/camera/test_touptek_adapter_simulated.py:170: SYNTH-COLOR-USB3 'assert False is not False', SYNTH-MONO-USB2 'assert True is not True' (also on HEAD with --runxfail at the old :85)"
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_adapter_simulated.py::TestAdapterConstantsComeFromTheVendoredSdk::test_every_fallback_equals_the_vendored_sdk_value"
+failed_before_fix = true
+evidence = "Fix values reverted in the table (MONO 0x40, RGB 0x16, FLUSH 0x36, NOFRAME_TIMEOUT 0x3F, AUTOEXPO_TRIGGER 0x5A): tests/core/camera/test_touptek_adapter_simulated.py:90: AssertionError: 5 mismatches, first 'TOUPCAM_FLAG_MONO: adapter 0x40, vendored SDK 16'"
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_adapter_simulated.py::TestAdapterConstantsComeFromTheVendoredSdk::test_mono_follows_the_sdk_modules_flag_not_the_fallback"
+failed_before_fix = true
+evidence = "Name lookup reverted (_has_flag reads _SDK_FALLBACKS[name] instead of the SDK module): tests/core/camera/test_touptek_adapter_simulated.py:147: AssertionError"
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_adapter_simulated.py::TestAdapterConstantsComeFromTheVendoredSdk::test_no_module_level_int_constant_outside_the_sdk_table"
+failed_before_fix = false
+reason_no_prefix_repro = "Structural guard added with the fix (the table did not exist before). Mutation-proven: adding '_TEC_ONOFF = 0x40' and using it fails with assert ['_TEC_ONOFF = 64'] == []."
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_adapter_simulated.py::TestAdapterConstantsComeFromTheVendoredSdk::test_every_call_site_names_a_known_constant_and_passes_no_fallback"
+failed_before_fix = false
+reason_no_prefix_repro = "Structural guard added with the fix. Mutation-proven: _put_option('TOUPCAM_OPTION_DUMP_CFG', 1) fails it; passing an extra fallback (_put_option(NAME, _SDK_FALLBACKS['TOUPCAM_OPTION_FLUSH'], 1)) fails with TypeError on every connect and in mypy."
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_adapter_no_hardware.py::test_is_color_sensor_reflects_model_flag_without_hardware"
+failed_before_fix = true
+evidence = "Revert-proof worktree at 994bec8 with today's tests: tests/core/camera/test_touptek_adapter_no_hardware.py:149: assert True is False (0x10 = TOUPCAM_FLAG_MONO not recognised as mono)"
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_adapter_no_hardware.py::test_is_color_sensor_uses_the_sdk_modules_mono_flag_by_name"
+failed_before_fix = true
+evidence = "Revert-proof worktree at 994bec8: tests/core/camera/test_touptek_adapter_no_hardware.py:159: assert True is False (the SDK module's TOUPCAM_FLAG_MONO ignored); also fails at :159 with only the name lookup reverted"
