@@ -235,6 +235,34 @@ not change · dependencies · non-goals · proof required.
 - **Non-goals:** the S6.5 capability table refactor.
 - **Proof:** xfails flip to passing tests; manifest.
 
+### S6.0b — guide-assisted reacquisition on the angular path
+
+- **Allowed files:** `apps/collimation_tool/application/recenter_policy.py`, its callers' wiring only where
+  the mount/calibration hand-off must change (`star_acquisition.py`), the ms↔arcsec factor's single public
+  owner (move the S6.0 "equivalent ms at `calibration_center_rate_x`·sidereal" conversion out of
+  `mount_test_move_panel.py` into one public function in the application/domain layer and make the panel
+  use it — that panel change is the only one allowed there), their tests.
+- **Behavior changed:** reacquisition moves the production OnStep mount via `move_angular` (sized from the
+  Guide calibration matrix through the single conversion owner, respecting the adapter's floor), never
+  `pulse_axis` on a mount without timed pulses; refusal messages surfaced, not dropped.
+- **Tests first:** fails on HEAD against the production adapter over the #51 OnStep simulator.
+- **Frozen:** timed-capable mounts keep their behaviour; S6.0/S6.0c tests green.
+- **Non-goals:** GuideTool pulse guiding (dormant, no mount wired — recorded dependency); Mount Align
+  extraction (S6.6).
+- **Proof:** failing-then-passing tests; manifest.
+
+### S6.5b — ToupTek no-frame timeout + flag log
+
+- **Allowed files:** `packages/astrotool_core/camera/touptek_adapter.py`, its tests,
+  `packages/astrotool_core/testing/sim_touptek.py` (only if the SDK's NOFRAME_TIMEOUT rule must be modelled).
+- **Behavior changed:** `_prepare_capture_mode` sets a valid NOFRAME_TIMEOUT per the vendored SDK
+  (0 = disable or ≥ `TOUPCAM_NOFRAME_TIMEOUT_MIN`) — choose from the SDK docs and the adapter's own
+  no-frame handling, justify; one INFO log line at connect with model name, raw `model.flag` (hex) and the
+  derived mono/colour/USB3/TEC classification.
+- **Tests first:** the simulator rejects out-of-range values like the SDK documents (cite) → failing test.
+- **Non-goals:** S6.5 capability-table refactor.
+- **Proof:** failing-then-passing test; manifest; field item: read the flag log on the next Pi run.
+
 ### S5 — #55 + #52 duplication inventory (analysis only)
 
 - **Allowed files:** new `docs/quality/duplication-audit.md` only.
