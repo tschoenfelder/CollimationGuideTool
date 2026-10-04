@@ -1,0 +1,120 @@
+# Proof manifest -- schema in proofs/README.md.
+# Run: python scripts/prove.py 39-astro-guide-pulse
+issues = [39]
+summary = """S6.0d (#39, user decision 2026-10-04): in Astronomical mode with tracking ON, guide-assisted \
+reacquisition could not move the mount at all -- OnStepAdapter 0.4.1's axis GOTO refuses a tracking mount \
+and nothing else was available, so every attempt ended 'mount_correction_rejected'. OnStepAdapter 0.5.0 \
+(unpublished; main stays pinned to 0.4.1) adds mount.guide_pulse(direction, ms): INDI timed guide, \
+tracking kept, 20..5000 ms in 500 ms chunks, safety preflight before each chunk and after the last, one at \
+a time, emergency_stop (ABORT + TRACK_OFF) on a failure after an issued chunk. Fix: OnStepMountPulseAdapter \
+detects it once per connection (facade guide_pulse + exported bounds) and reports a NEW capability \
+supports_guide_pulses_while_tracking (supports_pulse_guiding, Mount Align's timed/angular choice, is \
+unchanged), exposes guide_pulse(axis, direction, ms) under operation_lock with S6.0c's Stop latch, and \
+normalizes 0.5.0's result (refusal text, tracking_preserved, warnings, chunks) plus a fresh status read \
+after a sent-then-failed pulse AND after a Stop-latch refusal (tracking_off: 0.5.0's own tracking_preserved \
+predates its emergency stop); the cause is attributed to the user's Stop when it was one, and an unreadable \
+status or an unconfirmed 0.5.0 emergency stop reads 'tracking may be OFF -- check the mount'. The \
+reacquisition decides its motion up front from the global OperatingMode, a fresh tracking reading and the \
+capability: Terrestrial / tracking OFF keep the S6.0b angular path unchanged; Astronomical + tracking ON \
+uses guide pulses, or refuses unsent with 'astronomical reacquisition needs OnStepAdapter >= 0.5.0 (guide \
+pulses while tracking)'; an unreadable tracking state fails closed; the mode is re-read between pulses and \
+leaving Astronomical ends the run as 'operating_mode_changed'. The guide rate is not exposed, so px per \
+guide-ms is measured: a bounded per-direction calibration (probes 0.25/0.75/1/3 s, later probes capped from \
+the measured response so the excursion stays within one reacquisition step, until >= 4 px, <= 5 s per \
+direction, paired W/E N/S), measured on settled frames whose exposure started after the pulse \
+(acquire_settled_frames over the Guide panel's wait_for_frame_after), then the S6.0b 2-D solve (rotation / \
+mirroring / unequal and asymmetric scales) with guide pulses capped per axis. Tracking is never started or \
+stopped by the app; a pulse after which the mount no longer tracks is 'mount_tracking_stopped'; \
+OnStepAdapter warnings (meridian_flip_required) are shown even on success. The #51 simulator models \
+0.5.0's guide_pulse opt-in per scenario (default stays 0.4.1), checked field for field against the real \
+0.5.0 IndiGuideController (implementer 32/32 scenarios; reviewer 3150/3150 identical)."""
+modules = [
+    "packages/astrotool_core/mount/port.py",
+    "packages/astrotool_core/mount/__init__.py",
+    "packages/astrotool_core/onstep/mount_pulse_adapter.py",
+    "apps/collimation_tool/application/guide_pulse_reacquisition.py",
+    "apps/collimation_tool/application/recenter_policy.py",
+    "apps/collimation_tool/application/star_acquisition.py",
+    "apps/collimation_tool/application/fine_collimation_controller.py",
+    "apps/collimation_tool/ui/fine_collimation_panel.py",
+    "apps/collimation_tool/ui/main_window.py",
+]
+fix_commits = ["feb46e5"]
+dataset_uuids = []
+focused_command = "pytest -q tests/core/onstep/test_onstep_simulator.py::TestGuidePulseCapability tests/core/onstep/test_onstep_simulator.py::TestGuidePulseExecution tests/core/onstep/test_onstep_simulator.py::TestGuidePulseRefusals tests/core/onstep/test_onstep_simulator.py::TestGuidePulseFailureAfterAnIssuedChunk tests/core/onstep/test_onstep_simulator.py::TestStopDuringAGuidePulse tests/core/onstep/test_onstep_simulator.py::TestGuidePulseTrackingUnknown tests/collimation/application/test_guide_pulse_reacquisition.py tests/collimation/application/test_star_acquisition_guide_pulse_simulated.py tests/collimation/application/test_fine_collimation_controller.py::TestGuideAssistedReacquisition::test_a_successful_reacquisitions_note_reaches_the_outcome tests/collimation/ui/test_fine_collimation_panel.py::TestAC7_2InvalidResult::test_a_successful_run_still_shows_reacquisition_warnings tests/collimation/ui/test_collimation_main_window.py::TestArtificialStarTargetMode::test_reacquisition_gets_the_global_mode_a_tracking_reader_and_fresh_frames"
+broader_tier = "component"
+field_only_assumptions = [
+    "USER-SUPERVISED, before the pin bump: the first physical guide pulse on the rig with OnStepAdapter 0.5.0 (tracking ON, astronomical mode) -- that INDI TIMED_GUIDE_NS/WE moves the mount, completes per chunk, and leaves tracking ON; then one guide-pulse reacquisition with the star in Guide.",
+    "The real guide rate x guide-camera scale gives >= 4 px of star motion within 5 s of guiding per direction and within the excursion cap (0.35 x the guide tracker radius) (e.g. 0.5x sidereal at ~3.3\"/px: ~11 px at the equator, ~5.7 px at dec 60 deg on RA). Below that the calibration fails explicitly ('guide rate too low'); it never guesses.",
+    "Guide-pulse response is linear in duration and stable for the session (one calibration per FocusedStarAcquisition); a strongly asymmetric east/west response (OnStep guide rate near 1x sidereal stops RA on east pulses) is measured per direction, tested synthetically at 0.8x east vs 1.0x west.",
+    "Whether the real driver/firmware ends a running guide timer on ABORT is unknown: the simulator lets a chunk in flight finish; Stop is then effective at 0.5.0's next chunk preflight (tracking OFF), i.e. within <= 500 ms of guiding.",
+    "0.5.0's meridian supervisor (it may stop tracking at the hard stop on its own thread) is not modelled; its effect reaches this app as a refused next pulse plus tracking_off.",
+    "The Guide panel's wait_for_frame_after + acquire_settled_frames (6 s per stage, 750 ms settle) delivers a fresh frame in the field (Guide exposures up to ~2 s); interim until the shared fresh-frame service S6.7.",
+    "The OnStepMountParkAdapter's fresh tracking reading (decision_status, 0.5 s wait) reflects the mount's real tracking state when reacquisition starts.",
+]
+gaps = [
+    "fix_commits is a placeholder (5cf54e5) in this draft -- replace with the S6.0d commit.",
+    "0.5.0 is unpublished: the production adapter runs on 0.4.1 in CI (capability absent -> up-front refusal). The capable path is exercised only on the simulator with 0.5.0's exports installed into the 0.4.1 package by the test (install_onstep_adapter_050_exports); a throwaway check drove the production adapter through the REAL 0.5.0 IndiMount facade (unpacked wheel on sys.path) once.",
+    "The simulator's status-reader blocker derivation (indi_status.py:74-127) and meridian classification are modelled with the HA-based phase configured, not computed; the 0.5.0 contract checks compared the controller given the same snapshots, not the status reader.",
+    "The application tests and the guide_pulse_reacquisition unit tests fail before the original fix only at collection (new module / new keywords); their behaviour-level pre-fix state is S6.0b's characterized refusal (test_star_acquisition_simulated.py::TestGuideReacquisitionOnTheProductionAdapter::test_a_refusal_carries_the_adapters_reason).",
+    "A latched Stop's worker gets a bounded 6 s wait before the follow-up tracking read; still running then reads as 'tracking may be OFF'.",
+    "The mode re-read stops between pulses, not inside a running 0.5.0 pulse (<= 5 s of guiding at most).",
+    "Recorded by the coordinator, not done here: calibration drift/backlash robustness (A3), the permissive parallel-response check (A4), per-run recalibration cost (A5), the #44 evidence trail for the guide path (A6).",
+    "Without a fresh-frame waiter wired (other callers), the guide-pulse path measures the latest frame after the policy's settle, like S6.0b (S6.7).",
+    "proofs/39-reacquisition-angular.toml's field-only assumption 'in astronomical mode reacquisition is refused with that reason shown' is superseded by this change (coordinator to update).",
+]
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_simulator.py::TestGuidePulseCapability"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-04, separate worktree wt60d at HEAD de25dfc with only the new port types and the simulator copied in (production adapter at HEAD): tests/core/onstep/test_onstep_simulator.py:593: assert False is True (supports_guide_pulses_while_tracking never reported); the other cases fail at tests/core/onstep/test_onstep_simulator.py:557: AttributeError: 'OnStepMountPulseAdapter' object has no attribute 'guide_pulse'"
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_simulator.py::TestGuidePulseExecution"
+failed_before_fix = true
+evidence = "Same worktree: tests/core/onstep/test_onstep_simulator.py:557 and tests/core/onstep/test_onstep_simulator.py:650: AttributeError: 'OnStepMountPulseAdapter' object has no attribute 'guide_pulse'"
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_simulator.py::TestGuidePulseRefusals"
+failed_before_fix = true
+evidence = "Same worktree: every refusal class (12) fails at tests/core/onstep/test_onstep_simulator.py:557: AttributeError: 'OnStepMountPulseAdapter' object has no attribute 'guide_pulse'"
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_simulator.py::TestGuidePulseFailureAfterAnIssuedChunk"
+failed_before_fix = true
+evidence = "Same worktree: tests/core/onstep/test_onstep_simulator.py:557: AttributeError: 'OnStepMountPulseAdapter' object has no attribute 'guide_pulse'"
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_simulator.py::TestStopDuringAGuidePulse"
+failed_before_fix = true
+evidence = "Same worktree: tests/core/onstep/test_onstep_simulator.py:557: AttributeError: 'OnStepMountPulseAdapter' object has no attribute 'guide_pulse'. Review fixes, run before the change: tests/core/onstep/test_onstep_simulator.py:929: assert False is True (a Stop-latch refusal never read tracking, fix 1); tests/core/onstep/test_onstep_simulator.py:893: assert 'when a sent... pulse fails' not in 'stopped by ...pulse fails)' (mis-attributed cause, fix 2)"
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_simulator.py::TestGuidePulseTrackingUnknown"
+failed_before_fix = true
+evidence = "Review fix 3, run before the change: tests/core/onstep/test_onstep_simulator.py:954: assert False is True (unreadable status not treated as possibly stopped); the unconfirmed-emergency-stop case failed the same way at its tracking_off assertion (then line 972, now tests/core/onstep/test_onstep_simulator.py:974)"
+
+[[regression_tests]]
+node = "tests/collimation/application/test_guide_pulse_reacquisition.py"
+failed_before_fix = true
+evidence = "Same worktree: collection error tests/collimation/application/test_guide_pulse_reacquisition.py:22: ModuleNotFoundError: No module named 'collimation_tool.application.guide_pulse_reacquisition' (the decision/calibration did not exist). Review fix 4 (A1), run before the change: tests/collimation/application/test_guide_pulse_reacquisition.py:211: assert [1000, 2000, ...] == [250, 750, 1000, 3000, ...] and TypeError: calibrate_guide_pulses() got an unexpected keyword argument 'max_displacement_px' (TestCalibrationProbesStayInsideTheTracker)"
+
+[[regression_tests]]
+node = "tests/collimation/application/test_star_acquisition_guide_pulse_simulated.py"
+failed_before_fix = true
+evidence = "Same worktree: collection error tests/collimation/application/test_star_acquisition_guide_pulse_simulated.py:50: ModuleNotFoundError: No module named 'collimation_tool.application.guide_pulse_reacquisition'; behaviour before: the angular path's AXIS_STATE_REFUSED (S6.0b characterization). Review fixes 1/5 (TestReviewFixes), run before the change: collection error tests/collimation/application/test_star_acquisition_guide_pulse_simulated.py:55: ImportError: cannot import name 'OPERATING_MODE_CHANGED'"
+
+[[regression_tests]]
+node = "tests/collimation/application/test_fine_collimation_controller.py::TestGuideAssistedReacquisition::test_a_successful_reacquisitions_note_reaches_the_outcome"
+failed_before_fix = true
+evidence = "Same worktree: tests/collimation/application/test_fine_collimation_controller.py:188: AssertionError: assert None == 'OnStepAdapter warnings: meridian_flip_required'"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_fine_collimation_panel.py::TestAC7_2InvalidResult::test_a_successful_run_still_shows_reacquisition_warnings"
+failed_before_fix = true
+evidence = "Same worktree: tests/collimation/ui/test_fine_collimation_panel.py:203: AssertionError: assert 'meridian_flip_required' in 'FINE COLLIMATION: low confidence (0%) -- not actionable'"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_collimation_main_window.py::TestArtificialStarTargetMode::test_reacquisition_gets_the_global_mode_a_tracking_reader_and_fresh_frames"
+failed_before_fix = false
+reason_no_prefix_repro = "Wiring test for new keywords (operating_mode, current_operating_mode, tracking_state, wait_guide_frame_after): before the fix main_window passed none of them and returned 'no_guide_calibration' before calling the reacquisition when Mount Align had no matrix -- it would fail at the KeyError on calls[0]['operating_mode'] or at len(calls) == 0; not run in a worktree (S6.1's in-progress work changes the shared conftest's MainWindow patching)."

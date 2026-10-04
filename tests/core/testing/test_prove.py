@@ -430,7 +430,9 @@ class TestSelectionOfTheRealManifests:
         assert set(self._ids("49")) == listing_49
         assert self._ids("diag-7b21bdf1") == ["diag-7b21bdf1-onstep-serialization"]
         assert self._ids("7b21bdf1") == ["diag-7b21bdf1-onstep-serialization"]
-        assert self._ids("47") == ["47-efw-device-name", "diag-73c7d59d-filter-stuck-busy"]
+        listing_47 = {m.proof_id for m in self._REAL if 47 in m.issues}
+        assert {"47-efw-device-name", "diag-73c7d59d-filter-stuck-busy"} <= listing_47
+        assert set(self._ids("47")) == listing_47
 
     def test_the_bare_diag_prefix_is_ambiguous(self) -> None:
         with pytest.raises(LookupError, match="ambiguous"):

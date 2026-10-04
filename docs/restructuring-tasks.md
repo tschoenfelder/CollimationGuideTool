@@ -51,8 +51,8 @@ Status: `todo` · `in-progress` · `done` · `field-only` (only real hardware ca
 | S6.0 | #46, #31, #55 (P01/P02) | **CRITICAL, promoted:** Mount Align bootstrap/nudge/screen moves go through `pulse_axis`, which production `OnStepMountPulseAdapter` always refuses; no rate is ever installed, so angular moves never start on the rig. Size the first move angularly from the optics seeds instead of a timed bootstrap; failing regression against the real adapter + fake OnStep connection first | issue agent | 2 rounds: APPROVE-WITH-FIXES → APPROVE | done | 787ceed | `python scripts/prove.py 46-mount-align-angular-path` |
 | S6.0b | #39, P01 | Guide-assisted reacquisition (`recenter_policy.py:113`) calls `pulse_axis` on the production OnStep adapter → always `pulse_rejected`, adapter message dropped; move to the angular path (after S6.0). **Must use the same ms↔arcsec factor S6.0 stores the matrix in (equivalent ms at `calibration_center_rate_x`·sidereal) — that factor needs one public owner first** | issue agent | 4 rounds: APPROVE-WITH-FIXES → REJECT (unequal scales) → APPROVE-WITH-FIXES (tracker margin) → fixed | done | f24a523 | `python scripts/prove.py 39-reacquisition-angular` |
 | S6.0c | #49, AGENTS manual-move rule | `OnStepMountPulseAdapter.move_angular` holds `connection.operation_lock` for the whole blocking GOTO (up to 30 s); `abort()` takes the same lock on the GUI thread before `stop()`, and park-panel status polls also take it → Stop would freeze the UI and not cancel; `_cancel` never checked. Characterize with a failing component test, then decide stop/lock semantics (verify OnStepAdapter's real abort semantics — no assumptions) | issue agent | 3 rounds: APPROVE-WITH-FIXES (C1/C2 #44 regressions, C3) → APPROVE-WITH-FIXES (R1) → fixed | done | 52fd72f | `python scripts/prove.py 49-stop-during-angular-goto` |
-| S6.0d | #39, user decision | Astronomical-mode reacquisition via OnStepAdapter 0.5.0 `guide_pulse` (tracking preserved): capability-detected (main stays pinned to published 0.4.1 → clear 'needs OnStepAdapter ≥ 0.5.0' message), separate guide-pulse calibration (guide rate is not exposed), simulator modelled on the 0.5.0 source, distinct capability so Mount Align's timed/angular choice is unaffected; pin bump only after 0.5.0 is published and the supervised physical acceptance passed | | | todo | | |
-| S6.1 | #55 | Single-source device defaults + config-source contract test | | | todo | | |
+| S6.0d | #39, user decision | Astronomical-mode reacquisition via OnStepAdapter 0.5.0 `guide_pulse` (tracking preserved): capability-detected (main stays pinned to published 0.4.1 → clear 'needs OnStepAdapter ≥ 0.5.0' message), separate guide-pulse calibration (guide rate is not exposed), simulator modelled on the 0.5.0 source, distinct capability so Mount Align's timed/angular choice is unaffected; pin bump only after 0.5.0 is published and the supervised physical acceptance passed | issue agent | APPROVE-WITH-FIXES (Stop/tracking-off reporting, probes, mode re-read) → fixed | done | feb46e5 | `python scripts/prove.py 39-astro-guide-pulse` |
+| S6.1 | #55 | Single-source device defaults + config-source contract test | issue agent | APPROVE-WITH-FIXES (diagnostics call-time, scanner blind spots) → fixed | done | 37db9f0, 61d1e27 | `python scripts/prove.py 55-single-source-defaults` |
 | S6.2 | #52 | `DeviceConnectionService` (Focuser → MountPark → MountTestMove) | | | todo | | |
 | S6.3 | #52 | `OperationLifecycle` + bounded Busy timeout (FilterWheel, Focuser) | | | todo | | |
 | S6.4 | #48 | Remove Mount Align **and autofocus** local Star/Terrestrial toggles; derive from global OperatingMode (M04 decided). Also (from S6.0c review P-a): switching to Terrestrial while the mount is busy stores the mode but the gate stays BLOCKED until the next measurement gate — add a one-shot re-enforce when the busy period ends | | | todo | | |
@@ -326,6 +326,8 @@ not change · dependencies · non-goals · proof required.
 
 | Date | Task | Commit | What was proven |
 |------|------|--------|-----------------|
+| 2026-10-05 | S6.1 | 37db9f0, 61d1e27 | One owner for EFW name, INDI host/port and config/diagnostics paths; 2 live contradictions fixed (fake 'EFW 1', 'Filter Wheel' fallbacks); filter-wheel host → 127.0.0.1; contract scan over packages/apps/scripts; conftest isolates every reader. 61d1e27 = my hunk-split import-order slip, fixed |
+| 2026-10-05 | S6.0d | feb46e5 | Astronomical reacquisition via OnStepAdapter 0.5.0 guide_pulse, capability-detected (main on 0.4.1 → clear refusal); bounded guide-pulse calibration; tracking never touched; simulator ≡ real 0.5.0 controller (3150/3150). Field: user-supervised first physical guide pulse before the pin bump |
 | 2026-10-04 | S6.0b | f24a523 | Reacquisition moves the production mount on the angular path: 2-D solve (rotation/mirroring/unequal scales), per-axis cap 0.35×tracker radius, shared move planner, single ms↔arcsec owner with configured center rate, refusal reason shown, Stop latch re-armed, within-smallest-move success. Seeded sweeps + real RoiTracker; fail pre-fix / on intermediate states. Rollout blocker: fresh frame after each move (S6.7). Astronomical mode → S6.0d |
 | 2026-10-04 | S6.5b | 973d0ab | NOFRAME_TIMEOUT 1 (outside vendored SDK range, inherited from INDI) → 0 (disabled; every frame wait already bounded); connect log of model.flag + derived mono/USB3-capable/USB3-over-USB2/TEC. Field: read the flag log; watch whether the open GPCMOS calibration timeout changes |
 | 2026-10-03 | S3b | c55b9c6 | Runner, recenter settle and panel confirmation timeouts on the injected clock (neutral, characterization-proven); 37 fake-time tests; guard catches deadline arithmetic and timed waits in policy layers, allowlists pinned. Wall time: sizing 55.9→7.1 s, real-adapter Mount Align 95.3→11.8 s, angular 26.5→4.6 s, frame_validity 57→33 s, runner_simulated 6.7→2.4 s; failure_recovery (96 s) and TestMountTestMovePanel (8.6 min) unchanged — panel clock is S6.6 |
@@ -428,5 +430,19 @@ not change · dependencies · non-goals · proof required.
   message; (b) request an OnStepAdapter capability for guide-rate offsets while tracking; never stop
   tracking implicitly. Also: the policy checks no mode/tracking precondition itself (relies on the
   adapter refusing) → S6.4.
+- **S6.0d review leftovers (2026-10-05) → S6.7 / field.** Guide-pulse calibration does not subtract
+  tracking drift or Dec backlash (A3); the RA/Dec parallel check is permissive (`_MIN_DETERMINANT_RATIO
+  1e-3`, A4); each reacquisition run recalibrates (~20 s guiding + up to 16 settled frames, A5); the #44
+  evidence trail doesn't record the guide-path decision or an emergency-stop TRACK_OFF (A6). Upstream
+  OnStepAdapter note: after an emergency stop, `tracking_preserved` reflects the pre-stop snapshot
+  (`indi_guiding.py:220-222`) — report to the OnStepAdapter maintainer before 0.5.0 is released.
+- **S6.1 follow-ups (2026-10-05).** (a) D09: `testing/fake_onstep_indi_client.py` adopts
+  `config.device_defaults` (INDI_HOST/INDI_PORT) once S6.0d has landed; then delete its two pinned
+  exceptions in `tests/contracts/test_config_source_contract.py`. (b) D04 cooling default (−10 °C;
+  `ui/camera_panel.py`, `camera/touptek_adapter.py`, `config/camera_settings.py` twice) and D08 25 %
+  calibration target (`mount/movement_sizing.py`) were tagged S6.1 in the audit but are outside S6.1's
+  contract → fold into S6.5 (camera) / S6.6 (Mount Align). (c) Owner deviation from the audit:
+  `config/device_defaults.py` + `config/paths.py` instead of `filter_wheel/config.py` / `indi_endpoint.py`
+  (so low-level INDI code needn't import filter_wheel). (d) Field: EFW connects with the 127.0.0.1 default.
 - **S5 live contradictions (9)** are listed in `docs/quality/duplication-audit.md`; each is owned by an
   S6 step and gets a failing regression before its fix.

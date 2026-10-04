@@ -1,0 +1,121 @@
+# Proof manifest -- schema in proofs/README.md. Run: python scripts/prove.py 55-single-source-defaults
+issues = [55, 47]
+summary = """S6.1 (#55 D01-D03): the EFW device name, the INDI endpoint and the config file \
+locations each had several authoritative copies, two of them live contradictions -- the \
+FakeIndiServer simulated the known-wrong 'ToupTek EFW 1' and IndiFilterWheelAdapter defaulted \
+to a third name 'Filter Wheel'; the filter wheel dialled 'localhost' while OnStep dialled \
+'127.0.0.1' (same indiserver; 'localhost' costs ~2 s per connect on Windows against an \
+IPv4-only listener). One owner each now: astrotool_core.config.device_defaults \
+(EFW_DEVICE_NAME, INDI_HOST=127.0.0.1, INDI_PORT=7624) and astrotool_core.config.paths (both \
+config files and the diagnostics dir). Every reader resolves its default location through \
+own_config_path()/smarttscope_config_path()/diagnostics_dir() at call time; the old per-module \
+DEFAULT_* names stay as compatibility aliases bound to fixed real locations \
+(paths.DEFAULT_*), so they never capture a redirected value. Deviation from the audit's \
+suggested owners (filter_wheel/config.py for the EFW name, a new indi_endpoint.py): one \
+stdlib-only leaf in astrotool_core.config is importable by indi/client.py, the adapter and \
+the simulators without pulling in filter_wheel; filter_wheel/config.py keeps owning which \
+config source wins. A static contract test (packages/, apps/, scripts/; substring matching \
+incl. host:port strings, URLs, f-string parts, port as int/float/string) rejects any \
+re-stated literal; tests/conftest.py's isolation collapsed to one patch per owner location \
+(both config files and the diagnostics dir)."""
+modules = [
+    "packages/astrotool_core/config/device_defaults.py",
+    "packages/astrotool_core/config/paths.py",
+    "packages/astrotool_core/config/__init__.py",
+    "packages/astrotool_core/config/camera_settings.py",
+    "packages/astrotool_core/config/mount_alignment_settings.py",
+    "packages/astrotool_core/filter_wheel/config.py",
+    "packages/astrotool_core/filter_wheel/registry.py",
+    "packages/astrotool_core/filter_wheel/indi_filter_wheel_adapter.py",
+    "packages/astrotool_core/indi/client.py",
+    "packages/astrotool_core/onstep/settings.py",
+    "packages/astrotool_core/optics/smarttscope_config.py",
+    "packages/astrotool_core/diagnostics/service.py",
+    "packages/astrotool_core/diagnostics/remote.py",
+    "packages/astrotool_core/testing/fake_indi_server.py",
+    "packages/astrotool_core/testing/sim_indi_filter_wheel.py",
+    "apps/collimation_tool/ui/main_window.py",
+]
+fix_commits = ["37db9f0", "61d1e27"]
+dataset_uuids = []
+focused_command = """pytest -q \
+tests/core/filter_wheel/test_indi_filter_wheel_adapter.py::TestDefaultsNameTheRigsDevice \
+tests/core/config/test_config_sources.py \
+tests/contracts/test_config_source_contract.py \
+tests/collimation/ui/test_main_window_config_source.py \
+tests/core/indi/test_indi_client.py"""
+broader_tier = "contract"
+field_only_assumptions = [
+    "The filter wheel now dials 127.0.0.1 instead of 'localhost' when no [filter_wheel] host is configured. indiserver listens on IPv4 INADDR_ANY, so on rasppi3 'localhost' already ended at 127.0.0.1 after a refused ::1 attempt; the next Pi run should still show the EFW connecting (unverified on the rig after this change).",
+]
+gaps = [
+    "Hardware-tier tests (test_real_*) keep reading the real ~/.CollimationGuideTool and ~/.SmartTScope files on purpose (conftest skips the redirect for them); they are not exercised by this proof.",
+    "D09 (audit: superficial): testing/fake_onstep_indi_client.py still states '127.0.0.1'/7624 in its IndiRuntimeConfig double -- pinned as the only exceptions in test_config_source_contract.py (tracker: 'S6.1 follow-up: fake_onstep_indi_client.py adopts device_defaults after S6.0d lands'; the stale-exception test fails once they go).",
+    "Docstrings and comments are not scanned (prose, not knowledge). The scanner matches literal text: a value assembled from individually innocuous pieces (e.g. '76' + '24') is not caught.",
+    "scripts/regression_dataset.py (its diagnostics path now comes from the owner) is a dev CLI outside the manifest's modules schema; its change is covered by the contract scan only.",
+]
+
+[[regression_tests]]
+node = "tests/core/filter_wheel/test_indi_filter_wheel_adapter.py::TestDefaultsNameTheRigsDevice::test_a_default_simulator_is_the_device_the_built_in_wiring_names"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-05 (repeated after review fixes), separate worktree at de25dfc with only the two owner modules and the S6.1 tests copied in: packages/astrotool_core/filter_wheel/indi_filter_wheel_adapter.py:97: ConnectionError: IndiFilterWheelAdapter: 'ToupTek EFW 2' did not confirm CONNECTION within 0.5s (the default FakeIndiServer simulated 'ToupTek EFW 1')"
+
+[[regression_tests]]
+node = "tests/core/filter_wheel/test_indi_filter_wheel_adapter.py::TestDefaultsNameTheRigsDevice::test_the_adapters_default_device_is_the_built_in_one"
+failed_before_fix = true
+evidence = "Same revert-proof: packages/astrotool_core/filter_wheel/indi_filter_wheel_adapter.py:97: ConnectionError: IndiFilterWheelAdapter: 'Filter Wheel' did not confirm CONNECTION within 0.5s"
+
+[[regression_tests]]
+node = "tests/core/config/test_config_sources.py::TestOneDefaultIndiEndpoint::test_filter_wheel_and_onstep_resolve_the_same_indiserver"
+failed_before_fix = true
+evidence = "Same revert-proof: tests/core/config/test_config_sources.py:47: AssertionError: assert ('localhost', 7624) == ('127.0.0.1', 7624)"
+
+[[regression_tests]]
+node = "tests/core/config/test_config_sources.py::TestOneDefaultIndiEndpoint::test_every_signature_default_names_that_same_endpoint"
+failed_before_fix = true
+evidence = "Same revert-proof: tests/core/config/test_config_sources.py:54: AssertionError: assert ('localhost', 7624) == ('127.0.0.1', 7624)"
+
+[[regression_tests]]
+node = "tests/core/config/test_config_sources.py::TestOneOwnerRedirectsEveryConsumer"
+failed_before_fix = true
+evidence = "Same revert-proof, all 5 tests fail: tests/core/config/test_config_sources.py:107: KeyError: 'Main'; :116 KeyError: 'Main'; :120 assert ('127.0.0.1', 7624, 50.336) == ('10.1.2.3', 7700, 47.5); :123 assert None == 0.5; :130 assert ('ToupTek EFW...alhost', 7624) == ('Alternate E....1.2.3', 7700)"
+
+[[regression_tests]]
+node = "tests/core/config/test_config_sources.py::TestDiagnosticsDirectoryFollowsTheOwner::test_service_find_and_pull_use_the_injected_directory"
+failed_before_fix = true
+evidence = "Same revert-proof: tests/core/config/test_config_sources.py:156: AssertionError: assert WindowsPath('C:/Users/tscho/.CollimationGuideTool/diagnostics') == ...alt-diagnostics (a default DiagnosticService ignored the owner; in tests it could write to the real home)"
+
+[[regression_tests]]
+node = "tests/core/config/test_config_sources.py::TestBuiltInDefaultsAreTheOwnersValues::test_device_and_endpoint"
+failed_before_fix = true
+evidence = "Same revert-proof: tests/core/config/test_config_sources.py:175: AssertionError: assert 'ToupTek EFW 2' == 'Filter Wheel'"
+
+[[regression_tests]]
+node = "tests/contracts/test_config_source_contract.py::test_no_owned_literal_is_restated_outside_its_owner"
+failed_before_fix = true
+evidence = "Same revert-proof: tests/contracts/test_config_source_contract.py:131: AssertionError: 31 re-stated literals, first packages/astrotool_core/config/camera_settings.py:34: 'config.toml' (incl. filter_wheel/registry.py:90 and testing/fake_indi_server.py:33 'EFW <n>', four 7624s, 'localhost' x2, scripts/regression_dataset.py:82 '.CollimationGuideTool')"
+
+[[regression_tests]]
+node = "tests/contracts/test_config_source_contract.py::test_the_matcher"
+failed_before_fix = false
+reason_no_prefix_repro = "Scanner self-test (review blind spots: host:port, URLs, port as string/float, bare 'EFW 2', the f-string prefix 'ToupTek EFW '; plus near-miss non-matches); independent of the production fix."
+
+[[regression_tests]]
+node = "tests/contracts/test_config_source_contract.py::test_the_scanner_catches_fstrings_and_concatenation"
+failed_before_fix = false
+reason_no_prefix_repro = "Scanner self-test on synthetic source; independent of the production fix."
+
+[[regression_tests]]
+node = "tests/contracts/test_config_source_contract.py::test_the_scanner_catches_each_kind_of_restatement"
+failed_before_fix = false
+reason_no_prefix_repro = "Scanner self-test on synthetic source (docstrings skipped, every literal kind caught); independent of the production fix."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_main_window_config_source.py::TestMainWindowReadsTheOneOwner"
+failed_before_fix = true
+evidence = "Same revert-proof: tests/collimation/ui/test_main_window_config_source.py:56: assert WindowsPath('C:/Users/tscho/.CollimationGuideTool/config.toml') == ...alt-own.toml; :67 assert 'ToupTek EFW 2' == 'Alternate EFW'"
+
+[[regression_tests]]
+node = "tests/core/indi/test_indi_client.py::TestConnectSwitch"
+failed_before_fix = true
+evidence = "Same revert-proof (test now names the owner's device; the HEAD simulator still simulated 'EFW 1'): tests/core/indi/test_indi_client.py:53: assert None is not None; :59 assert None is not None"

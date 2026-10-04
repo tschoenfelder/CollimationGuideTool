@@ -21,7 +21,7 @@ field_only_assumptions = [
 ]
 gaps = [
     "These tests existed before c7c4bb8 and encoded the SAME wrong value ('EFW 1'), so before the fix they passed: a test can only pin a hardware name, not discover it. The real proof was the live indi_getprop check.",
-    "registry.py's fallback literal (`wiring.device_name or \"ToupTek EFW 2\"`) is unreachable in practice and has no test of its own -- a second copy of the default (duplicated knowledge, #55).",
+    "Resolved by S6.1 (37db9f0, proofs/55-single-source-defaults.toml): registry.py's second fallback literal now reads config.device_defaults.EFW_DEVICE_NAME, guarded by the config-source contract test.",
 ]
 
 [[regression_tests]]
