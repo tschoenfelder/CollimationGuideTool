@@ -7,6 +7,8 @@ only the vendor module is simulated."""
 from __future__ import annotations
 
 import ast
+import dataclasses
+import logging
 import re
 from pathlib import Path
 
@@ -22,7 +24,12 @@ from astrotool_core.testing import (
     SimulatedToupcamSdk,
     install_simulated_toupcam,
 )
-from astrotool_core.testing.sim_touptek import SDK_CONSTANTS, Scene
+from astrotool_core.testing.sim_touptek import (
+    FLAG_USB30_OVER_USB20,
+    SDK_CONSTANTS,
+    HRESULTException,
+    Scene,
+)
 from astrotool_core.timing import FakeClock
 
 _VENDORED_SDK = Path(__file__).resolve().parents[3] / "resources" / "touptek" / "toupcam.py"
@@ -307,6 +314,113 @@ class TestExposureAndFrames:
         cam.trigger_outcome = outcome
         with pytest.raises(RuntimeError, match=message):
             adapter.capture(0.01)
+
+
+class TestNoFrameTimeoutIsAValidSdkValue:
+    """S6.5b: TOUPCAM_OPTION_NOFRAME_TIMEOUT is "0 => disable, positive value
+    (>= NOFRAME_TIMEOUT_MIN) => timeout milliseconds", MIN = 500 ms
+    (resources/touptek/toupcam.py:109, :682). The adapter used to put 1 -- a
+    leftover of the INDI driver's setting, ported via smart_telescope -- which
+    the simulator refuses (E_INVALIDARG, an assumption: the SDK docs name no
+    error code)."""
+
+    def test_the_simulator_enforces_the_documented_range(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _, cam, _ = _connected(monkeypatch, "G3M678M")
+        option = SDK_CONSTANTS["TOUPCAM_OPTION_NOFRAME_TIMEOUT"]
+        minimum = SDK_CONSTANTS["TOUPCAM_NOFRAME_TIMEOUT_MIN"]
+        cam.invalid_option_puts.clear()
+        for valid in (0, minimum, 30_000):
+            cam.put_Option(option, valid)
+            assert cam.options[option] == valid
+        for invalid in (1, minimum - 1, -1):
+            with pytest.raises(HRESULTException) as raised:
+                cam.put_Option(option, invalid)
+            assert raised.value.hr & 0xFFFFFFFF == SDK_CONSTANTS["E_INVALIDARG"]
+        assert cam.options[option] == 30_000  # a refused put changes nothing
+        assert [value for _, value in cam.invalid_option_puts] == [1, minimum - 1, -1]
+
+    @pytest.mark.parametrize("model", sorted(CAMERA_MODELS))
+    def test_connect_puts_only_valid_option_values_and_logs_no_sdk_failure(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, model: str
+    ) -> None:
+        caplog.set_level(logging.WARNING, logger=touptek_adapter.__name__)
+        _, cam, _ = _connected(monkeypatch, model)
+        assert cam.invalid_option_puts == []
+        assert [r.getMessage() for r in caplog.records if r.levelno >= logging.WARNING] == []
+
+    def test_the_sdks_no_frame_timeout_is_disabled(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Disabled, not a fixed period: the adapter's own deadline
+        (exposure + timeout_extra_s, `_capture_raw`) bounds every wait and
+        scales with the exposure; the SDK's NOFRAMETIMEOUT event is not
+        handled by `_camera_event`."""
+        _, cam, _ = _connected(monkeypatch, "ATR585M")
+        assert cam.options[SDK_CONSTANTS["TOUPCAM_OPTION_NOFRAME_TIMEOUT"]] == 0
+
+    def test_a_missing_frame_is_still_bounded_by_the_adapters_own_deadline(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        adapter, cam, _ = _connected(monkeypatch, "G3M678M")
+        adapter._timeout_extra_s = 0.05  # keep the real-time frame wait short
+        cam.trigger_outcome = "none"
+        with pytest.raises(TimeoutError, match="no frame received"):
+            adapter.capture(0.01)
+
+
+class TestConnectLogsTheModelFlagWord:
+    """S6.5b: one INFO line at connect with the raw `model.flag`, so the rig
+    cameras' real MONO/USB30/TEC bits (inferred in S6.5a) become known."""
+
+    @pytest.mark.parametrize(
+        ("model", "classification"),
+        [
+            ("G3M678M", "mono, USB3-capable=yes, USB3-over-USB2-link=no, TEC=no"),
+            ("GPCMOS02000KPA", "colour, USB3-capable=no, USB3-over-USB2-link=no, TEC=no"),
+            ("ATR585M", "mono, USB3-capable=yes, USB3-over-USB2-link=no, TEC=yes"),
+            ("SYNTH-COLOR-USB3", "colour, USB3-capable=yes, USB3-over-USB2-link=no, TEC=no"),
+            ("SYNTH-MONO-USB2", "mono, USB3-capable=no, USB3-over-USB2-link=no, TEC=no"),
+        ],
+    )
+    def test_connect_logs_model_raw_flag_and_classification(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        caplog: pytest.LogCaptureFixture,
+        model: str,
+        classification: str,
+    ) -> None:
+        caplog.set_level(logging.INFO, logger=touptek_adapter.__name__)
+        _connected(monkeypatch, model)
+        lines = [
+            r.getMessage()
+            for r in caplog.records
+            if r.levelno == logging.INFO and "model.flag" in r.getMessage()
+        ]
+        flag = CAMERA_MODELS[model].flag
+        assert lines == [
+            f"TouptekCameraAdapter({model}): opened model={model} "
+            f"model.flag=0x{flag:X} -> {classification}"
+        ]
+
+    def test_a_usb3_camera_on_a_usb2_link_is_reported(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """TOUPCAM_FLAG_USB30 means USB3-capable; the link is USB30_OVER_USB20."""
+        caplog.set_level(logging.INFO, logger=touptek_adapter.__name__)
+        base = CAMERA_MODELS["G3M678M"]
+        model = dataclasses.replace(
+            base, name="SYNTH-USB3-ON-USB2", flag=base.flag | FLAG_USB30_OVER_USB20
+        )
+        sdk = SimulatedToupcamSdk(clock=FakeClock())
+        device = sdk.add_camera(model)
+        install_simulated_toupcam(monkeypatch, sdk)
+        TouptekCameraAdapter(camera_id=device.id).connect()
+        lines = [r.getMessage() for r in caplog.records if "model.flag" in r.getMessage()]
+        assert len(lines) == 1
+        assert lines[0].endswith(
+            f"model.flag=0x{model.flag:X} -> mono, "
+            "USB3-capable=yes, USB3-over-USB2-link=yes, TEC=no"
+        )
 
 
 class TestIdentity:

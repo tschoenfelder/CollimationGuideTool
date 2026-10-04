@@ -32,7 +32,20 @@ adapter's real `connect()` -> `_open_device()` -> `_basic_configure()` ->
   costs no real time), renders the frame from a `scene(start, end)` callback
   and fires the SDK event callback; `exposures` records each exposure's
   start/end on that clock;
-- trigger failure / disconnect / error events.
+- trigger failure / disconnect / error events;
+- the documented **TOUPCAM_OPTION_NOFRAME_TIMEOUT range** (S6.5b): "0 =>
+  disable, positive value (>= NOFRAME_TIMEOUT_MIN) => timeout milliseconds"
+  with `TOUPCAM_NOFRAME_TIMEOUT_MIN = 500`, as documented by the vendored
+  SDK 59.29030.20250722 (toupcam.py:109, :682; same text in the upstream
+  header 60.32226.20260808). Older ToupTek headers may have documented this
+  option as "1 = enable, 0 = disable" (unverified recollection), which would
+  explain the 1 the INDI driver and this adapter used to put. A value outside
+  the documented range is recorded in `invalid_option_puts`.
+  **Modelling assumptions, none of them documented by the SDK:** an
+  out-of-range value is refused rather than clamped (the real SDK might
+  clamp), the refusal is E_INVALIDARG ("One or more arguments are not
+  valid", toupcam.py:606), negative values are refused too, and on refusal
+  the option keeps its previous value.
 
 Only the vendor surface the adapter uses is modeled; this is not a vendor SDK
 emulation.
@@ -64,6 +77,7 @@ from astrotool_core.timing import Clock
 SDK_CONSTANTS: dict[str, int] = {
     "TOUPCAM_FLAG_MONO": 0x00000010,
     "TOUPCAM_FLAG_USB30": 0x00000040,
+    "TOUPCAM_FLAG_USB30_OVER_USB20": 0x00000100,
     "TOUPCAM_FLAG_TEC": 0x00000080,
     "TOUPCAM_FLAG_RAW16": 0x00008000,
     "TOUPCAM_FLAG_TEC_ONOFF": 0x00020000,
@@ -87,10 +101,13 @@ SDK_CONSTANTS: dict[str, int] = {
     "TOUPCAM_OPTION_FLUSH": 0x3D,
     "TOUPCAM_OPTION_AUTOEXPO_TRIGGER": 0x51,
     "TOUPCAM_OPTION_TECTARGET_RANGE": 0x6D,
+    "TOUPCAM_NOFRAME_TIMEOUT_MIN": 500,  # milliseconds
+    "E_INVALIDARG": 0x80070057,
 }
 
 FLAG_MONO = SDK_CONSTANTS["TOUPCAM_FLAG_MONO"]
 FLAG_USB30 = SDK_CONSTANTS["TOUPCAM_FLAG_USB30"]
+FLAG_USB30_OVER_USB20 = SDK_CONSTANTS["TOUPCAM_FLAG_USB30_OVER_USB20"]
 FLAG_TEC = SDK_CONSTANTS["TOUPCAM_FLAG_TEC"]
 FLAG_RAW16 = SDK_CONSTANTS["TOUPCAM_FLAG_RAW16"]
 FLAG_TEC_ONOFF = SDK_CONSTANTS["TOUPCAM_FLAG_TEC_ONOFF"]
@@ -101,6 +118,8 @@ OPTION_TEC = SDK_CONSTANTS["TOUPCAM_OPTION_TEC"]
 OPTION_TECTARGET = SDK_CONSTANTS["TOUPCAM_OPTION_TECTARGET"]
 OPTION_BLACKLEVEL = SDK_CONSTANTS["TOUPCAM_OPTION_BLACKLEVEL"]
 OPTION_CG = SDK_CONSTANTS["TOUPCAM_OPTION_CG"]
+OPTION_NOFRAME_TIMEOUT = SDK_CONSTANTS["TOUPCAM_OPTION_NOFRAME_TIMEOUT"]
+NOFRAME_TIMEOUT_MIN_MS = SDK_CONSTANTS["TOUPCAM_NOFRAME_TIMEOUT_MIN"]
 
 EVENT_IMAGE = SDK_CONSTANTS["TOUPCAM_EVENT_IMAGE"]
 EVENT_TRIGGER_FAIL = SDK_CONSTANTS["TOUPCAM_EVENT_TRIGGERFAIL"]
@@ -109,6 +128,7 @@ EVENT_DISCONNECTED = SDK_CONSTANTS["TOUPCAM_EVENT_DISCONNECTED"]
 
 E_NOTIMPL = -2147467263  # 0x80004001 as the SDK's signed HRESULT
 E_ACCESSDENIED = -2147024891  # 0x80070005
+E_INVALIDARG = SDK_CONSTANTS["E_INVALIDARG"] - (1 << 32)  # signed, as the SDK raises it
 
 
 def _fourcc(code: str) -> int:
@@ -239,6 +259,8 @@ class SimulatedToupcam:
     temperature_c10: int = 125
     options: dict[int, int] = field(default_factory=dict)
     notimpl_calls: list[str] = field(default_factory=list)
+    #: (option, value) puts refused with E_INVALIDARG (documented range only).
+    invalid_option_puts: list[tuple[int, int]] = field(default_factory=list)
     calls: list[str] = field(default_factory=list)
     exposures: list[ExposureRecord] = field(default_factory=list)
     closed: bool = False
@@ -288,6 +310,12 @@ class SimulatedToupcam:
     def put_Option(self, option: int, value: int) -> None:
         if not self._supported_option(option):
             raise self._notimpl(f"put_Option(0x{option:02X})")
+        if option == OPTION_NOFRAME_TIMEOUT and value != 0 and value < NOFRAME_TIMEOUT_MIN_MS:
+            # "0 => disable, positive value (>= NOFRAME_TIMEOUT_MIN) => timeout
+            # milliseconds" (toupcam.py:109). Refusing (not clamping), the
+            # error code and keeping the old value are assumptions (docstring).
+            self.invalid_option_puts.append((option, value))
+            raise HRESULTException(E_INVALIDARG)
         self.options[option] = value
 
     def get_Option(self, option: int) -> int:

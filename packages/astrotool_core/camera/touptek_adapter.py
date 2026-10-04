@@ -56,6 +56,8 @@ _SDK_FALLBACKS: dict[str, int] = {
     "TOUPCAM_EVENT_ERROR": 0x0080,
     "TOUPCAM_EVENT_DISCONNECTED": 0x0081,
     "TOUPCAM_FLAG_MONO": 0x00000010,
+    "TOUPCAM_FLAG_USB30": 0x00000040,  # USB3-capable camera, not the actual link
+    "TOUPCAM_FLAG_USB30_OVER_USB20": 0x00000100,  # USB3 camera on a USB2 link
     "TOUPCAM_FLAG_TEC": 0x00000080,
     "TOUPCAM_FLAG_RAW16": 0x00008000,  # camera has true 16-bit ADC depth
     "TOUPCAM_FLAG_TEC_ONOFF": 0x00020000,
@@ -352,6 +354,7 @@ class TouptekCameraAdapter(CameraPort):
         self._logical_name = str(device.displayname or device.model.name)
         self._device_id = str(device.id)
         self._model_flag = int(getattr(device.model, "flag", 0))
+        self._log_model_flag(str(getattr(device.model, "name", "") or self._logical_name))
         if self._has_flag("TOUPCAM_FLAG_RAW16"):
             self._pixel_shift = 0  # true 16-bit sensor — no shift needed
         try:
@@ -387,6 +390,22 @@ class TouptekCameraAdapter(CameraPort):
             # next connect to this camera fail ERROR_BUSY (0x800700AA).
             self._abandon_handle()
             raise ConnectionError(_describe_sdk_error(self._logical_name, exc)) from exc
+
+    def _log_model_flag(self, model_name: str) -> None:
+        """S6.5b: the raw SDK flag word and what this adapter derives from it,
+        once per connect -- the rig cameras' real MONO/USB30/TEC bits were
+        only inferred (S6.5a); this line makes them known from a Pi log."""
+        _log.info(
+            "TouptekCameraAdapter(%s): opened model=%s model.flag=0x%X -> %s, "
+            "USB3-capable=%s, USB3-over-USB2-link=%s, TEC=%s",
+            self._logical_name,
+            model_name,
+            self._model_flag,
+            "colour" if self.is_color_sensor() else "mono",
+            "yes" if self._has_flag("TOUPCAM_FLAG_USB30") else "no",
+            "yes" if self._has_flag("TOUPCAM_FLAG_USB30_OVER_USB20") else "no",
+            "yes" if self._supports_cooling else "no",
+        )
 
     @property
     def device_id(self) -> str:
@@ -758,7 +777,17 @@ class TouptekCameraAdapter(CameraPort):
         time.sleep(0.2)
         self._drain_state()
         self._put_option("TOUPCAM_OPTION_TRIGGER", 1)
-        self._put_option("TOUPCAM_OPTION_NOFRAME_TIMEOUT", 1)
+        # S6.5b: the SDK's own no-frame timeout stays disabled (0). The
+        # vendored SDK documents 0 or >= TOUPCAM_NOFRAME_TIMEOUT_MIN (500)
+        # milliseconds (toupcam.py:109); the 1 put here before -- the INDI
+        # driver's value (indi_toupbase), ported via smart_telescope -- is
+        # outside that documented range (what the rig's SDK did with it is
+        # unknown).
+        # A fixed SDK period cannot follow the exposure (seconds to minutes in
+        # trigger mode), _camera_event does not handle its NOFRAMETIMEOUT
+        # event, and _capture_raw already bounds every wait by
+        # exposure + timeout_extra_s.
+        self._put_option("TOUPCAM_OPTION_NOFRAME_TIMEOUT", 0)
         self._put_option("TOUPCAM_OPTION_FLUSH", 3)
 
     def _capture_raw(self, timeout_s: float) -> np.ndarray:  # pragma: no cover
