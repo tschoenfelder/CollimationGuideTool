@@ -309,6 +309,46 @@ not change · dependencies · non-goals · proof required.
 - **Frozen:** the external config file format (`~/.CollimationGuideTool/config.toml`), public signatures.
 - **Proof:** duplication-audit D01–D03 items resolved (cite); manifest.
 
+### S6.4 — #48 one mode source (Mount Align + autofocus)
+
+- **Allowed files:** `apps/collimation_tool/ui/mount_test_move_panel.py` (the local Star/Terrestrial
+  toggle and everything that reads it — nothing else in that file), the autofocus panel/controller where
+  its local Star/Terrestrial selector lives, `packages/astrotool_core/mount/operating_mode.py`
+  (`TrackingEnforcer`: clock pass-through, one-shot re-enforce when a busy period ends),
+  `apps/collimation_tool/ui/main_window.py` (mode wiring only), their tests; `install.md` if the UI text
+  is documented there.
+- **Behavior changed (#48 + user decision M04):** the global OperatingMode is the single source;
+  Mount Align's measurement strategy and autofocus's metric (Terrestrial → Tenengrad, Astronomical →
+  star/FWHM) derive from it; changing the global mode updates both; Natural vs Artificial Star stays
+  (orthogonal target type, AGENTS.md). Switching to Terrestrial while the mount is busy re-enforces once
+  the busy period ends (S6.0c review P-a). Tracking-settle poll becomes interruptible by Stop if it falls
+  out naturally — otherwise record for S6.3.
+- **Tests first:** #48 acceptance (no local selector; contradictory combinations impossible; mode change
+  propagates), M04, P-a.
+- **Frozen:** #44 fail-closed gate semantics (S6.0c), S6.0b/S6.0d reacquisition decisions.
+- **Non-goals:** extracting Mount Align orchestration (S6.6).
+- **Proof:** failing-then-passing tests; manifest for #48.
+
+### S6.5 — capability tables (camera + mount)
+
+- **Allowed files:** `packages/astrotool_core/camera/touptek_adapter.py` (unsupported-feature handling
+  becomes table/contract-driven per the S5 audit C-items: one capability decision per feature, no ad-hoc
+  E_NOTIMPL try/except per call site), `packages/astrotool_core/camera/port.py` (camera capabilities type
+  if needed), `packages/astrotool_core/mount/port.py` (`MountCapabilities` gains the angular floor/maximum
+  and replaces the duck-typed `min_angular_arcsec` / `hasattr` capability probes — audit C02 — keep the
+  old attributes as deprecated aliases if callers outside your files use them),
+  `packages/astrotool_core/onstep/mount_pulse_adapter.py` (report them), D04 cooling default single owner
+  (`config/camera_settings.py`, `ui/camera_panel.py` default only, touptek adapter default),
+  `testing/sim_touptek.py`, their tests.
+- **Behavior changed:** none for supported features; unsupported features are reported once via the
+  capability table (no repeated SDK calls/log spam).
+- **Tests:** capability contract per simulated model (G3M678M, ATR585M, GPCMOS02000KPA, synthetic);
+  config-source contract covers the cooling default.
+- **Frozen:** S6.5a/S6.5b constants table; S6.0–S6.0d mount behaviour.
+- **Non-goals:** Mount Align/reacquisition callers' migration beyond reading the new capability fields
+  where they currently duck-type (record the rest for S6.6).
+- **Proof:** failing-then-passing tests; manifest.
+
 ### S5 — #55 + #52 duplication inventory (analysis only)
 
 - **Allowed files:** new `docs/quality/duplication-audit.md` only.
