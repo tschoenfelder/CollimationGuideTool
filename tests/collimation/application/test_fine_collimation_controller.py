@@ -173,6 +173,20 @@ class TestGuideAssistedReacquisition:
         assert outcome.result.target_mode is CollimationTargetMode.ARTIFICIAL_STAR
         assert "reacquired_via_guide" in outcome.reacquisition_log
 
+    def test_a_successful_reacquisitions_note_reaches_the_outcome(self) -> None:
+        """S6.0d: OnStepAdapter warnings from a successful guide-pulse reacquisition are kept."""
+
+        def reacquirer(acq: FocusedStarAcquisition, cancel: object) -> AcquisitionResult:
+            return AcquisitionResult(
+                AcquisitionStatus.SEARCHING_GUIDE, None, (70.0, 70.0), None,
+                "OnStepAdapter warnings: meridian_flip_required",
+            )
+
+        outcome = self._controller(reacquirer).run()
+
+        assert outcome.status == "success"
+        assert outcome.detail == "OnStepAdapter warnings: meridian_flip_required"
+
     def test_a_failed_reacquisition_reports_its_own_reason_not_a_generic_loss(self) -> None:
         def reacquirer(acq: FocusedStarAcquisition, cancel: object) -> AcquisitionResult:
             return AcquisitionResult(AcquisitionStatus.LOST, None, None, "target_not_found_guide")

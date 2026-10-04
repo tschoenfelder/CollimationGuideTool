@@ -31,9 +31,18 @@ class AxisDirection(Enum):
 
 @dataclass(frozen=True)
 class MountCapabilities:
+    """`supports_pulse_guiding`: `pulse_axis` performs timed moves at an installed rate (Mount
+    Align chooses timed vs angular moves by it).
+
+    `supports_guide_pulses_while_tracking` (S6.0d, #39): a SEPARATE capability -- the mount
+    implements `GuidePulsePort`: bounded astronomical guide pulses that leave tracking ON
+    (OnStepAdapter >= 0.5.0 `mount.guide_pulse`). It says nothing about `pulse_axis`, and
+    Mount Align never reads it."""
+
     supports_pulse_guiding: bool
     min_pulse_ms: int
     max_pulse_ms: int
+    supports_guide_pulses_while_tracking: bool = False
 
 
 @dataclass(frozen=True)
@@ -74,6 +83,49 @@ class MountPort(Protocol):
         and nudge pulse to run at one deliberately-chosen rate regardless of
         an adapter's own default."""
         ...
+
+
+@dataclass(frozen=True)
+class GuidePulseResult:
+    """One guide pulse's outcome (S6.0d), normalized from OnStepAdapter 0.5.0's
+    `IndiGuidePulseResult`.
+
+    `accepted`: the whole pulse completed (and the mount was still tracking afterwards).
+    `message`: why not -- the adapter's own refusal/failure text, never dropped.
+    `sent`: at least one chunk reached the mount (0.5.0 `command_accepted`).
+    `tracking_preserved`: 0.5.0's own field (its last snapshot's tracking flag; on a failure
+    after an issued chunk that snapshot predates the emergency stop -- see `tracking_off`).
+    `tracking_off`: tracking was observed OFF right after a pulse that had been sent and then
+    failed -- e.g. 0.5.0's emergency stop (ABORT + TRACK_OFF) after a failed chunk, or a Stop.
+    The caller must report this prominently: the mount no longer tracks.
+    `warnings`: 0.5.0's warnings (e.g. "meridian_flip_required")."""
+
+    accepted: bool
+    message: str = ""
+    sent: bool = False
+    tracking_preserved: bool = False
+    tracking_off: bool = False
+    warnings: tuple[str, ...] = ()
+    chunks_requested: int = 0
+    chunks_completed: int = 0
+
+
+class GuidePulsePort(Protocol):
+    """Optional capability of a `MountPort` (`capabilities().supports_guide_pulses_while_tracking`):
+    a bounded guide pulse on one axis/direction while the mount keeps tracking. `direction` is
+    the axis direction in the same convention as `AngularMotionPort.move_angular` (AXIS1
+    POSITIVE = west / increasing hour angle, AXIS2 POSITIVE = north); which way that moves the
+    image is measured, never assumed."""
+
+    @property
+    def guide_pulse_range_ms(self) -> tuple[int, int] | None:
+        """(min, max) duration of one `guide_pulse`, as the installed OnStepAdapter defines
+        it; None without the capability."""
+        ...
+
+    def guide_pulse(
+        self, axis: MountAxis, direction: AxisDirection, duration_ms: int
+    ) -> GuidePulseResult: ...
 
 
 class AngularMotionPort(Protocol):

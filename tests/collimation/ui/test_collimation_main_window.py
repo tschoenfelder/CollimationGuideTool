@@ -5869,6 +5869,54 @@ class TestArtificialStarTargetMode:
         assert calls[0]["guide_calibration"] is matrix
         assert calls[0]["mount"] is window._pulse_mount
 
+    def test_reacquisition_gets_the_global_mode_a_tracking_reader_and_fresh_frames(
+        self, qapp: object
+    ) -> None:
+        """S6.0d: the motion decision is fed from the mode's single owner (the enforcer), a
+        fresh tracking reading of the mount, and the Guide panel's settled-frame wait."""
+        from astrotool_core.mount.operating_mode import OperatingMode
+        from astrotool_core.registration.result import RegistrationMethod, RegistrationStatus
+        from astrotool_core.testing import FakeMountPark
+        from collimation_tool.application.star_acquisition import (
+            AcquisitionResult,
+            AcquisitionStatus,
+        )
+
+        park = FakeMountPark(start_parked=False)
+        window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [], mount=park)
+        window._tracking_enforcer.set_mode(OperatingMode.ASTRONOMICAL)
+        park.start_tracking()
+        window._last_prior_a = OpticalPrior(
+            name="main", sensor_width_px=100, sensor_height_px=80, pixel_scale_arcsec=1.0
+        )
+        window._last_calibration_result = CrossCameraRegistrationResult(
+            method=RegistrationMethod.ARTIFICIAL_STAR, status=RegistrationStatus.OK_OVERLAP,
+            rotation_deg=0.0, scale=1.0,
+            polygon_a_in_b=((0.0, 0.0), (100.0, 0.0), (100.0, 80.0), (0.0, 80.0)),
+            confidence=1.0,
+        )
+        calls: list[dict[str, object]] = []
+
+        class _RecordingAcquisition:
+            def attempt_guide_reacquisition(
+                self, _get_frame: object, **kwargs: object
+            ) -> AcquisitionResult:
+                calls.append(kwargs)
+                return AcquisitionResult(AcquisitionStatus.SEARCHING_GUIDE, None, None)
+
+        window._reacquire_via_guide(_RecordingAcquisition(), None)  # type: ignore[arg-type]
+
+        assert calls[0]["operating_mode"] is OperatingMode.ASTRONOMICAL
+        current_mode = calls[0]["current_operating_mode"]
+        assert callable(current_mode) and current_mode() is OperatingMode.ASTRONOMICAL
+        tracking_state = calls[0]["tracking_state"]
+        assert callable(tracking_state) and tracking_state() is True
+        assert calls[0]["wait_guide_frame_after"] == window._right_panel.wait_for_frame_after
+        # No Mount Align matrix: still called -- only the angular path needs one.
+        assert calls[0]["guide_calibration"] is None
+        window._tracking_enforcer.set_mode(OperatingMode.TERRESTRIAL)
+        assert current_mode() is OperatingMode.TERRESTRIAL  # re-read, never a snapshot
+
 
 class TestArtificialStarAutofocusWiring:
     """Issue #33 (artificial star): autofocus infers its mode from the #39

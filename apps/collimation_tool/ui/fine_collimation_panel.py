@@ -339,6 +339,13 @@ class FineCollimationPanel(QWidget):
         """Render one completed run's outcome. Public -- called by
         `_poll_run` when driven live, and directly by tests to exercise
         the rendering logic without the runner/threading."""
+        self._render_outcome(outcome)
+        if outcome.status != "failed" and outcome.detail:  # S6.0d: e.g. a meridian warning
+            self._status_label.setText(
+                f"{self._status_label.text()} — reacquisition: {outcome.detail}"
+            )
+
+    def _render_outcome(self, outcome: FineCollimationOutcome) -> None:
         self._last_outcome = outcome
         if outcome.status == "failed" or outcome.result is None:
             self._set_style(_WARNING_STYLE, collimated=False)

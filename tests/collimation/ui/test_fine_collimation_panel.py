@@ -189,6 +189,19 @@ class TestAC7_2InvalidResult:
         assert "mount_correction_rejected" in text
         assert "non-tracking" in text
 
+    def test_a_successful_run_still_shows_reacquisition_warnings(self, qapp: object) -> None:
+        """S6.0d: e.g. OnStepAdapter's meridian-flip warning from a guide-pulse reacquisition."""
+        panel = _make_panel()
+        outcome = replace(
+            _low_confidence_outcome(), detail="OnStepAdapter warnings: meridian_flip_required"
+        )
+
+        panel.show_outcome(outcome)
+
+        text = panel._status_label.text()
+        assert "confidence" in text.lower()
+        assert "meridian_flip_required" in text
+
 
 class TestInitialState:
     def test_before_any_run_shows_a_neutral_not_yet_measured_state(self, qapp: object) -> None:

@@ -125,6 +125,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Sequence
+from functools import partial
 from pathlib import Path
 from typing import Any
 
@@ -178,6 +179,7 @@ from PySide6.QtWidgets import (
 )
 
 from collimation_tool.application.autofocus_controller import ExposureControl
+from collimation_tool.application.guide_pulse_reacquisition import read_tracking_for_decision
 from collimation_tool.application.star_acquisition import (
     AcquisitionResult,
     AcquisitionStatus,
@@ -276,6 +278,8 @@ class MainWindow(QMainWindow):
         # of each deciding tracking state themselves.
         mount_park_port = mount if mount is not None else NoMountPark()
         self._tracking_enforcer = TrackingEnforcer(mount_park_port, OperatingMode.TERRESTRIAL)
+        #: S6.0d: the fresh tracking reading astronomical reacquisition decides on.
+        self._mount_park_port: MountParkPort = mount_park_port
 
         # Issue #33: Auto Focus needs camera access -- wired to the Main
         # panel only, same "focuser lives on the main optical train only"
@@ -749,18 +753,22 @@ class MainWindow(QMainWindow):
         prior_a = self._last_prior_a
         if registration is None or prior_a is None:
             return AcquisitionResult(AcquisitionStatus.LOST, None, None, "no_registration")
-        calibration = self._test_move_panel.calibration_for("right")
-        if calibration is None:
-            return AcquisitionResult(AcquisitionStatus.LOST, None, None, "no_guide_calibration")
+        # S6.0d: a missing Mount Align matrix is reported by the reacquisition itself -- only
+        # the angular path needs it (the guide-pulse path calibrates its own pulses).
         return acquisition.attempt_guide_reacquisition(
             self._right_panel.latest_mono_frame,
             mount=self._pulse_mount,
-            guide_calibration=calibration,
+            guide_calibration=self._test_move_panel.calibration_for("right"),
             registration=registration,
             prior_main=prior_a,
             cancel_check=cancel_check,
             # S6.0b: the unit Mount Align stored the Guide matrix in (angular-only mounts).
             center_rate_x=self._mount_alignment_settings.calibration_center_rate_x,
+            # S6.0d: the global mode's single owner, a fresh tracking reading, fresh frames.
+            operating_mode=self._tracking_enforcer.mode,
+            current_operating_mode=lambda: self._tracking_enforcer.mode,
+            tracking_state=partial(read_tracking_for_decision, self._mount_park_port),
+            wait_guide_frame_after=self._right_panel.wait_for_frame_after,
         )
 
     def _on_left_camera_changed(self, device: object) -> None:

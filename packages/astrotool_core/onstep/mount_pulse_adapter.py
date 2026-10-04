@@ -44,6 +44,26 @@ reading (with `slewing=True` while this adapter's GOTO is in flight) instead
 of reading the controller mid-operation; with nothing read yet it claims
 nothing (`connected=False`). That is for display only -- `MountStatus` cannot
 mark a held-over reading (S6.5 capability item), so no decision may use it.
+
+Guide pulses while tracking (S6.0d, #39). OnStepAdapter 0.5.0 (unpublished at the time of
+writing; main stays pinned to 0.4.1) adds `IndiMount.guide_pulse(direction, duration_ms)`
+(indi_mount.py:32-38): standard INDI timed-guide properties, tracking left ON, 20..5000 ms
+(indi_guiding.py:17-18, ValueError outside, :149-152) in self-terminating 500 ms chunks (:19,
+:156-164) with a full safety preflight before every chunk and after the last (:178-212, refusing
+at PARK/HOME/slew/fault/limit/not tracking, meridian hard stop or firmware limit, and -- under
+the default "strict" `tracking_authority_policy` -- without time/site/HOME authority), one pulse
+at a time (a second concurrent call answers "another guide pulse is active", :166-170), and an
+`emergency_stop()` -- ABORT + TRACK_OFF -- whenever a failure follows an issued chunk (:213-226).
+Capability: detected once per connection on `connect()` from the installed OnStepAdapter -- its
+mount facade has `guide_pulse` AND its package exports the bounds (0.5.0 `__init__.py`:
+MIN_GUIDE_PULSE_MS/MAX_GUIDE_PULSE_MS); reported as the separate
+`supports_guide_pulses_while_tracking`, never as `supports_pulse_guiding` (Mount Align's
+timed/angular choice is unaffected). `guide_pulse` runs under `operation_lock` like a GOTO, is
+refused unsent while a Stop is latched, and is covered by Stop exactly like a GOTO (the stop
+worker's emergency stop turns tracking OFF; 0.5.0's next chunk preflight then refuses). After a
+pulse that was sent and then failed it reads the mount status once more, inside the lock, so a
+caller learns whether tracking is now OFF (`GuidePulseResult.tracking_off`) -- 0.5.0's own
+`tracking_preserved` comes from the snapshot taken BEFORE its emergency stop (:220-222).
 """
 
 from __future__ import annotations
@@ -51,13 +71,16 @@ from __future__ import annotations
 import logging
 import math
 import threading
+from typing import Protocol
 
+import onstep_adapter
 from onstep_adapter import IndiMount
 from onstep_adapter.indi_axis_motion import MAX_AXIS_MOVE_DEG, MIN_AXIS_MOVE_ARCSEC
 
 from astrotool_core.mount.port import (
     AxisDirection,
     CommandResult,
+    GuidePulseResult,
     MountAxis,
     MountCapabilities,
     MountStatus,
@@ -74,6 +97,52 @@ _log = logging.getLogger(__name__)
 
 #: Every refusal caused by Stop starts with this (the runner and panel report it as-is).
 _STOPPED = "stopped by the user"
+
+#: S6.0d: what a guide pulse needs from the installed OnStepAdapter (>= 0.5.0).
+NO_GUIDE_PULSE_API = (
+    "the installed OnStepAdapter has no guide pulse while tracking (needs >= 0.5.0)"
+)
+
+#: S6.0d: axis/direction -> 0.5.0 guide direction (same sign convention as `move_angular`:
+#: AXIS1 POSITIVE increases hour angle = west, AXIS2 POSITIVE = north).
+_GUIDE_DIRECTION = {
+    (MountAxis.AXIS1, AxisDirection.POSITIVE): "west",
+    (MountAxis.AXIS1, AxisDirection.NEGATIVE): "east",
+    (MountAxis.AXIS2, AxisDirection.POSITIVE): "north",
+    (MountAxis.AXIS2, AxisDirection.NEGATIVE): "south",
+}
+
+
+class _GuidePulseOutcome(Protocol):
+    """The fields of 0.5.0's `IndiGuidePulseResult` this shim reads (indi_guiding.py:53-65)."""
+
+    chunks_requested: int
+    chunks_completed: int
+    command_accepted: bool
+    pulse_completed: bool
+    tracking_preserved: bool
+    warnings: tuple[str, ...]
+    error: str | None
+
+
+#: Why tracking is OFF after a guide pulse that did not complete (review fix 2).
+_USER_STOP_CAUSE = "the user's Stop sends OnStep's emergency stop: ABORT + TRACK_OFF"
+_FAILED_PULSE_CAUSE = "OnStepAdapter stops the mount when a sent guide pulse fails"
+#: 0.5.0 appends this when its own emergency stop raised (indi_guiding.py:217-219).
+_STOP_FAILED_MARK = "emergency stop failed"
+#: Bound on waiting for a latched Stop's worker before reading tracking: OnStepAdapter's own
+#: stop confirmation wait is <= 5 s (indi_stop.py:22-28) plus margin.
+_STOP_WORKER_WAIT_S = 6.0
+
+
+def _installed_guide_pulse_range_ms() -> tuple[int, int] | None:
+    """The guide-pulse bounds the installed OnStepAdapter exports (0.5.0), or None (0.4.1)."""
+    low = getattr(onstep_adapter, "MIN_GUIDE_PULSE_MS", None)
+    high = getattr(onstep_adapter, "MAX_GUIDE_PULSE_MS", None)
+    if isinstance(low, int) and isinstance(high, int) and 0 < low <= high:
+        return (low, high)
+    return None
+
 
 _NO_PULSE_PRIMITIVE = (
     "OnStepAdapter has no timed pulse primitive over INDI yet "
@@ -98,17 +167,26 @@ class OnStepMountPulseAdapter:
         #: A Stop not yet served by the stop worker: the newest move generation it covers.
         self._pending_stop: int | None = None
         self._stop_worker: threading.Thread | None = None
+        #: S6.0d: the operation in flight is a guide pulse, not a GOTO (status() must not say
+        #: "slewing" for it).
+        self._in_flight_is_guide = False
+        #: S6.0d: guide-pulse bounds of the connected OnStepAdapter; None = no capability.
+        self._guide_range_ms: tuple[int, int] | None = None
         #: Accepted but never consulted -- see module docstring.
         self._rates: dict[tuple[MountAxis, AxisDirection], float] = {}
 
     def connect(self) -> None:
         if not self._held:
-            self._connection.acquire()
+            client = self._connection.acquire()
             self._held = True
+            # S6.0d: detected once per connection from the installed OnStepAdapter.
+            has_api = callable(getattr(client.mount, "guide_pulse", None))
+            self._guide_range_ms = _installed_guide_pulse_range_ms() if has_api else None
 
     def disconnect(self) -> None:
         if self._held:
             self._held = False
+            self._guide_range_ms = None
             self._last_status = None  # S6.0c: no stale carry-over into the next session
             self._connection.release()
 
@@ -120,10 +198,20 @@ class OnStepMountPulseAdapter:
 
     @property
     def _goto_in_flight(self) -> bool:
-        return self._in_flight_generation is not None
+        return self._in_flight_generation is not None and not self._in_flight_is_guide
 
     def capabilities(self) -> MountCapabilities:
-        return MountCapabilities(supports_pulse_guiding=False, min_pulse_ms=0, max_pulse_ms=0)
+        return MountCapabilities(
+            supports_pulse_guiding=False,
+            min_pulse_ms=0,
+            max_pulse_ms=0,
+            supports_guide_pulses_while_tracking=self.guide_pulse_range_ms is not None,
+        )
+
+    @property
+    def guide_pulse_range_ms(self) -> tuple[int, int] | None:
+        """S6.0d: (min, max) ms of one guide pulse, from the connected OnStepAdapter."""
+        return self._guide_range_ms if self._held else None
 
     def _mount(self) -> IndiMount | None:
         client = self._connection.client
@@ -274,6 +362,142 @@ class OnStepMountPulseAdapter:
                 with self._state:
                     self._in_flight_generation = None
         return CommandResult(accepted=True)
+
+    # ---- GuidePulsePort (S6.0d) ------------------------------------------
+    def guide_pulse(
+        self, axis: MountAxis, direction: AxisDirection, duration_ms: int
+    ) -> GuidePulseResult:
+        """One bounded guide pulse with tracking left ON (see the module docstring)."""
+        mount = self._mount()
+        if mount is None:
+            return GuidePulseResult(accepted=False, message="not connected")
+        bounds = self._guide_range_ms
+        pulse = getattr(mount, "guide_pulse", None)
+        if bounds is None or not callable(pulse):
+            return GuidePulseResult(accepted=False, message=NO_GUIDE_PULSE_API)
+        low, high = bounds
+        if (
+            isinstance(duration_ms, bool)
+            or not isinstance(duration_ms, int)
+            or not low <= duration_ms <= high
+        ):
+            return GuidePulseResult(
+                accepted=False,
+                message=(
+                    f"guide pulse {duration_ms!r} ms is outside OnStepAdapter's supported "
+                    f"range ({low}-{high} ms) -- nothing was sent"
+                ),
+            )
+        with self._connection.operation_lock:
+            with self._state:  # atomic with abort(), as for a GOTO
+                stopped = self._cancel.is_set()
+                if not stopped:
+                    self._move_generation += 1
+                    self._in_flight_generation = self._move_generation
+                    self._in_flight_is_guide = True
+                worker = self._stop_worker
+            if stopped:
+                return self._latched_stop_result(mount, worker)
+            error = ""
+            raw: _GuidePulseOutcome | None = None
+            try:
+                raw = pulse(_GUIDE_DIRECTION[(axis, direction)], duration_ms)
+            except (ConnectionError, RuntimeError, TimeoutError, ValueError) as exc:
+                error = str(exc)
+            finally:
+                with self._state:
+                    self._in_flight_generation = None
+                    self._in_flight_is_guide = False
+            if raw is None:
+                if self._cancel.is_set():
+                    error = f"{_STOPPED} ({error})"
+                return GuidePulseResult(accepted=False, message=error)
+            return self._guide_result(mount, raw)
+
+    def _guide_result(self, mount: IndiMount, raw: _GuidePulseOutcome) -> GuidePulseResult:
+        """Normalize 0.5.0's `IndiGuidePulseResult` (indi_guiding.py:53-65). The caller holds
+        `operation_lock`, so the follow-up status read is a fresh one."""
+        sent = bool(raw.command_accepted)
+        warnings = tuple(raw.warnings)
+        requested, done = int(raw.chunks_requested), int(raw.chunks_completed)
+        if raw.pulse_completed:
+            return GuidePulseResult(
+                accepted=True,
+                sent=True,
+                tracking_preserved=bool(raw.tracking_preserved),
+                warnings=warnings,
+                chunks_requested=requested,
+                chunks_completed=done,
+            )
+        message = str(raw.error or "guide pulse not completed")
+        stopped = self._cancel.is_set()
+        if stopped:
+            message = f"{_STOPPED} ({message})"
+        tracking_off = False
+        if sent:
+            tracking_off, note = self._tracking_note(
+                mount,
+                cause=_USER_STOP_CAUSE if stopped else _FAILED_PULSE_CAUSE,
+                chunks=(done, requested),
+                stop_unconfirmed=_STOP_FAILED_MARK in message,
+            )
+            message += note
+        return GuidePulseResult(
+            accepted=False,
+            message=message,
+            sent=sent,
+            tracking_preserved=bool(raw.tracking_preserved),
+            tracking_off=tracking_off,
+            warnings=warnings,
+            chunks_requested=requested,
+            chunks_completed=done,
+        )
+
+    def _latched_stop_result(
+        self, mount: IndiMount, worker: threading.Thread | None
+    ) -> GuidePulseResult:
+        """Review fix 1: the latched Stop sent OnStep's emergency stop (ABORT + TRACK_OFF) --
+        nothing is sent, and the result says whether the mount still tracks. The stop worker
+        gets a bounded moment to finish first (its confirmation wait, indi_stop.py:52-80); still
+        running then means "unknown", i.e. possibly stopped."""
+        if worker is not None and worker.is_alive():
+            worker.join(_STOP_WORKER_WAIT_S)
+        if worker is not None and worker.is_alive():
+            tracking_off, note = True, (
+                " -- tracking may be OFF, check the mount (the Stop is still in progress)"
+            )
+        else:
+            tracking_off, note = self._tracking_note(mount, cause=_USER_STOP_CAUSE)
+        return GuidePulseResult(
+            accepted=False,
+            message=_STOPPED + " -- guide pulse not sent" + note,
+            tracking_off=tracking_off,
+        )
+
+    @staticmethod
+    def _tracking_note(
+        mount: IndiMount,
+        *,
+        cause: str,
+        chunks: tuple[int, int] | None = None,
+        stop_unconfirmed: bool = False,
+    ) -> tuple[bool, str]:
+        """(tracking_off, text to append) after a pulse that a stop may have ended. Unknown
+        counts as possibly stopped (review fix 3): an unreadable status, or 0.5.0 reporting
+        that its own emergency stop failed, says "tracking may be OFF -- check the mount"."""
+        try:
+            tracking = bool(mount.get_status().tracking)
+        except (ConnectionError, RuntimeError, TimeoutError, ValueError) as exc:
+            return True, f" -- tracking may be OFF, check the mount (status unreadable: {exc})"
+        if stop_unconfirmed:
+            return True, (
+                " -- tracking may be OFF, check the mount (OnStepAdapter's emergency stop was "
+                "not confirmed)"
+            )
+        if tracking:
+            return False, ""
+        where = f"after {chunks[0]} of {chunks[1]} chunk(s) " if chunks else ""
+        return True, f" -- {where}the mount is NOT tracking any more ({cause})"
 
     # ---- MountPort ----------------------------------------------------
     def pulse_axis(

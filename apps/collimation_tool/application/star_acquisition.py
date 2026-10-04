@@ -38,7 +38,9 @@ from dataclasses import dataclass
 from enum import Enum
 
 import numpy as np
+from astrotool_core.acquisition import StableFrameWaiter, acquire_settled_frames
 from astrotool_core.mount.axis_calibration import CalibrationMatrix
+from astrotool_core.mount.operating_mode import OperatingMode
 from astrotool_core.mount.port import MountPort
 from astrotool_core.registration.alignment import transform_point_a_to_b
 from astrotool_core.registration.geometry import polygon_centroid
@@ -49,10 +51,20 @@ from astrotool_core.target.identity_match import IdentityMatchStatus, resolve_id
 from astrotool_core.target.roi import Roi, compute_roi_bounds
 from astrotool_core.target.roi_selector import select_target
 from astrotool_core.target.roi_tracker import RoiTracker, TrackingResult, TrackingState
-from astrotool_core.timing import Clock
+from astrotool_core.timing import SYSTEM_CLOCK, Clock
 
+from collimation_tool.application.guide_pulse_reacquisition import (
+    GuidePulseCalibrationConfig,
+    ReacquisitionMotion,
+    calibrate_guide_pulses,
+    choose_reacquisition_motion,
+)
 from collimation_tool.application.mount_commands import rearm_after_stop
-from collimation_tool.application.recenter_policy import CollimationRecenterPolicy
+from collimation_tool.application.recenter_policy import (
+    CollimationRecenterPolicy,
+    MountCorrectionResult,
+    RecenterConfig,
+)
 
 #: S6.0b (re-review): the largest image shift one reacquisition move may produce PER AXIS,
 #: bounded by two things. (1) 0.35 x the guide tracker's search radius
@@ -70,6 +82,11 @@ from collimation_tool.application.recenter_policy import CollimationRecenterPoli
 _STEP_TRACKER_RADIUS_FRACTION = 0.35
 _STEP_FRAME_FRACTION = 0.25
 
+#: S6.0d interim (until the shared fresh-frame service, S6.7): how long one stage of the
+#: guide-pulse path's settled-frame wait may take -- covers two guide exposures of up to the
+#: ~2 s observed in field diagnostics plus margin.
+GUIDE_FRESH_FRAME_TIMEOUT_S = 6.0
+
 #: Issue #15's own machine-readable failure-reason vocabulary, verbatim.
 _CORRECTION_REASON_TO_FAILURE_REASON = {
     "star_lost": "target_not_found_guide",
@@ -78,6 +95,19 @@ _CORRECTION_REASON_TO_FAILURE_REASON = {
     "max_pulses": "reacquisition_timeout",
     "cancelled": "cancelled",
 }
+
+#: S6.0d: nothing was sent -- astronomical reacquisition is not possible right now
+#: (`AcquisitionResult.detail` says why, e.g. "needs OnStepAdapter >= 0.5.0").
+ASTRONOMICAL_REACQUISITION_UNAVAILABLE = "astronomical_reacquisition_unavailable"
+#: S6.0d review (A2, #44 intent): the operating mode left Astronomical during a guide-pulse
+#: reacquisition -- no further guide pulse was sent.
+OPERATING_MODE_CHANGED = "operating_mode_changed"
+_MODE_CHANGED_DETAIL = (
+    "the operating mode switched away from Astronomical -- no further guide pulses were sent"
+)
+#: S6.0d: a sent guide pulse failed and the mount is NOT tracking any more (OnStepAdapter's
+#: emergency stop, or a Stop) -- the user must re-enable tracking.
+MOUNT_TRACKING_STOPPED = "mount_tracking_stopped"
 
 
 class AcquisitionStatus(Enum):
@@ -110,6 +140,29 @@ def _require_position(result: TrackingResult) -> tuple[float, float]:
     return (result.x, result.y)
 
 
+def _with_warnings(message: str, warnings: tuple[str, ...]) -> str | None:
+    """S6.0d: OnStepAdapter's guide-pulse warnings (e.g. meridian_flip_required) appended to a
+    detail text -- never dropped. None when there is nothing to say."""
+    parts = [message] if message else []
+    if warnings:
+        parts.append(f"OnStepAdapter warnings: {', '.join(warnings)}")
+    return "; ".join(parts) or None
+
+
+def _failed_correction(
+    correction: MountCorrectionResult, warnings: tuple[str, ...]
+) -> AcquisitionResult:
+    failure_reason = _CORRECTION_REASON_TO_FAILURE_REASON.get(correction.reason, correction.reason)
+    if correction.tracking_off:  # S6.0d: the mount stopped tracking -- say so first
+        failure_reason = MOUNT_TRACKING_STOPPED
+    status = (
+        AcquisitionStatus.CANCELLED if correction.reason == "cancelled" else AcquisitionStatus.LOST
+    )
+    return AcquisitionResult(
+        status, None, None, failure_reason, _with_warnings(correction.message, warnings)
+    )
+
+
 class FocusedStarAcquisition:
     def __init__(
         self,
@@ -140,6 +193,8 @@ class FocusedStarAcquisition:
         self._last_position: tuple[float, float] | None = None
         self._last_peak: float | None = None
         self._roi: Roi | None = None
+        #: S6.0d: the guide-pulse calibration measured in this session (None = not yet).
+        self._guide_pulse_matrix: CalibrationMatrix | None = None
 
     def select(self, main_frame: np.ndarray) -> AcquisitionResult:
         """AC 1.1: detect + select_target + tracker.acquire(); returns
@@ -204,12 +259,17 @@ class FocusedStarAcquisition:
         get_guide_frame: Callable[[], np.ndarray | None],
         *,
         mount: MountPort,
-        guide_calibration: CalibrationMatrix,
+        guide_calibration: CalibrationMatrix | None,
         registration: CrossCameraRegistrationResult,
         prior_main: OpticalPrior,
         cancel_check: Callable[[], bool] | None = None,
         clock: Clock | None = None,
         center_rate_x: float | None = None,
+        operating_mode: OperatingMode | None = None,
+        tracking_state: Callable[[], bool | None] | None = None,
+        wait_guide_frame_after: StableFrameWaiter | None = None,
+        guide_pulse_calibration: GuidePulseCalibrationConfig | None = None,
+        current_operating_mode: Callable[[], OperatingMode] | None = None,
     ) -> AcquisitionResult:
         """AC 1.4: only meant to be called once `process_main_frame` has
         reported `target_not_found_main` (i.e. exhausted its own bounded
@@ -232,7 +292,30 @@ class FocusedStarAcquisition:
         `MountAlignmentSettings.calibration_center_rate_x`; None = that setting's default). On
         such a mount the policy moves angularly (never `pulse_axis`); a refusal's adapter
         reason is returned in `detail`. Once the gates pass and the mount is about to move,
-        the adapter's latched Stop is re-armed (`rearm_after_stop`), like any new command."""
+        the adapter's latched Stop is re-armed (`rearm_after_stop`), like any new command.
+
+        S6.0d: the motion is chosen up front from `operating_mode` (the global mode's value;
+        None = terrestrial behaviour) and, in Astronomical mode, `tracking_state()` (a fresh
+        reading, None = unknown) -- see `guide_pulse_reacquisition`. A refusal is
+        `astronomical_reacquisition_unavailable` with the reason in `detail`, nothing sent. On
+        the guide-pulse path `guide_calibration` (Mount Align's angular matrix) is not used: the
+        guide pulses are calibrated here once per session, and every measurement uses a frame
+        from `wait_guide_frame_after` whose exposure started after the last pulse plus a settle
+        (`acquire_settled_frames`; without it, the latest frame after the policy's settle --
+        the S6.7 fresh-frame service will replace both). OnStepAdapter warnings go to `detail`
+        on success; a failed pulse after which the mount no longer tracks is
+        `mount_tracking_stopped`. `current_operating_mode()` (the mode's owner, re-read) is
+        checked between guide pulses: leaving Astronomical ends the run as
+        `operating_mode_changed`, nothing further sent."""
+        decision = choose_reacquisition_motion(operating_mode, tracking_state, mount)
+        if decision.motion is None:
+            return AcquisitionResult(
+                AcquisitionStatus.LOST, None, None, ASTRONOMICAL_REACQUISITION_UNAVAILABLE,
+                decision.refusal,
+            )
+        guide_pulses = decision.motion is ReacquisitionMotion.GUIDE_PULSE
+        if not guide_pulses and guide_calibration is None:
+            return AcquisitionResult(AcquisitionStatus.LOST, None, None, "no_guide_calibration")
         if self._last_position is None:
             raise RuntimeError("attempt_guide_reacquisition() called before select()")
 
@@ -282,8 +365,23 @@ class FocusedStarAcquisition:
         )
         guide_tracker.acquire(identity.source.x, identity.source.y)
 
+        source_clock = clock or SYSTEM_CLOCK
+        settle_ms = RecenterConfig().settle_ms
+
+        def next_guide_frame() -> np.ndarray | None:
+            if not guide_pulses or wait_guide_frame_after is None:
+                return get_guide_frame()
+            settled = acquire_settled_frames(
+                {"guide": wait_guide_frame_after},
+                reference_monotonic=source_clock.monotonic(),
+                timeout_s=GUIDE_FRESH_FRAME_TIMEOUT_S,
+                settle_ms=settle_ms,
+                clock=source_clock,
+            )["guide"]
+            return settled.frame.pixels if settled.ok and settled.frame is not None else None
+
         def measure() -> TrackingResult:
-            frame = get_guide_frame()
+            frame = next_guide_frame()
             if frame is None:
                 return TrackingResult(
                     state=TrackingState.LOST, x=None, y=None, matched_source=None
@@ -294,6 +392,22 @@ class FocusedStarAcquisition:
             _STEP_TRACKER_RADIUS_FRACTION * self._guide_max_position_error_px,
             _STEP_FRAME_FRACTION * min(first_frame.shape[:2]),
         )
+        # S6.0b: a new operator command -- an earlier Stop (e.g. Mount Align's) must not
+        # silently refuse it; a Stop pressed DURING this reacquisition still latches.
+        rearm_after_stop(mount)
+        if guide_pulses:
+            return self._recenter_with_guide_pulses(
+                mount,
+                measure,
+                target_center,
+                cancel_check=cancel_check,
+                current_operating_mode=current_operating_mode,
+                clock=clock,
+                max_step_px=max_step_px,
+                settled_frames=wait_guide_frame_after is not None,
+                calibration_config=guide_pulse_calibration,
+            )
+        assert guide_calibration is not None  # checked above for the angular path
         policy = CollimationRecenterPolicy(
             mount,
             guide_calibration,
@@ -301,23 +415,106 @@ class FocusedStarAcquisition:
             center_rate_x=center_rate_x,
             max_step_px=max_step_px,
         )
-        # S6.0b: a new operator command -- an earlier Stop (e.g. Mount Align's) must not
-        # silently refuse it; a Stop pressed DURING this reacquisition still latches.
-        rearm_after_stop(mount)
         correction = policy.center(measure, reference=target_center, cancel_check=cancel_check)
-
         if correction.success:
             return AcquisitionResult(AcquisitionStatus.SEARCHING_GUIDE, None, target_center, None)
+        return _failed_correction(correction, ())
 
-        failure_reason = _CORRECTION_REASON_TO_FAILURE_REASON.get(
-            correction.reason, correction.reason
+    def _recenter_with_guide_pulses(
+        self,
+        mount: MountPort,
+        measure: Callable[[], TrackingResult],
+        target_center: tuple[float, float],
+        *,
+        cancel_check: Callable[[], bool] | None,
+        current_operating_mode: Callable[[], OperatingMode] | None,
+        clock: Clock | None,
+        max_step_px: float,
+        settled_frames: bool,
+        calibration_config: GuidePulseCalibrationConfig | None,
+    ) -> AcquisitionResult:
+        """S6.0d: calibrate the guide pulses once per session, then the closed loop. Between
+        pulses the operating mode is re-read (review A2): leaving Astronomical ends the run."""
+        mode_changed: list[bool] = []
+
+        def guide_cancel() -> bool:
+            if (
+                current_operating_mode is not None
+                and current_operating_mode() is not OperatingMode.ASTRONOMICAL
+            ):
+                mode_changed.append(True)
+                return True
+            return cancel_check is not None and cancel_check()
+
+        result = self._guide_pulse_session(
+            mount,
+            measure,
+            target_center,
+            cancel_check=guide_cancel,
+            clock=clock,
+            max_step_px=max_step_px,
+            settled_frames=settled_frames,
+            calibration_config=calibration_config,
         )
-        status = (
-            AcquisitionStatus.CANCELLED
-            if correction.reason == "cancelled"
-            else AcquisitionStatus.LOST
+        if mode_changed:
+            return AcquisitionResult(
+                AcquisitionStatus.LOST, None, None, OPERATING_MODE_CHANGED, _MODE_CHANGED_DETAIL
+            )
+        return result
+
+    def _guide_pulse_session(
+        self,
+        mount: MountPort,
+        measure: Callable[[], TrackingResult],
+        target_center: tuple[float, float],
+        *,
+        cancel_check: Callable[[], bool],
+        clock: Clock | None,
+        max_step_px: float,
+        settled_frames: bool,
+        calibration_config: GuidePulseCalibrationConfig | None,
+    ) -> AcquisitionResult:
+        calibrated = self._guide_pulse_matrix
+        calibration_warnings: tuple[str, ...] = ()
+        if calibrated is None:
+            outcome = calibrate_guide_pulses(
+                mount,
+                measure,
+                config=calibration_config,
+                cancel_check=cancel_check,
+                # Review A1: the calibration excursion stays within one reacquisition step.
+                max_displacement_px=max_step_px,
+            )
+            if outcome.matrix is None:
+                assert outcome.failure_reason is not None
+                status = (
+                    AcquisitionStatus.CANCELLED
+                    if outcome.failure_reason == "cancelled"
+                    else AcquisitionStatus.LOST
+                )
+                return AcquisitionResult(
+                    status, None, None, outcome.failure_reason,
+                    _with_warnings(outcome.message, outcome.warnings),
+                )
+            calibrated = self._guide_pulse_matrix = outcome.matrix
+            calibration_warnings = outcome.warnings
+        policy = CollimationRecenterPolicy(
+            mount,
+            calibrated,
+            # The settle happens in the settled-frame wait when one is wired.
+            RecenterConfig(settle_ms=0) if settled_frames else None,
+            clock=clock,
+            max_step_px=max_step_px,
+            guide_pulses=True,
         )
-        return AcquisitionResult(status, None, None, failure_reason, correction.message or None)
+        correction = policy.center(measure, reference=target_center, cancel_check=cancel_check)
+        warnings = tuple(sorted(set(calibration_warnings) | set(correction.warnings)))
+        if correction.success:
+            return AcquisitionResult(
+                AcquisitionStatus.SEARCHING_GUIDE, None, target_center, None,
+                _with_warnings("", warnings),
+            )
+        return _failed_correction(correction, warnings)
 
     def confirm_returned_to_main(self, main_frame: np.ndarray) -> AcquisitionResult:
         """AC 1.5: after `attempt_guide_reacquisition` reports success,

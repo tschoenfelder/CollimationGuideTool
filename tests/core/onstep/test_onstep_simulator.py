@@ -18,7 +18,7 @@ import time
 from collections.abc import Callable
 
 import pytest
-from astrotool_core.mount import AxisDirection, MountAxis
+from astrotool_core.mount import AxisDirection, GuidePulseResult, MountAxis, MountStatus
 from astrotool_core.onstep import (
     OnStepFocuserAdapter,
     OnStepMountParkAdapter,
@@ -27,11 +27,17 @@ from astrotool_core.onstep import (
 from astrotool_core.testing import (
     ConnectFailure,
     FocuserScenario,
+    GuidePulseScenario,
     OnStepScenario,
     install_observable_operation_lock,
+    install_onstep_adapter_050_exports,
     make_simulated_onstep_connection,
 )
-from astrotool_core.testing.sim_onstep import AXIS_BUSY
+from astrotool_core.testing.fake_onstep_indi_client import (
+    IndiRuntimeConfig,
+    fake_indi_runtime_config,
+)
+from astrotool_core.testing.sim_onstep import AXIS_BUSY, SimulatedOnStepIndiClient
 from astrotool_core.timing import FakeClock
 
 _JOIN_S = 5.0  # real-time safety bound for joining test threads, never a policy wait
@@ -512,3 +518,459 @@ class TestCompoundOperationSerialization:
 
     def test_a_mount_status_poll_during_a_focuser_move_waits_for_the_move(self) -> None:
         assert self._run("park") == []
+
+
+# ---------------------------------------------------------------------------
+# S6.0d (#39): OnStepAdapter 0.5.0 guide pulses through the PRODUCTION
+# `OnStepMountPulseAdapter`, on the simulator's 0.5.0 model (opt-in per scenario).
+# ---------------------------------------------------------------------------
+
+
+def _guide_rig(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    api: bool = True,
+    exports: bool = True,
+    guide: GuidePulseScenario | None = None,
+    config: IndiRuntimeConfig | None = None,
+    **scenario: object,
+) -> tuple[OnStepMountPulseAdapter, SimulatedOnStepIndiClient, FakeClock]:
+    """Production adapter on the simulator; by default a 0.5.0 install, tracking, unparked."""
+    if exports:
+        install_onstep_adapter_050_exports(monkeypatch)
+    fields: dict[str, object] = {"parked": False, "tracking": True}
+    fields.update(scenario)
+    if api:
+        fields["guide_pulses"] = guide or GuidePulseScenario()
+    clock = FakeClock()
+    connection, made = make_simulated_onstep_connection(
+        OnStepScenario(**fields),  # type: ignore[arg-type]
+        clock=clock,
+        config=config,
+    )
+    adapter = OnStepMountPulseAdapter(connection)
+    adapter.connect()
+    return adapter, made[0], clock
+
+
+def _west(adapter: OnStepMountPulseAdapter, ms: int) -> GuidePulseResult:
+    return adapter.guide_pulse(MountAxis.AXIS1, AxisDirection.POSITIVE, ms)
+
+
+class TestGuidePulseCapability:
+    """Detected once per connection from the installed OnStepAdapter: the facade's
+    `guide_pulse` (0.5.0 indi_mount.py:32) AND the exported bounds (0.5.0 __init__.py).
+    A separate capability -- `supports_pulse_guiding` (Mount Align's timed/angular choice)
+    stays False either way."""
+
+    def test_the_published_0_4_1_has_no_guide_pulse(self) -> None:
+        import onstep_adapter
+
+        assert not hasattr(onstep_adapter.IndiMount, "guide_pulse")
+
+    def test_on_0_4_1_the_capability_is_absent_and_nothing_is_sent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        adapter, client, _clock = _guide_rig(monkeypatch, api=False, exports=False)
+
+        caps = adapter.capabilities()
+        result = _west(adapter, 500)
+
+        assert caps.supports_guide_pulses_while_tracking is False
+        assert caps.supports_pulse_guiding is False
+        assert adapter.guide_pulse_range_ms is None
+        assert result.accepted is False and result.sent is False
+        assert "needs >= 0.5.0" in result.message
+        assert client.guide_pulse_calls == []
+
+    def test_with_0_5_0_the_capability_is_reported_separately(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        adapter, _client, _clock = _guide_rig(monkeypatch)
+
+        caps = adapter.capabilities()
+
+        assert caps.supports_guide_pulses_while_tracking is True
+        assert caps.supports_pulse_guiding is False  # Mount Align's choice is unaffected
+        assert adapter.guide_pulse_range_ms == (20, 5000)
+
+    def test_a_facade_without_exported_bounds_is_not_capable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        adapter, _client, _clock = _guide_rig(monkeypatch, exports=False)
+
+        assert adapter.capabilities().supports_guide_pulses_while_tracking is False
+
+    def test_disconnected_means_no_capability(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        adapter, _client, _clock = _guide_rig(monkeypatch)
+        adapter.disconnect()
+
+        assert adapter.capabilities().supports_guide_pulses_while_tracking is False
+        assert _west(adapter, 500).message == "not connected"
+
+
+class TestGuidePulseExecution:
+    def test_a_pulse_is_chunked_and_keeps_tracking(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """0.5.0 indi_guiding.py:156-164: 500 ms chunks, never a remainder below 20 ms."""
+        adapter, client, clock = _guide_rig(monkeypatch)
+        ha0 = client.ha_deg
+
+        result = _west(adapter, 1200)
+        short = _west(adapter, 520)
+
+        assert result.accepted and result.sent and result.tracking_preserved
+        assert (result.chunks_requested, result.chunks_completed) == (3, 3)
+        assert client.guide_chunks_issued == [
+            ("west", 500), ("west", 500), ("west", 200), ("west", 500), ("west", 20),
+        ]
+        assert short.accepted
+        assert client.tracking is True and client.emergency_stop_calls == 0
+        assert client.tracking_enable_calls == 0  # never touches tracking (#44)
+        assert clock.monotonic() == pytest.approx(1.72)
+        assert client.ha_deg > ha0  # AXIS1 POSITIVE = west = increasing hour angle
+
+    @pytest.mark.parametrize(
+        ("axis", "direction", "expected"),
+        [
+            (MountAxis.AXIS1, AxisDirection.POSITIVE, "west"),
+            (MountAxis.AXIS1, AxisDirection.NEGATIVE, "east"),
+            (MountAxis.AXIS2, AxisDirection.POSITIVE, "north"),
+            (MountAxis.AXIS2, AxisDirection.NEGATIVE, "south"),
+        ],
+    )
+    def test_axis_directions_map_to_guide_directions(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        axis: MountAxis,
+        direction: AxisDirection,
+        expected: str,
+    ) -> None:
+        adapter, client, _clock = _guide_rig(monkeypatch)
+
+        assert adapter.guide_pulse(axis, direction, 100).accepted
+        assert client.guide_pulse_calls == [(expected, 100)]
+
+    @pytest.mark.parametrize("ms", [19, 5001, 0])
+    def test_a_duration_outside_0_5_0_bounds_is_refused_unsent(
+        self, monkeypatch: pytest.MonkeyPatch, ms: int
+    ) -> None:
+        adapter, client, _clock = _guide_rig(monkeypatch)
+
+        result = _west(adapter, ms)
+
+        assert not result.accepted and not result.sent
+        assert "20-5000 ms" in result.message
+        assert client.guide_pulse_calls == []
+
+    def test_warnings_are_surfaced(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """0.5.0 allows a pulse during a flip warning (strict phases include flip_required,
+        indi_guiding.py:47-50) and reports `meridian_flip_required` (:110-111)."""
+        adapter, _client, _clock = _guide_rig(
+            monkeypatch, guide=GuidePulseScenario(meridian_phase="flip_required")
+        )
+
+        result = _west(adapter, 300)
+
+        assert result.accepted
+        assert result.warnings == ("meridian_flip_required",)
+
+    def test_controller_managed_authority_gaps_are_warnings(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        adapter, _client, _clock = _guide_rig(
+            monkeypatch,
+            config=fake_indi_runtime_config(tracking_authority_policy="controller_managed"),
+            home_authority=False,
+        )
+
+        result = _west(adapter, 300)
+
+        assert result.accepted
+        assert result.warnings == ("home_authority_unestablished",)
+
+    def test_status_during_a_guide_pulse_does_not_claim_a_slew(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        adapter, _client, clock = _guide_rig(monkeypatch)
+        assert adapter.status().tracking  # a reading to hold over
+        seen: list[MountStatus] = []
+
+        def poll_from_the_gui_thread() -> None:
+            poller = threading.Thread(target=lambda: seen.append(adapter.status()))
+            poller.start()
+            poller.join(_JOIN_S)
+
+        clock.call_later(0.2, poll_from_the_gui_thread)
+        assert _west(adapter, 1000).accepted
+
+        assert len(seen) == 1
+        assert seen[0].connected and seen[0].tracking and not seen[0].slewing
+
+
+#: Every refusal class of 0.5.0's preflight (indi_guiding.py:102-137) and its lock (:166-170).
+_REFUSALS = [
+    pytest.param(
+        {"guide": GuidePulseScenario(extra_blockers=("onstep_status_alert",))},
+        "guide safety inputs unavailable: ['onstep_status_alert']",
+        id="hard-blocker",
+    ),
+    pytest.param(
+        {"status_stale": True},
+        "guide safety inputs unavailable: ['onstep_status_not_fresh']",
+        id="stale-status",
+    ),
+    pytest.param(
+        {"at_limit": True},
+        "guide safety inputs unavailable: ['onstep_limit_or_park_fault']",
+        id="firmware-limit",
+    ),
+    pytest.param(
+        {"tracking": False},
+        "guide pulse requires fresh unparked tracking state with no slew, HOME, fault or limit",
+        id="not-tracking",
+    ),
+    pytest.param(
+        {"parked": True},
+        "guide pulse requires fresh unparked tracking state with no slew, HOME, fault or limit",
+        id="parked",
+    ),
+    pytest.param(
+        {"at_home": True},
+        "guide pulse requires fresh unparked tracking state with no slew, HOME, fault or limit",
+        id="at-home",
+    ),
+    pytest.param(
+        {"slewing": True},
+        "guide pulse requires fresh unparked tracking state with no slew, HOME, fault or limit",
+        id="slewing",
+    ),
+    pytest.param(
+        {"guide": GuidePulseScenario(meridian_phase="hard_stop")},
+        "guide pulse refused at meridian phase hard_stop",
+        id="meridian-hard-stop",
+    ),
+    pytest.param(
+        {"home_authority": False},
+        "guide astronomical authority unavailable: ['home_authority_unestablished'] "
+        "phase=pre_meridian_allowed",
+        id="strict-no-home-authority",
+    ),
+    pytest.param(
+        {"time_site_authority": False},
+        "guide astronomical authority unavailable: ['hour_angle_unavailable', "
+        "'time_site_authority_unestablished'] phase=unknown",
+        id="strict-no-time-site-authority",
+    ),
+    pytest.param(
+        {"guide": GuidePulseScenario(extra_blockers=("pier_side_unknown",))},
+        "guide astronomical authority unavailable: ['pier_side_unknown'] "
+        "phase=pre_meridian_allowed",
+        id="strict-pier-side-unknown",
+    ),
+    pytest.param({"lock_held": True}, "another guide pulse is active", id="concurrent-pulse"),
+]
+
+
+class TestGuidePulseRefusals:
+    @pytest.mark.parametrize(("setup", "expected"), _REFUSALS)
+    def test_each_refusal_is_surfaced_and_nothing_is_sent(
+        self, monkeypatch: pytest.MonkeyPatch, setup: dict[str, object], expected: str
+    ) -> None:
+        fields = dict(setup)
+        guide = fields.pop("guide", None)
+        lock_held = bool(fields.pop("lock_held", False))
+        slewing = bool(fields.pop("slewing", False))
+        at_limit = bool(fields.pop("at_limit", False))
+        adapter, client, _clock = _guide_rig(
+            monkeypatch, guide=guide, **fields  # type: ignore[arg-type]
+        )
+        client.slewing, client.at_limit = slewing, at_limit
+        if lock_held:
+            client._guide_lock.acquire()
+
+        result = _west(adapter, 1000)
+
+        assert result.accepted is False and result.sent is False
+        assert result.message == expected
+        assert result.tracking_off is False
+        assert client.guide_chunks_issued == []
+        assert client.emergency_stop_calls == 0
+
+    def test_a_client_that_is_not_connected_is_reported(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        adapter, client, _clock = _guide_rig(monkeypatch)
+        client.closed = True  # 0.5.0 indi_client.py:246-247 raises ConnectionError
+
+        result = _west(adapter, 100)
+
+        assert not result.accepted and result.message == "INDI client is not connected"
+
+
+class TestGuidePulseFailureAfterAnIssuedChunk:
+    """0.5.0 indi_guiding.py:213-226: a failure once a chunk was issued triggers
+    `emergency_stop()` (ABORT + TRACK_OFF). Its `tracking_preserved` still comes from the
+    snapshot BEFORE that stop (:220-222), so the adapter reads the status again and reports
+    `tracking_off` -- prominently, in the message too."""
+
+    def test_a_chunk_timeout_stops_the_mount_and_says_tracking_is_off(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        guide = GuidePulseScenario(
+            chunk_errors=[
+                None, TimeoutError("INDI guide pulse TELESCOPE_TIMED_GUIDE_WE did not complete")
+            ]
+        )
+        adapter, client, _clock = _guide_rig(monkeypatch, guide=guide)
+
+        result = _west(adapter, 1500)
+
+        assert client.emergency_stop_calls == 1 and client.tracking is False
+        assert result.accepted is False and result.sent is True
+        assert result.tracking_preserved is True  # 0.5.0's pre-stop snapshot
+        assert result.tracking_off is True
+        assert (result.chunks_requested, result.chunks_completed) == (3, 1)
+        assert "did not complete" in result.message
+        assert "NOT tracking" in result.message
+
+    def test_a_refusal_after_the_last_chunk_also_stops_the_mount(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The final preflight's refusal is raised (indi_guiding.py:206-207) -> emergency stop."""
+        adapter, client, clock = _guide_rig(monkeypatch)
+        clock.call_later(0.9, lambda: setattr(client, "meridian_phase", "hard_stop"))
+
+        result = _west(adapter, 1000)
+
+        assert client.emergency_stop_calls == 1
+        assert result.tracking_off is True
+        assert result.message.startswith("guide pulse refused at meridian phase hard_stop")
+
+    def test_a_refusal_between_chunks_does_not_stop_the_mount(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A preflight refusal before a later chunk returns without emergency stop
+        (indi_guiding.py:183-188): sent, not completed, still tracking."""
+        adapter, client, clock = _guide_rig(monkeypatch)
+        clock.call_later(0.2, lambda: setattr(client, "meridian_phase", "hard_stop"))
+
+        result = _west(adapter, 1500)
+
+        assert client.emergency_stop_calls == 0 and client.tracking is True
+        assert result.sent is True and result.accepted is False
+        assert result.tracking_off is False
+        assert result.chunks_completed == 1
+        assert result.message == "guide pulse refused at meridian phase hard_stop"
+
+
+class TestStopDuringAGuidePulse:
+    """S6.0c semantics for guide pulses: Stop is lock-free and sends OnStep's emergency stop
+    (ABORT + TRACK_OFF) while the pulse holds `operation_lock`; 0.5.0's next chunk preflight then
+    refuses (not tracking) -- no further chunk is sent. A latched Stop refuses the next pulse
+    unsent until the operator's next command re-arms."""
+
+    def test_stop_mid_pulse_ends_it_and_reports_tracking_off(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        adapter, client, clock = _guide_rig(monkeypatch)
+
+        def press_stop() -> None:
+            adapter.abort()  # returns at once (S6.0c)
+            # Barrier: the stop worker's emergency stop has reached the controller.
+            assert _until(lambda: not client.tracking), "the stop never reached the mount"
+
+        clock.call_later(0.3, press_stop)
+        result = _west(adapter, 2000)
+        worker = adapter._stop_worker
+        if worker is not None:
+            worker.join(_JOIN_S)
+
+        assert client.guide_chunks_issued == [("west", 500)]  # nothing after the Stop
+        assert result.accepted is False and result.sent is True
+        assert result.tracking_off is True
+        assert result.message.startswith("stopped by the user")
+        # Review fix 2: attributed to the user's Stop, not to a failed pulse.
+        assert "when a sent guide pulse fails" not in result.message
+        assert "Stop" in result.message and "NOT tracking" in result.message
+
+    def test_a_latched_stop_refuses_the_next_pulse_unsent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        adapter, client, _clock = _guide_rig(monkeypatch)
+        adapter.abort()
+        worker = adapter._stop_worker
+        if worker is not None:
+            worker.join(_JOIN_S)
+        client.tracking = True  # the operator re-enabled tracking
+
+        refused = _west(adapter, 500)
+        adapter.clear_abort()
+        accepted = _west(adapter, 500)
+
+        assert refused.message == "stopped by the user -- guide pulse not sent"
+        assert not refused.sent
+        assert accepted.accepted
+
+    def test_a_latched_stop_says_when_the_stop_ended_tracking(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Review fix 1: a Stop between pulses sends 0.5.0's emergency stop (ABORT + TRACK_OFF);
+        the next pulse is refused unsent -- and the user is told the mount no longer tracks."""
+        adapter, client, _clock = _guide_rig(monkeypatch)
+        adapter.abort()
+        worker = adapter._stop_worker
+        if worker is not None:
+            worker.join(_JOIN_S)
+        assert client.tracking is False
+
+        refused = _west(adapter, 500)
+
+        assert not refused.sent and not refused.accepted
+        assert refused.tracking_off is True
+        assert refused.message.startswith("stopped by the user -- guide pulse not sent")
+        assert "NOT tracking" in refused.message
+        assert client.guide_pulse_calls == []
+
+
+class TestGuidePulseTrackingUnknown:
+    """Review fix 3: unknown means possibly stopped -- 'tracking may be OFF, check the mount'."""
+
+    def test_a_failed_status_read_after_a_failed_pulse(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        guide = GuidePulseScenario(
+            chunk_errors=[RuntimeError("INDI rejected guide pulse TELESCOPE_TIMED_GUIDE_WE")]
+        )
+        adapter, client, _clock = _guide_rig(monkeypatch, guide=guide)
+
+        def unreadable() -> object:
+            raise ConnectionError("INDI status unavailable")
+
+        monkeypatch.setattr(client.mount, "get_status", unreadable)
+
+        result = _west(adapter, 300)
+
+        assert result.sent and not result.accepted
+        assert result.tracking_off is True
+        assert "tracking may be OFF" in result.message and "check the mount" in result.message
+
+    def test_an_unconfirmed_emergency_stop(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """0.5.0 appends '; emergency stop failed: ...' (indi_guiding.py:217-219)."""
+        guide = GuidePulseScenario(
+            chunk_errors=[
+                TimeoutError("INDI guide pulse TELESCOPE_TIMED_GUIDE_WE did not complete")
+            ]
+        )
+        adapter, client, _clock = _guide_rig(monkeypatch, guide=guide)
+
+        def failing_stop(*, timeout: float = 5.0) -> object:
+            raise RuntimeError("abort not acknowledged")
+
+        monkeypatch.setattr(client, "emergency_stop", failing_stop)
+
+        result = _west(adapter, 300)
+
+        assert "emergency stop failed" in result.message
+        assert result.tracking_off is True
+        assert "tracking may be OFF" in result.message
+

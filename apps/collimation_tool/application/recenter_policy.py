@@ -41,6 +41,16 @@ Align's screen moves (`angular_move_plan`): a component below the adapter-report
 the plan is validated as a whole before anything is sent. A refusal keeps the adapter's own
 reason in `MountCorrectionResult.message`.
 
+Guide pulses while tracking (S6.0d, #39): with `guide_pulses=True` every correction is a
+tracking-preserving guide pulse (`GuidePulsePort.guide_pulse`, OnStepAdapter >= 0.5.0) and the
+matrix is a GUIDE-PULSE calibration in real guide-pulse ms (`guide_pulse_reacquisition`), so no
+rate conversion applies. The correction is solved in 2-D like the angular path; each component is
+capped at the per-axis `max_step_px` share (converted through the measured matrix) and at the
+adapter-reported longest pulse; a component shorter than the shortest pulse is dropped (it is
+below a pixel at any practical guide rate), and nothing at all is sent when every component is.
+A refused/failed pulse ends the loop as `pulse_rejected` with the adapter's message; OnStepAdapter
+warnings (e.g. meridian_flip_required) and "tracking is now OFF" are carried on the result.
+
 The timed path (mounts that report timed pulses) is unchanged and still maps image x to AXIS1
 and y to AXIS2 -- rotation-blind, pinned as a known defect by a strict xfail
 (test_recenter_policy.py::TestTimedPathRotation); no production timed mount is wired today.
@@ -56,7 +66,13 @@ from functools import partial
 
 from astrotool_core.config import MountAlignmentSettings
 from astrotool_core.mount.axis_calibration import CalibrationMatrix, solve_screen_move
-from astrotool_core.mount.port import AxisDirection, CommandResult, MountAxis, MountPort
+from astrotool_core.mount.port import (
+    AxisDirection,
+    CommandResult,
+    GuidePulseResult,
+    MountAxis,
+    MountPort,
+)
 from astrotool_core.target.roi_tracker import TrackingResult, TrackingState
 from astrotool_core.timing import SYSTEM_CLOCK, Clock
 
@@ -82,7 +98,21 @@ _NO_MOTION_PRIMITIVE = (
 #: far from the reference whenever one axis' remainder is just below the mount's smallest move.
 RECENTER_DROP_TOLERANCE = 0.5
 
-_CorrectionStep = Callable[[], CommandResult]
+_NO_GUIDE_PULSES = (
+    "this mount offers no guide pulse while tracking (needs OnStepAdapter >= 0.5.0) -- "
+    "nothing was sent to the mount"
+)
+
+_CorrectionStep = Callable[[], "CommandResult | GuidePulseResult"]
+
+
+def _note_guide_outcome(result: CommandResult | GuidePulseResult, warnings: set[str]) -> bool:
+    """S6.0d: collect a guide pulse's OnStepAdapter warnings; True when the mount was observed
+    NOT tracking after it failed. Other results carry neither."""
+    if not isinstance(result, GuidePulseResult):
+        return False
+    warnings.update(result.warnings)
+    return result.tracking_off
 
 
 @dataclass(frozen=True)
@@ -117,13 +147,18 @@ class MountCorrectionResult:
     mount's smallest move -- sqrt(2) x a floor-sized move's image shift; message says so);
     `move_cap_below_mount_minimum` -- the per-move cap (`max_pulse_ms` in the configured unit)
     is itself below that smallest move (a configuration problem); `calibration_degenerate` --
-    the matrix cannot be inverted."""
+    the matrix cannot be inverted.
+
+    Guide pulses only (S6.0d): `warnings` -- OnStepAdapter's warnings seen on any pulse;
+    `tracking_off` -- a sent pulse failed and the mount was then observed NOT tracking."""
 
     success: bool
     pulses_issued: int
     final_offset_px: float
     reason: str
     message: str = ""
+    warnings: tuple[str, ...] = ()
+    tracking_off: bool = False
 
 
 class CollimationRecenterPolicy:
@@ -138,6 +173,7 @@ class CollimationRecenterPolicy:
         clock: Clock | None = None,
         center_rate_x: float | None = None,
         max_step_px: float | None = None,
+        guide_pulses: bool = False,
     ) -> None:
         """`center_rate_x`: the unit the matrix's equivalent ms are in on a mount without timed
         pulses -- pass the loaded `MountAlignmentSettings.calibration_center_rate_x` (the
@@ -146,7 +182,11 @@ class CollimationRecenterPolicy:
         `max_step_px` (mounts without timed pulses): the largest image shift one angular move
         may produce, per axis, converted to arcsec through the measured matrix -- the caller
         sizes it from the camera frame (see `FocusedStarAcquisition`). None = the fixed
-        `max_pulse_ms` cap in the configured unit (~60" at 8x)."""
+        `max_pulse_ms` cap in the configured unit (~60" at 8x).
+
+        `guide_pulses` (S6.0d): correct with tracking-preserving guide pulses; `calibration` is
+        then a guide-pulse calibration in real ms, and `max_step_px` caps each guide pulse the
+        same way (None = the adapter's longest pulse)."""
         self._mount = mount
         self._calibration = calibration
         self._config = config or RecenterConfig()
@@ -157,6 +197,7 @@ class CollimationRecenterPolicy:
             else MountAlignmentSettings().calibration_center_rate_x
         )
         self._max_step_px = max_step_px
+        self._guide_pulses = guide_pulses
 
     def center(
         self,
@@ -171,44 +212,54 @@ class CollimationRecenterPolicy:
         prev_dist: float | None = None
         diverge_count = 0
         timed = bool(self._mount.capabilities().supports_pulse_guiding)
+        warnings: set[str] = set()
+
+        def finish(result: MountCorrectionResult) -> MountCorrectionResult:
+            if not warnings:
+                return result
+            return MountCorrectionResult(
+                result.success, result.pulses_issued, result.final_offset_px, result.reason,
+                result.message, tuple(sorted(warnings)), result.tracking_off,
+            )
 
         for _ in range(cfg.max_iterations):
             if cancel_check is not None and cancel_check():
-                return MountCorrectionResult(False, pulses, prev_dist or 0.0, "cancelled")
+                return finish(MountCorrectionResult(False, pulses, prev_dist or 0.0, "cancelled"))
 
             result = measure()
             if result.state not in _LOCKED_STATES or result.x is None or result.y is None:
-                return MountCorrectionResult(False, pulses, 999.0, "star_lost")
+                return finish(MountCorrectionResult(False, pulses, 999.0, "star_lost"))
 
             dx = result.x - ref_x
             dy = result.y - ref_y
             dist = (dx**2 + dy**2) ** 0.5
             if dist <= cfg.fine_tolerance_px:
-                return MountCorrectionResult(True, pulses, dist, "within_tolerance")
+                return finish(MountCorrectionResult(True, pulses, dist, "within_tolerance"))
 
             if prev_dist is not None and dist > prev_dist * 1.1:
                 diverge_count += 1
                 if diverge_count >= cfg.max_diverge_count:
-                    return MountCorrectionResult(False, pulses, dist, "diverging")
+                    return finish(MountCorrectionResult(False, pulses, dist, "diverging"))
             else:
                 diverge_count = max(0, diverge_count - 1)
             prev_dist = dist
 
-            planned = self._timed_correction(dx, dy) if timed else self._angular_correction(dx, dy)
+            planned = self._plan(dx, dy, timed)
             if isinstance(planned, _NotSent):
                 if planned.reason == "below_mount_minimum_move":
-                    return self._below_floor_result(pulses, dist, planned.message)
-                return MountCorrectionResult(False, pulses, dist, planned.reason, planned.message)
-            for send in planned:
-                pulse_result = send()
-                pulses += 1
-                if not pulse_result.accepted:
-                    _log.warning("recentering correction refused: %s", pulse_result.message)
-                    return MountCorrectionResult(
-                        False, pulses, dist, "pulse_rejected", pulse_result.message
+                    return finish(self._below_floor_result(pulses, dist, planned.message))
+                return finish(
+                    MountCorrectionResult(False, pulses, dist, planned.reason, planned.message)
+                )
+            sent, stopped = self._send_steps(planned, warnings, cancel_check)
+            pulses += sent
+            if stopped is not None:
+                reason, message, tracking_off = stopped
+                return finish(
+                    MountCorrectionResult(
+                        False, pulses, dist, reason, message, tracking_off=tracking_off
                     )
-                if cfg.settle_ms > 0:
-                    self._clock.sleep(cfg.settle_ms / 1000.0)
+                )
 
         final = measure()
         if final.state in _LOCKED_STATES and final.x is not None and final.y is not None:
@@ -216,7 +267,70 @@ class CollimationRecenterPolicy:
         else:
             final_dist = 999.0
         success = final_dist <= cfg.rough_tolerance_px
-        return MountCorrectionResult(success, pulses, final_dist, "max_pulses")
+        return finish(MountCorrectionResult(success, pulses, final_dist, "max_pulses"))
+
+    def _send_steps(
+        self,
+        planned: list[_CorrectionStep],
+        warnings: set[str],
+        cancel_check: Callable[[], bool] | None,
+    ) -> tuple[int, tuple[str, str, bool] | None]:
+        """Send one correction's steps (settling after each); returns how many were sent and,
+        when the correction ended early, (reason, message, tracking_off)."""
+        sent = 0
+        for send in planned:
+            # S6.0d review (A2): with guide pulses, re-check between the pulses of one
+            # correction too (e.g. the operating mode left Astronomical).
+            if self._guide_pulses and cancel_check is not None and cancel_check():
+                return sent, ("cancelled", "", False)
+            pulse_result = send()
+            sent += 1
+            tracking_off = _note_guide_outcome(pulse_result, warnings)
+            if not pulse_result.accepted:
+                _log.warning("recentering correction refused: %s", pulse_result.message)
+                return sent, ("pulse_rejected", pulse_result.message, tracking_off)
+            if self._config.settle_ms > 0:
+                self._clock.sleep(self._config.settle_ms / 1000.0)
+        return sent, None
+
+    def _plan(self, dx: float, dy: float, timed: bool) -> list[_CorrectionStep] | _NotSent:
+        if self._guide_pulses:
+            return self._guide_correction(dx, dy)
+        return self._timed_correction(dx, dy) if timed else self._angular_correction(dx, dy)
+
+    def _fastest_px_per_ms(self, axis: MountAxis) -> float:
+        return max(
+            max(self._calibration.response_for(axis, d).px_per_ms for d in AxisDirection), 1e-9
+        )
+
+    def _guide_correction(self, dx: float, dy: float) -> list[_CorrectionStep] | _NotSent:
+        """S6.0d: at most one guide pulse per axis, solved in 2-D (see the module docstring)."""
+        guide_pulse = getattr(self._mount, "guide_pulse", None)
+        bounds = getattr(self._mount, "guide_pulse_range_ms", None)
+        if guide_pulse is None or bounds is None:
+            return _NotSent("pulse_rejected", _NO_GUIDE_PULSES)
+        shortest, longest = bounds
+        try:
+            solved = solve_screen_move(self._calibration, target_dx_px=-dx, target_dy_px=-dy)
+        except ValueError as exc:
+            return _NotSent("calibration_degenerate", str(exc))
+        steps: list[_CorrectionStep] = []
+        for axis, direction, duration_ms in solved:
+            cap = longest
+            if self._max_step_px is not None:
+                cap_ms = int(self._max_step_px / self._fastest_px_per_ms(axis))
+                cap = min(longest, max(shortest, cap_ms))
+            duration = min(int(duration_ms), cap)
+            if duration < shortest:
+                continue  # sub-pixel at any practical guide rate
+            steps.append(partial(guide_pulse, axis, direction, duration))
+        if not steps:
+            return _NotSent(
+                "below_mount_minimum_move",
+                f"the remaining correction is shorter than the shortest guide pulse "
+                f"({shortest} ms) -- nothing was sent",
+            )
+        return steps
 
     def _timed_correction(self, dx: float, dy: float) -> list[_CorrectionStep]:
         """One timed pulse on the dominant axis (unchanged pre-S6.0b behaviour)."""
@@ -284,8 +398,12 @@ class CollimationRecenterPolicy:
         within the rough tolerance -- or within the mount's smallest move (sqrt(2) x the image
         shift of a floor-sized move on the faster axis: one sub-floor remainder per axis), which
         at fine plate scales (30" > 20 px at ~1"/px) is as close as this mount can get."""
-        floor = float(getattr(self._mount, "min_angular_arcsec", 0.0) or 0.0)
-        floor_ms = arcsec_to_equivalent_ms(floor, center_rate_x=self._center_rate_x)
+        if self._guide_pulses:
+            bounds = getattr(self._mount, "guide_pulse_range_ms", None)
+            floor_ms = float(bounds[0]) if bounds else 0.0
+        else:
+            floor = float(getattr(self._mount, "min_angular_arcsec", 0.0) or 0.0)
+            floor_ms = arcsec_to_equivalent_ms(floor, center_rate_x=self._center_rate_x)
         floor_px = floor_ms * max(r.px_per_ms for r in self._calibration.responses.values())
         reachable_px = math.sqrt(2.0) * floor_px
         if dist <= self._config.rough_tolerance_px:

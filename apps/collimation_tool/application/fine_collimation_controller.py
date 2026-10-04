@@ -74,6 +74,8 @@ _STAR_LOST_REASON = "star_lost"
 _NO_USABLE_FRAMES_REASON = "no_usable_frames"
 _CANCELLED_REASON = "cancelled"
 _NO_FRAME_REASON = "no_frame_available"
+#: S6.0d: prefix of a successful reacquisition's note in the log (carried to `detail`).
+_REACQUISITION_NOTE = "reacquisition_note: "
 
 
 @dataclass(frozen=True)
@@ -100,6 +102,8 @@ class FineCollimationOutcome:
     reacquisition_log: tuple[str, ...] = ()
     #: S6.0b: human-readable detail behind `reason` -- e.g. the mount adapter's own refusal
     #: text when guide-assisted reacquisition was refused. None when there is none.
+    #: S6.0d: on success, a successful reacquisition's notes (e.g. OnStepAdapter's
+    #: "meridian_flip_required" warning).
     detail: str | None = None
 
 
@@ -212,6 +216,8 @@ class FineCollimationController:
         if confirmed.status is not AcquisitionStatus.TRACKING or confirmed.roi is None:
             return (confirmed.failure_reason or _STAR_LOST_REASON, confirmed.detail)
         log.append("reacquired_via_guide")
+        if guide_result.detail:  # S6.0d: e.g. OnStepAdapter warnings -- shown, never dropped
+            log.append(_REACQUISITION_NOTE + guide_result.detail)
         return crop_to_roi(frame, confirmed.roi)
 
     def _build_result(
@@ -244,4 +250,10 @@ class FineCollimationController:
             ),
             reason=None,
             reacquisition_log=tuple(log),
+            detail="; ".join(
+                entry[len(_REACQUISITION_NOTE):]
+                for entry in log
+                if entry.startswith(_REACQUISITION_NOTE)
+            )
+            or None,
         )
