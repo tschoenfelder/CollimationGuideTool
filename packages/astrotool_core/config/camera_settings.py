@@ -31,7 +31,11 @@ import tomllib
 from dataclasses import dataclass
 from pathlib import Path
 
-DEFAULT_CONFIG_PATH = Path.home() / ".CollimationGuideTool" / "config.toml"
+from astrotool_core.config import paths
+
+#: Compatibility alias of `paths.DEFAULT_OWN_CONFIG_PATH`; the
+#: functions below resolve the owner at call time (#55 D03).
+DEFAULT_CONFIG_PATH = paths.DEFAULT_OWN_CONFIG_PATH
 
 
 @dataclass(frozen=True)
@@ -57,7 +61,7 @@ class CameraPanelSettings:
 
 
 def load_camera_settings(
-    path: Path | str = DEFAULT_CONFIG_PATH,
+    path: Path | str | None = None,
 ) -> dict[str, CameraPanelSettings]:
     """``{panel_name: CameraPanelSettings}`` for every ``[cameras.<panel_name>]``
     table found.
@@ -68,6 +72,8 @@ def load_camera_settings(
     restoring the other panel's settings.
     """
     settings: dict[str, CameraPanelSettings] = {}
+    if path is None:
+        path = paths.own_config_path()
     try:
         with Path(path).open("rb") as f:
             data = tomllib.load(f)
@@ -126,7 +132,7 @@ def _strip_table_blocks(lines: list[str], prefix: str) -> list[str]:
 
 def save_camera_settings(
     settings: dict[str, CameraPanelSettings],
-    path: Path | str = DEFAULT_CONFIG_PATH,
+    path: Path | str | None = None,
 ) -> None:
     """Write ``{panel_name: CameraPanelSettings}`` to `path` as TOML.
 
@@ -136,7 +142,7 @@ def save_camera_settings(
     same as an empty one (nothing to preserve), matching `load_camera_settings`'s
     own tolerance.
     """
-    target = Path(path)
+    target = Path(path) if path is not None else paths.own_config_path()
     try:
         existing_lines = target.read_text(encoding="utf-8").splitlines()
     except OSError:

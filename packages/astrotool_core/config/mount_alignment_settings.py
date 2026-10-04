@@ -25,7 +25,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-DEFAULT_CONFIG_PATH = Path.home() / ".CollimationGuideTool" / "config.toml"
+from astrotool_core.config import paths
+
+#: Compatibility alias of `paths.DEFAULT_OWN_CONFIG_PATH`; the loader
+#: resolves the owner at call time (#55 D03).
+DEFAULT_CONFIG_PATH = paths.DEFAULT_OWN_CONFIG_PATH
 
 #: OnStep rate preset 7 is "48x" sidereal (presets 0-9, passed through
 #: OnStepAdapter's `move_*_timed(rate_preset=)`). Kept as the default here so
@@ -224,7 +228,7 @@ def _read[T](table: dict[str, Any], key: str, default: T, convert: Callable[[Any
 
 
 def load_mount_alignment_settings(
-    path: Path | str = DEFAULT_CONFIG_PATH,
+    path: Path | str | None = None,
 ) -> MountAlignmentSettings:
     """Read the `[mount_alignment]` table, falling back to
     `MountAlignmentSettings()`'s defaults for a missing file, missing table,
@@ -232,7 +236,7 @@ def load_mount_alignment_settings(
     never required state (same contract as `load_camera_settings`)."""
     defaults = MountAlignmentSettings()
     try:
-        with Path(path).open("rb") as f:
+        with Path(path if path is not None else paths.own_config_path()).open("rb") as f:
             data = tomllib.load(f)
     except (OSError, tomllib.TOMLDecodeError):
         return defaults

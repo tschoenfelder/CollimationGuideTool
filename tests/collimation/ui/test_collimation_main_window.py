@@ -1570,15 +1570,19 @@ class TestFovOverlayIntegration:
         assert window._right_panel._fov_rect is None
 
     def test_default_construction_finds_real_data_when_smarttscope_is_installed(
-        self, qapp: object
+        self, qapp: object, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         # Verified on the Pi this feature was built for: with no override
         # given, MainWindow reads the real ~/.SmartTScope/config.toml and
         # produces the real rig's overlay — skipped everywhere else.
+        # `optics.DEFAULT_CONFIG_PATH` is the import-time (real) location;
+        # conftest redirects the owner, so point it back for this one test.
+        from astrotool_core.config import paths
         from astrotool_core.optics import DEFAULT_CONFIG_PATH
 
         if not DEFAULT_CONFIG_PATH.is_file():
             pytest.skip("no ~/.SmartTScope/config.toml on this machine")
+        monkeypatch.setattr(paths, "SMARTTSCOPE_CONFIG_PATH", DEFAULT_CONFIG_PATH)
         window = MainWindow(
             _camera_with_sensor(3840, 2160),
             guide_camera=_camera_with_sensor(1920, 1080),

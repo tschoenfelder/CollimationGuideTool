@@ -37,38 +37,34 @@ os.environ.setdefault("NUMEXPR_NUM_THREADS", "1")
 
 
 @pytest.fixture(autouse=True)
-def _isolate_camera_settings_path(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Redirect CollimationTool MainWindow's default camera-settings file
-    to a per-test tmp_path instead of the real
-    ``~/.CollimationGuideTool/config.toml``.
+def _isolate_config_files(
+    request: pytest.FixtureRequest, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Redirect BOTH config files and the diagnostics directory to per-test
+    tmp paths by patching their one owner, `astrotool_core.config.paths`
+    (#55 D03) -- every reader resolves its default through it at call time,
+    so this covers MainWindow's camera settings / mount alignment, the
+    plate-scale lookup, the filter-wheel wiring, the OnStep INDI config and
+    every default `DiagnosticService` (e.g. a MainWindow incident capture)
+    at once.
 
-    Without this, every test that constructs a bare `MainWindow(...)`
-    (the vast majority — `camera_settings_path` is rarely passed
-    explicitly) would read and overwrite the developer's/Pi's actual
-    saved camera settings on every test run. Patches the name as
-    imported into `main_window` (not the defining module) — see that
-    constructor's own comment on why a bare global reference, not a
-    default-parameter value, makes this patch effective.
+    Without this, a bare `MainWindow(...)` would read and overwrite the
+    developer's/Pi's real ``~/.CollimationGuideTool/config.toml``, and a
+    machine that has ``~/.SmartTScope/config.toml`` would silently switch
+    mount calibration (#46) to sized moves. The SmartTScope path points at a
+    file that never exists, so tests that need a plate scale pass one
+    explicitly. `hardware`-tier tests keep the real files: they talk to the
+    real rig and need its real configuration.
     """
-    try:
-        import collimation_tool.ui.main_window as _main_window_module
-    except ImportError:
+    if request.node.get_closest_marker("hardware") is not None:
         return
-    monkeypatch.setattr(_main_window_module, "DEFAULT_CONFIG_PATH", tmp_path / "config.toml")
+    from astrotool_core.config import paths
 
-
-@pytest.fixture(autouse=True)
-def _isolate_pixel_scale_lookup(monkeypatch: pytest.MonkeyPatch) -> None:
-    """MainWindow reads each optical train's plate scale from the real
-    ``~/.SmartTScope/config.toml`` unless a test passes one explicitly. Without
-    this, a developer/Pi machine that HAS that file would silently switch
-    mount calibration (issue #46) from the fixed pulse to sized moves in every
-    bare `MainWindow(...)` test. Tests that need a scale pass it explicitly."""
-    try:
-        import collimation_tool.ui.main_window as _main_window_module
-    except ImportError:
-        return
-    monkeypatch.setattr(_main_window_module, "load_pixel_scale_arcsec", lambda _train: None)
+    monkeypatch.setattr(paths, "OWN_CONFIG_PATH", tmp_path / "config.toml")
+    monkeypatch.setattr(
+        paths, "SMARTTSCOPE_CONFIG_PATH", tmp_path / "no-smarttscope" / "config.toml"
+    )
+    monkeypatch.setattr(paths, "DIAGNOSTICS_DIR", tmp_path / "diagnostics")
 
 
 @pytest.fixture(scope="session")

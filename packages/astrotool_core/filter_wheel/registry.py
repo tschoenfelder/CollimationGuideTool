@@ -23,18 +23,15 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from astrotool_core.filter_wheel.config import (
-    DEFAULT_LOCAL_CONFIG_PATH,
-    DEFAULT_SMARTTSCOPE_CONFIG_PATH,
-    load_filter_wheel_wiring,
-)
+from astrotool_core.config.device_defaults import EFW_DEVICE_NAME, INDI_HOST, INDI_PORT
+from astrotool_core.filter_wheel.config import load_filter_wheel_wiring
 from astrotool_core.filter_wheel.indi_filter_wheel_adapter import IndiFilterWheelAdapter
 from astrotool_core.filter_wheel.port import FilterWheelPort
 
-#: Only ever used when neither config source names a host/port -- matches
-#: this rig's real indiserver (see filter_wheel.config's own built-in default).
-_DEFAULT_HOST = "localhost"
-_DEFAULT_PORT = 7624
+#: Only ever used when neither config source names a host/port -- the one
+#: default INDI endpoint (`astrotool_core.config.device_defaults`, #55 D02).
+_DEFAULT_HOST = INDI_HOST
+_DEFAULT_PORT = INDI_PORT
 _WHEEL_ID = "efw1"
 
 
@@ -71,8 +68,8 @@ class FilterWheelAssignment:
 
 def load_filter_wheel_layout(
     *,
-    smarttscope_path: Path | str = DEFAULT_SMARTTSCOPE_CONFIG_PATH,
-    local_path: Path | str = DEFAULT_LOCAL_CONFIG_PATH,
+    smarttscope_path: Path | str | None = None,
+    local_path: Path | str | None = None,
 ) -> FilterWheelLayout:
     """One wheel, wired to whichever train `load_filter_wheel_wiring` names --
     an empty layout (no wheel, no trains) when the wiring is explicitly
@@ -82,12 +79,10 @@ def load_filter_wheel_layout(
         return FilterWheelLayout(wheels=(), trains=())
     wheel = FilterWheelConfig(
         id=_WHEEL_ID,
-        # load_filter_wheel_wiring() always resolves device_name to a real
-        # string whenever enabled=True (its own built-in default, if
-        # nothing else names one) -- this `or` is an unreachable-in-
-        # practice safety net, so it must still name a real device rather
-        # than a stale duplicate of that same default.
-        device_name=wiring.device_name or "ToupTek EFW 2",
+        # load_filter_wheel_wiring() always resolves device_name whenever
+        # enabled=True; the fallback names the same single owner rather
+        # than re-stating the literal (#55 D01).
+        device_name=wiring.device_name or EFW_DEVICE_NAME,
         host=wiring.host or _DEFAULT_HOST,
         port=wiring.port or _DEFAULT_PORT,
         filter_names=dict(wiring.filter_names),

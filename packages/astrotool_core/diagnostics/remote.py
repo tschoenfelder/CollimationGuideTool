@@ -20,7 +20,8 @@ import subprocess
 from collections.abc import Callable, Iterable
 from pathlib import Path
 
-from astrotool_core.diagnostics.service import DEFAULT_DIAGNOSTICS_DIR, find_bundle
+from astrotool_core.config import paths
+from astrotool_core.diagnostics.service import find_bundle
 
 #: SSH host alias for the rig's Pi. ``rasppi3`` is defined in the user's
 #: ``~/.ssh/config`` (``HostName rasppiserver3.fritz.box``, ``User astro``);
@@ -30,7 +31,7 @@ DEFAULT_PI_HOST = "rasppi3"
 #: The Pi's own diagnostics dir. ``~`` is left for the remote shell / scp to
 #: expand against ``astro``'s home (``DiagnosticService`` uses the same
 #: ``~/.CollimationGuideTool/diagnostics`` convention on every platform).
-DEFAULT_REMOTE_DIAGNOSTICS_DIR = "~/.CollimationGuideTool/diagnostics"
+DEFAULT_REMOTE_DIAGNOSTICS_DIR = f"~/{paths.APP_DIR_NAME}/diagnostics"
 
 #: ``(argv) -> CompletedProcess``. Defaults to a real ``subprocess.run`` with
 #: captured text output; injected in tests.
@@ -82,7 +83,7 @@ def pull_bundle(
     *,
     host: str = DEFAULT_PI_HOST,
     remote_dir: str = DEFAULT_REMOTE_DIAGNOSTICS_DIR,
-    local_dir: Path | str = DEFAULT_DIAGNOSTICS_DIR,
+    local_dir: Path | str | None = None,
     force: bool = False,
     runner: CommandRunner | None = None,
 ) -> Path:
@@ -96,7 +97,7 @@ def pull_bundle(
     ``AmbiguousRemoteBundleError`` subclasses) on any failure.
     """
     run = runner or _default_runner
-    local_root = Path(local_dir)
+    local_root = Path(local_dir) if local_dir is not None else paths.diagnostics_dir()
 
     if not force:
         existing = find_bundle(incident_id, diagnostics_dir=local_root)

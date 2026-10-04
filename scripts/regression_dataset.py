@@ -28,6 +28,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from astrotool_core.config import paths
 from astrotool_core.diagnostics import find_bundle
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -79,7 +80,7 @@ def main(argv: list[str] | None = None) -> int:
 
     bundle = find_bundle(args.uuid)
     if bundle is None:
-        diagnostics = Path.home() / ".CollimationGuideTool" / "diagnostics"
+        diagnostics = paths.diagnostics_dir()
         print(
             f"error: no diagnostic bundle matches {args.uuid!r} (looked under {diagnostics})\n"
             f"  if the failure was reproduced on the Pi, pull it first:\n"

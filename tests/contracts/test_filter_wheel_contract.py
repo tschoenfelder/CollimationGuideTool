@@ -20,6 +20,7 @@ import weakref
 from collections.abc import Callable
 
 import pytest
+from astrotool_core.config.device_defaults import EFW_DEVICE_NAME, INDI_PORT
 from astrotool_core.filter_wheel import FakeFilterWheel, FilterWheelPort, NoFilterWheel
 from astrotool_core.filter_wheel.indi_filter_wheel_adapter import IndiFilterWheelAdapter
 from astrotool_core.testing.fake_indi_server import FakeIndiServer
@@ -27,8 +28,10 @@ from astrotool_core.testing.fake_indi_server import FakeIndiServer
 FilterWheelFactory = Callable[[], FilterWheelPort]
 
 _INDI_FILTER_WHEEL_HOST = os.environ.get("ASTROTOOL_INDI_FILTER_WHEEL_HOST")
-_INDI_FILTER_WHEEL_PORT = int(os.environ.get("ASTROTOOL_INDI_FILTER_WHEEL_PORT", "7624"))
-_INDI_FILTER_WHEEL_DEVICE = os.environ.get("ASTROTOOL_INDI_FILTER_WHEEL_DEVICE", "Filter Wheel")
+# Defaults from the one owner (#55 D01/D02) -- an earlier "Filter Wheel" here
+# matched only the adapter's own (wrong) default, never the rig's driver.
+_INDI_FILTER_WHEEL_PORT = int(os.environ.get("ASTROTOOL_INDI_FILTER_WHEEL_PORT", str(INDI_PORT)))
+_INDI_FILTER_WHEEL_DEVICE = os.environ.get("ASTROTOOL_INDI_FILTER_WHEEL_DEVICE", EFW_DEVICE_NAME)
 
 
 def no_filter_wheel_factory() -> FilterWheelPort:

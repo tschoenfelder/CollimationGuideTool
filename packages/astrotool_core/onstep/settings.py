@@ -18,8 +18,13 @@ from pathlib import Path
 
 from onstep_adapter import IndiRuntimeConfig
 
-DEFAULT_CONFIG_PATH = Path.home() / ".CollimationGuideTool" / "config.toml"
-SMARTTSCOPE_CONFIG_PATH = Path.home() / ".SmartTScope" / "config.toml"
+from astrotool_core.config import paths
+from astrotool_core.config.device_defaults import INDI_HOST, INDI_PORT
+
+#: Compatibility aliases of `astrotool_core.config.paths`' real locations (kept for
+#: compatibility); `load_onstep_indi_config` resolves the owner at call time.
+DEFAULT_CONFIG_PATH = paths.DEFAULT_OWN_CONFIG_PATH
+SMARTTSCOPE_CONFIG_PATH = paths.DEFAULT_SMARTTSCOPE_CONFIG_PATH
 
 
 def _table(path: Path, name: str) -> dict[str, object]:
@@ -92,13 +97,17 @@ def load_onstep_indi_config(
     this app's own `~/.CollimationGuideTool/config.toml`. Missing
     file/table/malformed value -> the defaults below, never an error.
     """
-    site = _table(smarttscope_path or SMARTTSCOPE_CONFIG_PATH, "observer")
-    indi = _table(own_path or DEFAULT_CONFIG_PATH, "indi")
-    meridian = _table(own_path or DEFAULT_CONFIG_PATH, "meridian")
+    if smarttscope_path is None:
+        smarttscope_path = paths.smarttscope_config_path()
+    if own_path is None:
+        own_path = paths.own_config_path()
+    site = _table(smarttscope_path, "observer")
+    indi = _table(own_path, "indi")
+    meridian = _table(own_path, "meridian")
     focuser_max = indi.get("focuser_max_position")
     return IndiRuntimeConfig(
-        host=_text(indi, "host", "127.0.0.1"),
-        port=int(_number(indi, "port", 7624)),
+        host=_text(indi, "host", INDI_HOST),
+        port=int(_number(indi, "port", INDI_PORT)),
         device=_text(indi, "device", "LX200 OnStep"),
         observer_lat=_number(site, "lat", 50.336),
         observer_lon=_number(site, "lon", 8.533),

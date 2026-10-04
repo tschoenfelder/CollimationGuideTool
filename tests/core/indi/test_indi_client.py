@@ -7,10 +7,12 @@ import time
 from collections.abc import Iterator
 
 import pytest
+from astrotool_core.config.device_defaults import EFW_DEVICE_NAME
 from astrotool_core.indi.client import IndiClient
 from astrotool_core.testing.fake_indi_server import FakeIndiServer
 
-_DEVICE = "ToupTek EFW 1"
+#: The device a default FakeIndiServer simulates (#55 D01: was the wrong "EFW 1").
+_DEVICE = EFW_DEVICE_NAME
 
 
 @pytest.fixture

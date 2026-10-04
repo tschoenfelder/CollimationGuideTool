@@ -45,6 +45,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, cast
 
+from astrotool_core.config.device_defaults import INDI_PORT
 from astrotool_core.filter_wheel.indi_filter_wheel_adapter import IndiFilterWheelAdapter
 from astrotool_core.indi._protocol import IncrementalIndiParser, ParsedElement, xml_escape_attr
 from astrotool_core.indi.client import IndiClient, VectorState
@@ -82,7 +83,7 @@ class SimulatedIndiClient(IndiClient):
         server_reachable: bool = True,
         poll_interval_s: float = 0.05,
     ) -> None:
-        super().__init__("simulated-indiserver", 7624)
+        super().__init__("simulated-indiserver", INDI_PORT)
         self._clock = clock
         self._device = device
         self._server_reachable = server_reachable
@@ -320,7 +321,7 @@ def make_simulated_filter_wheel_adapter(
     wheel = SimulatedIndiFilterWheel(scenario, clock=clock)
     adapter = IndiFilterWheelAdapter(
         "simulated-indiserver",
-        7624,
+        INDI_PORT,
         device_name or scenario.device_name,
         connect_timeout_s=connect_timeout_s,
         filter_names=filter_names,

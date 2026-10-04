@@ -47,13 +47,16 @@ from typing import Any
 
 import numpy as np
 
+from astrotool_core.config import paths
 from astrotool_core.frames.frame import Frame
 
 _log = logging.getLogger(__name__)
 
 #: Default bundle location, per the architecture's convention of keeping
 #: hardware/session state outside the git-managed repo.
-DEFAULT_DIAGNOSTICS_DIR = Path.home() / ".CollimationGuideTool" / "diagnostics"
+#: Compatibility alias of `paths.DEFAULT_DIAGNOSTICS_DIR`; every default
+#: below resolves the owner at call time (#55 D03).
+DEFAULT_DIAGNOSTICS_DIR = paths.DEFAULT_DIAGNOSTICS_DIR
 DEFAULT_MAX_BUNDLES = 20
 #: Retention window (2026-08-29 project decision — see issue #10).
 DEFAULT_MAX_AGE_DAYS = 7.0
@@ -171,7 +174,7 @@ def _detect_git_commit() -> str | None:
 
 
 def find_bundle(
-    incident_id: str, *, diagnostics_dir: Path | str = DEFAULT_DIAGNOSTICS_DIR
+    incident_id: str, *, diagnostics_dir: Path | str | None = None
 ) -> Path | None:
     """Resolve a UUID (full, or an unambiguous prefix) to its bundle directory.
 
@@ -180,7 +183,7 @@ def find_bundle(
     unrelated log files by hand (issue #10's "agent/debugging use case").
     Returns ``None`` when there's no match, or the prefix is ambiguous.
     """
-    root = Path(diagnostics_dir)
+    root = Path(diagnostics_dir) if diagnostics_dir is not None else paths.diagnostics_dir()
     exact = root / incident_id
     if exact.is_dir():
         return exact
@@ -199,7 +202,7 @@ class DiagnosticService:
         self,
         *,
         app_name: str,
-        diagnostics_dir: Path | str = DEFAULT_DIAGNOSTICS_DIR,
+        diagnostics_dir: Path | str | None = None,
         max_bundles: int = DEFAULT_MAX_BUNDLES,
         max_age_days: float = DEFAULT_MAX_AGE_DAYS,
         version: str | None = None,
@@ -207,7 +210,9 @@ class DiagnosticService:
         recent_logs: Callable[[], list[str]] | None = None,
     ) -> None:
         self._app_name = app_name
-        self._diagnostics_dir = Path(diagnostics_dir)
+        self._diagnostics_dir = (
+            Path(diagnostics_dir) if diagnostics_dir is not None else paths.diagnostics_dir()
+        )
         self._max_bundles = max_bundles
         self._max_age_days = max_age_days
         self._version = version if version is not None else _detect_version()

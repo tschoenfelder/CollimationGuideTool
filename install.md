@@ -264,7 +264,7 @@ to this wheel over its own native SDK, never INDI, so it has no equivalent):
 enabled = true
 active_camera_role = "main"    # which optical train the selector appears on
 device = "ToupTek EFW 2"       # optional override; default is the rig's known device
-host = "localhost"             # optional
+host = "127.0.0.1"             # optional; default (same indiserver as [indi])
 port = 7624                    # optional
 
 [filters]

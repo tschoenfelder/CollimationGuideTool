@@ -28,11 +28,12 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
+from astrotool_core.config.device_defaults import INDI_PORT
 from astrotool_core.indi._protocol import IncrementalIndiParser, ParsedElement, xml_escape_attr
 
 _log = logging.getLogger(__name__)
 
-_DEFAULT_PORT = 7624
+_DEFAULT_PORT = INDI_PORT
 _CONNECT_TIMEOUT_S = 5.0
 
 #: Top-level element tags this client keeps as named "vectors" — a driver's

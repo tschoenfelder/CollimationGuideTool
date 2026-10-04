@@ -24,7 +24,11 @@ import tomllib
 from pathlib import Path
 from typing import Any
 
-DEFAULT_CONFIG_PATH = Path.home() / ".SmartTScope" / "config.toml"
+from astrotool_core.config import paths
+
+#: Compatibility alias of `paths.DEFAULT_SMARTTSCOPE_CONFIG_PATH`;
+#: `load_pixel_scale_arcsec` resolves the owner at call time (#55 D03).
+DEFAULT_CONFIG_PATH = paths.DEFAULT_SMARTTSCOPE_CONFIG_PATH
 
 #: 206264.8 arcsec/radian — the standard plate-scale constant:
 #: arcsec_per_px = ARCSEC_PER_RADIAN * (pixel_size_mm / focal_length_mm).
@@ -60,7 +64,7 @@ def _load_toml(path: Path) -> dict[str, Any] | None:
 
 
 def load_pixel_scale_arcsec(
-    train_name: str, *, config_path: Path | str = DEFAULT_CONFIG_PATH
+    train_name: str, *, config_path: Path | str | None = None
 ) -> float | None:
     """Plate scale (arcsec/px) for one `[optical_trains.<train_name>]` entry.
 
@@ -76,6 +80,8 @@ def load_pixel_scale_arcsec(
 
     Returns None if any required piece is missing.
     """
+    if config_path is None:
+        config_path = paths.smarttscope_config_path()
     data = _load_toml(Path(config_path))
     if data is None:
         return None

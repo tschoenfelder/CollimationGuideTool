@@ -16,8 +16,9 @@ not a blocking call, since INDI's own model is inherently async (send a
 would freeze the GUI thread for the length of a real wheel rotation. The
 caller polls `status()` for `moving`/`current_slot` to confirm arrival.
 
-No real EFW hardware has been identified for this rig yet -- `device_name`
-below is an unverified placeholder. Same "hypothesis pending Pi
+The built-in defaults (device name, host, port) are the rig's, owned by
+`astrotool_core.config.device_defaults` (#55 D01/D02); production always
+passes them explicitly via `filter_wheel.registry`. Same "hypothesis pending Pi
 verification" caveat this project already applies to new adapters (see
 memory `feedback_verify_hardware_hypotheses_before_shipping`): treat
 the property names above as sourced from libindi's general Filter
@@ -37,13 +38,15 @@ import contextlib
 import logging
 import time
 
+from astrotool_core.config.device_defaults import EFW_DEVICE_NAME, INDI_HOST, INDI_PORT
 from astrotool_core.filter_wheel.port import FilterWheelPort, FilterWheelState
 from astrotool_core.indi.client import IndiClient, VectorState
 
 _log = logging.getLogger(__name__)
 
-_DEFAULT_DEVICE_NAME = "Filter Wheel"
-_DEFAULT_PORT = 7624
+_DEFAULT_DEVICE_NAME = EFW_DEVICE_NAME
+_DEFAULT_HOST = INDI_HOST
+_DEFAULT_PORT = INDI_PORT
 _CONNECT_TIMEOUT_S = 10.0
 _FILTER_WHEEL_PROBE_TIMEOUT_S = 3.0
 #: Same gap/fix as IndiFocuserAdapter._PROPERTY_REFRESH_INTERVAL_S (see
@@ -60,7 +63,7 @@ _PROPERTY_REFRESH_INTERVAL_S = 2.0
 class IndiFilterWheelAdapter(FilterWheelPort):
     def __init__(
         self,
-        host: str = "localhost",
+        host: str = _DEFAULT_HOST,
         port: int = _DEFAULT_PORT,
         device_name: str = _DEFAULT_DEVICE_NAME,
         *,

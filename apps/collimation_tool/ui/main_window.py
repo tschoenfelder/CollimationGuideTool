@@ -136,10 +136,10 @@ from astrotool_core.camera import (
     list_devices as _list_touptek_devices,
 )
 from astrotool_core.config import (
-    DEFAULT_CONFIG_PATH,
     load_camera_settings,
     load_mount_alignment_settings,
     save_camera_settings,
+    paths,
 )
 from astrotool_core.diagnostics import DiagnosticService
 from astrotool_core.diffraction.optical_reference_model import OpticalConfig
@@ -358,16 +358,18 @@ class MainWindow(QMainWindow):
             )
         self._filter_wheel_ids: list[str] = [a.wheel_id for a in assignments]
 
-        # Resolved from the module-level DEFAULT_CONFIG_PATH at call time
-        # (not bound as this parameter's own default value) so tests can
-        # monkeypatch this module's DEFAULT_CONFIG_PATH to redirect every
-        # MainWindow() call at once, rather than needing camera_settings_path
-        # threaded through every test's construction call — see conftest.py.
+        # Resolved through the single config-path owner at call time (#55
+        # D03: `astrotool_core.config.paths`), so redirecting that one owner
+        # redirects every MainWindow() call and every other reader at once,
+        # rather than needing camera_settings_path threaded through every
+        # test's construction call — see conftest.py.
         # Resolved here (before _test_move_panel below, which also reads
         # this same file's [mount_alignment] table) rather than down by the
         # camera-settings restore, which used to be the first thing to need it.
         self._camera_settings_path = (
-            Path(camera_settings_path) if camera_settings_path is not None else DEFAULT_CONFIG_PATH
+            Path(camera_settings_path)
+            if camera_settings_path is not None
+            else paths.own_config_path()
         )
 
         # Shared with _test_move_panel below -- see MountTestMovePanel's

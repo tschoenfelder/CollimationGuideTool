@@ -310,3 +310,47 @@ class TestInvalidSlotRejection:
         for bad in (0, -1, -7):
             with pytest.raises(ValueError, match="invalid slot"):
                 adapter.set_slot(bad)
+
+
+class TestDefaultsNameTheRigsDevice:
+    """#55 D01 (live contradictions): the built-in wiring names the rig's EFW,
+    but the simulator defaulted to the known-wrong "ToupTek EFW 1" and the
+    adapter to a third name, "Filter Wheel". Every default must be the one
+    the wiring resolves when no config names a device."""
+
+    @staticmethod
+    def _built_in_device_name(tmp_path: object) -> str:
+        from pathlib import Path
+
+        from astrotool_core.filter_wheel.config import load_filter_wheel_wiring
+
+        missing = Path(str(tmp_path)) / "missing.toml"
+        name = load_filter_wheel_wiring(smarttscope_path=missing, local_path=missing).device_name
+        assert name is not None
+        return name
+
+    def test_a_default_simulator_is_the_device_the_built_in_wiring_names(
+        self, tmp_path: object
+    ) -> None:
+        fake = FakeIndiServer()
+        fake.start()
+        adapter = IndiFilterWheelAdapter(
+            fake.host, fake.port, self._built_in_device_name(tmp_path), connect_timeout_s=0.5
+        )
+        try:
+            adapter.connect()
+            assert adapter.is_available is True
+        finally:
+            adapter.disconnect()
+            fake.stop()
+
+    def test_the_adapters_default_device_is_the_built_in_one(self, tmp_path: object) -> None:
+        fake = FakeIndiServer(device_name=self._built_in_device_name(tmp_path))
+        fake.start()
+        adapter = IndiFilterWheelAdapter(fake.host, fake.port, connect_timeout_s=0.5)
+        try:
+            adapter.connect()
+            assert adapter.is_available is True
+        finally:
+            adapter.disconnect()
+            fake.stop()

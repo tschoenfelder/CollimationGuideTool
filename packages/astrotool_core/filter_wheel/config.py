@@ -34,8 +34,13 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
-DEFAULT_SMARTTSCOPE_CONFIG_PATH = Path.home() / ".SmartTScope" / "config.toml"
-DEFAULT_LOCAL_CONFIG_PATH = Path.home() / ".CollimationGuideTool" / "config.toml"
+from astrotool_core.config import paths
+from astrotool_core.config.device_defaults import EFW_DEVICE_NAME
+
+#: Compatibility aliases of `astrotool_core.config.paths`' real locations (kept for
+#: compatibility); the loaders below resolve the owner at call time.
+DEFAULT_SMARTTSCOPE_CONFIG_PATH = paths.DEFAULT_SMARTTSCOPE_CONFIG_PATH
+DEFAULT_LOCAL_CONFIG_PATH = paths.DEFAULT_OWN_CONFIG_PATH
 
 #: `[filters]`'s descriptive keys -> the short codes shown in the UI. A key
 #: not in this table is skipped (never guessed at) -- see _read_filter_names.
@@ -51,12 +56,9 @@ _FILTER_NAME_ABBREVIATIONS: dict[str, str] = {
 }
 
 #: This rig's own known-good state, used only when NEITHER config file
-#: carries an explicit INDI `device` name. Corrected 2026-09-24 -- the
-#: original "ToupTek EFW 1" guess was never checked against the real
-#: indiserver (`indi_getprop`); a real-field UI failure ("EFW 1" not
-#: found) traced to this constant, and the rig's actual driver reports
-#: itself as "ToupTek EFW 2".
-_BUILT_IN_DEVICE_NAME = "ToupTek EFW 2"
+#: carries an explicit INDI `device` name -- owned by
+#: `astrotool_core.config.device_defaults` (#47 correction history there).
+_BUILT_IN_DEVICE_NAME = EFW_DEVICE_NAME
 _BUILT_IN_ACTIVE_TRAIN = "main"
 #: This rig's physical wheel (user-confirmed 2026-09-25): L, R, G, B, SII, Ha, OIII, empty.
 _BUILT_IN_FILTER_NAMES: dict[int, str] = {
@@ -137,15 +139,20 @@ def _read_indi_identity(data: dict[str, Any]) -> tuple[str | None, str | None, i
 
 def _load_filter_wheel_wiring_base(
     *,
-    smarttscope_path: Path | str = DEFAULT_SMARTTSCOPE_CONFIG_PATH,
-    local_path: Path | str = DEFAULT_LOCAL_CONFIG_PATH,
+    smarttscope_path: Path | str | None = None,
+    local_path: Path | str | None = None,
 ) -> FilterWheelWiring:
     """The wheel's wiring: which optical train it currently serves, and its
     per-slot filter names. Reads the shared SmartTScope config first (the
     authoritative source for a rig that has one); falls back to the SAME
     table shapes in CollimationGuideTool's own config; falls back to this
     rig's built-in known-good default if neither file has a `[filter_wheel]`
-    table at all. Never raises."""
+    table at all. Never raises. A path left as None is resolved through
+    `astrotool_core.config.paths` at call time."""
+    if smarttscope_path is None:
+        smarttscope_path = paths.smarttscope_config_path()
+    if local_path is None:
+        local_path = paths.own_config_path()
     local = _load_toml(Path(local_path))
     local_device, local_host, local_port = _read_indi_identity(local or {})
 
@@ -209,13 +216,17 @@ def _load_filter_wheel_wiring_base(
 
 def load_filter_wheel_wiring(
     *,
-    smarttscope_path: Path | str = DEFAULT_SMARTTSCOPE_CONFIG_PATH,
-    local_path: Path | str = DEFAULT_LOCAL_CONFIG_PATH,
+    smarttscope_path: Path | str | None = None,
+    local_path: Path | str | None = None,
 ) -> FilterWheelWiring:
     """`_load_filter_wheel_wiring_base` plus one rig-specific escape hatch:
     a non-empty `[filters]` table in the LOCAL file replaces the shared
     file's names and is marked `names_override`, so it also beats the names
     the INDI driver reports. Never overrides an explicit "no wheel"."""
+    if smarttscope_path is None:
+        smarttscope_path = paths.smarttscope_config_path()
+    if local_path is None:
+        local_path = paths.own_config_path()
     wiring = _load_filter_wheel_wiring_base(
         smarttscope_path=smarttscope_path, local_path=local_path
     )

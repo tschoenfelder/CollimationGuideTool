@@ -2,10 +2,12 @@
 INDI wire protocol to drive `IndiClient`/`IndiFilterWheelAdapter` end-to-end
 in tests, on any platform (no indiserver/libindi install needed).
 
-Simulates ONE non-OnStep INDI device (default `"ToupTek EFW 1"`, the rig's
-filter wheel) with a `CONNECTION` switch vector always present and -- only
-after a simulated connect, mirroring real drivers' "interfaces probed after
-connect" behaviour -- the libindi Filter Wheel Interface vectors
+Simulates ONE non-OnStep INDI device (default: the rig's filter wheel,
+named by `astrotool_core.config.device_defaults.EFW_DEVICE_NAME`, #55 D01),
+listening on the default INDI host (ephemeral port), with a `CONNECTION`
+switch vector always present and -- only after a simulated connect,
+mirroring real drivers' "interfaces probed after connect" behaviour -- the
+libindi Filter Wheel Interface vectors
 (`FILTER_NAME`, `FILTER_SLOT`), unless `filter_wheel_available=False`.
 
 INDI is valid in this project only for such non-OnStep devices (cameras,
@@ -21,6 +23,7 @@ import logging
 import socket
 import threading
 
+from astrotool_core.config.device_defaults import EFW_DEVICE_NAME, INDI_HOST
 from astrotool_core.indi._protocol import IncrementalIndiParser, ParsedElement, xml_escape_attr
 
 _log = logging.getLogger(__name__)
@@ -30,7 +33,7 @@ class FakeIndiServer:
     def __init__(
         self,
         *,
-        device_name: str = "ToupTek EFW 1",
+        device_name: str = EFW_DEVICE_NAME,
         filter_wheel_available: bool = True,
         filter_slot: int = 1,
         filter_names: tuple[str, ...] | None = None,
@@ -59,7 +62,7 @@ class FakeIndiServer:
         self._conn: socket.socket | None = None
 
         self._listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self._listener.bind(("127.0.0.1", 0))
+        self._listener.bind((INDI_HOST, 0))
         self._listener.listen(1)
         self._stop = threading.Event()
         self._accept_thread = threading.Thread(
@@ -68,7 +71,7 @@ class FakeIndiServer:
 
     @property
     def host(self) -> str:
-        return "127.0.0.1"
+        return INDI_HOST
 
     @property
     def port(self) -> int:
