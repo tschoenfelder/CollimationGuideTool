@@ -49,8 +49,9 @@ Status: `todo` · `in-progress` · `done` · `field-only` (only real hardware ca
 | S4 | #51 | Scenario simulators (OnStep mount, focuser, filter wheel, ToupTek camera) on FakeClock; 5 defect reproductions | issue agent | 2 rounds: APPROVE-WITH-FIXES (fidelity) → APPROVE-WITH-FIXES (2 minor) → fixed | done | 0fdf781 | `python scripts/prove.py 51` |
 | S5 | #55, #52 | Duplication inventory + size/dependency baseline (`docs/quality/duplication-audit.md`) | analysis agent | coordinator spot-check (P01 confirmed in code) | done | (this commit) | docs only |
 | S6.0 | #46, #31, #55 (P01/P02) | **CRITICAL, promoted:** Mount Align bootstrap/nudge/screen moves go through `pulse_axis`, which production `OnStepMountPulseAdapter` always refuses; no rate is ever installed, so angular moves never start on the rig. Size the first move angularly from the optics seeds instead of a timed bootstrap; failing regression against the real adapter + fake OnStep connection first | issue agent | 2 rounds: APPROVE-WITH-FIXES → APPROVE | done | 787ceed | `python scripts/prove.py 46-mount-align-angular-path` |
-| S6.0b | #39, P01 | Guide-assisted reacquisition (`recenter_policy.py:113`) calls `pulse_axis` on the production OnStep adapter → always `pulse_rejected`, adapter message dropped; move to the angular path (after S6.0). **Must use the same ms↔arcsec factor S6.0 stores the matrix in (equivalent ms at `calibration_center_rate_x`·sidereal) — that factor needs one public owner first** | | | todo | | |
+| S6.0b | #39, P01 | Guide-assisted reacquisition (`recenter_policy.py:113`) calls `pulse_axis` on the production OnStep adapter → always `pulse_rejected`, adapter message dropped; move to the angular path (after S6.0). **Must use the same ms↔arcsec factor S6.0 stores the matrix in (equivalent ms at `calibration_center_rate_x`·sidereal) — that factor needs one public owner first** | issue agent | 4 rounds: APPROVE-WITH-FIXES → REJECT (unequal scales) → APPROVE-WITH-FIXES (tracker margin) → fixed | done | f24a523 | `python scripts/prove.py 39-reacquisition-angular` |
 | S6.0c | #49, AGENTS manual-move rule | `OnStepMountPulseAdapter.move_angular` holds `connection.operation_lock` for the whole blocking GOTO (up to 30 s); `abort()` takes the same lock on the GUI thread before `stop()`, and park-panel status polls also take it → Stop would freeze the UI and not cancel; `_cancel` never checked. Characterize with a failing component test, then decide stop/lock semantics (verify OnStepAdapter's real abort semantics — no assumptions) | issue agent | 3 rounds: APPROVE-WITH-FIXES (C1/C2 #44 regressions, C3) → APPROVE-WITH-FIXES (R1) → fixed | done | 52fd72f | `python scripts/prove.py 49-stop-during-angular-goto` |
+| S6.0d | #39, user decision | Astronomical-mode reacquisition via OnStepAdapter 0.5.0 `guide_pulse` (tracking preserved): capability-detected (main stays pinned to published 0.4.1 → clear 'needs OnStepAdapter ≥ 0.5.0' message), separate guide-pulse calibration (guide rate is not exposed), simulator modelled on the 0.5.0 source, distinct capability so Mount Align's timed/angular choice is unaffected; pin bump only after 0.5.0 is published and the supervised physical acceptance passed | | | todo | | |
 | S6.1 | #55 | Single-source device defaults + config-source contract test | | | todo | | |
 | S6.2 | #52 | `DeviceConnectionService` (Focuser → MountPark → MountTestMove) | | | todo | | |
 | S6.3 | #52 | `OperationLifecycle` + bounded Busy timeout (FilterWheel, Focuser) | | | todo | | |
@@ -280,6 +281,7 @@ not change · dependencies · non-goals · proof required.
 
 | Date | Task | Commit | What was proven |
 |------|------|--------|-----------------|
+| 2026-10-04 | S6.0b | f24a523 | Reacquisition moves the production mount on the angular path: 2-D solve (rotation/mirroring/unequal scales), per-axis cap 0.35×tracker radius, shared move planner, single ms↔arcsec owner with configured center rate, refusal reason shown, Stop latch re-armed, within-smallest-move success. Seeded sweeps + real RoiTracker; fail pre-fix / on intermediate states. Rollout blocker: fresh frame after each move (S6.7). Astronomical mode → S6.0d |
 | 2026-10-04 | S6.5b | 973d0ab | NOFRAME_TIMEOUT 1 (outside vendored SDK range, inherited from INDI) → 0 (disabled; every frame wait already bounded); connect log of model.flag + derived mono/USB3-capable/USB3-over-USB2/TEC. Field: read the flag log; watch whether the open GPCMOS calibration timeout changes |
 | 2026-10-03 | S3b | c55b9c6 | Runner, recenter settle and panel confirmation timeouts on the injected clock (neutral, characterization-proven); 37 fake-time tests; guard catches deadline arithmetic and timed waits in policy layers, allowlists pinned. Wall time: sizing 55.9→7.1 s, real-adapter Mount Align 95.3→11.8 s, angular 26.5→4.6 s, frame_validity 57→33 s, runner_simulated 6.7→2.4 s; failure_recovery (96 s) and TestMountTestMovePanel (8.6 min) unchanged — panel clock is S6.6 |
 | 2026-10-03 | S6.5a | 4864cc8 | `is_color_sensor()` uses the SDK's real MONO flag (was USB30); all ToupTek constants from one SDK-keyed table, checked against the vendored SDK and AST-guarded; strict xfails flipped. Rig: GPCMOS known colour; G3M678M/ATR585M previous classification unknown (S6.5b flag log) |
@@ -367,5 +369,19 @@ not change · dependencies · non-goals · proof required.
   timeout) → S6.6/S6.7; this, not the runner, keeps `TestMountTestMovePanel` (~8.6 min) and
   `test_calibration_failure_recovery.py` (~96 s) slow. (d) `stream_controller.py` clock seam not taken
   (allowlisted). (e) CONTRIBUTING "Deterministic time" known-gap note is now outdated for policy layers.
+- **S6.0b review (2026-10-04).** Fixed in S6.0b: camera rotation on the angular reacquisition path
+  (90° diverged ~12′), center_rate_x wiring, refusal reason surfaced, latched Stop re-armed by a new
+  reacquisition. **ROLLOUT BLOCKER → S6.7:** reacquisition measures the latest frame after a 750 ms
+  settle with no check that it was captured after the move (AGENTS.md: frames during motion are never
+  evidence) — must use the fresh-frame-after-motion service before any Pi rollout.
+  **USER DECISION (2026-10-04):** astronomical-mode reacquisition will use OnStepAdapter 0.5.0's
+  `mount.guide_pulse(direction, ms)` (standard INDI timed-guide, tracking preserved) → task S6.0d. 0.5.0 is
+  NOT published yet (local wheel only); the first physical guide-pulse acceptance is supervised by the
+  user before OnStepAdapter merges/releases. Original question for the record: astronomical-mode reacquisition — OnStepAdapter 0.4.1 refuses local axis
+  moves while tracking (`indi_axis_motion.py:85-97`), so with tracking on every reacquisition is refused
+  (now with the reason shown). Options: (a) declare unsupported in astronomical mode with a clear UI
+  message; (b) request an OnStepAdapter capability for guide-rate offsets while tracking; never stop
+  tracking implicitly. Also: the policy checks no mode/tracking precondition itself (relies on the
+  adapter refusing) → S6.4.
 - **S5 live contradictions (9)** are listed in `docs/quality/duplication-audit.md`; each is owned by an
   S6 step and gets a failing regression before its fix.

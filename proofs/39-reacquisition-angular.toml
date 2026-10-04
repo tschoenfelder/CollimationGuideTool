@@ -1,0 +1,233 @@
+# Proof manifest -- schema in proofs/README.md.
+# Run: python scripts/prove.py 39-reacquisition-angular
+issues = [39]
+summary = """S6.0b (#39 AC 5, audit P01): guide-assisted reacquisition drove CollimationRecenterPolicy, \
+which always corrected with a timed pulse_axis. The production OnStepMountPulseAdapter \
+(OnStepAdapter >= 0.4 over INDI) has no timed primitive and refuses every pulse, so every \
+reacquisition ended 'mount_correction_rejected' without moving the mount, and the adapter's reason \
+was dropped. Fix: on a mount whose capabilities().supports_pulse_guiding is False the policy corrects \
+with move_angular, solved in 2-D from both axes' measured Guide responses (solve_screen_move: a \
+rotated or mirrored camera converges), each component converted through one public ms<->arcsec owner \
+(equivalent_duration, S6.0's unit: equivalent ms at calibration_center_rate_x x sidereal), capped on \
+its own (never scaled below the 30\" floor; unequal RA/Dec image scales away from the equator) and \
+planned by one rule shared with Mount Align's screen moves (angular_move_plan: floor, sub-floor \
+component dropped only when its share of the full error is small, whole correction validated before \
+anything is sent). A reacquisition step is sized per axis from the Guide tracker radius (0.35x) and frame (0.25x) (max_step_px) \
+instead of the fixed ~60\" cap. main_window passes the loaded calibration_center_rate_x; refusal \
+reasons travel AcquisitionResult.detail -> FineCollimationOutcome.detail -> the status text; a \
+reacquisition re-arms an earlier latched Stop (shared rearm_after_stop, also the Mount Align runner) \
+while a Stop during it still stops it; a cap below the floor is reported as a configuration problem. \
+Timed mounts are unchanged (their rotation blindness is pinned by a strict xfail)."""
+modules = [
+    "apps/collimation_tool/application/recenter_policy.py",
+    "apps/collimation_tool/application/star_acquisition.py",
+    "apps/collimation_tool/application/equivalent_duration.py",
+    "apps/collimation_tool/application/angular_move_plan.py",
+    "apps/collimation_tool/application/mount_commands.py",
+    "apps/collimation_tool/application/fine_collimation_controller.py",
+    "apps/collimation_tool/ui/fine_collimation_panel.py",
+    "apps/collimation_tool/ui/main_window.py",
+    "apps/collimation_tool/ui/mount_test_move_panel.py",
+    "apps/collimation_tool/ui/mount_test_move_runner.py",
+]
+fix_commits = ["f24a523"]
+dataset_uuids = []
+focused_command = "pytest -q tests/collimation/application/test_recenter_policy_simulated.py tests/collimation/application/test_star_acquisition_simulated.py tests/collimation/application/test_equivalent_duration.py tests/collimation/application/test_angular_move_plan.py tests/collimation/application/test_recenter_policy.py::TestTimedPathCharacterization tests/collimation/application/test_recenter_policy.py::TestTimedPathRotation tests/collimation/application/test_recenter_policy.py::TestAngularPathWithoutAUsableMotion tests/collimation/application/test_recenter_policy.py::TestBelowTheFloorOnSkewedAxes tests/collimation/application/test_star_acquisition.py::TestAC1_4GuideAssistedReacquisition::test_mount_rejection_is_reported_distinctly tests/collimation/application/test_fine_collimation_controller.py::TestGuideAssistedReacquisition::test_a_refused_reacquisition_carries_the_mounts_reason tests/collimation/ui/test_fine_collimation_panel.py::TestAC7_2InvalidResult::test_a_failed_run_shows_the_mounts_refusal_detail tests/collimation/ui/test_collimation_main_window.py::TestArtificialStarTargetMode::test_reacquisition_reads_the_guide_matrix_in_the_configured_center_rate"
+broader_tier = "component"
+field_only_assumptions = [
+    "Real OnStep/INDI accepts reacquisition-sized angular moves (30\" floor .. a 28 px guide-image step per axis, ~185\" at 6.6\"/px) with tracking OFF (terrestrial / artificial star). OnStepAdapter 0.4.1 refuses local axis moves while tracking (modelled by the simulator): in astronomical mode reacquisition is refused with that reason shown -- a user decision, recorded by the coordinator.",
+    "The rig's Guide calibration matrix was produced by Mount Align on the angular-only adapter (equivalent-ms unit) with the calibration_center_rate_x configured now.",
+    "The Guide response is linear and close to the matrix over a 28 px per-axis step (tested robust to a real response 1.5x the matrix, or 2x on RA), and the RA/Dec image axes are near-orthogonal (per-component capping then shrinks each axis' share of the error); tested synthetically for RA image-scale factors 1.0/0.7/0.5, arbitrary rotations and mirroring.",
+    "Each GOTO plus the 750 ms settle leaves the mount at rest before the next guide frame is measured -- no fresh-frame-after-motion check in this loop (S6.7, rollout blocker).",
+    "A Stop during a reacquisition GOTO is honoured by OnStep (S6.0c's assumption); the reacquisition's own cancel_check does not interrupt a running GOTO.",
+]
+gaps = [
+    "Timed path (no production timed mount wired) is rotation-blind: pinned by the strict xfail TestTimedPathRotation, not fixed (frozen in S6.0b).",
+    "cancel_check is consulted between corrections only; a running angular GOTO is not interrupted by the reacquisition's cancel (recorded by the coordinator).",
+    "No fresh-frame check after each move (S6.7).",
+    "OnStepAdapter's 10-degree maximum is not reported by the adapter (only min_angular_arcsec is); the frame/tracker-sized step stays far below it, and a refusal beyond it would be surfaced.",
+    "With the policy's fallback cap (no frame geometry: ~60\" per move) a large error can exhaust max_iterations (reported as max_pulses, error still decreasing); reacquisition always passes the frame-sized step.",
+    "Floor-limited residuals: at fine plate scales (e.g. 1\"/px) a sub-30\" remainder can exceed the 20 px rough tolerance; it is a success with an explicit 'within the mount's smallest move' message when within sqrt(2) x a floor-sized move (coordinator decision), a failure beyond that (only reachable with strongly skewed axes).",
+    "Several pre-fix runs were reconstructions: the first S6.0b fix and the pre-re-review state rebuilt in separate worktrees by re-applying/reversing the recorded edit scripts; the main_window wiring and detail-display tests fail before the fix by KeyError/TypeError on an absent keyword.",
+    "RECENTER_DROP_TOLERANCE (0.5) differs in value from the screen moves' 0.25 by design (closed loop, re-measured each step); both go through the one shared rule.",
+]
+
+[[regression_tests]]
+node = "tests/collimation/application/test_recenter_policy_simulated.py::TestRecenteringMovesTheProductionAdapter::test_a_correction_moves_the_mount_and_converges"
+failed_before_fix = true
+evidence = "Pre-fix run 2026-10-04, separate worktree wt60b8 at HEAD 3e01fb0 (production at HEAD, current tests, name-only shims on star_acquisition only): tests/collimation/application/test_recenter_policy_simulated.py:151: AssertionError: the mount never moved: MountCorrectionResult(success=False, pulses_issued=1, ..., reason='pulse_rejected')"
+
+[[regression_tests]]
+node = "tests/collimation/application/test_recenter_policy_simulated.py::TestRecenteringMovesTheProductionAdapter::test_every_move_respects_the_adapters_floor"
+failed_before_fix = true
+evidence = "Same HEAD run: tests/collimation/application/test_recenter_policy_simulated.py:163: AssertionError: the mount never moved"
+
+[[regression_tests]]
+node = "tests/collimation/application/test_recenter_policy_simulated.py::TestRecenteringMovesTheProductionAdapter::test_pulse_axis_is_never_called_on_a_mount_without_timed_pulses"
+failed_before_fix = true
+evidence = "Same HEAD run: tests/collimation/application/test_recenter_policy_simulated.py:172: assert [(<MountAxis.AXIS1: 1>, <AxisDirection.NEGATIVE: 2>, 500)] == []"
+
+[[regression_tests]]
+node = "tests/collimation/application/test_recenter_policy_simulated.py::TestRecenteringMovesTheProductionAdapter::test_the_measured_signs_pick_the_direction_not_an_assumed_convention"
+failed_before_fix = true
+evidence = "Same HEAD run, all 3 sign cases: tests/collimation/application/test_recenter_policy_simulated.py:183: AssertionError: MountCorrectionResult(..., reason='pulse_rejected')"
+
+[[regression_tests]]
+node = "tests/collimation/application/test_recenter_policy_simulated.py::TestRecenteringMovesTheProductionAdapter::test_the_settle_after_each_move_waits_on_the_injected_clock"
+failed_before_fix = true
+evidence = "Same HEAD run: tests/collimation/application/test_recenter_policy_simulated.py:194: assert 0 == 1 (no move accepted, so no settle)"
+
+[[regression_tests]]
+node = "tests/collimation/application/test_recenter_policy_simulated.py::TestRefusalsAndTheFloor::test_a_refused_move_reports_the_adapters_reason"
+failed_before_fix = true
+evidence = "Same HEAD run: tests/collimation/application/test_recenter_policy_simulated.py:207: AttributeError: 'MountCorrectionResult' object has no attribute 'message' (the refusal reason was dropped)"
+
+[[regression_tests]]
+node = "tests/collimation/application/test_recenter_policy_simulated.py::TestRefusalsAndTheFloor::test_a_correction_below_the_floor_is_skipped_and_never_sent"
+failed_before_fix = true
+evidence = "Same HEAD run: tests/collimation/application/test_recenter_policy_simulated.py:217: AssertionError: MountCorrectionResult(..., pulses_issued=1, reason='pulse_rejected')"
+
+[[regression_tests]]
+node = "tests/collimation/application/test_recenter_policy_simulated.py::TestRefusalsAndTheFloor::test_a_sub_floor_residual_beyond_the_rough_tolerance_is_within_the_smallest_move"
+failed_before_fix = true
+evidence = "Coordinator success-semantics decision; the pre-decision state (worktree wt60b7, only the below-floor success rule reverted, and the first S6.0b fix in wt60b8): tests/collimation/application/test_recenter_policy_simulated.py:237: assert False is True. At HEAD: :236 reason='pulse_rejected'."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_recenter_policy_simulated.py::TestRefusalsAndTheFloor::test_a_small_sub_floor_component_is_dropped_and_the_rest_is_sent"
+failed_before_fix = true
+evidence = "Same HEAD run: tests/collimation/application/test_recenter_policy_simulated.py:249: assert [] == ['ra', 'ra']"
+
+[[regression_tests]]
+node = "tests/collimation/application/test_recenter_policy_simulated.py::TestRefusalsAndTheFloor::test_a_large_sub_floor_component_refuses_the_whole_correction"
+failed_before_fix = true
+evidence = "Against the first S6.0b fix (worktree wt60b8, that policy re-applied by its edit script): tests/collimation/application/test_recenter_policy_simulated.py:262: AssertionError: MountCorrectionResult(success=True, pulses_issued=1, final_offset_px=4.4, reason='within_tolerance') -- RA sent alone though Dec's sub-floor share was 74%. At HEAD: :262 reason='pulse_rejected'."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_recenter_policy_simulated.py::TestTheConfiguredCenterRate::test_moves_are_sized_in_the_configured_unit"
+failed_before_fix = false
+reason_no_prefix_repro = "Pins the new center_rate_x hand-off (the keyword did not exist before: TypeError at test_recenter_policy_simulated.py:272, not a behavioural failure)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_recenter_policy_simulated.py::TestTheConfiguredCenterRate::test_a_cap_below_the_mounts_smallest_move_is_reported_as_such"
+failed_before_fix = true
+evidence = "Review item 5, against the first S6.0b fix (worktree wt60b8): tests/collimation/application/test_recenter_policy_simulated.py:291: AssertionError: reason='below_mount_minimum_move', message='remaining correction (AXIS1 15.0\", AXIS2 15.0\") is below ...' -- the misleading below-floor text. At HEAD: TypeError at :285 (keyword absent)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_recenter_policy_simulated.py::TestARotatedCameraConverges::test_the_star_is_brought_to_the_reference"
+failed_before_fix = true
+evidence = "Review item 1, against the first S6.0b fix (worktree wt60b8): all 4 sign cases at 90 degrees: tests/collimation/application/test_recenter_policy_simulated.py:320: AssertionError: MountCorrectionResult(success=False, pulses_issued=12, final_offset_px=66.9780670047074, reason='diverging'). At HEAD all 24 cases fail at :320 with reason='pulse_rejected'."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_recenter_policy_simulated.py::TestUnequalAxisScales::test_the_reviewers_repro_moves_and_converges"
+failed_before_fix = true
+evidence = "Re-review blocker (sweep4.py), against the pre-re-review state (worktree wt60b8, edit reversed by script; also run on the shared tree before the fix): tests/collimation/application/test_recenter_policy_simulated.py:357: AssertionError: nothing was sent: MountCorrectionResult(success=False, pulses_issued=0, final_offset_px=181.78, reason='below_mount_minimum_move', message='the remaining correction needs AXIS...')"
+
+[[regression_tests]]
+node = "tests/collimation/application/test_recenter_policy_simulated.py::TestUnequalAxisScales::test_the_error_always_shrinks_and_nothing_is_refused_unsent"
+failed_before_fix = true
+evidence = "Same pre-re-review run, 24 of 60 seeded cases: 12 zero-move refusals at tests/collimation/application/test_recenter_policy_simulated.py:379: AssertionError: MountCorrectionResult(success=False, pulses_issued=0, ..., reason='below_mount_minimum_move', message='the remaining correction needs AXIS2 25.4\"...'); 12 stopped with the error left large at :387 (reason='below_mount_minimum_move' after 2-12 moves)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_recenter_policy_simulated.py::TestUnequalAxisScales::test_with_a_frame_sized_step_every_case_converges"
+failed_before_fix = false
+reason_no_prefix_repro = "Pins the new max_step_px (frame-sized step) API: before it, TypeError at test_recenter_policy_simulated.py:400 (keyword absent), not a behavioural failure; the behavioural pre-fix failures of the frame-sized step are the star_acquisition tests below."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_star_acquisition_simulated.py::TestGuideReacquisitionOnTheProductionAdapter::test_the_star_is_brought_back_to_mains_field"
+failed_before_fix = true
+evidence = "HEAD run (wt60b8, name-only shims on star_acquisition: AcquisitionResult.detail=None, ignored clock/center_rate_x keywords): tests/collimation/application/test_star_acquisition_simulated.py:152: AssertionError: AcquisitionResult(status=LOST, failure_reason='mount_correction_rejected', detail=None)"
+
+[[regression_tests]]
+node = "tests/collimation/application/test_star_acquisition_simulated.py::TestGuideReacquisitionOnTheProductionAdapter::test_a_refusal_carries_the_adapters_reason"
+failed_before_fix = true
+evidence = "Same HEAD run: tests/collimation/application/test_star_acquisition_simulated.py:176: AssertionError: assert (None is not None) -- the adapter's refusal text was dropped"
+
+[[regression_tests]]
+node = "tests/collimation/application/test_star_acquisition_simulated.py::TestGuideReacquisitionOnTheProductionAdapter::test_a_residual_below_the_mounts_smallest_move_is_not_sent"
+failed_before_fix = true
+evidence = "Same HEAD run: tests/collimation/application/test_star_acquisition_simulated.py:197: AssertionError: AcquisitionResult(status=LOST, failure_reason='mount_correction_rejected')"
+
+[[regression_tests]]
+node = "tests/collimation/application/test_star_acquisition_simulated.py::test_the_configured_center_rate_is_passed_through"
+failed_before_fix = true
+evidence = "Same HEAD run, both parameter cases: tests/collimation/application/test_star_acquisition_simulated.py:233: AssertionError: AcquisitionResult(status=LOST, failure_reason='mount_correction_rejected'). Pre-re-review state (fixed 60\" cap): :237: assert 30.082 == 184.8 / assert 120.328 == 184.8 (worktree wt60b8, current tests); with only the step fraction reverted to 0.5 (wt60b7): :237 assert 264.0 == 184.8."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_star_acquisition_simulated.py::TestALatchedStop::test_an_earlier_stop_does_not_block_a_new_reacquisition"
+failed_before_fix = true
+evidence = "Revert-proof, separate worktree wt60b9 with the complete fix and ONLY the rearm_after_stop call removed: tests/collimation/application/test_star_acquisition_simulated.py:268: AssertionError: AcquisitionResult(status=LOST, failure_reason='mount_correction_rejected', detail='stopped by the user -- move not sent')"
+
+[[regression_tests]]
+node = "tests/collimation/application/test_star_acquisition_simulated.py::TestALatchedStop::test_a_stop_during_the_reacquisition_stops_it"
+failed_before_fix = true
+evidence = "HEAD run (wt60b8, shims): tests/collimation/application/test_star_acquisition_simulated.py:297: AssertionError: assert (None is not None) -- nothing ever moved and no reason was carried. Passes with only the rearm removed (guard that re-arming happens at the start, never mid-reacquisition)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_star_acquisition_simulated.py::TestAFrameSizedReacquisitionStep::test_a_large_offset_is_corrected_in_frame_sized_steps"
+failed_before_fix = true
+evidence = "Pre-re-review state (worktree wt60b8, fixed 60\" cap): tests/collimation/application/test_star_acquisition_simulated.py:326: AssertionError: [60.164, 30.082, 60.164, 30.082, ...] (never larger than the fixed cap). HEAD: :323 mount_correction_rejected."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_star_acquisition_simulated.py::TestAFrameSizedReacquisitionStep::test_a_step_never_exceeds_the_trackers_share_of_the_search_radius"
+failed_before_fix = true
+evidence = "Pre-re-review state (worktree wt60b8): tests/collimation/application/test_star_acquisition_simulated.py:347: AssertionError: [60.164, 34.41..., 60.164, ...] (fixed cap, not frame-sized); with only the step fraction reverted to 0.5 (wt60b7): :348 [264.0, 264.0, 198.1] (above the 0.35 x radius share). HEAD: :345 mount_correction_rejected."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_star_acquisition.py::TestAC1_4GuideAssistedReacquisition::test_mount_rejection_is_reported_distinctly"
+failed_before_fix = true
+evidence = "HEAD run (wt60b8, shim detail=None): tests/collimation/application/test_star_acquisition.py:254: AssertionError: assert None == 'rejected for test'"
+
+[[regression_tests]]
+node = "tests/collimation/application/test_fine_collimation_controller.py::TestGuideAssistedReacquisition::test_a_refused_reacquisition_carries_the_mounts_reason"
+failed_before_fix = true
+evidence = "HEAD run (wt60b8): tests/collimation/application/test_fine_collimation_controller.py:199: AttributeError: 'FineCollimationOutcome' object has no attribute 'detail'"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_fine_collimation_panel.py::TestAC7_2InvalidResult::test_a_failed_run_shows_the_mounts_refusal_detail"
+failed_before_fix = false
+reason_no_prefix_repro = "Before the fix FineCollimationOutcome had no detail field (TypeError at test_fine_collimation_panel.py:181 constructing it) -- an absent API, not a wrong rendering."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_collimation_main_window.py::TestArtificialStarTargetMode::test_reacquisition_reads_the_guide_matrix_in_the_configured_center_rate"
+failed_before_fix = true
+evidence = "HEAD run (wt60b8) and a hunk-only revert: tests/collimation/ui/test_collimation_main_window.py:5864: KeyError: 'center_rate_x' -- the configured value never reached the reacquisition"
+
+[[regression_tests]]
+node = "tests/collimation/application/test_equivalent_duration.py"
+failed_before_fix = false
+reason_no_prefix_repro = "Pins the new single owner of the S6.0 ms<->arcsec factor (did not exist before; the factor lived in a private MountTestMovePanel method)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_angular_move_plan.py"
+failed_before_fix = false
+reason_no_prefix_repro = "Pins the shared angular planning rule moved out of MountTestMovePanel._plan_angular_screen_move (screen-move behaviour unchanged; its panel tests stay green) and its per-axis caps (absent before the re-review fix: TypeError at test_angular_move_plan.py:146)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_recenter_policy.py::TestTimedPathCharacterization"
+failed_before_fix = false
+reason_no_prefix_repro = "Characterization of the timed path, written and run green on HEAD before the change; frozen behaviour for timed-capable mounts."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_recenter_policy.py::TestAngularPathWithoutAUsableMotion"
+failed_before_fix = false
+reason_no_prefix_repro = "Guards for the angular path's explicit not-sent outcomes (no motion primitive; degenerate matrix -> calibration_degenerate); before the fix such mounts were only ever pulsed."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_star_acquisition_simulated.py::TestTheTrackerKeepsTheStarAcrossACorrection::test_the_star_is_never_lost_by_a_correction"
+failed_before_fix = true
+evidence = "Coordinator review (tracker margin): worktree wt60b7 with only the per-axis step fraction reverted to 0.5 x radius, 7 of 24 seeded cases (real response 1.5x on both axes, or 2x RA only; real RoiTracker radius 120 px): tests/collimation/application/test_star_acquisition_simulated.py:391: AssertionError: (AcquisitionResult(status=LOST, failure_reason='target_not_found_guide'), ...) -- the star was lost to one correction. At HEAD: :390 (never moved)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_recenter_policy_simulated.py::TestAFinePlateScale::test_a_star_within_the_smallest_move_is_a_success"
+failed_before_fix = true
+evidence = "Pre-decision state (worktree wt60b7, only the below-floor success rule reverted): tests/collimation/application/test_recenter_policy_simulated.py:427: AssertionError: MountCorrectionResult(success=False, pulses_issued=0, ..., reason='below_mount_minimum_move', message='the remaining correction needs AXIS1 25...')"
+
+[[regression_tests]]
+node = "tests/collimation/application/test_recenter_policy_simulated.py::TestAFinePlateScale::test_a_large_error_ends_within_the_smallest_move"
+failed_before_fix = true
+evidence = "Same pre-decision run, 2 of 3 rotations: tests/collimation/application/test_recenter_policy_simulated.py:441: AssertionError: MountCorrectionResult(success=False, pulses_issued=2-3, reason='below_mount_minimum_move') -- the star sat within one smallest move but was reported as a failure."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_recenter_policy.py::TestBelowTheFloorOnSkewedAxes"
+failed_before_fix = false
+reason_no_prefix_repro = "Guard for the new success rule's failure side (residual beyond sqrt(2) x a floor-sized move, only reachable with skewed axes); it reported failure before the decision too."
