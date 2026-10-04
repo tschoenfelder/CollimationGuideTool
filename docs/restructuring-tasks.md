@@ -264,6 +264,51 @@ not change · dependencies · non-goals · proof required.
 - **Non-goals:** S6.5 capability-table refactor.
 - **Proof:** failing-then-passing test; manifest; field item: read the flag log on the next Pi run.
 
+### S6.0d — astronomical reacquisition via OnStepAdapter 0.5.0 `guide_pulse`
+
+- **Allowed files:** `packages/astrotool_core/onstep/mount_pulse_adapter.py` (+ onstep `__init__`),
+  `packages/astrotool_core/mount/port.py` (one NEW, distinct capability for tracking-preserving guide
+  pulses — do NOT change what `supports_pulse_guiding` means to Mount Align), `testing/sim_onstep.py` +
+  `testing/fake_onstep_indi_client.py` (model 0.5.0's guide_pulse from its source), the reacquisition path
+  (`application/recenter_policy.py`, `application/star_acquisition.py`, a new application module for the
+  guide-pulse calibration if needed), the minimal UI binding to show the new outcome/message, their tests.
+- **Source of truth:** the unpublished wheel
+  `C:/Users/tscho/Documents/Codex/CameraTest/OnStepAdapter/dist/onstep_adapter-0.5.0-py3-none-any.whl`
+  (read `indi_guiding.py`, `indi_mount.py`, `indi_client.py`; cite lines). Do NOT install it into `.venv`
+  and do NOT change the pyproject pin (main stays on published 0.4.1). An optional contract check against
+  the real 0.5.0 API may run in a throwaway venv outside the repo.
+- **Behavior:** in Astronomical mode with tracking ON, reacquisition uses `mount.guide_pulse(direction,
+  ms)` when the installed OnStepAdapter provides it (capability-detected once, single owner); otherwise it
+  refuses up front with "astronomical reacquisition needs OnStepAdapter ≥ 0.5.0 (guide pulses while
+  tracking)". Terrestrial/tracking-off keeps the S6.0b angular path. Never stops/starts tracking itself.
+  Guide pulses are 20–5000 ms (0.5.0 bounds); the guide rate is not exposed → derive px-per-guide-ms from
+  a small, bounded guide-pulse calibration (per direction, measured on fresh frames) or another
+  evidence-based approach — justify. Surface 0.5.0's result fields (refusal reason, `tracking_preserved`,
+  warnings); if a failure after an issued chunk triggered 0.5.0's emergency_stop (tracking OFF), report
+  that prominently.
+- **Tests first:** against the production adapter + simulator modelling 0.5.0 exactly (preflight
+  blockers, chunking, lock, emergency_stop on failure).
+- **Frozen:** Mount Align's timed/angular selection; S6.0/S6.0b/S6.0c behaviour; #44 gate.
+- **Non-goals:** GuideTool pulse guiding; publishing/pinning 0.5.0; field acceptance (user-supervised).
+- **Proof:** failing-then-passing tests; manifest; field items (supervised first physical guide pulse is
+  the user's, before the pin bump).
+
+### S6.1 — single-source device defaults (#55 D01–D03)
+
+- **Allowed files:** configuration/registry/default resolution (`packages/astrotool_core/config/**`,
+  the registry module, `filter_wheel/indi_filter_wheel_adapter.py` default only,
+  `testing/fake_indi_server.py` default only), consumers that hard-code the same literals (INDI host/port,
+  EFW device name, config path constants) — only the literal → owner replacement; `tests/conftest.py`
+  (the config-path patching, if it can collapse to one owner); their tests; `templates/` if a config default
+  is documented there.
+- **Behavior:** none (behaviour-neutral) except fixing live contradictions found by S5 (e.g. FakeIndiServer
+  defaulting to the wrong "ToupTek EFW 1", the adapter's "Filter Wheel" default) — each such fix gets a
+  failing test first.
+- **Tests:** a config-source contract test that fails if a second contradictory literal appears (scan
+  production code for the owned literals); injecting an alternate config proves every consumer sees it.
+- **Frozen:** the external config file format (`~/.CollimationGuideTool/config.toml`), public signatures.
+- **Proof:** duplication-audit D01–D03 items resolved (cite); manifest.
+
 ### S5 — #55 + #52 duplication inventory (analysis only)
 
 - **Allowed files:** new `docs/quality/duplication-audit.md` only.
