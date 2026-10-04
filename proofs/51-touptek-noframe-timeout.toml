@@ -1,0 +1,68 @@
+# Proof manifest -- schema in proofs/README.md. Run: python scripts/prove.py 51-touptek-noframe
+issues = [51]  # S6.5b has no GitHub issue; found by S6.5a under #51 (schema: [] needs a dataset uuid)
+summary = """S6.5b (found by S6.5a): touptek_adapter._prepare_capture_mode put TOUPCAM_OPTION_NOFRAME_TIMEOUT = 1, \
+but the SDK takes '0 => disable, positive value (>= NOFRAME_TIMEOUT_MIN) => timeout milliseconds' with \
+TOUPCAM_NOFRAME_TIMEOUT_MIN = 500 in the vendored SDK 59.29030.20250722 (resources/touptek/toupcam.py:109, :682), so 1 is outside the documented range; the 1 is the INDI driver's \
+(indi_toupbase) value, ported via smart_telescope's 'indi' setup profile. Fix: put 0 (disabled, the SDK default) -- \
+the adapter's own deadline (exposure + timeout_extra_s) bounds every frame wait and _camera_event does not handle \
+the SDK's NOFRAMETIMEOUT event. Also one INFO line per connect with model name, raw model.flag (hex) and the \
+derived mono/colour, USB3-capable, USB3-over-USB2-link and TEC classification, so the rig cameras' real flag bits become known."""
+modules = ["packages/astrotool_core/camera/touptek_adapter.py"]
+fix_commits = ["973d0ab"]
+dataset_uuids = []
+focused_command = """pytest -q \
+tests/core/camera/test_touptek_adapter_simulated.py::TestNoFrameTimeoutIsAValidSdkValue \
+tests/core/camera/test_touptek_adapter_simulated.py::TestConnectLogsTheModelFlagWord \
+tests/core/camera/test_touptek_adapter_simulated.py::TestAdapterConstantsComeFromTheVendoredSdk \
+tests/core/camera/test_touptek_adapter_simulated.py::TestSimulatorMatchesTheVendoredSdk"""
+broader_tier = "component"
+field_only_assumptions = [
+    "What the real SDK did with the old value 1 is unknown: refused (a 'SDK call failed' WARNING at every connect, timeout stays disabled -- then this fix changes nothing on the rig) or accepted/clamped (NOFRAMETIMEOUT events that _camera_event ignored). Either way frame waits were bounded by the adapter's own deadline, before and after.",
+    "Read the new 'TouptekCameraAdapter(...): opened model=... model.flag=0x... -> mono|colour, USB3-capable=..., USB3-over-USB2-link=..., TEC=...' INFO line for G3M678M, ATR585M and GPCMOS02000KPA on the next Pi run; it confirms or corrects S6.5a's inferences (MONO bit on G3M678M/ATR585M, USB30 bits from the family names) and the simulator's CAMERA_MODELS flag words.",
+    "After the fix no 'SDK call failed' WARNING should follow camera connect on the Pi.",
+    "Watch whether the still-open GPCMOS02000KPA 'camera busy' / calibration timeout (2026-09-24 field session) behaves differently after this change: if the real SDK had accepted the old 1, NOFRAMETIMEOUT events would have fired during multi-second trigger waits.",
+]
+gaps = [
+    "Simulator modelling assumptions (none documented by the SDK): an out-of-range value is refused rather than clamped, with E_INVALIDARG, negative values included, and the option keeps its previous value. Older ToupTek headers may have documented the option as '1 = enable, 0 = disable' (unverified); the out-of-range reading is from the vendored 2025 header.",
+    "If a future change re-enables the SDK no-frame timeout, TOUPCAM_EVENT_NOFRAMETIMEOUT (0x82) must be handled in _camera_event (it is not today) and the period must exceed the longest exposure plus readout.",
+]
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_adapter_simulated.py::TestNoFrameTimeoutIsAValidSdkValue::test_connect_puts_only_valid_option_values_and_logs_no_sdk_failure"
+failed_before_fix = true
+evidence = "HEAD fe5bb51 adapter with the new simulator rule: tests/core/camera/test_touptek_adapter_simulated.py:350: assert [(1, 1)] == [] for all 5 models (WARNING 'TouptekCameraAdapter(ATR585M): SDK call failed: -2147024809' from touptek_adapter.py:804)"
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_adapter_simulated.py::TestNoFrameTimeoutIsAValidSdkValue::test_the_sdks_no_frame_timeout_is_disabled"
+failed_before_fix = true
+evidence = "HEAD fe5bb51 adapter: tests/core/camera/test_touptek_adapter_simulated.py:359: KeyError 1 (the refused put left the option unset; with an accepting SDK it would read 1, not 0)"
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_adapter_simulated.py::TestNoFrameTimeoutIsAValidSdkValue::test_the_simulator_enforces_the_documented_range"
+failed_before_fix = false
+reason_no_prefix_repro = "Pins the simulator's model of the SDK rule (toupcam.py:109/:682), added with the fix; it tests the simulator, not the adapter."
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_adapter_simulated.py::TestNoFrameTimeoutIsAValidSdkValue::test_a_missing_frame_is_still_bounded_by_the_adapters_own_deadline"
+failed_before_fix = false
+reason_no_prefix_repro = "Characterization of the adapter's own frame deadline, which the decision to disable the SDK timeout relies on; passes before and after the fix."
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_adapter_simulated.py::TestConnectLogsTheModelFlagWord::test_connect_logs_model_raw_flag_and_classification"
+failed_before_fix = true
+evidence = "HEAD fe5bb51 adapter (no such log line): tests/core/camera/test_touptek_adapter_simulated.py:400: AssertionError: assert [] == [...] for all 5 models (no such log line)"
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_adapter_simulated.py::TestConnectLogsTheModelFlagWord::test_a_usb3_camera_on_a_usb2_link_is_reported"
+failed_before_fix = true
+evidence = "HEAD fe5bb51 adapter: tests/core/camera/test_touptek_adapter_simulated.py:419: assert len(lines) == 1 (no flag log line)"
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_adapter_simulated.py::TestAdapterConstantsComeFromTheVendoredSdk::test_every_fallback_equals_the_vendored_sdk_value"
+failed_before_fix = false
+reason_no_prefix_repro = "Existing S6.5a guard; listed because this fix adds TOUPCAM_FLAG_USB30 to _SDK_FALLBACKS (checked against the vendored SDK). Not a pre-fix failure."
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_adapter_simulated.py::TestSimulatorMatchesTheVendoredSdk::test_every_copied_constant_equals_resources_touptek_toupcam_py"
+failed_before_fix = false
+reason_no_prefix_repro = "Existing guard; listed because the simulator now copies TOUPCAM_NOFRAME_TIMEOUT_MIN and E_INVALIDARG, which it checks against the vendored SDK."

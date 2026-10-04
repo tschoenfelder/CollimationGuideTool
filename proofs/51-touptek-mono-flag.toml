@@ -22,7 +22,7 @@ field_only_assumptions = [
 gaps = [
     "No real-SDK flag dump for the rig cameras; the simulator's per-model USB bits come from the family names and are unverified.",
     "A call site that names a valid but semantically wrong SDK constant (e.g. FLUSH where NOFRAME_TIMEOUT was meant) cannot be caught by a generic test; only the wrong-fallback pairing is now structurally impossible.",
-    "Separate, unfixed: _prepare_capture_mode puts TOUPCAM_OPTION_NOFRAME_TIMEOUT=1 (ms), below TOUPCAM_NOFRAME_TIMEOUT_MIN=500 (toupcam.py:109/682); rig effect unknown.",
+    "Resolved separately by S6.5b (973d0ab, proofs/51-touptek-noframe-timeout.toml): NOFRAME_TIMEOUT=1 was outside the documented range; now 0 (disabled).",
 ]
 
 [[regression_tests]]
