@@ -138,8 +138,8 @@ from astrotool_core.camera import (
 from astrotool_core.config import (
     load_camera_settings,
     load_mount_alignment_settings,
-    save_camera_settings,
     paths,
+    save_camera_settings,
 )
 from astrotool_core.diagnostics import DiagnosticService
 from astrotool_core.diffraction.optical_reference_model import OpticalConfig
