@@ -175,6 +175,20 @@ class TestAC7_2InvalidResult:
         assert panel.is_collimated_style_active is False
         assert "star_lost" in panel._status_label.text()
 
+    def test_a_failed_run_shows_the_mounts_refusal_detail(self, qapp: object) -> None:
+        """S6.0b: the user sees WHY guide-assisted reacquisition could not move the mount."""
+        panel = _make_panel()
+        outcome = FineCollimationOutcome(
+            status="failed", result=None, reason="mount_correction_rejected",
+            detail="Local axis motion requires fresh unparked, stationary, non-tracking state",
+        )
+
+        panel.show_outcome(outcome)
+
+        text = panel._status_label.text()
+        assert "mount_correction_rejected" in text
+        assert "non-tracking" in text
+
 
 class TestInitialState:
     def test_before_any_run_shows_a_neutral_not_yet_measured_state(self, qapp: object) -> None:

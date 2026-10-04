@@ -5815,6 +5815,56 @@ class TestArtificialStarTargetMode:
         assert result.status is AcquisitionStatus.LOST
         assert result.failure_reason == "no_guide_calibration"
 
+    def test_reacquisition_reads_the_guide_matrix_in_the_configured_center_rate(
+        self, qapp: object, tmp_path: Path
+    ) -> None:
+        """S6.0b: on an angular-only mount Mount Align stores the Guide matrix in equivalent ms
+        at the CONFIGURED `calibration_center_rate_x`; the real wiring hands that same loaded
+        value (not a default) to the reacquisition."""
+        from astrotool_core.registration.result import RegistrationMethod, RegistrationStatus
+        from collimation_tool.application.star_acquisition import (
+            AcquisitionResult,
+            AcquisitionStatus,
+        )
+
+        config = tmp_path / "config.toml"
+        config.write_text("[mount_alignment]\ncalibration_center_rate_x = 16.0\n")
+        window = MainWindow(
+            _donut_camera((0.0, 0.0)), device_lister=lambda: [], camera_settings_path=config
+        )
+        window._last_prior_a = OpticalPrior(
+            name="main", sensor_width_px=100, sensor_height_px=80, pixel_scale_arcsec=1.0
+        )
+        window._last_calibration_result = CrossCameraRegistrationResult(
+            method=RegistrationMethod.ARTIFICIAL_STAR, status=RegistrationStatus.OK_OVERLAP,
+            rotation_deg=0.0, scale=1.0,
+            polygon_a_in_b=((0.0, 0.0), (100.0, 0.0), (100.0, 80.0), (0.0, 80.0)),
+            confidence=1.0,
+        )
+        matrix = CalibrationMatrix(
+            responses={
+                (axis, direction): AxisResponse(axis, direction, 1000, 10.0, 0.0, 0.01)
+                for axis in MountAxis
+                for direction in AxisDirection
+            }
+        )
+        window._test_move_panel._calibration["right"] = matrix
+        calls: list[dict[str, object]] = []
+
+        class _RecordingAcquisition:
+            def attempt_guide_reacquisition(
+                self, _get_frame: object, **kwargs: object
+            ) -> AcquisitionResult:
+                calls.append(kwargs)
+                return AcquisitionResult(AcquisitionStatus.SEARCHING_GUIDE, None, None)
+
+        window._reacquire_via_guide(_RecordingAcquisition(), None)  # type: ignore[arg-type]
+
+        assert len(calls) == 1
+        assert calls[0]["center_rate_x"] == 16.0
+        assert calls[0]["guide_calibration"] is matrix
+        assert calls[0]["mount"] is window._pulse_mount
+
 
 class TestArtificialStarAutofocusWiring:
     """Issue #33 (artificial star): autofocus infers its mode from the #39

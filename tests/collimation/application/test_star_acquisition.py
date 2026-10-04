@@ -250,6 +250,8 @@ class TestAC1_4GuideAssistedReacquisition:
 
         assert result.status is AcquisitionStatus.LOST
         assert result.failure_reason == "mount_correction_rejected"
+        # S6.0b: the mount's own reason is carried, not dropped.
+        assert result.detail == "rejected for test"
 
     def test_cancellation_is_reported_distinctly(self) -> None:
         prior_main, registration = _guide_registration()

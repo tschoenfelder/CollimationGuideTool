@@ -49,8 +49,26 @@ from astrotool_core.target.identity_match import IdentityMatchStatus, resolve_id
 from astrotool_core.target.roi import Roi, compute_roi_bounds
 from astrotool_core.target.roi_selector import select_target
 from astrotool_core.target.roi_tracker import RoiTracker, TrackingResult, TrackingState
+from astrotool_core.timing import Clock
 
+from collimation_tool.application.mount_commands import rearm_after_stop
 from collimation_tool.application.recenter_policy import CollimationRecenterPolicy
+
+#: S6.0b (re-review): the largest image shift one reacquisition move may produce PER AXIS,
+#: bounded by two things. (1) 0.35 x the guide tracker's search radius
+#: (`guide_max_position_error_px`): the measurement after each correction must re-find the star
+#: inside that radius, and both axes move before it -- a combined jump of up to sqrt(2) x the
+#: per-axis step, i.e. <= ~0.5 x radius with a perfect calibration and <= ~0.74 x radius when
+#: the real response is 1.5x the calibration (e.g. calibrated at another declination). 0.5 x
+#: radius per axis lost the star in that case (coordinator decision after review).
+#: (2) A quarter of the guide frame's smaller dimension: the same 25%-of-frame size Mount Align
+#: (#46) calibrates with -- a move size the rig has demonstrably measured -- so a wrong-signed
+#: move cannot push the star off the frame in one step. Never below the mount's smallest move
+#: (the policy raises a cap to that floor). Without a frame the policy's fixed `max_pulse_ms`
+#: cap (~60" at 8x) applies. OnStepAdapter's 10 degree maximum is far above either bound (a
+#: refusal beyond it would be reported, not hidden).
+_STEP_TRACKER_RADIUS_FRACTION = 0.35
+_STEP_FRAME_FRACTION = 0.25
 
 #: Issue #15's own machine-readable failure-reason vocabulary, verbatim.
 _CORRECTION_REASON_TO_FAILURE_REASON = {
@@ -77,6 +95,9 @@ class AcquisitionResult:
     roi: Roi | None
     target_position: tuple[float, float] | None
     failure_reason: str | None = None
+    #: S6.0b: human-readable detail behind a failure -- e.g. the mount adapter's own refusal
+    #: reason behind `mount_correction_rejected` (never dropped). None when there is none.
+    detail: str | None = None
 
 
 def _require_position(result: TrackingResult) -> tuple[float, float]:
@@ -187,6 +208,8 @@ class FocusedStarAcquisition:
         registration: CrossCameraRegistrationResult,
         prior_main: OpticalPrior,
         cancel_check: Callable[[], bool] | None = None,
+        clock: Clock | None = None,
+        center_rate_x: float | None = None,
     ) -> AcquisitionResult:
         """AC 1.4: only meant to be called once `process_main_frame` has
         reported `target_not_found_main` (i.e. exhausted its own bounded
@@ -202,7 +225,14 @@ class FocusedStarAcquisition:
         Main's field once reached, not merely at its edge). Synchronous
         and run-to-completion, matching `CollimationRecenterPolicy.
         center()`'s own contract -- one final `AcquisitionResult`, not
-        interim progress."""
+        interim progress.
+
+        S6.0b: `clock` is the policy's settle clock (default real); `center_rate_x` is the
+        unit `guide_calibration` was stored in on a mount without timed pulses (pass the loaded
+        `MountAlignmentSettings.calibration_center_rate_x`; None = that setting's default). On
+        such a mount the policy moves angularly (never `pulse_axis`); a refusal's adapter
+        reason is returned in `detail`. Once the gates pass and the mount is about to move,
+        the adapter's latched Stop is re-armed (`rearm_after_stop`), like any new command."""
         if self._last_position is None:
             raise RuntimeError("attempt_guide_reacquisition() called before select()")
 
@@ -260,7 +290,20 @@ class FocusedStarAcquisition:
                 )
             return guide_tracker.update(detect_sources(frame).sources)
 
-        policy = CollimationRecenterPolicy(mount, guide_calibration)
+        max_step_px = min(
+            _STEP_TRACKER_RADIUS_FRACTION * self._guide_max_position_error_px,
+            _STEP_FRAME_FRACTION * min(first_frame.shape[:2]),
+        )
+        policy = CollimationRecenterPolicy(
+            mount,
+            guide_calibration,
+            clock=clock,
+            center_rate_x=center_rate_x,
+            max_step_px=max_step_px,
+        )
+        # S6.0b: a new operator command -- an earlier Stop (e.g. Mount Align's) must not
+        # silently refuse it; a Stop pressed DURING this reacquisition still latches.
+        rearm_after_stop(mount)
         correction = policy.center(measure, reference=target_center, cancel_check=cancel_check)
 
         if correction.success:
@@ -274,7 +317,7 @@ class FocusedStarAcquisition:
             if correction.reason == "cancelled"
             else AcquisitionStatus.LOST
         )
-        return AcquisitionResult(status, None, None, failure_reason)
+        return AcquisitionResult(status, None, None, failure_reason, correction.message or None)
 
     def confirm_returned_to_main(self, main_frame: np.ndarray) -> AcquisitionResult:
         """AC 1.5: after `attempt_guide_reacquisition` reports success,

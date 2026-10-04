@@ -98,6 +98,9 @@ class FineCollimationOutcome:
     #: Issue #39: what guide-assisted reacquisition did during this run
     #: (e.g. "reacquired_via_guide"), retained for diagnostics.
     reacquisition_log: tuple[str, ...] = ()
+    #: S6.0b: human-readable detail behind `reason` -- e.g. the mount adapter's own refusal
+    #: text when guide-assisted reacquisition was refused. None when there is none.
+    detail: str | None = None
 
 
 class FineCollimationController:
@@ -126,9 +129,12 @@ class FineCollimationController:
             else sample_count * _DEFAULT_MAX_ATTEMPTS_FACTOR
         )
 
-    def _fail(self, reason: str, log: list[str]) -> FineCollimationOutcome:
+    def _fail(
+        self, reason: str, log: list[str], detail: str | None = None
+    ) -> FineCollimationOutcome:
         return FineCollimationOutcome(
-            status="failed", result=None, reason=reason, reacquisition_log=tuple(log)
+            status="failed", result=None, reason=reason, reacquisition_log=tuple(log),
+            detail=detail,
         )
 
     def run(self, cancel_check: Callable[[], bool] | None = None) -> FineCollimationOutcome:
@@ -175,8 +181,9 @@ class FineCollimationController:
                 reacquisitions += 1
                 log.append("guide_reacquisition_attempted")
                 recovered = self._recover_via_guide(cancel_check, log)
-                if isinstance(recovered, str):
-                    return self._fail(recovered, log)
+                if isinstance(recovered, tuple):
+                    reason, detail = recovered
+                    return self._fail(reason, log, detail)
                 collected.append(recovered)
             # SEARCHING_MAIN / AMBIGUOUS: not yet usable, not yet fatal --
             # keep going, bounded by attempts/max_attempts above.
@@ -185,23 +192,25 @@ class FineCollimationController:
 
     def _recover_via_guide(
         self, cancel_check: Callable[[], bool] | None, log: list[str]
-    ) -> np.ndarray | str:
+    ) -> np.ndarray | tuple[str, str | None]:
         """Guide-assisted recovery (issue #39): returns the recovered ROI
-        frame, or a failure-reason string. Identity is preserved -- the
+        frame, or (failure reason, detail). Identity is preserved -- the
         confirm step re-detects with `resolve_identity`, so an ambiguous
-        return reports `target_ambiguous` instead of switching target."""
+        return reports `target_ambiguous` instead of switching target.
+        S6.0b: the reacquisition's `detail` (e.g. the mount's refusal text)
+        is carried through, never dropped."""
         assert self._guide_reacquirer is not None
         guide_result = self._guide_reacquirer(self._acquisition, cancel_check)
         if guide_result.status is AcquisitionStatus.CANCELLED:
-            return _CANCELLED_REASON
+            return (_CANCELLED_REASON, guide_result.detail)
         if guide_result.status is not AcquisitionStatus.SEARCHING_GUIDE:
-            return guide_result.failure_reason or _STAR_LOST_REASON
+            return (guide_result.failure_reason or _STAR_LOST_REASON, guide_result.detail)
         frame = self._get_frame()
         if frame is None:
-            return _NO_FRAME_REASON
+            return (_NO_FRAME_REASON, None)
         confirmed = self._acquisition.confirm_returned_to_main(frame)
         if confirmed.status is not AcquisitionStatus.TRACKING or confirmed.roi is None:
-            return confirmed.failure_reason or _STAR_LOST_REASON
+            return (confirmed.failure_reason or _STAR_LOST_REASON, confirmed.detail)
         log.append("reacquired_via_guide")
         return crop_to_roi(frame, confirmed.roi)
 

@@ -377,12 +377,15 @@ class MainWindow(QMainWindow):
         self._mount_panel = MountParkPanel(
             mount_park_port, tracking_enforcer=self._tracking_enforcer
         )
+        #: Loaded once and kept (S6.0b): Mount Align stores its calibration in this
+        #: configuration's unit, and guide-assisted reacquisition must read it in the same one.
+        self._mount_alignment_settings = load_mount_alignment_settings(self._camera_settings_path)
         self._test_move_panel = MountTestMovePanel(
             self._pulse_mount,
             mount_park=mount_park_port,
             get_left_frame=self._left_panel.latest_mono_frame,
             get_right_frame=self._right_panel.latest_mono_frame,
-            settings=load_mount_alignment_settings(self._camera_settings_path),
+            settings=self._mount_alignment_settings,
             set_left_auto_exposure_paused=self._left_panel.set_auto_exposure_paused,
             set_right_auto_exposure_paused=self._right_panel.set_auto_exposure_paused,
             get_left_exposure_gain=self._left_panel.current_exposure_gain,
@@ -754,6 +757,8 @@ class MainWindow(QMainWindow):
             registration=registration,
             prior_main=prior_a,
             cancel_check=cancel_check,
+            # S6.0b: the unit Mount Align stored the Guide matrix in (angular-only mounts).
+            center_rate_x=self._mount_alignment_settings.calibration_center_rate_x,
         )
 
     def _on_left_camera_changed(self, device: object) -> None:

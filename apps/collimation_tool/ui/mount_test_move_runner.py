@@ -75,6 +75,8 @@ from astrotool_core.mount.park_port import MountParkPort, MountParkStatus
 from astrotool_core.mount.port import AxisDirection, CommandResult, MountAxis, MountPort
 from astrotool_core.timing import SYSTEM_CLOCK, Clock, Deadline
 
+from collimation_tool.application.mount_commands import rearm_after_stop
+
 _UNPARK_TIMEOUT_S = 5.0
 _REPARK_TIMEOUT_S = 5.0
 _PARK_POLL_INTERVAL_S = 0.1
@@ -336,9 +338,7 @@ class MountTestMoveRunner:
             # submission is accepted: a refused submit (busy) must not re-arm the sequence
             # that Stop interrupted.
             self._stop_requested.clear()
-            clear_abort = getattr(mount, "clear_abort", None)
-            if callable(clear_abort):
-                clear_abort()
+            rearm_after_stop(mount)
         threading.Thread(
             target=self._run,
             args=(mount_park, mount, steps, rate_preset, park_after, settle_ms),

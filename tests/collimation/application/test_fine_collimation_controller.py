@@ -183,6 +183,21 @@ class TestGuideAssistedReacquisition:
         assert outcome.reason == "target_not_found_guide"
         assert "guide_reacquisition_attempted" in outcome.reacquisition_log
 
+    def test_a_refused_reacquisition_carries_the_mounts_reason(self) -> None:
+        """S6.0b: the adapter's refusal text (AcquisitionResult.detail) reaches the outcome."""
+
+        def reacquirer(acq: FocusedStarAcquisition, cancel: object) -> AcquisitionResult:
+            return AcquisitionResult(
+                AcquisitionStatus.LOST, None, None, "mount_correction_rejected",
+                "stopped by the user -- move not sent",
+            )
+
+        outcome = self._controller(reacquirer).run()
+
+        assert outcome.status == "failed"
+        assert outcome.reason == "mount_correction_rejected"
+        assert outcome.detail == "stopped by the user -- move not sent"
+
     def test_an_ambiguous_return_to_main_never_silently_switches_target(self) -> None:
         def star(x: float) -> np.ndarray:
             return airy_pattern_image(

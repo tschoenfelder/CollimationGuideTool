@@ -293,7 +293,6 @@ from astrotool_core.mount.movement_sizing import (
     plan_first_move,
     plan_followup,
     rate_arcsec_per_s,
-    seed_rate_arcsec_per_s,
 )
 from astrotool_core.mount.operating_mode import OperatingMode, TrackingEnforcer
 from astrotool_core.target.detector import detect_sources
@@ -308,6 +307,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from collimation_tool.application.angular_move_plan import plan_angular_move
+from collimation_tool.application.equivalent_duration import angular_unit_rate_arcsec_per_s
 from collimation_tool.ui.flow_layout import FlowLayout
 from collimation_tool.ui.mount_test_move_runner import (
     AngularPulseStep,
@@ -485,12 +486,6 @@ _REFERENCE_MAX_AGE_S = 60.0
 #: Issue #43: a measured shift below this is 'the image did not move'.
 _NO_MOTION_MIN_PX = 1.0
 _NO_MOTION_WIDTH_FRACTION = 0.0025
-#: S6.0: a screen-move component below the mount's smallest angular move may be skipped only
-#: when the image error it leaves is at most this fraction of the requested shift. Screen
-#: moves are fire-and-forget positioning clicks whose sizes step 5/15/30% of the frame, so a
-#: <=25% error stays well inside one size step and the next click corrects it; anything
-#: larger is refused up front instead of landing somewhere the user did not ask for.
-_SCREEN_MOVE_DROP_TOLERANCE = 0.25
 
 
 @dataclass(frozen=True)
@@ -2353,10 +2348,10 @@ class MountTestMovePanel(QWidget):
         machinery (and every `AxisResponse.duration_ms`) still speaks durations; on a mount
         that only moves by angle they are converted at this ONE fixed factor -- the same
         centering-rate seed `plan_first_move` sizes with -- so a sized duration maps back to
-        exactly the calculated arcsec. A unit conversion, not a mount-rate model."""
-        return seed_rate_arcsec_per_s(
-            SizingPolicy(center_rate_x=self._settings.calibration_center_rate_x)
-        )
+        exactly the calculated arcsec. A unit conversion, not a mount-rate model; its single
+        owner is `collimation_tool.application.equivalent_duration` (S6.0b), shared with the
+        guide-assisted recenter policy that reads the matrix this panel stores."""
+        return angular_unit_rate_arcsec_per_s(self._settings.calibration_center_rate_x)
 
     def _angular_only_policy(
         self, policy: SizingPolicy, cameras: list[CameraGeometry], distance_m: float | None
@@ -3191,40 +3186,30 @@ class MountTestMovePanel(QWidget):
         """S6.0: the whole angular sequence for a screen move, validated BEFORE anything is
         sent. Returns (steps, clamped, skipped axis label) or a refusal message.
 
-        Each solved component (calibration duration unit) becomes arcsec and is capped like a
-        nudge. A component below the mount's smallest angular move cannot be commanded: it is
-        DROPPED when the image error that leaves (its own share of the solved shift, from the
-        measured matrix) is within `_SCREEN_MOVE_DROP_TOLERANCE` of the requested shift --
-        a fire-and-forget positioning click lands close enough and the next click corrects
-        the rest; otherwise the whole move is refused with nothing sent. Never a partially
+        The rule (cap like a nudge; a sub-floor component DROPPED only when the image error it
+        leaves is within `SCREEN_MOVE_DROP_TOLERANCE` of the requested shift, else the whole
+        move REFUSED with nothing sent) has one owner shared with the guide-assisted recenter
+        policy: `collimation_tool.application.angular_move_plan` (S6.0b). Never a partially
         executed sequence (a refused second component used to strand the first)."""
-        unit = self._angular_unit_rate()
-        cap = self._nudge_cap_arcsec()
         floor = self._min_angular_arcsec()
-        kept: list[PulseStep | AngularPulseStep] = []
-        clamped = False
-        dropped: list[str] = []
-        residual_dx = residual_dy = 0.0
-        for axis, direction, duration_ms in steps:
-            arcsec = duration_ms * unit / 1000.0
-            if arcsec < floor:
-                response = matrix.response_for(axis, direction)
-                residual_dx += response.dx_px / response.duration_ms * duration_ms
-                residual_dy += response.dy_px / response.duration_ms * duration_ms
-                dropped.append(f'{_AXIS_LABELS[axis]} {arcsec:.1f}"')
-                continue
-            if arcsec > cap:
-                clamped, arcsec = True, cap
-            kept.append((axis, direction, max(1, round(arcsec / unit * 1000.0)), arcsec))
-        if not dropped:
-            return kept, clamped, ""
-        residual_px = math.hypot(residual_dx, residual_dy)
-        if not kept or residual_px > _SCREEN_MOVE_DROP_TOLERANCE * target_px:
+        plan = plan_angular_move(
+            matrix,
+            steps,
+            target_px=target_px,
+            center_rate_x=self._settings.calibration_center_rate_x,
+            cap_arcsec=self._nudge_cap_arcsec(),
+            floor_arcsec=floor,
+        )
+        dropped = ", ".join(f'{_AXIS_LABELS[axis]} {arcsec:.1f}"' for axis, arcsec in plan.dropped)
+        if plan.refused:
             return (
-                f"this move needs {', '.join(dropped)}, below the mount's smallest angular "
+                f"this move needs {dropped}, below the mount's smallest angular "
                 f'move ({floor:.0f}") -- nothing was sent; choose a larger size'
             )
-        return kept, clamped, ", ".join(dropped)
+        kept: list[PulseStep | AngularPulseStep] = [
+            (step.axis, step.direction, step.duration_ms, step.arcsec) for step in plan.steps
+        ]
+        return kept, plan.clamped, dropped
 
     def _finish_screen_move(
         self,

@@ -342,7 +342,8 @@ class FineCollimationPanel(QWidget):
         self._last_outcome = outcome
         if outcome.status == "failed" or outcome.result is None:
             self._set_style(_WARNING_STYLE, collimated=False)
-            self._status_label.setText(f"{self._prefix()}: failed — {outcome.reason}")
+            detail = f" ({outcome.detail})" if outcome.detail else ""
+            self._status_label.setText(f"{self._prefix()}: failed — {outcome.reason}{detail}")
             return
         prefix = self._prefix(outcome.result.target_mode)
 
@@ -447,6 +448,7 @@ class FineCollimationPanel(QWidget):
         if outcome is not None:
             context["last_status"] = outcome.status
             context["last_reason"] = outcome.reason
+            context["last_detail"] = outcome.detail
             context["last_reacquisition_log"] = list(outcome.reacquisition_log)
             if outcome.result is not None:
                 context["last_target_mode"] = outcome.result.target_mode.value
