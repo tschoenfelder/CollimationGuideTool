@@ -56,7 +56,7 @@ Status: `todo` · `in-progress` · `done` · `field-only` (only real hardware ca
 | S6.2 | #52 | `DeviceConnectionService` (Focuser → MountPark → MountTestMove) | | | todo | | |
 | S6.3 | #52 | `OperationLifecycle` + bounded Busy timeout (FilterWheel, Focuser) | | | todo | | |
 | S6.4 | #48 | Remove Mount Align **and autofocus** local Star/Terrestrial toggles; derive from global OperatingMode (M04 decided). Also (from S6.0c review P-a): switching to Terrestrial while the mount is busy stores the mode but the gate stays BLOCKED until the next measurement gate — add a one-shot re-enforce when the busy period ends | | | todo | | |
-| S6.5 | #55 | ToupTek capability table (unsupported features contract-driven) | | | todo | | |
+| S6.5 | #55 | ToupTek capability table (unsupported features contract-driven) | issue agent | APPROVE-WITH-FIXES (cooler-left-on safety, range retry) → APPROVE | done | 5f38a4c | `python scripts/prove.py 55-capability-tables` |
 | S6.5a | production defect (found by S4 review) | `touptek_adapter.py:54` `_FLAG_MONO = 0x40` is the SDK's `TOUPCAM_FLAG_USB30`; real `TOUPCAM_FLAG_MONO` is `0x10` (resources/touptek/toupcam.py:24/26). `is_color_sensor()` (line 639) therefore answers "not USB3": a colour USB3 camera would be treated as mono (no debayer). Option fallbacks also wrong (RGB 0x16→0x0c, FLUSH 0x36→0x3d, NOFRAME_TIMEOUT 0x3F→0x01, AUTOEXPO_TRIGGER 0x5A→0x51) — only used when the SDK lacks the name. Failing regression first (S4 leaves a strict xfail), then fix; check which rig cameras are affected | issue agent | APPROVE-WITH-FIXES → pairing gap closed structurally | done | 4864cc8 | `python scripts/prove.py 51-touptek` |
 | S6.5b | production defect (found by S6.5a) | `touptek_adapter._prepare_capture_mode` puts `TOUPCAM_OPTION_NOFRAME_TIMEOUT = 1` (1 ms); the SDK requires ≥ `TOUPCAM_NOFRAME_TIMEOUT_MIN` = 500 ms (`resources/touptek/toupcam.py:109`, `:682`) → either rejected (log warning) or a 1 ms no-frame timeout on the rig. Characterize on the simulator, decide the intended value from the SDK docs, fix; add a connect-time log of `model.flag` so the S6.5a camera-flag inferences become known on the next Pi run | issue agent | APPROVE-WITH-FIXES → fixed | done | 973d0ab | `python scripts/prove.py 51-touptek-noframe` |
 | S6.6 | #52 | Mount Align orchestration out of `mount_test_move_panel.py` into application layer | | | todo | | |
@@ -366,6 +366,7 @@ not change · dependencies · non-goals · proof required.
 
 | Date | Task | Commit | What was proven |
 |------|------|--------|-----------------|
+| 2026-10-06 | S6.5 | 5f38a4c | Camera + mount capability tables; unsupported features decided once, no per-frame SDK calls; bounded range retry; TEC-off never suppressed (65,000-case exhaustive check); one owner for the cooling default |
 | 2026-10-05 | S6.1 | 37db9f0, 61d1e27 | One owner for EFW name, INDI host/port and config/diagnostics paths; 2 live contradictions fixed (fake 'EFW 1', 'Filter Wheel' fallbacks); filter-wheel host → 127.0.0.1; contract scan over packages/apps/scripts; conftest isolates every reader. 61d1e27 = my hunk-split import-order slip, fixed |
 | 2026-10-05 | S6.0d | feb46e5 | Astronomical reacquisition via OnStepAdapter 0.5.0 guide_pulse, capability-detected (main on 0.4.1 → clear refusal); bounded guide-pulse calibration; tracking never touched; simulator ≡ real 0.5.0 controller (3150/3150). Field: user-supervised first physical guide pulse before the pin bump |
 | 2026-10-04 | S6.0b | f24a523 | Reacquisition moves the production mount on the angular path: 2-D solve (rotation/mirroring/unequal scales), per-axis cap 0.35×tracker radius, shared move planner, single ms↔arcsec owner with configured center rate, refusal reason shown, Stop latch re-armed, within-smallest-move success. Seeded sweeps + real RoiTracker; fail pre-fix / on intermediate states. Rollout blocker: fresh frame after each move (S6.7). Astronomical mode → S6.0d |
@@ -484,5 +485,30 @@ not change · dependencies · non-goals · proof required.
   contract → fold into S6.5 (camera) / S6.6 (Mount Align). (c) Owner deviation from the audit:
   `config/device_defaults.py` + `config/paths.py` instead of `filter_wheel/config.py` / `indi_endpoint.py`
   (so low-level INDI code needn't import filter_wheel). (d) Field: EFW connects with the 127.0.0.1 default.
+- **S6.4 findings (2026-10-05).** M02: Mount Align still has two tracking-verification paths (enforcer vs
+  direct `ensure_tracking_mode` when no enforcer/mount) → S6.6. M03: `MountTestMoveRunner` turns tracking
+  off before every move regardless of mode → S6.8. M05: "artificial star?" decided in three places
+  (`CollimationTargetMode`, registration button, `AutofocusMode`); `_calibration_distance_m` reads the
+  registration button → S6.6. `_on_calibrate_fov` doesn't itself reject star-field+Terrestrial (UI-only
+  constraint). Tracking settle poll not interruptible by Stop → S6.3. P-a trigger lives in a MainWindow
+  500 ms timer → move into the connection service poll in S6.2. recenter_policy doesn't ask the enforcer
+  for its tracking precondition → S6.6.
+- **CI note.** `37db9f0` (S6.1) failed CI on ruff I001 — my zero-context hunk split misplaced one import;
+  fixed in `61d1e27`. Lesson: split shared files by building the staged blob from HEAD + exact
+  replacements, never `git apply --unidiff-zero`.
+- **S6.5 follow-ups (2026-10-06).** (a) D04 pinned test doubles restate −10 °C: `camera/fake_camera.py:57`,
+  `camera/replay_camera.py:67`, `testing/fake_touptek.py:83` → migrate to `config.camera_settings.
+  DEFAULT_TARGET_TEMPERATURE_C` in S6.6 (then delete the `_COOLING_ALLOWED` pins). (b) Callers still
+  duck-typing mount capabilities (`recenter_policy.py:353/405`, `mount_test_move_panel.py:2381`, three
+  `hasattr` "angular" probes + `hasattr(abort)`, `mount_test_move_runner.py:166`, `mount_park_panel.py`
+  confirm_home/long_running_actions/home_confirmed, `focuser_panel.py` blockers) → S6.6; note
+  `test_recenter_policy.py:231/363/404` doubles set `min_angular_arcsec = 30.0` while `capabilities()`
+  says 0.0 — fix together. (c) `FocuserStatus` has no held-over flag; `sim_onstep.py` restates the 30″/10°
+  bounds; camera_panel ±40 °C target-range fallback → S6.6. (d) Field: gain/exposure ranges may change
+  with conversion gain on some models (ranges now cached per connection).
+- **USER DECISIONS (2026-10-06, S6.4 review).** (1) Selecting Artificial Star as target switches the
+  global Operating Mode to Terrestrial (tracking OFF) with a visible note — Astronomical + Artificial star
+  must not exist. (2) NCC FOV registration stays available in both modes (Moon/planets at night); only
+  ASTAP star-field matching is restricted to Astronomical.
 - **S5 live contradictions (9)** are listed in `docs/quality/duplication-audit.md`; each is owned by an
   S6 step and gets a failing regression before its fix.

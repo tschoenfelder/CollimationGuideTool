@@ -1,0 +1,197 @@
+# Proof manifest -- schema in proofs/README.md. Run: python scripts/prove.py 55-capability-tables
+issues = [55]
+summary = """S6.5 (#55 audit C01/C02/D04): unsupported-capability handling was ad hoc. Camera: \
+TouptekCameraAdapter had two mechanisms for one concept (hand-written flag-gated _supports_* \
+properties plus a temperature-only E_NOTIMPL cache), get_descriptor() -- read on every frame -- \
+re-queried the gain/exposure/TEC ranges per call, and a flag-gated option the SDK still refused \
+(E_NOTIMPL) warned on every use: the 531a952/4730c55 spam class, still open for every call but the \
+two fixed ones. Now one capability table (_FEATURE_FLAGS + _OPTION_FEATURE, flag names looked up \
+on the SDK module via the S6.5a _SDK_FALLBACKS/_sdk_constant single source) decides each feature \
+once per connection: flag-gated features from model.flag, the temperature sensor by one probe at \
+connect, ranges asked once at connect (a transiently failed gain/exposure range is re-asked at \
+most once per range_retry_s on the injected clock); the first E_NOTIMPL for a feature or option is \
+recorded and reported once (INFO), never re-asked; get_descriptor() makes no other SDK call; \
+CameraCapabilities gains supports_temperature and supports_raw16. Safety: the cooler's on/off and \
+its target are separate features, and every TEC-off write (connect, cooling off, disconnect) is \
+gated by the TEC flags only -- a refused target never suppresses it (a review finding on the \
+pre-commit S6.5 tree, which left the cooler ON). Mount: MountCapabilities gains \
+supports_angular_moves and min/max_angular_arcsec (OnStepMountPulseAdapter reports OnStepAdapter's \
+own MIN_AXIS_MOVE_ARCSEC/MAX_AXIS_MOVE_DEG; min_angular_arcsec kept as a deprecated alias), and \
+MountStatus gains fresh (held-over readings marked, S6.0c leftover). D04: the -10 C cooling \
+target default has one owner, config.camera_settings.DEFAULT_TARGET_TEMPERATURE_C, read at call \
+time by the settings dataclass/loader, the camera panel and the adapter; the config-source \
+contract test scans for re-statements and proves an injected default reaches every consumer."""
+modules = [
+    "packages/astrotool_core/camera/touptek_adapter.py",
+    "packages/astrotool_core/camera/capabilities.py",
+    "packages/astrotool_core/config/camera_settings.py",
+    "packages/astrotool_core/mount/port.py",
+    "packages/astrotool_core/onstep/mount_pulse_adapter.py",
+    "packages/astrotool_core/testing/fake_mount.py",
+    "packages/astrotool_core/testing/sim_touptek.py",
+    "apps/collimation_tool/ui/camera_panel.py",
+]
+fix_commits = ["5f38a4c"]
+dataset_uuids = []
+focused_command = """pytest -q \
+tests/core/camera/test_touptek_capability_table.py \
+tests/core/camera/test_touptek_adapter_simulated.py::TestCapabilityMatrix \
+tests/core/camera/test_touptek_adapter_simulated.py::TestUnsupportedCapabilityIsNeverCalled \
+tests/core/onstep/test_mount_capabilities.py \
+tests/core/onstep/test_onstep_adapters.py::TestHeldOverMountStatusIsMarked \
+tests/contracts/test_mount_contract.py::test_declared_angular_capability_matches_the_mount \
+tests/contracts/test_config_source_contract.py"""
+broader_tier = "component"
+field_only_assumptions = [
+    "Gain, exposure and TEC-target ranges are asked once per connect instead of on every get_descriptor() call (a transiently failed gain/exposure query is re-asked at most every 30 s); assumed static for one connection on the real SDK (the simulator models them static). If a real camera's range changed with conversion gain or bit depth mid-session, the descriptor would now report the connect-time range.",
+    "TEC-off safety on the rig (ATR585M): Cooling off and Disconnect must leave the cooler off; check the Temp reading drifts back toward ambient after Disconnect.",
+    "The temperature sensor is probed once at connect (one get_Temperature call): on the GPCMOS02000KPA this is the one E_NOTIMPL the 4730c55 fix already allowed, now at connect instead of on the first poll; one INFO line 'temperature not implemented by this camera' per connect is expected in the Pi log, no WARNING.",
+    "After the change, a Pi session with G3M678M/ATR585M/GPCMOS02000KPA should show no repeated 'SDK call failed' WARNING; any E_NOTIMPL the flags did not predict appears once as INFO '<feature> not implemented by this camera (SDK E_NOTIMPL)' -- read it to correct the flag inferences (S6.5a/S6.5b flag log).",
+]
+gaps = [
+    "TOUPCAM_FLAG_GETTEMPERATURE (toupcam.py:30) is not used to gate the temperature sensor: the rig cameras' real flag words are unknown (S6.5b flag log pending), and a camera that reports a temperature without the bit would lose a working reading; the connect-time probe is used instead.",
+    "Callers still duck-type: recenter_policy.py:353/:405 and mount_test_move_panel.py (getattr min_angular_arcsec, three hasattr 'angular' probes, hasattr abort), mount_test_move_runner.py:166, mount_park_panel.py (confirm_home/long_running_actions/home_confirmed), focuser_panel.py (blockers) -- migration to capabilities() recorded for S6.6; the deprecated alias keeps them working.",
+    "D04 pinned exceptions: fake_camera.py:57, replay_camera.py:67, testing/fake_touptek.py:83 still re-state -10.0 (outside S6.5's allowed files); test_every_cooling_exception_is_still_needed forces deleting the pins once migrated. The camera panel's +/-40 C target-range fallback (camera_panel.py:288,373-374) is not centralized either.",
+    "FocuserStatus has no held-over flag yet (focuser/port.py outside S6.5's files); OnStepFocuserAdapter's held-over readings stay display-only by convention.",
+    "Simulator modelling (S6.5 additions, sim_touptek.py): query log and fail_calls fault injection are test seams; the flag/SDK disagreement (TEC flag set, TEC options E_NOTIMPL) is synthetic -- no rig camera is known to do it.",
+]
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_capability_table.py::TestNoRepeatedQueriesAndNoSpam::test_a_streaming_session_asks_each_range_once_per_connect"
+failed_before_fix = true
+evidence = "base 5acc6b9 (= 6e7ccd5 + tracker only) adapter with the S6.5 simulator (isolated worktree, PYTHONPATH on its packages/apps): tests/core/camera/test_touptek_capability_table.py:191: AssertionError: {'get_ExpoAGainRange': 25, 'get_ExpTimeRange': 25, ...} == {...: 1} for all 6 models (ATR585M also get_TecTargetRange 25)"
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_capability_table.py::TestNoRepeatedQueriesAndNoSpam::test_a_persistently_failing_range_query_warns_once_not_per_frame"
+failed_before_fix = true
+evidence = "base 5acc6b9 adapter: tests/core/camera/test_touptek_capability_table.py:220: assert 25 == 1 (a failing get_ExpoAGainRange/get_ExpTimeRange queried and warned on every descriptor read)"
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_capability_table.py::TestNoRepeatedQueriesAndNoSpam::test_a_tec_flag_the_sdk_refuses_is_reported_once_and_then_treated_as_unsupported"
+failed_before_fix = true
+evidence = "base 5acc6b9 adapter: tests/core/camera/test_touptek_capability_table.py:245: assert ['put_Option(0x08)', 'get_Option(0x08)', ...] == ['put_Option(0x08)'] (every cooling read re-asked the refused option and warned)"
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_capability_table.py::TestNoRepeatedQueriesAndNoSpam::test_cooling_refused_by_the_sdk_is_unsupported_in_the_descriptor"
+failed_before_fix = true
+evidence = "base 5acc6b9 adapter: tests/core/camera/test_touptek_capability_table.py:255: assert True is False (descriptor kept supports_cooling from the flag after the SDK answered E_NOTIMPL)"
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_capability_table.py::TestNoRepeatedQueriesAndNoSpam::test_a_temperature_sensor_that_disappears_mid_session_is_reported_once"
+failed_before_fix = true
+evidence = "base 5acc6b9 adapter: tests/core/camera/test_touptek_capability_table.py:271: AttributeError: 'CameraCapabilities' object has no attribute 'supports_temperature' (no table entry for the sensor)"
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_capability_table.py::TestNoRepeatedQueriesAndNoSpam::test_a_transient_temperature_failure_keeps_the_sensor"
+failed_before_fix = true
+evidence = "base 5acc6b9 adapter: tests/core/camera/test_touptek_capability_table.py:285: AttributeError: 'CameraCapabilities' object has no attribute 'supports_temperature'"
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_capability_table.py::TestNoRepeatedQueriesAndNoSpam::test_a_streaming_session_never_repeats_a_refused_call_or_warns"
+failed_before_fix = false
+reason_no_prefix_repro = "Characterization over the five simulated rig/synthetic models plus SYNTH-CGHDR: for flag-consistent models the 531a952/4730c55 fixes already held on HEAD; kept as the no-spam guard for the table."
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_capability_table.py::TestCapabilityTablePerModel::test_the_descriptor_carries_one_decision_per_feature"
+failed_before_fix = true
+evidence = "base 5acc6b9 adapter: tests/core/camera/test_touptek_capability_table.py:127: AttributeError: 'CameraCapabilities' object has no attribute 'supports_temperature' for G3M678M, GPCMOS02000KPA, ATR585M, SYNTH-COLOR-USB3, SYNTH-MONO-USB2, SYNTH-CGHDR"
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_capability_table.py::TestCapabilityTablePerModel::test_a_reconnect_decides_again"
+failed_before_fix = true
+evidence = "base 5acc6b9 adapter: tests/core/camera/test_touptek_capability_table.py:170: AttributeError: 'CameraCapabilities' object has no attribute 'supports_temperature'"
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_capability_table.py::TestCapabilityTablePerModel::test_the_capabilities_type_defaults_the_new_decisions_to_unsupported"
+failed_before_fix = true
+evidence = "base 5acc6b9: tests/core/camera/test_touptek_capability_table.py:165: AttributeError: 'CameraCapabilities' object has no attribute 'supports_temperature'"
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_capability_table.py::TestSupportedFeaturesStillReachTheSdk"
+failed_before_fix = false
+reason_no_prefix_repro = "Characterization (behaviour for supported features must stay identical): TEC forced off at connect/disconnect, target/cooling/HCG/black level reach the SDK, temperature and TEC state read live. Passes on HEAD and after."
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_capability_table.py::TestOneTableOneRule::test_every_feature_flag_in_the_table_is_a_known_sdk_constant"
+failed_before_fix = true
+evidence = "base 5acc6b9: tests/core/camera/test_touptek_capability_table.py:331: AttributeError: module 'astrotool_core.camera.touptek_adapter' has no attribute '_FEATURE_FLAGS'"
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_capability_table.py::TestOneTableOneRule::test_no_hand_written_capability_guards_remain"
+failed_before_fix = true
+evidence = "base 5acc6b9: tests/core/camera/test_touptek_capability_table.py:354: AssertionError: _temperature_not_implemented"
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_capability_table.py::TestOneTableOneRule::test_e_notimpl_is_compared_in_exactly_one_place"
+failed_before_fix = false
+reason_no_prefix_repro = "Structural guard: HEAD also had exactly two E_NOTIMPL mentions (table + get_temperature), so it passes before; it keeps the E_NOTIMPL rule in the single _is_not_implemented helper."
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_adapter_simulated.py::TestCapabilityMatrix::test_descriptor_reflects_the_model"
+failed_before_fix = true
+evidence = "Existing #51 test, assertion updated for the connect-time temperature probe; base 5acc6b9: tests/core/camera/test_touptek_adapter_simulated.py:216: assert [] == ['get_Temperature'] for GPCMOS02000KPA (HEAD decided the sensor lazily on the first poll, not at connect)"
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_adapter_simulated.py::TestUnsupportedCapabilityIsNeverCalled"
+failed_before_fix = false
+reason_no_prefix_repro = "The 531a952/4730c55 regressions (#51), unchanged and green before and after; listed because the table now carries both fixes."
+
+[[regression_tests]]
+node = "tests/core/onstep/test_mount_capabilities.py::TestOnStepReportsItsAngularBounds"
+failed_before_fix = true
+evidence = "base 5acc6b9: tests/core/onstep/test_mount_capabilities.py:36: AttributeError: 'MountCapabilities' object has no attribute 'supports_angular_moves' (also :44, :51 min_angular_arcsec, :57)"
+
+[[regression_tests]]
+node = "tests/core/onstep/test_mount_capabilities.py::TestCapabilityDefaults"
+failed_before_fix = true
+evidence = "base 5acc6b9: tests/core/onstep/test_mount_capabilities.py:72 and :80 AttributeError (no supports_angular_moves), :91 TypeError unexpected keyword 'supports_angular_moves', :101 AttributeError 'MountStatus' object has no attribute 'fresh'"
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_adapters.py::TestHeldOverMountStatusIsMarked"
+failed_before_fix = true
+evidence = "base 5acc6b9: tests/core/onstep/test_onstep_adapters.py:1117 and :1132: AttributeError: 'MountStatus' object has no attribute 'fresh' (held-over and nothing-read-yet readings indistinguishable from fresh ones)"
+
+[[regression_tests]]
+node = "tests/contracts/test_mount_contract.py::test_declared_angular_capability_matches_the_mount"
+failed_before_fix = true
+evidence = "base 5acc6b9: tests/contracts/test_mount_contract.py:149: AttributeError: 'MountCapabilities' object has no attribute 'supports_angular_moves' (NoMount, FakeMount, OnStep shim, FakeAngularMount)"
+
+[[regression_tests]]
+node = "tests/contracts/test_config_source_contract.py::test_the_cooling_default_has_one_owner"
+failed_before_fix = true
+evidence = "base 5acc6b9: tests/contracts/test_config_source_contract.py:276: AttributeError (no owner); the same scanner over the HEAD tree finds the default re-stated at camera_panel.py:289, camera_settings.py:60 and :97, touptek_adapter.py:322 (plus the three pinned test doubles)"
+
+[[regression_tests]]
+node = "tests/contracts/test_config_source_contract.py::test_every_consumer_observes_an_injected_cooling_default"
+failed_before_fix = true
+evidence = "base 5acc6b9: tests/contracts/test_config_source_contract.py:336: AttributeError: camera_settings has no attribute 'DEFAULT_TARGET_TEMPERATURE_C' (no owner to inject into; each consumer held its own -10.0)"
+
+[[regression_tests]]
+node = "tests/contracts/test_config_source_contract.py::test_the_cooling_owner_holds_the_value"
+failed_before_fix = true
+evidence = "base 5acc6b9: tests/contracts/test_config_source_contract.py:307: AttributeError: module 'astrotool_core.config.camera_settings' has no attribute 'DEFAULT_TARGET_TEMPERATURE_C'"
+
+[[regression_tests]]
+node = "tests/contracts/test_config_source_contract.py::test_the_cooling_scanner_catches_each_kind_of_restatement"
+failed_before_fix = false
+reason_no_prefix_repro = "Pins the scanner itself (annotated default, attribute, setValue, dict.get fallback; not a docstring, not an unrelated -10.0 or +10.0); added with the guard."
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_capability_table.py::TestTecOffIsNeverSuppressedByAnotherOptionsRefusal::test_cooler_ends_off_after_a_refused_target_option"
+failed_before_fix = false
+reason_no_prefix_repro = "Guards a safety regression introduced and fixed inside S6.5 before commit (review C1: TECTARGET shared the 'cooling' feature, so a refused target skipped set_cooling_enabled(False) and the disconnect TEC-off). Fails on the pre-review S6.5 tree for both parametrizations at tests/core/camera/test_touptek_capability_table.py:379: assert 1 == 0 (cooler left ON); passes on base 5acc6b9, which never refused anything."
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_capability_table.py::TestTecOffIsNeverSuppressedByAnotherOptionsRefusal::test_a_refused_target_falls_back_to_the_local_intention"
+failed_before_fix = true
+evidence = "base 5acc6b9: tests/core/camera/test_touptek_capability_table.py:393: assert ['put_Option(0x0F)', 'get_Option(0x0F)', ...] == ['put_Option(0x0F)'] (the refused target re-asked on every read); on the pre-review S6.5 tree it failed at :394 (supports_cooling False after a refused target)"
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_capability_table.py::TestTecOffIsNeverSuppressedByAnotherOptionsRefusal::test_cooling_off_is_attempted_once_more_after_the_on_off_option_was_refused"
+failed_before_fix = true
+evidence = "base 5acc6b9: tests/core/camera/test_touptek_capability_table.py:406: the refused TEC on/off re-asked on every 'cooling off'; the pre-review S6.5 tree failed at :406 the other way (no TEC-off retry at all: ['put_Option(0x08)'])"
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_capability_table.py::TestAFailedRangeProbeIsRetriedBoundedly"
+failed_before_fix = false
+reason_no_prefix_repro = "Review C4, a regression introduced and fixed inside S6.5 before commit: base 5acc6b9 re-queried every frame (self-healing, but per frame -- the spam the table removes), and the pre-review S6.5 tree never re-asked a transiently failed range. On both, tests/core/camera/test_touptek_capability_table.py:418 raises TypeError (no clock injection), so no assertion-level pre-fix failure exists."
