@@ -24,7 +24,7 @@ never silently clamped.
 primitive takes a target offset directly and needs no arcsec/s rate to
 convert a timed pulse into a distance, unlike 0.3.5's `move_ra`/`move_dec`.
 
-Stop during a GOTO (S6.0c). OnStepAdapter 0.4.1's `move_*_axis_deg` blocks for
+Stop during a GOTO (S6.0c). OnStepAdapter's `move_*_axis_deg` (0.4.1; unchanged in 0.5.0) blocks for
 the whole GOTO (indi_axis_motion.py:164-208, default 30 s timeout) and has no
 cancel hook; `move_angular` holds `operation_lock` for all of it (9cea2e9), so
 no other compound operation interleaves with it. Stop is the one deliberate
@@ -50,25 +50,29 @@ OnStepAdapter's own `IndiAxisMover` bound as `min_angular_arcsec`/`max_angular_a
 (single source: `onstep_adapter.indi_axis_motion`); `move_angular` refuses outside exactly
 that range. The `min_angular_arcsec` property is a deprecated alias for duck-typed callers.
 
-Guide pulses while tracking (S6.0d, #39). OnStepAdapter 0.5.0 (unpublished at the time of
-writing; main stays pinned to 0.4.1) adds `IndiMount.guide_pulse(direction, duration_ms)`
-(indi_mount.py:32-38): standard INDI timed-guide properties, tracking left ON, 20..5000 ms
-(indi_guiding.py:17-18, ValueError outside, :149-152) in self-terminating 500 ms chunks (:19,
-:156-164) with a full safety preflight before every chunk and after the last (:178-212, refusing
-at PARK/HOME/slew/fault/limit/not tracking, meridian hard stop or firmware limit, and -- under
-the default "strict" `tracking_authority_policy` -- without time/site/HOME authority), one pulse
-at a time (a second concurrent call answers "another guide pulse is active", :166-170), and an
-`emergency_stop()` -- ABORT + TRACK_OFF -- whenever a failure follows an issued chunk (:213-226).
+Guide pulses while tracking (S6.0d, #39). OnStepAdapter 0.5.0 (published 2026-10-06, pinned
+since S6.0e; line numbers below are the published wheel's) adds
+`IndiMount.guide_pulse(direction, duration_ms)` (indi_mount.py:32-38): standard INDI timed-guide
+properties, tracking left ON, 20..5000 ms (indi_guiding.py:17-18, ValueError outside, :164-167)
+in 500 ms chunks (:19, :171-179), each paced to its length and followed by a wait (<= the 3 s
+command timeout) for a fresh OnStep status whose `:GU#` `G` flag has cleared (:216-227,
+:282-303), with a full safety preflight before every chunk, inside that post-chunk wait and after
+the last chunk (:117-152, :194-204, :230-235; refusing at PARK/HOME/slew/fault/limit/not
+tracking, meridian hard stop or firmware limit, and -- under the default "strict"
+`tracking_authority_policy` -- without time/site/HOME authority), one pulse at a time (a second
+concurrent call answers "another guide pulse is active", :181-185), and an `emergency_stop()` --
+ABORT + TRACK_OFF -- whenever a failure, a post-chunk refusal or an expired post-chunk wait
+follows an issued chunk (:241-258).
 Capability: detected once per connection on `connect()` from the installed OnStepAdapter -- its
 mount facade has `guide_pulse` AND its package exports the bounds (0.5.0 `__init__.py`:
 MIN_GUIDE_PULSE_MS/MAX_GUIDE_PULSE_MS); reported as the separate
 `supports_guide_pulses_while_tracking`, never as `supports_pulse_guiding` (Mount Align's
 timed/angular choice is unaffected). `guide_pulse` runs under `operation_lock` like a GOTO, is
 refused unsent while a Stop is latched, and is covered by Stop exactly like a GOTO (the stop
-worker's emergency stop turns tracking OFF; 0.5.0's next chunk preflight then refuses). After a
+worker's emergency stop turns tracking OFF; 0.5.0's post-chunk status wait then refuses). After a
 pulse that was sent and then failed it reads the mount status once more, inside the lock, so a
 caller learns whether tracking is now OFF (`GuidePulseResult.tracking_off`) -- 0.5.0's own
-`tracking_preserved` comes from the snapshot taken BEFORE its emergency stop (:220-222).
+`tracking_preserved` comes from the snapshot taken BEFORE its emergency stop (:252-254).
 """
 
 from __future__ import annotations
@@ -119,7 +123,7 @@ _GUIDE_DIRECTION = {
 
 
 class _GuidePulseOutcome(Protocol):
-    """The fields of 0.5.0's `IndiGuidePulseResult` this shim reads (indi_guiding.py:53-65)."""
+    """The fields of 0.5.0's `IndiGuidePulseResult` this shim reads (indi_guiding.py:64-76)."""
 
     chunks_requested: int
     chunks_completed: int
@@ -133,7 +137,7 @@ class _GuidePulseOutcome(Protocol):
 #: Why tracking is OFF after a guide pulse that did not complete (review fix 2).
 _USER_STOP_CAUSE = "the user's Stop sends OnStep's emergency stop: ABORT + TRACK_OFF"
 _FAILED_PULSE_CAUSE = "OnStepAdapter stops the mount when a sent guide pulse fails"
-#: 0.5.0 appends this when its own emergency stop raised (indi_guiding.py:217-219).
+#: 0.5.0 appends this when its own emergency stop raised (indi_guiding.py:247-251).
 _STOP_FAILED_MARK = "emergency stop failed"
 #: Bound on waiting for a latched Stop's worker before reading tracking: OnStepAdapter's own
 #: stop confirmation wait is <= 5 s (indi_stop.py:22-28) plus margin.
@@ -427,7 +431,7 @@ class OnStepMountPulseAdapter:
             return self._guide_result(mount, raw)
 
     def _guide_result(self, mount: IndiMount, raw: _GuidePulseOutcome) -> GuidePulseResult:
-        """Normalize 0.5.0's `IndiGuidePulseResult` (indi_guiding.py:53-65). The caller holds
+        """Normalize 0.5.0's `IndiGuidePulseResult` (indi_guiding.py:64-76). The caller holds
         `operation_lock`, so the follow-up status read is a fresh one."""
         sent = bool(raw.command_accepted)
         warnings = tuple(raw.warnings)

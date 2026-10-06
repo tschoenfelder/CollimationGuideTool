@@ -18,12 +18,13 @@ capability -- never by trying one and falling back:
 
 This module never starts or stops tracking.
 
-Guide-pulse calibration. OnStepAdapter 0.5.0 sends durations only (indi_guiding.py:190-194: the
+Guide-pulse calibration. OnStepAdapter 0.5.0 sends durations only (indi_guiding.py:205-210: the
 TIMED_GUIDE_NS/WE number is the duration in ms) and exposes no guide rate, so "how far does one
 guide-ms move the star in the guide image" can only come from evidence: a small, bounded pulse
 per axis direction (west/east/north/south), measured on frames whose exposure STARTED after the
 pulse had completed (0.5.0's `guide_pulse` returns only after every chunk's TIMED_GUIDE property
-reported completion and a final safety preflight, :196-212). Each direction gets its own response
+reported completion, its paced length elapsed and a fresh OnStep status showed the guide flag
+cleared, plus a final safety preflight, :212-235). Each direction gets its own response
 vector, so camera rotation, mirroring, unequal RA/Dec scales (cos(dec)) and an asymmetric RA
 response (with tracking on, east/west guiding slows/speeds the RA drive) all enter the 2-D solve
 (`solve_screen_move`) exactly as on the S6.0b angular path. Mount Align's matrix is not reused:

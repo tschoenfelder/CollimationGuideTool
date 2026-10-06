@@ -30,8 +30,8 @@ from astrotool_core.testing import (
     GuidePulseScenario,
     OnStepScenario,
     install_observable_operation_lock,
-    install_onstep_adapter_050_exports,
     make_simulated_onstep_connection,
+    simulate_onstep_adapter_041_package,
 )
 from astrotool_core.testing.fake_onstep_indi_client import (
     IndiRuntimeConfig,
@@ -522,7 +522,8 @@ class TestCompoundOperationSerialization:
 
 # ---------------------------------------------------------------------------
 # S6.0d (#39): OnStepAdapter 0.5.0 guide pulses through the PRODUCTION
-# `OnStepMountPulseAdapter`, on the simulator's 0.5.0 model (opt-in per scenario).
+# `OnStepMountPulseAdapter`, on the simulator's 0.5.0 model (S6.0e: the pinned default; the
+# published 0.4.1 is simulated explicitly -- no facade API, `simulate_onstep_adapter_041_package`).
 # ---------------------------------------------------------------------------
 
 
@@ -535,13 +536,14 @@ def _guide_rig(
     config: IndiRuntimeConfig | None = None,
     **scenario: object,
 ) -> tuple[OnStepMountPulseAdapter, SimulatedOnStepIndiClient, FakeClock]:
-    """Production adapter on the simulator; by default a 0.5.0 install, tracking, unparked."""
-    if exports:
-        install_onstep_adapter_050_exports(monkeypatch)
+    """Production adapter on the simulator; by default the pinned 0.5.0 (the installed package as
+    is), tracking, unparked. `exports=False` hides 0.5.0's package additions (a 0.4.1 package);
+    `api=False` gives the client the 0.4.1 facade (no `guide_pulse`)."""
+    if not exports:
+        simulate_onstep_adapter_041_package(monkeypatch)
     fields: dict[str, object] = {"parked": False, "tracking": True}
     fields.update(scenario)
-    if api:
-        fields["guide_pulses"] = guide or GuidePulseScenario()
+    fields["guide_pulses"] = (guide or GuidePulseScenario()) if api else None
     clock = FakeClock()
     connection, made = make_simulated_onstep_connection(
         OnStepScenario(**fields),  # type: ignore[arg-type]
@@ -563,10 +565,25 @@ class TestGuidePulseCapability:
     A separate capability -- `supports_pulse_guiding` (Mount Align's timed/angular choice)
     stays False either way."""
 
-    def test_the_published_0_4_1_has_no_guide_pulse(self) -> None:
+    def test_the_pinned_0_5_0_is_what_the_capable_tests_run_on(self) -> None:
+        """The capable cases below use the installed package as is: it must be the pin
+        (tests/contracts/test_onstep_guide_pulse_contract.py checks the pin itself)."""
         import onstep_adapter
 
-        assert not hasattr(onstep_adapter.IndiMount, "guide_pulse")
+        assert onstep_adapter.__version__ == "0.5.0"
+        assert callable(getattr(onstep_adapter.IndiMount, "guide_pulse", None))
+
+    def test_the_default_scenario_is_the_pinned_0_5_0(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        connection, _made = make_simulated_onstep_connection(
+            OnStepScenario(parked=False, tracking=True), clock=FakeClock()
+        )
+        adapter = OnStepMountPulseAdapter(connection)
+        adapter.connect()
+
+        assert adapter.capabilities().supports_guide_pulses_while_tracking is True
+        assert adapter.guide_pulse_range_ms == (20, 5000)
 
     def test_on_0_4_1_the_capability_is_absent_and_nothing_is_sent(
         self, monkeypatch: pytest.MonkeyPatch
@@ -600,6 +617,16 @@ class TestGuidePulseCapability:
         adapter, _client, _clock = _guide_rig(monkeypatch, exports=False)
 
         assert adapter.capabilities().supports_guide_pulses_while_tracking is False
+
+    def test_exported_bounds_without_the_facade_api_are_not_capable(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The installed 0.5.0 package's exports alone do not make a 0.4.1 facade capable."""
+        adapter, client, _clock = _guide_rig(monkeypatch, api=False)
+
+        assert adapter.capabilities().supports_guide_pulses_while_tracking is False
+        assert "needs >= 0.5.0" in _west(adapter, 500).message
+        assert client.guide_pulse_calls == []
 
     def test_disconnected_means_no_capability(self, monkeypatch: pytest.MonkeyPatch) -> None:
         adapter, _client, _clock = _guide_rig(monkeypatch)
@@ -808,9 +835,9 @@ class TestGuidePulseRefusals:
 
 
 class TestGuidePulseFailureAfterAnIssuedChunk:
-    """0.5.0 indi_guiding.py:213-226: a failure once a chunk was issued triggers
+    """0.5.0 indi_guiding.py:241-258: a failure once a chunk was issued triggers
     `emergency_stop()` (ABORT + TRACK_OFF). Its `tracking_preserved` still comes from the
-    snapshot BEFORE that stop (:220-222), so the adapter reads the status again and reports
+    snapshot BEFORE that stop (:252-254), so the adapter reads the status again and reports
     `tracking_off` -- prominently, in the message too."""
 
     def test_a_chunk_timeout_stops_the_mount_and_says_tracking_is_off(
@@ -846,21 +873,45 @@ class TestGuidePulseFailureAfterAnIssuedChunk:
         assert result.tracking_off is True
         assert result.message.startswith("guide pulse refused at meridian phase hard_stop")
 
-    def test_a_refusal_between_chunks_does_not_stop_the_mount(
+    def test_a_refusal_arising_during_a_chunk_stops_the_mount(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """A preflight refusal before a later chunk returns without emergency stop
-        (indi_guiding.py:183-188): sent, not completed, still tracking."""
+        """S6.0e, the PUBLISHED 0.5.0 (the S6.0d pre-release returned here without a stop):
+        after every chunk it waits for a fresh OnStep status and re-runs the preflight
+        (indi_guiding.py:221-227, :282-296); a refusal there is raised (`_GuideSafetyError`) ->
+        emergency stop, and that chunk is not counted as completed."""
         adapter, client, clock = _guide_rig(monkeypatch)
         clock.call_later(0.2, lambda: setattr(client, "meridian_phase", "hard_stop"))
 
         result = _west(adapter, 1500)
 
-        assert client.emergency_stop_calls == 0 and client.tracking is True
+        assert client.guide_chunks_issued == [("west", 500)]
+        assert client.emergency_stop_calls == 1 and client.tracking is False
         assert result.sent is True and result.accepted is False
-        assert result.tracking_off is False
-        assert result.chunks_completed == 1
-        assert result.message == "guide pulse refused at meridian phase hard_stop"
+        assert result.tracking_off is True
+        assert (result.chunks_requested, result.chunks_completed) == (3, 0)
+        assert result.message.startswith("guide pulse refused at meridian phase hard_stop")
+        assert "NOT tracking" in result.message
+
+    def test_a_guide_flag_that_never_clears_stops_the_mount(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """S6.0e, published 0.5.0: no fresh status with the `:GU#` `G` flag cleared within the
+        command timeout after a chunk -> TimeoutError (indi_guiding.py:298-302) -> emergency
+        stop; the adapter reports tracking OFF."""
+        guide = GuidePulseScenario(idle_timeouts=[False, True])
+        adapter, client, clock = _guide_rig(monkeypatch, guide=guide)
+
+        result = _west(adapter, 1500)
+
+        assert client.guide_chunks_issued == [("west", 500), ("west", 500)]
+        assert client.emergency_stop_calls == 1 and client.tracking is False
+        assert (result.chunks_requested, result.chunks_completed) == (3, 1)
+        assert result.sent is True and result.tracking_off is True
+        assert result.message.startswith(
+            "OnStep still reports guide pulse active or did not publish a fresh post-guide status"
+        )
+        assert clock.monotonic() == pytest.approx(1.0 + 3.0)  # 2 chunks + the 3 s wait
 
 
 class TestStopDuringAGuidePulse:

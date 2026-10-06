@@ -11,27 +11,31 @@ wire protocol — `OnStepConnection` and the shims never see one; they only
 see `OnStepIndiClient`'s own Python surface, so that is what this fake
 reproduces (same convention as `fake_onstep_client.py` did for 0.3.5).
 
-S6.0d (#39): OnStepAdapter 0.5.0's tracking-preserving guide pulse, OPT-IN per client
-(`guide_pulse_api=True`; the default stays the published 0.4.1 surface with no
-`guide_pulse` on the mount facade). Modelled line by line on the unpublished 0.5.0 wheel
-(`onstep_adapter-0.5.0-py3-none-any.whl`): the facade `IndiMount.guide_pulse`/`guide`
-(indi_mount.py:32-42), `OnStepIndiClient.guide_pulse` raising ConnectionError when not connected
-(indi_client.py:243-250) and building the controller with the configured
-`tracking_authority_policy` (indi_client.py:198-203), and `IndiGuideController`
-(indi_guiding.py): bounds 20..5000 ms and 500 ms chunks (:17-19), direction and
-integer-duration validation raising ValueError (:95-100, :146-154), the chunk split (:156-164),
-the non-blocking lock answering "another guide pulse is active" (:166-170), a preflight before
-EVERY chunk and once more after the last (:178-212) with its hard / tracking-state / meridian /
-strict-authority refusals and its warnings (:102-137), and -- on a ConnectionError/RuntimeError/
-TimeoutError/ValueError once a chunk was issued, including a refusal of that final preflight --
-`emergency_stop()` (ABORT + TRACK_OFF) before the failed result is returned (:213-226). The
+S6.0d (#39) / S6.0e: OnStepAdapter 0.5.0's tracking-preserving guide pulse. Since S6.0e the
+published 0.5.0 is pinned and this fake's DEFAULT facade is 0.5.0's (`guide_pulse_api=True`);
+`guide_pulse_api=False` together with `simulate_onstep_adapter_041_package` is the published
+0.4.1 surface (no `guide_pulse` on the facade, no guide exports), kept for the capability-absent
+path. Modelled line by line on the PUBLISHED 0.5.0 wheel (release v0.5.0, sha256 2420ba1c...;
+`tests/contracts/test_onstep_guide_pulse_contract.py` replays it against the installed
+`IndiGuideController`): the facade `IndiMount.guide_pulse`/`guide` (indi_mount.py:32-42),
+`OnStepIndiClient.guide_pulse` raising ConnectionError when not connected (indi_client.py:243-250)
+and building the controller with the configured `tracking_authority_policy`
+(indi_client.py:198-203), and `IndiGuideController` (indi_guiding.py): bounds 20..5000 ms and
+500 ms chunks (:17-19), direction and integer-duration validation raising ValueError (:110-115,
+:161-169), the chunk split (:171-179), the non-blocking lock answering "another guide pulse is
+active" (:181-185), a preflight before EVERY chunk (:194-204) with its hard / tracking-state /
+meridian / strict-authority refusals and its warnings (:117-152), after each issued chunk the
+wait for a fresh OnStep status with the `:GU#` `G` flag cleared (:221-227, :282-303) -- whose
+preflight refusal is raised (`_GuideSafetyError`, :53-61) and whose expiry is a TimeoutError --
+one more preflight after the last chunk (:230-235), and -- on a ConnectionError/RuntimeError/
+TimeoutError/ValueError once a chunk was issued, including those post-chunk refusals --
+`emergency_stop()` (ABORT + TRACK_OFF) before the failed result is returned (:241-258). The
 preflight's snapshot blockers are the ones 0.5.0's status reader derives (indi_status.py:74-127)
 from this fake's flags, plus `guide_blockers` to inject any other; the meridian phase follows
 `classify_meridian` (indi_meridian.py:28-75), with the geometric phase itself configured
 (`meridian_phase`) instead of computed from hour angle and site. The axis moves at
 `guide_rate_x` x sidereal per issued chunk (0.5.0 exposes no guide rate; the real rate is the
-controller's). `install_onstep_adapter_050_exports` adds the guide bounds 0.5.0's package
-exports (its `__init__.py`: GUIDE_CHUNK_MS, MAX_GUIDE_PULSE_MS, MIN_GUIDE_PULSE_MS).
+controller's).
 """
 
 from __future__ import annotations
@@ -75,10 +79,12 @@ __all__ = [
     "IndiStartupStatus",
     "IndiStopResult",
     "IndiUnparkResult",
+    "GUIDE_IDLE_TIMEOUT_MESSAGE",
     "ONSTEP_ADAPTER_050_GUIDE_EXPORTS",
+    "ONSTEP_ADAPTER_050_ONLY_EXPORTS",
     "fake_indi_runtime_config",
-    "install_onstep_adapter_050_exports",
     "make_fake_onstep_indi_connection",
+    "simulate_onstep_adapter_041_package",
 ]
 
 
@@ -91,7 +97,9 @@ class FakeIndiAxisMoveResult:
 
 
 #: OnStepAdapter 0.5.0's guide bounds (indi_guiding.py:17-19), exported by its package
-#: (0.5.0 `__init__.py`) -- the published 0.4.1 has none of them.
+#: (0.5.0 `__init__.py`:7-12) -- the published 0.4.1 has none of them. Kept as this fake's own
+#: copy (it must not change with the installed package); a contract test pins it to the
+#: installed 0.5.0's values.
 ONSTEP_ADAPTER_050_GUIDE_EXPORTS: dict[str, int] = {
     "MIN_GUIDE_PULSE_MS": 20,
     "MAX_GUIDE_PULSE_MS": 5000,
@@ -100,6 +108,14 @@ ONSTEP_ADAPTER_050_GUIDE_EXPORTS: dict[str, int] = {
 _GUIDE_MIN_MS = ONSTEP_ADAPTER_050_GUIDE_EXPORTS["MIN_GUIDE_PULSE_MS"]
 _GUIDE_MAX_MS = ONSTEP_ADAPTER_050_GUIDE_EXPORTS["MAX_GUIDE_PULSE_MS"]
 _GUIDE_CHUNK_MS = ONSTEP_ADAPTER_050_GUIDE_EXPORTS["GUIDE_CHUNK_MS"]
+#: Every name the published 0.5.0 `__init__.py` adds over 0.4.1 (`__init__.py`:7-12, `__all__`).
+ONSTEP_ADAPTER_050_ONLY_EXPORTS: tuple[str, ...] = (
+    *ONSTEP_ADAPTER_050_GUIDE_EXPORTS, "IndiGuidePulseResult",
+)
+#: 0.5.0's error when no fresh `G`-cleared status follows a chunk (indi_guiding.py:299-302).
+GUIDE_IDLE_TIMEOUT_MESSAGE = (
+    "OnStep still reports guide pulse active or did not publish a fresh post-guide status"
+)
 #: Sidereal rate (arcsec/s) for turning a guide chunk at `guide_rate_x` into an axis offset.
 _SIDEREAL_ARCSEC_PER_S = 15.041
 
@@ -126,7 +142,7 @@ _GUIDE_STRICT_ALLOWED_PHASES = frozenset({  # indi_guiding.py:47-50
 
 @dataclass(frozen=True)
 class FakeIndiGuidePulseResult:
-    """Field for field 0.5.0's `IndiGuidePulseResult` (indi_guiding.py:53-65)."""
+    """Field for field 0.5.0's `IndiGuidePulseResult` (indi_guiding.py:64-76)."""
 
     direction: str
     requested_duration_ms: int
@@ -141,15 +157,37 @@ class FakeIndiGuidePulseResult:
     error: str | None = None
 
 
+class _FakeGuideSafetyError(RuntimeError):
+    """0.5.0's `_GuideSafetyError` (indi_guiding.py:53-61): a refusal while waiting for the
+    post-chunk status, carrying that preflight's snapshot, meridian state and warnings."""
+
+    def __init__(
+        self, message: str, snapshot: IndiMountSnapshot,
+        meridian: IndiMeridianState, warnings: tuple[str, ...],
+    ) -> None:
+        super().__init__(message)
+        self.snapshot = snapshot
+        self.meridian = meridian
+        self.warnings = warnings
+
+
 class _MonkeyPatch(Protocol):
     def setattr(self, target: object, name: str, value: object, raising: bool = ...) -> None: ...
 
+    def delattr(self, target: object, name: str, raising: bool = ...) -> None: ...
 
-def install_onstep_adapter_050_exports(monkeypatch: _MonkeyPatch) -> None:
-    """Make the installed (0.4.1) `onstep_adapter` package export 0.5.0's guide bounds, as a
-    real 0.5.0 install does. `monkeypatch`: pytest's fixture (restores them after the test)."""
-    for name, value in ONSTEP_ADAPTER_050_GUIDE_EXPORTS.items():
-        monkeypatch.setattr(onstep_adapter, name, value, raising=False)
+
+def simulate_onstep_adapter_041_package(monkeypatch: _MonkeyPatch) -> None:
+    """Make the installed (0.5.0) `onstep_adapter` package look like the published 0.4.1 wheel
+    to this app: none of 0.5.0's added exports, no `IndiMount.guide_pulse`/`guide`, version
+    "0.4.1". Pair it with a 0.4.1 client facade (`guide_pulse_api=False`, or
+    `OnStepScenario(guide_pulses=None)`), as a real 0.4.1 install has neither.
+    `monkeypatch`: pytest's fixture (restores everything after the test)."""
+    for name in ONSTEP_ADAPTER_050_ONLY_EXPORTS:
+        monkeypatch.delattr(onstep_adapter, name, raising=False)
+    for name in ("guide_pulse", "guide"):
+        monkeypatch.delattr(onstep_adapter.IndiMount, name, raising=False)
+    monkeypatch.setattr(onstep_adapter, "__version__", "0.4.1")
 
 
 @dataclass
@@ -292,9 +330,9 @@ class FakeOnStepIndiClient:
     #: One finite axis move at a time, like the real `IndiAxisMover`.
     _axis_lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
-    #: S6.0d: expose OnStepAdapter 0.5.0's `guide_pulse` on the mount facade (opt-in; the
-    #: default is the published 0.4.1 surface without it). See the module docstring.
-    guide_pulse_api: bool = False
+    #: OnStepAdapter 0.5.0's `guide_pulse` on the mount facade (S6.0e: the default, as pinned);
+    #: False = the published 0.4.1 surface without it. See the module docstring.
+    guide_pulse_api: bool = True
     #: Guide rate as a multiple of sidereal, per normalized direction (missing = `guide_rate_x`).
     guide_rate_x: float = 0.5
     guide_direction_rate_x: dict[str, float] = field(default_factory=dict)
@@ -304,6 +342,9 @@ class FakeOnStepIndiClient:
     guide_blockers: tuple[str, ...] = ()
     #: Raised by the next issued chunks' completion waits (None = that chunk completes).
     guide_chunk_errors: list[BaseException | None] = field(default_factory=list)
+    #: Per issued chunk that completed: True = OnStep never publishes a fresh status with the
+    #: `G` flag cleared, so 0.5.0's post-chunk wait expires (indi_guiding.py:282-303).
+    guide_idle_timeouts: list[bool] = field(default_factory=list)
     #: Every `guide_pulse` call (normalized direction, ms) and every chunk actually issued.
     guide_pulse_calls: list[tuple[str, int]] = field(default_factory=list)
     guide_chunks_issued: list[tuple[str, int]] = field(default_factory=list)
@@ -526,7 +567,7 @@ class FakeOnStepIndiClient:
     def _guide_preflight(
         self,
     ) -> tuple[IndiMountSnapshot, IndiMeridianState, tuple[str, ...], str | None]:
-        """indi_guiding.py:102-137, in its order and with its texts."""
+        """indi_guiding.py:117-152, in its order and with its texts."""
         snapshot = self.observe_mount()
         meridian = self._meridian_for(snapshot)
         blockers = self._guide_snapshot_blockers(snapshot)
@@ -562,7 +603,7 @@ class FakeOnStepIndiClient:
 
     def _guide_chunk(self, direction: str, chunk_ms: int) -> None:
         """One issued chunk until its TIMED_GUIDE property reports completion
-        (indi_guiding.py:190-199, :230-248): the axis moves at the guide rate; a queued
+        (indi_guiding.py:205-215, :262-280): the axis moves at the guide rate; a queued
         `guide_chunk_errors` entry is raised as that wait's failure (an INDI Alert ->
         RuntimeError, no completion -> TimeoutError). The simulator adds the clock time."""
         rate_x = self.guide_direction_rate_x.get(direction, self.guide_rate_x)
@@ -580,35 +621,41 @@ class FakeOnStepIndiClient:
             if error is not None:
                 raise error
 
+    def _guide_wait_idle(
+        self, command_timeout: float
+    ) -> tuple[IndiMountSnapshot, IndiMeridianState, tuple[str, ...]]:
+        """0.5.0's post-chunk wait (indi_guiding.py:282-303): a preflight on the fresh status --
+        a refusal raises `_FakeGuideSafetyError` (-> emergency stop, chunk not counted); with
+        the `G` flag cleared the chunk is done. A queued `guide_idle_timeouts` True keeps `G`
+        set: `_guide_idle_wait_elapse` lets the wait time pass, the preflight runs once more
+        (still refusing first, as the real loop does) and the wait expires with TimeoutError."""
+        stuck = bool(self.guide_idle_timeouts) and self.guide_idle_timeouts.pop(0)
+        snapshot, meridian, warnings, refusal = self._guide_preflight()
+        if refusal:
+            raise _FakeGuideSafetyError(refusal, snapshot, meridian, warnings)
+        if not stuck:
+            return snapshot, meridian, warnings
+        self._guide_idle_wait_elapse(command_timeout)
+        snapshot, meridian, warnings, refusal = self._guide_preflight()
+        if refusal:
+            raise _FakeGuideSafetyError(refusal, snapshot, meridian, warnings)
+        raise TimeoutError(GUIDE_IDLE_TIMEOUT_MESSAGE)
+
+    def _guide_idle_wait_elapse(self, seconds: float) -> None:
+        """The time a post-chunk wait spends before expiring; no clock here (the simulator
+        adds it)."""
+
     def guide_pulse(
         self, direction: str, duration_ms: int, *, command_timeout: float = 3.0
     ) -> FakeIndiGuidePulseResult:
         """`OnStepIndiClient.guide_pulse` + `IndiGuideController.pulse` of 0.5.0."""
         if self.closed:  # indi_client.py:246-247
             raise ConnectionError("INDI client is not connected")
-        try:  # indi_guiding.py:95-100
-            normalized = _GUIDE_DIRECTION_ALIASES[direction.strip().lower()]
-        except (AttributeError, KeyError) as exc:
-            raise ValueError("Guide direction must be north, south, east or west") from exc
-        if isinstance(duration_ms, bool) or not isinstance(duration_ms, int):  # :147-154
-            raise ValueError("Guide duration must be an integer number of milliseconds")
-        if not _GUIDE_MIN_MS <= duration_ms <= _GUIDE_MAX_MS:
-            raise ValueError(f"Guide duration must be {_GUIDE_MIN_MS}..{_GUIDE_MAX_MS} ms")
-        if not math.isfinite(command_timeout) or command_timeout <= 0:
-            raise ValueError("Guide command timeout must be positive and finite")
+        normalized = _guide_arguments(direction, duration_ms, command_timeout)
         self.guide_pulse_calls.append((normalized, duration_ms))
+        chunks = _guide_chunks(duration_ms)
 
-        chunks: list[int] = []  # indi_guiding.py:156-164
-        remaining = duration_ms
-        while remaining > _GUIDE_CHUNK_MS:
-            chunk = _GUIDE_CHUNK_MS
-            if remaining - chunk < _GUIDE_MIN_MS:
-                chunk = remaining - _GUIDE_MIN_MS
-            chunks.append(chunk)
-            remaining -= chunk
-        chunks.append(remaining)
-
-        if not self._guide_lock.acquire(blocking=False):  # :166-170
+        if not self._guide_lock.acquire(blocking=False):  # :181-185
             return FakeIndiGuidePulseResult(
                 normalized, duration_ms, len(chunks), 0, False, False, False,
                 None, "unknown", error="another guide pulse is active",
@@ -619,7 +666,7 @@ class FakeOnStepIndiClient:
         last_snapshot: IndiMountSnapshot | None = None
         last_meridian: IndiMeridianState | None = None
         try:
-            for chunk in chunks:  # :178-200
+            for chunk in chunks:  # :193-228
                 snapshot, meridian, current, refusal = self._guide_preflight()
                 last_snapshot, last_meridian = snapshot, meridian
                 warnings.update(current)
@@ -632,8 +679,12 @@ class FakeOnStepIndiClient:
                 self.guide_chunks_issued.append((normalized, chunk))
                 issued = True
                 self._guide_chunk(normalized, chunk)
+                last_snapshot, last_meridian, current = self._guide_wait_idle(  # :221-227
+                    command_timeout
+                )
+                warnings.update(current)
                 completed += 1
-            snapshot, meridian, current, refusal = self._guide_preflight()  # :202-212
+            snapshot, meridian, current, refusal = self._guide_preflight()  # :230-235
             last_snapshot, last_meridian = snapshot, meridian
             warnings.update(current)
             if refusal:
@@ -643,7 +694,10 @@ class FakeOnStepIndiClient:
                 snapshot.tracking, snapshot.raw_status, meridian.phase,
                 tuple(sorted(warnings)), None,
             )
-        except (ConnectionError, RuntimeError, TimeoutError, ValueError) as exc:  # :213-226
+        except (ConnectionError, RuntimeError, TimeoutError, ValueError) as exc:  # :241-258
+            if isinstance(exc, _FakeGuideSafetyError):
+                last_snapshot, last_meridian = exc.snapshot, exc.meridian
+                warnings.update(exc.warnings)
             stop_error = None
             if issued:
                 try:
@@ -659,6 +713,37 @@ class FakeOnStepIndiClient:
             )
         finally:
             self._guide_lock.release()
+
+
+def _guide_arguments(direction: str, duration_ms: int, command_timeout: float) -> str:
+    """0.5.0's argument checks, in its order and with its texts (indi_guiding.py:110-115,
+    :161-169); returns the normalized direction."""
+    try:
+        normalized = _GUIDE_DIRECTION_ALIASES[direction.strip().lower()]
+    except (AttributeError, KeyError) as exc:
+        raise ValueError("Guide direction must be north, south, east or west") from exc
+    if isinstance(duration_ms, bool) or not isinstance(duration_ms, int):
+        raise ValueError("Guide duration must be an integer number of milliseconds")
+    if not _GUIDE_MIN_MS <= duration_ms <= _GUIDE_MAX_MS:
+        raise ValueError(f"Guide duration must be {_GUIDE_MIN_MS}..{_GUIDE_MAX_MS} ms")
+    if not math.isfinite(command_timeout) or command_timeout <= 0:
+        raise ValueError("Guide command timeout must be positive and finite")
+    return normalized
+
+
+def _guide_chunks(duration_ms: int) -> list[int]:
+    """0.5.0's chunk split (indi_guiding.py:171-179): 500 ms chunks, never a remainder below
+    the 20 ms minimum."""
+    chunks: list[int] = []
+    remaining = duration_ms
+    while remaining > _GUIDE_CHUNK_MS:
+        chunk = _GUIDE_CHUNK_MS
+        if remaining - chunk < _GUIDE_MIN_MS:
+            chunk = remaining - _GUIDE_MIN_MS
+        chunks.append(chunk)
+        remaining -= chunk
+    chunks.append(remaining)
+    return chunks
 
 
 def fake_indi_runtime_config(**overrides: object) -> IndiRuntimeConfig:

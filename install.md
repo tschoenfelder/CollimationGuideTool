@@ -233,6 +233,19 @@ gaps here, were fixed upstream after
   rounded up. The floor was originally 720″ (which excluded most of this
   app's own calibration seeds) before OnStepAdapter#14 lowered it to 30″
   and switched to size-scaled arrival tolerances.
+- **Guide pulses while tracking (OnStepAdapter >= 0.5.0, pinned since
+  2026-10-07)**: `mount.guide_pulse(direction, ms)` uses INDI
+  `TELESCOPE_TIMED_GUIDE_NS/WE`, 20–5000 ms in 500 ms chunks, tracking left
+  ON. Only the fine-collimation star reacquisition in **Astronomical** mode
+  with tracking ON uses it; Mount Align still uses the axis moves above
+  (unchanged in 0.5.0). Each chunk must be followed by a fresh OnStep status
+  whose `G` (guiding) flag has cleared within ~3 s; any refusal or failure
+  after a chunk was sent makes OnStepAdapter stop the mount (ABORT +
+  TRACK_OFF), and the app then says tracking is OFF. With an older
+  OnStepAdapter the app refuses astronomical reacquisition up front
+  ("needs OnStepAdapter ≥ 0.5.0"), sending nothing. The guide rate is the
+  controller's own; the app measures the star's response per direction
+  before correcting.
 
 Mount Align on this connection: a requested move under 30″ is refused
 outright (see above); one within range is issued directly as a finite
@@ -244,6 +257,32 @@ controller (this reverses 0.3.5's deployment, which required it stopped so
 OnStepAdapter could own the serial port exclusively). After upgrading
 OnStepAdapter, update the Pi's venv:
 `.venv/bin/pip install <release wheel URL from pyproject.toml>`.
+
+**Upgrading the Pi to OnStepAdapter 0.5.0** (the current pin; the code that
+needs it arrives with the same `git reset --hard origin/main`). From the
+CollimationGuideTool checkout on the Pi, with the app closed:
+
+```bash
+curl -fLO https://github.com/tschoenfelder/OnStepAdapter/releases/download/v0.5.0/onstep_adapter-0.5.0-py3-none-any.whl
+sha256sum onstep_adapter-0.5.0-py3-none-any.whl
+# must print 2420ba1c47b61a406022debfa690bd76b12810d4eecbd7c1ad58d66865014da4
+.venv/bin/pip install --force-reinstall --no-deps ./onstep_adapter-0.5.0-py3-none-any.whl
+.venv/bin/python -c "import dataclasses, onstep_adapter as o, onstep_adapter.indi_guiding as g, onstep_adapter.indi_status as s; print(o.__version__, callable(getattr(o.IndiMount, 'guide_pulse', None)), 'guiding' in {f.name for f in dataclasses.fields(s.IndiMountSnapshot)}, hasattr(g.IndiGuideController, '_wait_onstep_guide_idle'))"
+# must print: 0.5.0 True True True
+rm onstep_adapter-0.5.0-py3-none-any.whl
+```
+
+`--force-reinstall` matters: an unpublished 0.5.0 pre-release (built
+2026-10-04, without the post-chunk `G`-flag wait) carries the SAME version
+number, so a plain `pip install` would keep it if it was ever installed.
+The last two `True`s are only printed by the published build.
+
+No config change is needed: 0.5.0 reads the same `[indi]` settings
+(`tracking_authority_policy` also governs the guide pulse's authority
+checks). Rolling back = the same steps with the v0.4.1 wheel
+(`releases/download/v0.4.1/onstep_adapter-0.4.1-py3-none-any.whl`) on a
+checkout from before the pin; the app then refuses astronomical
+reacquisition instead of guiding.
 
 #### Filter wheel (which optical train it serves, and its filter names)
 

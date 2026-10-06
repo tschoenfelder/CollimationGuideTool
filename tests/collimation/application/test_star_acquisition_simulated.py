@@ -3,7 +3,8 @@ OnStep adapter on the #51 simulator.
 
 `FocusedStarAcquisition.attempt_guide_reacquisition` (detect -> resolve identity -> confidence
 gate -> `CollimationRecenterPolicy`) -> the real `OnStepMountPulseAdapter` -> the simulated
-OnStepAdapter 0.4.1 controller (no timed pulse; finite axis GOTO of 30"..10 deg). Guide frames
+OnStepAdapter controller's axis motion (0.4.1 semantics, unchanged in the pinned 0.5.0: no timed
+pulse for this path; finite axis GOTO of 30"..10 deg). Guide frames
 are rendered from where the simulated controller REALLY pointed, so the star only comes back if
 the mount received the right moves. The Guide calibration matrix is in S6.0's unit (equivalent
 ms at `calibration_center_rate_x` x sidereal), modelled here from the settings owner.

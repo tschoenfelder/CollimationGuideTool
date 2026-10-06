@@ -4,7 +4,8 @@ pulses, end to end against the PRODUCTION adapter on the #51 simulator.
 `FocusedStarAcquisition.attempt_guide_reacquisition` -> motion decision (operating mode, fresh
 tracking reading from the production park adapter, reported capability) -> guide-pulse
 calibration + `CollimationRecenterPolicy` -> the real `OnStepMountPulseAdapter` -> the simulated
-controller with 0.5.0's guide-pulse model (opt-in; without it the simulator is 0.4.1). Guide
+controller with 0.5.0's guide-pulse model (the pinned default since S6.0e; the 0.4.1 case is
+simulated explicitly: no facade API and `simulate_onstep_adapter_041_package`). Guide
 frames are rendered from where the simulated controller REALLY points, through a camera model
 with rotation / mirroring / unequal axis scales, and are delivered with explicit exposure
 timestamps through the production settled-frame wait -- so the star only comes back if the right
@@ -41,8 +42,8 @@ from astrotool_core.registration.result import (
 from astrotool_core.testing import (
     GuidePulseScenario,
     OnStepScenario,
-    install_onstep_adapter_050_exports,
     make_simulated_onstep_connection,
+    simulate_onstep_adapter_041_package,
 )
 from astrotool_core.testing.frame_factory import single_star_image
 from astrotool_core.testing.sim_onstep import SimulatedOnStepIndiClient
@@ -121,8 +122,8 @@ class _Sky:
         dec_sign: float = 1.0,
         ra_factor: float = 1.0,
     ) -> None:
-        if guide_api:
-            install_onstep_adapter_050_exports(monkeypatch)
+        if not guide_api:  # the published 0.4.1: neither the facade API nor the exports
+            simulate_onstep_adapter_041_package(monkeypatch)
         self.guide = guide or GuidePulseScenario(rate_x=1.0)
         self.clock = FakeClock()
         connection, made = make_simulated_onstep_connection(

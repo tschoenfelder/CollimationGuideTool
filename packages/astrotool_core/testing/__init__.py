@@ -53,8 +53,8 @@ from astrotool_core.testing.sim_onstep import (
     SimulatedIndiFocuser,
     SimulatedOnStepIndiClient,
     install_observable_operation_lock,
-    install_onstep_adapter_050_exports,
     make_simulated_onstep_connection,
+    simulate_onstep_adapter_041_package,
 )
 from astrotool_core.testing.sim_touptek import (
     CAMERA_MODELS,
@@ -87,7 +87,7 @@ __all__ = [
     "SimulatedToupcamSdk",
     "frames_from_replay",
     "install_observable_operation_lock",
-    "install_onstep_adapter_050_exports",
+    "simulate_onstep_adapter_041_package",
     "install_simulated_toupcam",
     "make_simulated_filter_wheel_adapter",
     "make_simulated_onstep_connection",

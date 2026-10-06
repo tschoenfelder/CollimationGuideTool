@@ -1,7 +1,8 @@
 """S6.0b (#39, audit P01): guide-assisted recentering against the PRODUCTION OnStep adapter.
 
 `CollimationRecenterPolicy` -> the real `OnStepMountPulseAdapter` -> `OnStepConnection` -> the
-#51 OnStep simulator (OnStepAdapter 0.4.1 over INDI: no timed pulse at all, only a finite
+#51 OnStep simulator (the installed OnStepAdapter's axis motion over INDI -- 0.4.1 semantics,
+unchanged in the pinned 0.5.0: no timed pulse for Mount Align, only a finite
 degree-target axis GOTO of 30"..10 deg, refused while tracking/parked), on a `FakeClock`. The
 star's guide-camera position is computed from what the simulated controller REALLY moved, so the
 assertions can only pass if the mount received the right moves.
@@ -196,7 +197,7 @@ class TestRecenteringMovesTheProductionAdapter:
 
 class TestRefusalsAndTheFloor:
     def test_a_refused_move_reports_the_adapters_reason(self) -> None:
-        # OnStepAdapter 0.4.1 refuses a local axis move while tracking (sim_onstep.py).
+        # OnStepAdapter (0.4.1 and 0.5.0) refuses a local axis move while tracking (sim_onstep.py).
         rig = _GuideRig(start_px=(40.0, -25.0), tracking=True)
         policy = CollimationRecenterPolicy(rig.mount, rig.calibration(), clock=rig.clock)
 

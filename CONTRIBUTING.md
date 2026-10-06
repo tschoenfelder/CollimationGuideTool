@@ -170,8 +170,9 @@ serial port, camera SDK, network or real sleep:
 
 Each field state is one scenario field: connect errors (`connect_errors=[TimeoutError(...)]`),
 parked/tracking, tracking confirmation later than the timeout (OnStepAdapter
-then stops tracking -- the simulators reproduce OnStepAdapter 0.4.1's own
-behaviour, cited per item in `sim_onstep.py`), stale status, axis moves that
+then stops tracking -- the simulators reproduce OnStepAdapter's own behaviour
+(0.4.1 semantics, unchanged in the pinned 0.5.0; the 0.5.0 guide pulse is
+modelled on the published wheel), cited per item in `sim_onstep.py`), stale status, axis moves that
 fail in motion, focuser limits/stale metadata/backlash/`busy_forever`, wheel
 slot names, `busy_forever`, `reply_latency_s`, a wrong configured device
 name, a connection drop mid-move (`clock.call_later(t, wheel.drop_connection)`),

@@ -9,8 +9,14 @@ simulated client extends `FakeOnStepIndiClient` (whose default behaviour the
 existing tests rely on) and reproduces what OnStepAdapter 0.4.1 itself does
 on top of the controller -- the semantics the application really sees --
 on an injected `astrotool_core.timing.Clock` (a `FakeClock` in tests), never
-with real sleeps. Source references are to the installed 0.4.1 wheel
-(`site-packages/onstep_adapter/`):
+with real sleeps. Source references are to the published 0.4.1 wheel
+(`site-packages/onstep_adapter/` before S6.0e). S6.0e pinned 0.5.0, which leaves
+indi_axis_motion, indi_tracking, indi_stop, indi_home, indi_focuser, indi_meridian,
+indi_config and meridian_policy byte-identical; in indi_client.py the 0.4.1 line numbers
+cited below shift (0.5.0 adds the guide controller): +1 from :12, +2 from :83, +3 from :139,
++9 from :195, +18 from :234, +19 from :371; indi_status.py gains only the `guiding` snapshot
+field (+1 from :41, +2 from :152). Everything
+modelled here except the guide pulse is therefore unchanged in 0.5.0:
 
 - **connect error variants** (`OnStepScenario.connect_errors`): each
   `connect()` raises the next queued exception (a bare exception, or a
@@ -85,14 +91,17 @@ with real sleeps. Source references are to the installed 0.4.1 wheel
   `emergency_stop()` once more (:246-248). `axis_moves_aborted` counts moves
   a stop cut short.
 
-- **0.5.0 guide pulses** (S6.0d, opt-in: `OnStepScenario(guide_pulses=GuidePulseScenario())`;
-  without it the client is the published 0.4.1 surface, no `guide_pulse` on the facade). The
-  semantics are `FakeOnStepIndiClient.guide_pulse`'s, modelled on the unpublished 0.5.0 wheel
+- **0.5.0 guide pulses** (S6.0d; since S6.0e -- 0.5.0 pinned -- the default
+  `OnStepScenario(guide_pulses=GuidePulseScenario())`; `guide_pulses=None` is the published 0.4.1
+  surface, no `guide_pulse` on the facade -- pair it with `simulate_onstep_adapter_041_package`).
+  The semantics are `FakeOnStepIndiClient.guide_pulse`'s, modelled on the published 0.5.0 wheel
   (see that module's docstring, cited per line); here each issued chunk also takes its length of
-  clock time (the TIMED_GUIDE property completes when the controller's timer ends,
-  indi_guiding.py:196-199), so a Stop or a meridian-phase change can arrive between chunks via
-  `clock.call_later`. Whether the real driver/firmware ends a running guide timer on ABORT is
-  not known (field item): a chunk in flight here always runs to its end.
+  clock time (0.5.0 paces every chunk to its duration, indi_guiding.py:205-220), so a Stop or a
+  meridian-phase change can arrive during a chunk via `clock.call_later` -- 0.5.0's post-chunk
+  status wait then refuses and stops the mount (indi_guiding.py:282-303). A post-chunk wait that
+  expires (`GuidePulseScenario.idle_timeouts`) takes the command timeout of clock time.
+  Whether the real driver/firmware ends a running guide timer on ABORT is not known (field
+  item): a chunk in flight here always runs to its end.
 
 Deliberately NOT modeled (unknown or owned elsewhere): whether the real
 controller/driver honours INDI ABORT mid-GOTO exactly like this (field
@@ -126,7 +135,7 @@ from astrotool_core.testing.fake_onstep_indi_client import (
     IndiStopResult,
     IndiUnparkResult,
     fake_indi_runtime_config,
-    install_onstep_adapter_050_exports,
+    simulate_onstep_adapter_041_package,
 )
 from astrotool_core.timing import SYSTEM_CLOCK, Clock
 
@@ -161,8 +170,8 @@ __all__ = [
     "SimulatedIndiFocuser",
     "SimulatedOnStepIndiClient",
     "install_observable_operation_lock",
-    "install_onstep_adapter_050_exports",
     "make_simulated_onstep_connection",
+    "simulate_onstep_adapter_041_package",
 ]
 
 
@@ -263,6 +272,9 @@ class GuidePulseScenario:
     extra_blockers: tuple[str, ...] = ()
     #: Raised by the next issued chunks' completion waits (None = completes); shared list.
     chunk_errors: list[BaseException | None] = field(default_factory=list)
+    #: Per completed chunk: True = OnStep never publishes a fresh `G`-cleared status, so 0.5.0's
+    #: post-chunk wait expires after the command timeout (TimeoutError); shared list.
+    idle_timeouts: list[bool] = field(default_factory=list)
 
 
 @dataclass
@@ -289,8 +301,9 @@ class OnStepScenario:
     #: confirmation after sending ABORT (0.4.1: two fresh samples, <= 5 s).
     stop_confirm_latency_s: float = 0.0
     focuser: FocuserScenario = field(default_factory=FocuserScenario)
-    #: S6.0d: OnStepAdapter 0.5.0's guide pulse on the mount facade; None = 0.4.1 (no API).
-    guide_pulses: GuidePulseScenario | None = None
+    #: OnStepAdapter 0.5.0's guide pulse on the mount facade (S6.0e: the default, as pinned);
+    #: None = the published 0.4.1 facade (no API) -- see `simulate_onstep_adapter_041_package`.
+    guide_pulses: GuidePulseScenario | None = field(default_factory=GuidePulseScenario)
 
 
 class SimulatedIndiFocuser(FakeIndiFocuser):
@@ -433,13 +446,15 @@ class SimulatedOnStepIndiClient(FakeOnStepIndiClient):
 
     def __post_init__(self) -> None:
         guide = self.scenario.guide_pulses
-        if guide is not None:  # before the facade is built (FakeOnStepIndiClient.__post_init__)
-            self.guide_pulse_api = True
+        # Before the facade is built (FakeOnStepIndiClient.__post_init__).
+        self.guide_pulse_api = guide is not None
+        if guide is not None:
             self.guide_rate_x = guide.rate_x
             self.guide_direction_rate_x = guide.direction_rate_x
             self.meridian_phase = guide.meridian_phase
             self.guide_blockers = guide.extra_blockers
             self.guide_chunk_errors = guide.chunk_errors
+            self.guide_idle_timeouts = guide.idle_timeouts
         super().__post_init__()
         s = self.scenario
         self.parked, self.tracking, self.at_home = s.parked, s.tracking, s.at_home
@@ -551,6 +566,9 @@ class SimulatedOnStepIndiClient(FakeOnStepIndiClient):
     def _guide_chunk(self, direction: str, chunk_ms: int) -> None:
         self.clock.sleep(chunk_ms / 1000.0)  # the controller's guide timer
         super()._guide_chunk(direction, chunk_ms)
+
+    def _guide_idle_wait_elapse(self, seconds: float) -> None:
+        self.clock.sleep(seconds)  # 0.5.0 polls until its post-chunk deadline
 
     # ---- axis motion -------------------------------------------------------
     def move_axis_deg(
