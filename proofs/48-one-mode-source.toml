@@ -1,0 +1,296 @@
+# Proof manifest -- schema in proofs/README.md.
+# Run: python scripts/prove.py 48
+issues = [48, 44]
+summary = """S6.4 (#48 + user decision M04 + S6.0c review P-a + S3a clock dependency + user decisions A/B of \
+2026-10-06): the global OperatingMode was not the only Terrestrial/Astronomical source. Mount Align kept a \
+local Star/Terrestrial toggle (in Astronomical the toggle alone decided measurement and tracking; MainWindow \
+only copied the mode into it), autofocus had its own Star/Terrestrial selector independent of the mode, \
+ASTAP star-field registration was selectable in Terrestrial, Astronomical + Artificial star could coexist, \
+a Mount Align capture snapshotted with tracking ON could re-enable tracking after a switch to Terrestrial \
+(TrackingEnforcer.verify(ON) ran in Terrestrial, also when the switch landed during the check), and \
+entering Terrestrial while the mount was busy stayed BLOCKED until the next measurement gate. Fix: Mount \
+Align's toggle is removed -- measurement strategy and tracking need (TrackingEnforcer.measurement_tracking) \
+are read live from the enforcer's mode; a mode change refreshes a read-only line and stops a run started \
+under the old mode (Stop's own notes kept). Autofocus: Terrestrial -> Tenengrad, Astronomical -> \
+star/FWHM, Artificial star stays a target-type toggle; a mode change cancels a running autofocus. \
+USER DECISION A (2026-10-06): an artificial star is a fixed target -- choosing it (collimation target or \
+the registration Artificial Star button) switches the global mode to Terrestrial (tracking OFF via the \
+normal #44 switch, P-a when busy) with a visible note; choosing Astronomical returns the target to \
+Natural star with a note (honours the explicit mode click instead of refusing it), so Astronomical + \
+Artificial star cannot exist. The rule lives in MainWindow's mode wiring; TrackingEnforcer.set_mode alone \
+does not apply it. USER DECISION B (2026-10-06): ASTAP star-field registration is selectable only in \
+Astronomical; NCC registration stays available in both modes (Moon/planet texture at night). \
+TrackingEnforcer: refuses tracking ON while Terrestrial (also when the mode switched during the check -- \
+closed gate + owed re-enforce), takes clock= for the settle poll, turns a device error or a raising status \
+read (e.g. an unconfirmed OnStep emergency stop) into a closed gate without retrying, stores gate and \
+pending flag atomically under its lock (never held across mount I/O) so a GUI tracking-OFF check that \
+finishes after an overtaking worker tracking-ON check cannot leave 'off verified' while tracking is ON, \
+and leaves a one-shot re-enforce pending when a Terrestrial enforcement finds the mount busy; MainWindow's non-blocking tick (no-op unless pending) carries it out once a fresh reading \
+exists. S6.0c fail-closed semantics unchanged. Diagnostics report operating_mode / measurement_mode \
+(Mount Align), autofocus_mode (focuser) and the collimation target_mode independently."""
+modules = [
+    "packages/astrotool_core/mount/operating_mode.py",
+    "apps/collimation_tool/ui/mount_test_move_panel.py",
+    "apps/collimation_tool/ui/focuser_panel.py",
+    "apps/collimation_tool/ui/main_window.py",
+]
+fix_commits = ["be7353e"]
+dataset_uuids = []
+focused_command = "pytest -q tests/core/mount/test_operating_mode.py tests/collimation/ui/test_operating_mode_ui.py tests/collimation/ui/test_focuser_panel.py::TestModeFollowsTheOperatingMode tests/collimation/ui/test_focuser_panel.py::TestArtificialStarMode tests/collimation/ui/test_collimation_main_window.py::TestMountTestMovePanel::test_a_global_mode_change_during_calibration_stops_the_run tests/collimation/ui/test_collimation_main_window.py::TestMountTestMovePanel::test_diagnostic_context_reports_the_operating_and_measurement_mode tests/collimation/ui/test_collimation_main_window.py::TestArtificialStarAutofocusWiring"
+broader_tier = "component"
+field_only_assumptions = [
+    "On the rig, switching the global mode while a Mount Align GOTO runs sends OnStep's stop (the panel's Stop path) and the run ends with 'operating mode changed'; the interrupted OnStepAdapter call still runs to its own deadline (S6.0c D2).",
+    "The P-a re-enforce fires within ~0.5 s (QTimer tick) after the OnStep connection is released; the follow-up stop_tracking (OnStep emergency stop) is accepted then -- if it is not confirmed (OnStepAdapter#17) the gate stays closed with that reason and nothing is resent.",
+    "Operators accept that autofocus in Terrestrial mode always uses Tenengrad unless the target is Artificial star (no manual metric override, user decision M04).",
+    "User decision A: choosing an artificial star while Astronomical turns tracking OFF on the real mount (via the normal Terrestrial switch) -- intended, confirmed by the user 2026-10-06.",
+]
+gaps = [
+    "M02 (two tracking-verification paths in Mount Align: enforcer.verify vs direct ensure_tracking_mode when no enforcer is wired) is not consolidated -- outside S6.4's contract text; changing it alters the unavailable-mount refusal.",
+    "M03 (MountTestMoveRunner turns tracking off before every move whatever the mode) untouched -- runner not in S6.4's allowed files (S6.8).",
+    "M05 structure: Astronomical + Artificial star can no longer exist (decision A), but the artificial-star choice still has three representations (CollimationTargetMode, the registration button, the autofocus toggle synced one-way) and _calibration_distance_m reads the registration button -- one owner still to be made.",
+    "Registration: only the UI choice is constrained; _on_calibrate_fov does not itself reject a programmatic star-field + Terrestrial combination.",
+    "The tracking settle poll (ensure_tracking_mode) is still not interruptible by Stop -- no cancel hook falls out naturally (S6.3).",
+    "The P-a trigger is a MainWindow QTimer tick, not the mount park panel's own status poll (mount_park_panel.py is outside S6.4's files); move it into DeviceConnectionService's poll in S6.2.",
+    "No test drives the mid-run mode change for a nudge/screen move (only for calibration); the code path is the same running-check + Stop.",
+    "Diagnostics: Mount Align's old target_mode key (star/terrestrial) was renamed to measurement_mode without an alias -- no code or test reads it; only stored bundles (datasets/regressions/35 provenance) contain it.",
+]
+
+[[regression_tests]]
+node = "tests/core/mount/test_operating_mode.py::TestClockPassThrough::test_the_settle_poll_waits_on_the_injected_clock"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/core/mount/test_operating_mode.py:399: TypeError: TrackingEnforcer.__init__() got an unexpected keyword argument 'clock'"
+
+[[regression_tests]]
+node = "tests/core/mount/test_operating_mode.py::TestClockPassThrough::test_a_mount_that_never_settles_times_out_on_fake_time"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/core/mount/test_operating_mode.py:410: TypeError: TrackingEnforcer.__init__() got an unexpected keyword argument 'clock'"
+
+[[regression_tests]]
+node = "tests/core/mount/test_operating_mode.py::TestTrackingDecisionsComeOnlyFromTheGlobalMode::test_the_measurement_tracking_follows_the_mode"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/core/mount/test_operating_mode.py:426: AttributeError: 'TrackingEnforcer' object has no attribute 'measurement_tracking'"
+
+[[regression_tests]]
+node = "tests/core/mount/test_operating_mode.py::TestTrackingDecisionsComeOnlyFromTheGlobalMode::test_a_tracking_on_request_in_terrestrial_mode_is_refused_and_sends_nothing"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/core/mount/test_operating_mode.py:442: assert 1 == 0 (start_tracking was sent in Terrestrial mode)"
+
+[[regression_tests]]
+node = "tests/core/mount/test_operating_mode.py::TestReenforceWhenTheBusyPeriodEnds::test_entering_terrestrial_while_busy_leaves_a_pending_re_enforce"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/core/mount/test_operating_mode.py:476: AttributeError: 'TrackingEnforcer' object has no attribute 'reenforce_pending'"
+
+[[regression_tests]]
+node = "tests/core/mount/test_operating_mode.py::TestReenforceWhenTheBusyPeriodEnds::test_while_still_busy_the_retry_sends_nothing_and_stays_closed"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/core/mount/test_operating_mode.py:482: AttributeError: 'TrackingEnforcer' object has no attribute 'retry_pending'"
+
+[[regression_tests]]
+node = "tests/core/mount/test_operating_mode.py::TestReenforceWhenTheBusyPeriodEnds::test_when_the_busy_period_ends_tracking_is_turned_off_once"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/core/mount/test_operating_mode.py:493: AttributeError: 'TrackingEnforcer' object has no attribute 'retry_pending'"
+
+[[regression_tests]]
+node = "tests/core/mount/test_operating_mode.py::TestReenforceWhenTheBusyPeriodEnds::test_switching_back_to_astronomical_cancels_the_pending_re_enforce"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/core/mount/test_operating_mode.py:508: AttributeError: 'TrackingEnforcer' object has no attribute 'reenforce_pending'"
+
+[[regression_tests]]
+node = "tests/core/mount/test_operating_mode.py::TestReenforceWhenTheBusyPeriodEnds::test_a_measurement_gate_that_succeeds_first_clears_the_pending_re_enforce"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/core/mount/test_operating_mode.py:517: AttributeError: 'TrackingEnforcer' object has no attribute 'reenforce_pending'"
+
+[[regression_tests]]
+node = "tests/core/mount/test_operating_mode.py::TestReenforceWhenTheBusyPeriodEnds::test_on_the_real_park_adapter_the_re_enforce_runs_after_the_goto_releases"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/core/mount/test_operating_mode.py:530: AttributeError: 'TrackingEnforcer' object has no attribute 'retry_pending'"
+
+[[regression_tests]]
+node = "tests/core/mount/test_operating_mode.py::TestDeviceErrorsCloseTheGateWithoutRetrying::test_a_raising_stop_closes_the_gate_with_the_reason"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/core/mount/test_operating_mode.py:541: RuntimeError: emergency stop not confirmed (raised through enforce into the caller)"
+
+[[regression_tests]]
+node = "tests/core/mount/test_operating_mode.py::TestDeviceErrorsCloseTheGateWithoutRetrying::test_the_pending_re_enforce_sends_one_stop_and_never_repeats_it"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/core/mount/test_operating_mode.py:567: AttributeError: 'TrackingEnforcer' object has no attribute 'reenforce_pending'. Review repro against the pre-review S6.4 draft: ticks 0,1,2 raised, pending stayed True, stops 1,2,3"
+
+[[regression_tests]]
+node = "tests/core/mount/test_operating_mode.py::TestModeSwitchDuringATrackingOnCheck::test_the_check_is_denied_and_tracking_is_turned_off_on_the_next_tick"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/core/mount/test_operating_mode.py:604: AssertionError: assert (not True) (a tracking-ON check overtaken by a switch to Terrestrial was reported allowed)"
+
+[[regression_tests]]
+node = "tests/core/mount/test_operating_mode.py::TestConcurrentChecksNeverLoseTheConflict::test_a_stale_off_verification_never_overwrites_the_conflict"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/core/mount/test_operating_mode.py:667: AssertionError: assert not True (worker gate allowed). Mutation against this fix (conflict guard disabled = the round-2 draft): tests/core/mount/test_operating_mode.py:669: AssertionError: TrackingGate(allowed=True, reason='tracking off verified (already_correct)') while tracking was ON"
+
+[[regression_tests]]
+node = "tests/core/mount/test_operating_mode.py::TestARaisingStatusReadFailsClosed::test_verify_closes_the_gate_with_the_reason"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/core/mount/test_operating_mode.py:678: ConnectionError: INDI connection lost (raised out of verify)"
+
+[[regression_tests]]
+node = "tests/core/mount/test_operating_mode.py::TestARaisingStatusReadFailsClosed::test_a_terrestrial_enforce_closes_the_gate_and_owes_nothing"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/core/mount/test_operating_mode.py:678: ConnectionError: INDI connection lost (raised out of enforce)"
+
+[[regression_tests]]
+node = "tests/core/mount/test_operating_mode.py::TestARaisingStatusReadFailsClosed::test_an_astronomical_enforce_does_not_raise"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/core/mount/test_operating_mode.py:678: ConnectionError: INDI connection lost (the evidence read raised out of enforce)"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_operating_mode_ui.py::TestMountAlignFollowsPolicy::test_a_star_capture_requested_before_a_switch_to_terrestrial_never_enables_tracking"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/collimation/ui/test_operating_mode_ui.py:219: assert 2 == 1 (the stale star request re-enabled tracking in Terrestrial mode)"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_operating_mode_ui.py::TestMountAlignHasNoLocalModeSelector::test_mount_align_exposes_no_star_or_terrestrial_selector"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/collimation/ui/test_operating_mode_ui.py:260: AssertionError: ['Connect', 'Star', 'Terrestrial', 'Small', 'Medium', 'Large']"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_operating_mode_ui.py::TestMountAlignHasNoLocalModeSelector::test_mount_align_reads_the_global_mode_owner_directly"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/collimation/ui/test_operating_mode_ui.py:270: AssertionError: assert ('terrestrial', TrackingMode.OFF) == ('star', TrackingMode.ON) (the panel kept its stale local copy)"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_operating_mode_ui.py::TestMountAlignHasNoLocalModeSelector::test_a_global_mode_change_updates_mount_align_without_restart"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/collimation/ui/test_operating_mode_ui.py:285: AttributeError: 'MountTestMovePanel' object has no attribute '_measurement_mode_label'"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_operating_mode_ui.py::TestAutofocusFollowsTheGlobalMode::test_autofocus_exposes_no_star_or_terrestrial_selector"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/collimation/ui/test_operating_mode_ui.py:316: AssertionError: ['Connect', '1', '10', '100', '200', 'Star', ...]"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_operating_mode_ui.py::TestAutofocusFollowsTheGlobalMode::test_the_metric_follows_the_global_mode"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/collimation/ui/test_operating_mode_ui.py:330: AssertionError: assert [STAR, STAR, STAR] == [TERRESTRIAL, STAR, TERRESTRIAL] (autofocus ignored the global Terrestrial mode)"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_operating_mode_ui.py::TestAutofocusFollowsTheGlobalMode::test_the_panel_says_which_metric_the_mode_selects"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/collimation/ui/test_operating_mode_ui.py:334: AttributeError: 'FocuserPanel' object has no attribute '_af_metric_label'"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_operating_mode_ui.py::TestRegistrationChoicesFollowTheGlobalMode::test_terrestrial_mode_disables_the_star_field_choice"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/collimation/ui/test_operating_mode_ui.py:376: assert not True (star-field selectable in Terrestrial)"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_operating_mode_ui.py::TestReenforceWhenTheBusyPeriodEnds::test_while_still_busy_nothing_is_sent_and_the_gate_stays_closed"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/collimation/ui/test_operating_mode_ui.py:426: AttributeError: 'MainWindow' object has no attribute '_tracking_reenforce_timer'"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_operating_mode_ui.py::TestReenforceWhenTheBusyPeriodEnds::test_when_the_busy_period_ends_tracking_is_turned_off_once"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/collimation/ui/test_operating_mode_ui.py:439: AttributeError: 'MainWindow' object has no attribute '_tracking_reenforce_timer'"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_operating_mode_ui.py::TestReenforceWhenTheBusyPeriodEnds::test_switching_back_to_astronomical_stops_the_pending_re_enforce"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/collimation/ui/test_operating_mode_ui.py:454: AttributeError: 'MainWindow' object has no attribute '_tracking_reenforce_timer'"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_operating_mode_ui.py::TestDiagnosticsSeparateModeAndTargetType::test_operating_mode_and_target_type_are_reported_independently"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/collimation/ui/test_operating_mode_ui.py:471: KeyError: 'operating_mode'"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_operating_mode_ui.py::TestArtificialStarImpliesTerrestrial::test_selecting_an_artificial_star_target_switches_to_terrestrial"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/collimation/ui/test_operating_mode_ui.py:500: AssertionError: assert OperatingMode.ASTRONOMICAL is OperatingMode.TERRESTRIAL (Astronomical + Artificial star coexisted)"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_operating_mode_ui.py::TestArtificialStarImpliesTerrestrial::test_choosing_artificial_star_registration_switches_to_terrestrial"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/collimation/ui/test_operating_mode_ui.py:515: AssertionError: assert OperatingMode.ASTRONOMICAL is OperatingMode.TERRESTRIAL"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_operating_mode_ui.py::TestArtificialStarImpliesTerrestrial::test_switching_to_astronomical_returns_the_target_to_natural_star"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/collimation/ui/test_operating_mode_ui.py:530: AssertionError: assert CollimationTargetMode.ARTIFICIAL_STAR is CollimationTargetMode.NATURAL_STAR"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_operating_mode_ui.py::TestArtificialStarImpliesTerrestrial::test_a_manual_mode_change_clears_the_note"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/collimation/ui/test_operating_mode_ui.py:540: AssertionError: assert 'Artificial star is a fixed target' in 'Tracking follows the astronomical workflow'"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_operating_mode_ui.py::TestArtificialStarImpliesTerrestrial::test_a_busy_mount_keeps_the_gate_closed_and_re_enforces_when_free"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/collimation/ui/test_operating_mode_ui.py:559: AssertionError: assert OperatingMode.ASTRONOMICAL is OperatingMode.TERRESTRIAL"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_focuser_panel.py::TestModeFollowsTheOperatingMode::test_without_a_global_mode_wired_the_metric_is_star"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/collimation/ui/test_focuser_panel.py:192: AttributeError: 'FocuserPanel' object has no attribute '_autofocus_mode'"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_focuser_panel.py::TestModeFollowsTheOperatingMode::test_the_metric_is_read_live_from_the_global_mode"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/collimation/ui/test_focuser_panel.py:198: TypeError: FocuserPanel.__init__() got an unexpected keyword argument 'operating_mode'"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_focuser_panel.py::TestModeFollowsTheOperatingMode::test_a_mode_change_during_a_run_cancels_it"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/collimation/ui/test_focuser_panel.py:206: TypeError: FocuserPanel.__init__() got an unexpected keyword argument 'operating_mode'"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_collimation_main_window.py::TestMountTestMovePanel::test_a_global_mode_change_during_calibration_stops_the_run"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/collimation/ui/test_collimation_main_window.py:4266: AssertionError: assert (not [_CalibrationStep(...), ...]) (the calibration carried on under the new mode)"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_collimation_main_window.py::TestMountTestMovePanel::test_diagnostic_context_reports_the_operating_and_measurement_mode"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/collimation/ui/test_collimation_main_window.py:4623: KeyError: 'operating_mode'"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_collimation_main_window.py::TestArtificialStarAutofocusWiring::test_selecting_the_artificial_star_target_selects_artificial_star_autofocus"
+failed_before_fix = true
+evidence = "Worktree at 5acc6b9 with the S6.4 tests copied in, production unchanged: tests/collimation/ui/test_collimation_main_window.py:5983: AttributeError: 'FocuserPanel' object has no attribute '_autofocus_mode' (migrated: deselecting artificial star now returns to the global mode's metric, not a local Star button)"
+
+[[regression_tests]]
+node = "tests/core/mount/test_operating_mode.py::TestTrackingDecisionsComeOnlyFromTheGlobalMode::test_a_tracking_on_request_in_astronomical_mode_is_still_repaired"
+failed_before_fix = false
+reason_no_prefix_repro = "Regression guard: the Terrestrial refusal must not touch Astronomical star calibration's tracking-ON repair."
+
+[[regression_tests]]
+node = "tests/core/mount/test_operating_mode.py::TestDecisionsNeverUseHeldOverReadings::test_terrestrial_gate_fails_closed_while_the_mount_is_busy"
+failed_before_fix = false
+reason_no_prefix_repro = "S6.0c's frozen fail-closed regression (49-stop-during-angular-goto manifest), listed as the guarantee S6.4 must keep."
+
+[[regression_tests]]
+node = "tests/core/mount/test_operating_mode.py::TestDecisionsNeverUseHeldOverReadings::test_entering_terrestrial_mode_while_busy_is_denied_not_verified"
+failed_before_fix = false
+reason_no_prefix_repro = "S6.0c's frozen fail-closed regression; P-a adds the re-enforce, not a different gate."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_operating_mode_ui.py::TestMountAlignFollowsPolicy::test_terrestrial_operating_mode_requires_tracking_off"
+failed_before_fix = false
+reason_no_prefix_repro = "Migrated from test_terrestrial_operating_mode_requires_tracking_off_even_if_star_is_toggled (the toggle no longer exists); guards that Terrestrial verifies tracking OFF and never enables it."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_operating_mode_ui.py::TestOperatingModeSelector::test_switching_to_astronomical_switches_mount_align_to_star_measurement"
+failed_before_fix = false
+reason_no_prefix_repro = "Migrated #44 test (asserted the local Star button); now asserts the derived measurement and tracking need. HEAD mirrored the mode into the toggle, so it passed there too."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_operating_mode_ui.py::TestAutofocusFollowsTheGlobalMode::test_an_artificial_star_target_coexists_with_terrestrial_mode"
+failed_before_fix = false
+reason_no_prefix_repro = "#48 test list: artificial-star target type coexists with global Terrestrial (HEAD already mapped it one-way)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_operating_mode_ui.py::TestAutofocusFollowsTheGlobalMode::test_a_natural_star_target_coexists_with_astronomical_mode"
+failed_before_fix = false
+reason_no_prefix_repro = "#48 test list: natural-star target coexists with global Astronomical; regression guard."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_operating_mode_ui.py::TestRegistrationChoicesFollowTheGlobalMode::test_astronomical_mode_keeps_ncc_and_enables_star_field"
+failed_before_fix = false
+reason_no_prefix_repro = "User decision B (2026-10-06): NCC stays available in Astronomical (Moon/planet texture). HEAD already allowed it; guards against re-introducing the S6.4 draft's NCC disabling."
