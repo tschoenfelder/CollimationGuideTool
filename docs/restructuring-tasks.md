@@ -350,6 +350,24 @@ not change · dependencies · non-goals · proof required.
   where they currently duck-type (record the rest for S6.6).
 - **Proof:** failing-then-passing tests; manifest.
 
+### S6.0e — pin OnStepAdapter 0.5.0
+
+- **Allowed files:** `pyproject.toml` (the onstep-adapter dependency URL only → the published v0.5.0
+  wheel), `install.md` (version notes / Pi upgrade instructions), the `.venv` (reinstall), tests that
+  assumed 0.4.1 (`install_onstep_adapter_050_exports` and the capability-detection tests in
+  `tests/core/onstep/`, `tests/collimation/application/test_guide_pulse_reacquisition.py`, simulators in
+  `testing/sim_onstep.py` / `fake_onstep_indi_client.py` only where they hard-code the 0.4.1 world),
+  their contract tests; proofs/39-astro-guide-pulse.toml (field-only notes).
+- **Behavior changed:** production now runs on 0.5.0, so the astronomical guide-pulse path is live; the
+  0.4.1-absence path stays tested via simulation (an installed package without `guide_pulse`).
+- **Must verify (no assumptions):** the installed package's version and `guide_pulse` facade; its
+  `indi_status`/`indi_meridian`/`indi_axis_motion`/`indi_tracking`/`indi_stop`/`indi_home` vs 0.4.1 — list
+  every behavioural difference relevant to CGT (diff the two wheels) and re-run the S6.0–S6.0d suites
+  against it; the sim-vs-real comparison script from the S6.0d review against the INSTALLED package.
+- **Non-goals:** Pi venv upgrade (S8 rollout).
+- **Proof:** CI green on 0.5.0; manifest note; field item: Pi venv upgrade + the user-supervised guide
+  pulse (if not already done before the release).
+
 ### S5 — #55 + #52 duplication inventory (analysis only)
 
 - **Allowed files:** new `docs/quality/duplication-audit.md` only.
