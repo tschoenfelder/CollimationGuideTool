@@ -368,6 +368,39 @@ not change · dependencies · non-goals · proof required.
 - **Proof:** CI green on 0.5.0; manifest note; field item: Pi venv upgrade + the user-supervised guide
   pulse (if not already done before the release).
 
+### S6.2 — DeviceConnectionService (#52 K-items)
+
+- **Allowed files:** new application service module(s) under `apps/collimation_tool/application/` (or
+  `astrotool_core` if GuideTool needs it too — justify), `ui/focuser_panel.py`, `ui/filter_wheel_panel.py`,
+  `ui/mount_park_panel.py`, `ui/camera_panel.py` (connect/disconnect/stream-start paths only),
+  `ui/main_window.py` (closeEvent per-panel isolation; moving the S6.4 P-a 500 ms re-enforce timer into
+  the service's poll), `apps/guide_tool/ui/**` connect path (K03: only `ConnectionError` caught; previous
+  camera never released), `packages/astrotool_core/onstep/connection.py` (KeyError from 0.4.x/0.5.0
+  `connect()` not caught by `acquire()`), their tests. **Not** `mount_test_move_panel.py` (S6.6/S6.7 own it).
+- **Behavior:** one connect/disconnect lifecycle with normalized failure reporting (exception classes,
+  log line, `last_connect_error`) and guaranteed cleanup; FilterWheelPanel gets the ca5bb92 fix it missed;
+  camera stream start guards connect; GuideTool releases the previous camera (#45 class) and catches the
+  same failure set; disconnect/stop guarded; closeEvent isolates per-panel failures.
+- **Tests first:** failure injected at every phase (connect/start/wait/finish/cancel/disconnect) leaves
+  each panel retryable; simulators (#51) + fake clock; thin panel binding tests.
+- **Proof:** failing-then-passing tests; audit K01–K03 resolved; manifest.
+
+### S6.7 — fresh-frame-after-motion service (ROLLOUT BLOCKER)
+
+- **Allowed files:** new shared service (application or `astrotool_core.acquisition`) built on
+  `acquire_stable_frame` / `acquire_settled_frames`; callers: `application/star_acquisition.py` /
+  `recenter_policy.py` reacquisition measurement (replace the latest-frame-after-settle fallback and
+  `GUIDE_FRESH_FRAME_TIMEOUT_S`), `application/autofocus_controller.py` (T05: fixed 5 s fresh-frame wait
+  vs exposure-scaled), `ui/mount_test_move_panel.py` capture timing only (exposure-scaled timeouts,
+  completed_at / reference max age on the injected clock — S3b(c)); nudges: manual moves must not wait for
+  BEFORE/AFTER measurement frames (AGENTS.md) — decouple if contained; their tests.
+- **Behavior:** every measurement after motion uses a frame whose exposure STARTED after the motion
+  ended (+ settle), exposure-scaled deadline, explicit timeout outcome; one owner of the rule.
+- **Tests first:** stale/motion-overlapping frames via `testing.sim_frames.FrameTimeline` (#51) for
+  reacquisition, autofocus, Mount Align; long exposures (>2 s) no longer time out.
+- **Frozen:** S6.0b/S6.0d/S6.4 decisions; #49 off-GUI-thread waits.
+- **Proof:** failing-then-passing tests; manifest; TestMountTestMovePanel wall time before/after.
+
 ### S5 — #55 + #52 duplication inventory (analysis only)
 
 - **Allowed files:** new `docs/quality/duplication-audit.md` only.
