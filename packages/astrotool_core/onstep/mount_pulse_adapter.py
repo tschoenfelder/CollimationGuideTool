@@ -42,8 +42,13 @@ names the stop; the lock is released then (bounded), never earlier.
 `status()` never queues behind a running operation: it serves its last
 reading (with `slewing=True` while this adapter's GOTO is in flight) instead
 of reading the controller mid-operation; with nothing read yet it claims
-nothing (`connected=False`). That is for display only -- `MountStatus` cannot
-mark a held-over reading (S6.5 capability item), so no decision may use it.
+nothing (`connected=False`). That is for display only, and marked so
+(`MountStatus.fresh=False`, S6.5): no decision may use it.
+
+Angular bounds (S6.5, #55 C02): `capabilities()` reports `supports_angular_moves` and
+OnStepAdapter's own `IndiAxisMover` bound as `min_angular_arcsec`/`max_angular_arcsec`
+(single source: `onstep_adapter.indi_axis_motion`); `move_angular` refuses outside exactly
+that range. The `min_angular_arcsec` property is a deprecated alias for duck-typed callers.
 
 Guide pulses while tracking (S6.0d, #39). OnStepAdapter 0.5.0 (unpublished at the time of
 writing; main stays pinned to 0.4.1) adds `IndiMount.guide_pulse(direction, duration_ms)`
@@ -88,8 +93,8 @@ from astrotool_core.mount.port import (
 from astrotool_core.onstep.connection import OnStepConnection
 
 #: OnStepAdapter's own `IndiAxisMover` bound (30"..10 degrees), taken from OnStepAdapter
-#: itself (single source). `MIN_AXIS_ARCSEC` is re-exported for this app and reported to
-#: callers through `OnStepMountPulseAdapter.min_angular_arcsec` (S6.0).
+#: itself (single source). Reported to callers as `MountCapabilities.min_angular_arcsec` /
+#: `max_angular_arcsec` (S6.5); `MIN_AXIS_ARCSEC` stays re-exported for this app.
 MIN_AXIS_ARCSEC = float(MIN_AXIS_MOVE_ARCSEC)
 _MAX_AXIS_ARCSEC = float(MAX_AXIS_MOVE_DEG) * 3600.0
 
@@ -206,6 +211,9 @@ class OnStepMountPulseAdapter:
             min_pulse_ms=0,
             max_pulse_ms=0,
             supports_guide_pulses_while_tracking=self.guide_pulse_range_ms is not None,
+            supports_angular_moves=True,
+            min_angular_arcsec=MIN_AXIS_ARCSEC,
+            max_angular_arcsec=_MAX_AXIS_ARCSEC,
         )
 
     @property
@@ -236,11 +244,14 @@ class OnStepMountPulseAdapter:
                 return self._last_status
             last = self._last_status
             if last is None:  # busy and nothing read yet: claim nothing (S6.0c)
-                return MountStatus(connected=False, tracking=False, slewing=self._goto_in_flight)
+                return MountStatus(
+                    connected=False, tracking=False, slewing=self._goto_in_flight, fresh=False
+                )
             return MountStatus(
                 connected=True,
                 tracking=last.tracking,
                 slewing=last.slewing or self._goto_in_flight,
+                fresh=False,  # held over (S6.0c): display only
             )
 
     def abort(self) -> None:
@@ -309,9 +320,10 @@ class OnStepMountPulseAdapter:
     # ---- AngularMotionPort ------------------------------------------------
     @property
     def min_angular_arcsec(self) -> float:
-        """Reported capability (S6.0): the smallest `move_angular` size OnStepAdapter accepts.
-        Callers size moves against it up front instead of discovering it from a refusal."""
-        return MIN_AXIS_ARCSEC
+        """Deprecated alias (S6.5) of `capabilities().min_angular_arcsec`: the smallest
+        `move_angular` size OnStepAdapter accepts. Kept for the duck-typed callers
+        (`getattr(mount, "min_angular_arcsec", 0.0)`) until they read the capability."""
+        return self.capabilities().min_angular_arcsec
 
     def installed_rate(self, axis: MountAxis, direction: AxisDirection) -> float | None:
         return self._rates.get((axis, direction))

@@ -11,6 +11,7 @@ GuideCorrectionPolicy), not this port.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import Enum, auto
 from typing import Protocol
@@ -37,19 +38,44 @@ class MountCapabilities:
     `supports_guide_pulses_while_tracking` (S6.0d, #39): a SEPARATE capability -- the mount
     implements `GuidePulsePort`: bounded astronomical guide pulses that leave tracking ON
     (OnStepAdapter >= 0.5.0 `mount.guide_pulse`). It says nothing about `pulse_axis`, and
-    Mount Align never reads it."""
+    Mount Align never reads it.
+
+    S6.5 (#55 audit C02) -- angular moves, asked here instead of by duck typing:
+    `supports_angular_moves`: the mount implements `AngularMotionPort` (`move_angular`).
+    `min_angular_arcsec` / `max_angular_arcsec`: the smallest / largest `move_angular` size
+    the mount accepts (positive magnitude, arcsec); 0.0 = no floor, None = no stated maximum.
+    A mount without angular moves reports (0.0, None). The owner of the numbers is the
+    adapter's own source (OnStepAdapter's `IndiAxisMover` bound for
+    `OnStepMountPulseAdapter`), never a caller-side literal."""
 
     supports_pulse_guiding: bool
     min_pulse_ms: int
     max_pulse_ms: int
     supports_guide_pulses_while_tracking: bool = False
+    supports_angular_moves: bool = False
+    min_angular_arcsec: float = 0.0
+    max_angular_arcsec: float | None = None
+
+    def __post_init__(self) -> None:
+        low, high = self.min_angular_arcsec, self.max_angular_arcsec
+        if not (math.isfinite(low) and low >= 0.0):
+            raise ValueError(f"min_angular_arcsec must be finite and >= 0, got {low!r}")
+        if high is not None and not (math.isfinite(high) and high >= low):
+            raise ValueError(
+                f"max_angular_arcsec must be finite and >= min_angular_arcsec, got {high!r}"
+            )
 
 
 @dataclass(frozen=True)
 class MountStatus:
+    """`fresh` (S6.5, from S6.0c): False when the adapter served a held-over reading (or
+    nothing read yet) because another operation holds the connection -- display only; no
+    decision may treat it as a new reading (same rule as `MountParkStatus.fresh`)."""
+
     connected: bool
     tracking: bool
     slewing: bool
+    fresh: bool = True
 
 
 @dataclass(frozen=True)

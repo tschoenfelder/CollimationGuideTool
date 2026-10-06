@@ -39,6 +39,11 @@ class CameraCapabilities:
     #: False) -- same "no data" convention as CameraPort.get_temperature().
     min_target_temp_c: float | None = None
     max_target_temp_c: float | None = None
+    #: S6.5 (#55 C01): a temperature sensor answers `CameraPort.get_temperature()`
+    #: (independent of cooling: some sensors report a temperature without a TEC).
+    supports_temperature: bool = False
+    #: S6.5: the sensor delivers true 16-bit ADC codes (SDK pixel format RAW16).
+    supports_raw16: bool = False
 
 
 @dataclass(frozen=True)

@@ -28,14 +28,25 @@ uses to avoid adding OpenCV/SciPy for one FFT-based algorithm.
 from __future__ import annotations
 
 import tomllib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Final
 
 from astrotool_core.config import paths
 
 #: Compatibility alias of `paths.DEFAULT_OWN_CONFIG_PATH`; the
 #: functions below resolve the owner at call time (#55 D03).
 DEFAULT_CONFIG_PATH = paths.DEFAULT_OWN_CONFIG_PATH
+
+#: The built-in TEC target temperature (degrees C) when nothing is saved -- the
+#: ONE owner (#55 D04): `CameraPanelSettings`, `load_camera_settings`, the camera
+#: panel's spin box and `TouptekCameraAdapter` all read it here, at call time.
+#: `tests/contracts/test_config_source_contract.py` fails on a second copy.
+DEFAULT_TARGET_TEMPERATURE_C: Final = -10.0
+
+
+def _default_target_temperature_c() -> float:
+    return DEFAULT_TARGET_TEMPERATURE_C
 
 
 @dataclass(frozen=True)
@@ -57,7 +68,7 @@ class CameraPanelSettings:
     #: Cooling ON/OFF is deliberately NOT persisted here -- every connect
     #: always starts with cooling off (see TouptekCameraAdapter._basic_configure).
     #: Only the operator's chosen target temperature is remembered.
-    target_temperature_c: float = -10.0
+    target_temperature_c: float = field(default_factory=_default_target_temperature_c)
 
 
 def load_camera_settings(
@@ -94,7 +105,9 @@ def load_camera_settings(
                 exposure_ms=float(table["exposure_ms"]),
                 gain=int(table["gain"]),
                 auto_exposure_enabled=bool(table.get("auto_exposure_enabled", False)),
-                target_temperature_c=float(table.get("target_temperature_c", -10.0)),
+                target_temperature_c=float(
+                    table.get("target_temperature_c", DEFAULT_TARGET_TEMPERATURE_C)
+                ),
             )
         except (KeyError, TypeError, ValueError):
             continue

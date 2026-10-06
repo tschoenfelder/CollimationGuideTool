@@ -24,9 +24,10 @@ import ast
 import re
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any
 
 import pytest
-from astrotool_core.config import device_defaults, paths
+from astrotool_core.config import camera_settings, device_defaults, paths
 
 _REPO = Path(__file__).resolve().parents[2]
 _PRODUCTION_ROOTS = (_REPO / "packages", _REPO / "apps", _REPO / "scripts")
@@ -226,3 +227,125 @@ def f():
         ],
         key=str,
     )
+
+
+# -- D04: the built-in cooling target (S6.5) ------------------------------------------------
+#
+# `astrotool_core/config/camera_settings.py` owns DEFAULT_TARGET_TEMPERATURE_C (-10 C).
+# The number alone is too common to scan for, so a re-statement is a numeric literal
+# equal to the owned value on a source line that mentions a temperature ("temp").
+
+_COOLING_OWNER = "packages/astrotool_core/config/camera_settings.py"
+
+#: module -> why it may still re-state the default. Each is a CameraPort test double /
+#: demo camera outside S6.5's allowed files; migrate them to the owner, then delete.
+_COOLING_ALLOWED: dict[str, str] = {
+    "packages/astrotool_core/camera/fake_camera.py": "demo camera; follow-up (S6.5 record)",
+    "packages/astrotool_core/camera/replay_camera.py": "replay camera; follow-up (S6.5 record)",
+    "packages/astrotool_core/testing/fake_touptek.py": "test double; follow-up (S6.5 record)",
+}
+
+
+def cooling_default_lines(source: str, owned: float) -> list[int]:
+    """Lines of `source` with a numeric literal equal to `owned` (sign included) on a
+    line that mentions a temperature."""
+    lines = source.splitlines()
+    hits: list[int] = []
+    for node in ast.walk(ast.parse(source)):
+        value: object
+        if (
+            isinstance(node, ast.UnaryOp)
+            and isinstance(node.op, ast.USub)
+            and isinstance(node.operand, ast.Constant)
+        ):
+            operand = node.operand.value
+            value = -operand if isinstance(operand, int | float) else None
+            line = node.lineno
+        elif isinstance(node, ast.Constant):
+            value, line = node.value, node.lineno
+        else:
+            continue
+        if isinstance(value, bool) or not isinstance(value, int | float) or value != owned:
+            continue
+        if "temp" in lines[line - 1].lower() and line not in hits:
+            hits.append(line)
+    return hits
+
+
+def _cooling_findings() -> dict[str, list[int]]:
+    owned = camera_settings.DEFAULT_TARGET_TEMPERATURE_C
+    found: dict[str, list[int]] = {}
+    for rel, path in _production_modules():
+        if rel == _COOLING_OWNER:
+            continue
+        hits = cooling_default_lines(path.read_text(encoding="utf-8"), owned)
+        if hits:
+            found[rel] = hits
+    return found
+
+
+def test_the_cooling_default_has_one_owner() -> None:
+    offenders = [
+        f"{rel}:{line}"
+        for rel, lines in _cooling_findings().items()
+        if rel not in _COOLING_ALLOWED
+        for line in lines
+    ]
+    assert offenders == [], (
+        "re-stated cooling target default -- read "
+        "astrotool_core.config.camera_settings.DEFAULT_TARGET_TEMPERATURE_C:\n"
+        + "\n".join(offenders)
+    )
+
+
+def test_every_cooling_exception_is_still_needed() -> None:
+    assert sorted(set(_COOLING_ALLOWED) - set(_cooling_findings())) == []
+
+
+def test_the_cooling_owner_holds_the_value() -> None:
+    source = (_REPO / _COOLING_OWNER).read_text(encoding="utf-8")
+    assert camera_settings.DEFAULT_TARGET_TEMPERATURE_C == -10.0
+    assert len(cooling_default_lines(source, -10.0)) == 1
+
+
+def test_the_cooling_scanner_catches_each_kind_of_restatement() -> None:
+    source = '''
+"""Docstring: -10 C target temperature."""
+class A:
+    target_temperature_c: float = -10.0
+    def f(self, table):
+        self._target_temperature_c = -10
+        spin_temp.setValue(-10.0)
+        return float(table.get("target_temperature_c", -10.0))
+OFFSET = -10.0
+TEMP_STEP = 10.0
+'''
+    assert cooling_default_lines(source, -10.0) == [4, 6, 7, 8]
+
+
+def test_every_consumer_observes_an_injected_cooling_default(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    qapp: Any,  # noqa: ANN401
+) -> None:
+    """#55: change the owner, and every consumer follows (read at call time)."""
+    from astrotool_core.camera.fake_camera import FakeCamera
+    from astrotool_core.camera.touptek_adapter import TouptekCameraAdapter
+    from collimation_tool.ui.camera_panel import CameraPanel
+
+    monkeypatch.setattr(camera_settings, "DEFAULT_TARGET_TEMPERATURE_C", -7.5)
+    assert TouptekCameraAdapter().get_target_temperature() == -7.5
+    assert (
+        camera_settings.CameraPanelSettings(
+            camera_id=None, exposure_ms=1.0, gain=100, auto_exposure_enabled=False
+        ).target_temperature_c
+        == -7.5
+    )
+    path = tmp_path / "config.toml"
+    path.write_text("[cameras.main]\nexposure_ms = 1.0\ngain = 100\n", encoding="utf-8")
+    assert camera_settings.load_camera_settings(path)["main"].target_temperature_c == -7.5
+    panel = CameraPanel(FakeCamera(), title="D04", device_lister=list)
+    try:
+        assert panel._target_temp_spin.value() == -7.5
+    finally:
+        panel.deleteLater()

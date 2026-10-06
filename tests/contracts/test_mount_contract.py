@@ -15,7 +15,7 @@ from collections.abc import Callable
 import pytest
 from astrotool_core.mount import AxisDirection, MountAxis, MountPort, NoMountAdapter
 from astrotool_core.onstep import OnStepConnection, OnStepMountPulseAdapter, load_onstep_indi_config
-from astrotool_core.testing.fake_mount import FakeMountAdapter
+from astrotool_core.testing.fake_mount import FakeAngularMountAdapter, FakeMountAdapter
 from astrotool_core.testing.fake_onstep_indi_client import make_fake_onstep_indi_connection
 
 MountFactory = Callable[[], MountPort]
@@ -129,5 +129,29 @@ def test_real_onstep_mount_capabilities_and_status(mount_factory: MountFactory) 
         assert caps.supports_pulse_guiding is False
         status = mount.status()
         assert status.connected is True
+    finally:
+        mount.disconnect()
+
+
+def fake_angular_mount_factory() -> MountPort:
+    return FakeAngularMountAdapter()
+
+
+@pytest.mark.parametrize("mount_factory", [*MOUNT_FACTORIES, fake_angular_mount_factory])
+def test_declared_angular_capability_matches_the_mount(mount_factory: MountFactory) -> None:
+    """S6.5 (#55 C02): callers ask `capabilities()`, never `hasattr` -- so what a mount
+    declares must be what it implements, and its bounds must be well-formed."""
+    mount = mount_factory()
+    mount.connect()
+    try:
+        caps = mount.capabilities()
+        implements = callable(getattr(mount, "move_angular", None))
+        assert caps.supports_angular_moves is implements
+        assert caps.min_angular_arcsec >= 0.0
+        if caps.max_angular_arcsec is not None:
+            assert caps.max_angular_arcsec >= caps.min_angular_arcsec
+        if not caps.supports_angular_moves:
+            assert (caps.min_angular_arcsec, caps.max_angular_arcsec) == (0.0, None)
+        assert isinstance(mount.status().fresh, bool)
     finally:
         mount.disconnect()

@@ -210,7 +210,10 @@ class TestCapabilityMatrix:
             CAMERA_MODELS[model].height,
         )
         assert (caps.min_gain, caps.max_gain) == CAMERA_MODELS[model].gain_range[:2]
-        assert cam.notimpl_calls == []
+        # S6.5: the only refused call is the capability table's one temperature probe
+        # at connect, on a model without a sensor (4730c55's GPCMOS02000KPA).
+        sensor = CAMERA_MODELS[model].has_temperature_sensor
+        assert cam.notimpl_calls == ([] if sensor else ["get_Temperature"])
 
     def test_a_cooled_camera_reports_its_target_range_and_temperature(
         self, monkeypatch: pytest.MonkeyPatch

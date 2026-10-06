@@ -35,8 +35,10 @@ from astrotool_core.camera.capabilities import (
     ConversionGain,
 )
 from astrotool_core.camera.port import CameraPort, CaptureAbortedError
+from astrotool_core.config import camera_settings
 from astrotool_core.frames.frame import Frame
 from astrotool_core.frames.pixel_format import BayerPattern
+from astrotool_core.timing import SYSTEM_CLOCK, Clock
 
 _log = logging.getLogger(__name__)
 
@@ -79,6 +81,51 @@ _SDK_FALLBACKS: dict[str, int] = {
     "E_NOTIMPL": 0x80004001,  # this camera model has no such feature
     "E_BUSY": 0x800700AA,  # the device already has an open handle
 }
+
+
+# S6.5 (#55 audit C01): the capability table -- ONE decision per feature for the
+# connected model. A flag-gated feature is supported when the model's SDK flag
+# word has any of its flags (names looked up like every other SDK constant);
+# `None` = not flag-gated, i.e. supported on a connected camera unless the SDK
+# answers E_NOTIMPL (the temperature sensor: some models report a temperature
+# without a TEC -- audit C03 -- and the GPCMOS02000KPA has none at all, 4730c55;
+# it is probed once at connect). Whatever the flags say, the first E_NOTIMPL for
+# a feature (or for an option outside the table) is recorded for the rest of the
+# connection (`_refused`) and reported once; nothing asks again (531a952/4730c55:
+# per-frame/per-poll retries of a refused call spammed a WARNING for a whole
+# session). The value ranges (gain, exposure, TEC target) are asked once per
+# connect, never per frame (`get_descriptor()` is read on every frame); a gain or
+# exposure range whose query failed transiently is asked again at most once per
+# `range_retry_s`. Safety (review C1): the cooler's on/off ("cooling") is its own
+# feature, separate from the target ("cooling_target") -- a refused target never
+# suppresses a TEC-off (see `_tec_off`).
+_FEATURE_FLAGS: dict[str, tuple[str, ...] | None] = {
+    "cooling": ("TOUPCAM_FLAG_TEC", "TOUPCAM_FLAG_TEC_ONOFF"),
+    "cooling_target": ("TOUPCAM_FLAG_TEC", "TOUPCAM_FLAG_TEC_ONOFF"),
+    "conversion_gain": ("TOUPCAM_FLAG_CG", "TOUPCAM_FLAG_CGHDR"),  # HCG (LCG always)
+    "hdr": ("TOUPCAM_FLAG_CGHDR",),
+    "black_level": ("TOUPCAM_FLAG_BLACKLEVEL",),
+    "raw16": ("TOUPCAM_FLAG_RAW16",),  # true 16-bit ADC: no pixel shift
+    "temperature": None,
+    "target_temp_range": ("TOUPCAM_FLAG_TEC", "TOUPCAM_FLAG_TEC_ONOFF"),
+    "gain_range": None,
+    "exposure_range": None,
+}
+
+#: The SDK options that belong to a feature: refusing one refuses the feature.
+_OPTION_FEATURE: dict[str, str] = {
+    "TOUPCAM_OPTION_TEC": "cooling",
+    "TOUPCAM_OPTION_TECTARGET": "cooling_target",
+    "TOUPCAM_OPTION_CG": "conversion_gain",
+    "TOUPCAM_OPTION_BLACKLEVEL": "black_level",
+}
+
+
+def _is_not_implemented(exc: Exception) -> bool:
+    """The SDK's "this camera model has no such feature" answer (a model
+    property, never transient). The one place E_NOTIMPL is recognised."""
+    hr = getattr(exc, "hr", None)
+    return isinstance(hr, int) and (hr & 0xFFFFFFFF) == _SDK_FALLBACKS["E_NOTIMPL"]
 
 
 def _fourcc(a: str, b: str, c: str, d: str) -> int:
@@ -274,7 +321,12 @@ class TouptekCameraAdapter(CameraPort):
         name: str | None = None,
         bit_depth: int = 16,
         timeout_extra_s: float = 5.0,
+        clock: Clock | None = None,
+        range_retry_s: float = 30.0,
     ) -> None:
+        #: Paces the bounded re-ask of a failed range query (review C4).
+        self._clock: Clock = clock if clock is not None else SYSTEM_CLOCK
+        self._range_retry_s = range_retry_s
         self._index = index
         self._camera_id_hint = camera_id
         self._name_selector = name
@@ -319,13 +371,23 @@ class TouptekCameraAdapter(CameraPort):
         # crashed prior session), so this always starts False; _target_temperature_c
         # is a user intention, not read back from hardware -- see set_target_temperature.
         self._cooling_enabled = False
-        self._target_temperature_c: float | None = -10.0
-        # Real-field report: GPCMOS02000KPA (no temperature sensor at all)
-        # spammed a WARNING every poll tick forever, one per
-        # get_Temperature() call -- E_NOTIMPL is a model-level capability,
-        # not a transient failure, so it's cached per-connect instead of
-        # retried indefinitely (see get_temperature()).
-        self._temperature_not_implemented = False
+        # D04: the built-in default has one owner (config.camera_settings).
+        self._target_temperature_c: float | None = camera_settings.DEFAULT_TARGET_TEMPERATURE_C
+        # S6.5: features/options the SDK answered E_NOTIMPL for on this connection
+        # (see `_FEATURE_FLAGS`), and the ranges asked once at connect.
+        # Threading: read and extended from the GUI thread (polls, descriptor) and the
+        # capture worker (options); single `in`/`add`/`update` set operations are
+        # atomic under the GIL, and the set is only ever *replaced* (never mutated
+        # in place) on connect/disconnect, so a reader sees either the old or the
+        # new connection's set. A lost race at worst repeats one SDK call.
+        self._refused: set[str] = set()
+        self._gain_range: tuple[int, int] | None = None
+        self._exposure_range_ms: tuple[float, float] | None = None
+        self._target_range_c: tuple[float, float] | None = None
+        #: Clock time of the last range probe (None before connect).
+        self._ranges_probed_at: float | None = None
+        #: Review C1: the "cooling off" re-try after a refused TEC on/off was made.
+        self._tec_off_retried = False
 
     def connect(self) -> None:
         if self._cam is not None:
@@ -354,8 +416,10 @@ class TouptekCameraAdapter(CameraPort):
         self._logical_name = str(device.displayname or device.model.name)
         self._device_id = str(device.id)
         self._model_flag = int(getattr(device.model, "flag", 0))
+        self._refused = set()
+        self._tec_off_retried = False
         self._log_model_flag(str(getattr(device.model, "name", "") or self._logical_name))
-        if self._has_flag("TOUPCAM_FLAG_RAW16"):
+        if self._supports("raw16"):
             self._pixel_shift = 0  # true 16-bit sensor — no shift needed
         try:
             self._serial_number = cam.SerialNumber()
@@ -384,6 +448,7 @@ class TouptekCameraAdapter(CameraPort):
             self._basic_configure()
             self._prepare_capture_mode()
             self._sdk_bit_depth = self._query_bit_depth_from_sdk()
+            self._probe_capabilities()
         except Exception as exc:
             # Issue #45: a half-opened device must never keep its SDK handle --
             # the SDK allows one handle per device, so a leaked one makes the
@@ -404,8 +469,78 @@ class TouptekCameraAdapter(CameraPort):
             "colour" if self.is_color_sensor() else "mono",
             "yes" if self._has_flag("TOUPCAM_FLAG_USB30") else "no",
             "yes" if self._has_flag("TOUPCAM_FLAG_USB30_OVER_USB20") else "no",
-            "yes" if self._supports_cooling else "no",
+            "yes" if self._supports("cooling") else "no",
         )
+
+    def _probe_capabilities(self) -> None:  # pragma: no cover -- simulator-tested
+        """S6.5: the table's non-flag decisions, once per connect -- the
+        temperature sensor (one probe; E_NOTIMPL refuses it) and the value
+        ranges `get_descriptor()` reports (asked here, never per frame; a failed
+        query warns once and leaves the documented default)."""
+        self._sdk_call("temperature", lambda: self._cam.get_Temperature())
+        self._probe_ranges()
+        self._target_range_c = self._query_target_temp_range()
+
+    def _probe_ranges(self) -> None:  # pragma: no cover -- simulator-tested
+        """Ask each gain/exposure range still unknown (and not refused) once."""
+        self._ranges_probed_at = self._clock.monotonic()
+        if self._gain_range is None and self._supports("gain_range"):
+            gain = self._sdk_call("gain_range", lambda: self._cam.get_ExpoAGainRange())
+            self._gain_range = (int(gain[0]), int(gain[1])) if gain else None
+        if self._exposure_range_ms is None and self._supports("exposure_range"):
+            exposure = self._sdk_call("exposure_range", lambda: self._cam.get_ExpTimeRange())
+            self._exposure_range_ms = (
+                (float(exposure[0]) / 1000.0, float(exposure[1]) / 1000.0) if exposure else None
+            )
+
+    def _reprobe_failed_ranges(self) -> None:
+        """Review C4: a range whose query failed transiently (not E_NOTIMPL) is asked
+        again at most once per `range_retry_s` on the clock -- never per frame, and
+        never once known or refused."""
+        if self._cam is None or self._ranges_probed_at is None:
+            return
+        missing = (self._gain_range is None and self._supports("gain_range")) or (
+            self._exposure_range_ms is None and self._supports("exposure_range")
+        )
+        if missing and self._clock.monotonic() - self._ranges_probed_at >= self._range_retry_s:
+            self._probe_ranges()
+
+    def _supports(self, feature: str) -> bool:
+        """The capability table's decision for *feature* (see `_FEATURE_FLAGS`)."""
+        if feature in self._refused:
+            return False
+        flags = _FEATURE_FLAGS[feature]
+        if flags is None:
+            return self._cam is not None
+        return any(self._model_flag & _sdk_constant(self._tc, flag) for flag in flags)
+
+    def _refuse(self, subject: str) -> None:
+        """Record an E_NOTIMPL answer for *subject* (a feature or an SDK option
+        name) for the rest of this connection, and say so once."""
+        feature = _OPTION_FEATURE.get(subject, subject)
+        if feature in self._refused:
+            return
+        self._refused.update({subject, feature})
+        _log.info(
+            "TouptekCameraAdapter(%s): %s not implemented by this camera (SDK E_NOTIMPL) "
+            "-- treated as unsupported until the next connect",
+            self._logical_name,
+            feature,
+        )
+
+    def _sdk_call(self, subject: str, fn: Any) -> Any:  # noqa: ANN401
+        """`fn()`; on E_NOTIMPL the table records *subject* as unsupported, any
+        other failure is warned about (and may be transient). None on failure."""
+        try:
+            return fn()
+        except Exception as exc:  # noqa: BLE001 -- SDK raises HRESULTException
+            if _is_not_implemented(exc):
+                self._refuse(subject)
+            else:
+                _log.warning(
+                    "TouptekCameraAdapter(%s): SDK call failed: %s", self._logical_name, exc
+                )
+            return None
 
     @property
     def device_id(self) -> str:
@@ -426,16 +561,19 @@ class TouptekCameraAdapter(CameraPort):
                     # Never leave the cooler running unattended once this adapter stops
                     # tracking the camera -- same "deactivate before disconnect" safety
                     # pattern as the mount's stop_tracking()-before-disconnect. Skipped
-                    # entirely on hardware with no TEC at all (_supports_cooling False).
-                    if self._supports_cooling:
-                        self._put_option("TOUPCAM_OPTION_TEC", 0)
+                    # only on hardware whose flags say it has no TEC at all.
+                    self._tec_off(final=True)
                     self._cam.Stop()
                 finally:
                     self._cam.Close()
         self._cam = None
         self._tc = None
         self._cooling_enabled = False
-        self._temperature_not_implemented = False  # re-probe on the next connect
+        # S6.5: the table is decided again on the next connect.
+        self._refused = set()
+        self._gain_range = self._exposure_range_ms = self._target_range_c = None
+        self._ranges_probed_at = None
+        self._tec_off_retried = False
         self._exposure_ever_set = False  # a reconnect should re-bootstrap from capture()'s hint
 
     def abort_capture(self) -> None:
@@ -515,44 +653,26 @@ class TouptekCameraAdapter(CameraPort):
         if self._cam is not None:  # pragma: no cover
             self._try(lambda: self._cam.put_ExpoAGain(self._gain))
 
-    # Real-field report (2026-09-29): every capability-gated SDK option
-    # below used to be called unconditionally whenever _cam is set, even on
-    # a camera model whose _model_flag already says it doesn't support that
-    # capability -- on G3M678M (no TEC), that meant get_descriptor() (called
-    # every delivered frame by CameraPanel._apply_auto_exposure() while Auto
-    # exposure/gain is on) spammed a "SDK call failed" warning continuously
-    # for an entire session. The capability is knowable up front from
-    # _model_flag (same bits get_descriptor()'s own CameraCapabilities()
-    # uses), so these properties let every option call be skipped entirely
-    # -- not just caught-and-logged-once like get_temperature()'s own
-    # earlier, narrower fix -- on hardware that was never going to support
-    # it in the first place.
-    @property
-    def _supports_cooling(self) -> bool:
-        return self._has_flag("TOUPCAM_FLAG_TEC") or self._has_flag("TOUPCAM_FLAG_TEC_ONOFF")
-
-    @property
-    def _supports_hcg(self) -> bool:
-        return self._has_flag("TOUPCAM_FLAG_CG") or self._has_flag("TOUPCAM_FLAG_CGHDR")
-
-    @property
-    def _supports_black_level(self) -> bool:
-        return self._has_flag("TOUPCAM_FLAG_BLACKLEVEL")
-
+    # Real-field report (2026-09-29): every capability-gated SDK option used to
+    # be called unconditionally whenever _cam is set -- on G3M678M (no TEC),
+    # get_descriptor() (read on every delivered frame) spammed a "SDK call
+    # failed" warning for a whole session (531a952). Every call site below asks
+    # the capability table (`_supports`, S6.5) and skips the SDK entirely for an
+    # unsupported feature.
     def get_black_level(self) -> int:
-        if self._cam is not None and self._supports_black_level:  # pragma: no cover
+        if self._cam is not None and self._supports("black_level"):  # pragma: no cover
             value = self._get_option("TOUPCAM_OPTION_BLACKLEVEL")
             if value is not None:
                 return int(value)
         return 0
 
     def set_black_level(self, level: int) -> None:
-        if self._cam is not None and self._supports_black_level:  # pragma: no cover
+        if self._cam is not None and self._supports("black_level"):  # pragma: no cover
             self._put_option("TOUPCAM_OPTION_BLACKLEVEL", max(0, int(level)))
             self._pixel_shift = -1  # offset changes 16-bit alignment; re-detect on next frame
 
     def get_conversion_gain(self) -> ConversionGain:
-        if self._cam is not None and self._supports_hcg:  # pragma: no cover
+        if self._cam is not None and self._supports("conversion_gain"):  # pragma: no cover
             value = self._get_option("TOUPCAM_OPTION_CG")
             if value is not None:
                 try:
@@ -562,33 +682,22 @@ class TouptekCameraAdapter(CameraPort):
         return ConversionGain.LCG
 
     def set_conversion_gain(self, mode: ConversionGain) -> None:
-        if self._cam is not None and self._supports_hcg:  # pragma: no cover
+        if self._cam is not None and self._supports("conversion_gain"):  # pragma: no cover
             self._put_option("TOUPCAM_OPTION_CG", int(mode))
 
     def get_temperature(self) -> float | None:
-        # Real-field report: GPCMOS02000KPA has no temperature sensor at
-        # all -- get_Temperature() raised E_NOTIMPL on every single poll
-        # tick forever (the panel polls this on a timer), spamming a
-        # WARNING every ~0.3-1s indefinitely. E_NOTIMPL is a model-level
-        # capability that cannot change mid-session, so it's probed once
-        # per connect and cached, not retried on every call.
-        if self._cam is None or self._temperature_not_implemented:
+        # Real-field report (4730c55): GPCMOS02000KPA has no temperature sensor
+        # -- get_Temperature() raised E_NOTIMPL on every poll tick (the panel
+        # polls on a timer), a WARNING every ~0.3-1 s. The table decides it once
+        # per connect (`_probe_capabilities`); a non-E_NOTIMPL failure is
+        # transient: warned, asked again on the next poll.
+        if self._cam is None or not self._supports("temperature"):
             return None
-        try:
-            value = self._cam.get_Temperature()  # pragma: no cover
-        except Exception as exc:  # noqa: BLE001 -- SDK raises HRESULTException, caught broadly like _try()
-            hr = getattr(exc, "hr", None)
-            if isinstance(hr, int) and (hr & 0xFFFFFFFF) == _SDK_FALLBACKS["E_NOTIMPL"]:
-                self._temperature_not_implemented = True
-            else:
-                _log.warning(
-                    "TouptekCameraAdapter(%s): SDK call failed: %s", self._logical_name, exc
-                )
-            return None
-        return round(float(value) / 10.0, 1)  # pragma: no cover
+        value = self._sdk_call("temperature", lambda: self._cam.get_Temperature())
+        return None if value is None else round(float(value) / 10.0, 1)
 
     def get_cooling_enabled(self) -> bool:
-        if self._cam is not None and self._supports_cooling:  # pragma: no cover
+        if self._cam is not None and self._supports("cooling"):  # pragma: no cover
             value = self._get_option("TOUPCAM_OPTION_TEC")
             if value is not None:
                 return bool(value)
@@ -596,11 +705,46 @@ class TouptekCameraAdapter(CameraPort):
 
     def set_cooling_enabled(self, enabled: bool) -> None:
         self._cooling_enabled = bool(enabled)
-        if self._cam is not None and self._supports_cooling:  # pragma: no cover
-            self._put_option("TOUPCAM_OPTION_TEC", 1 if enabled else 0)
+        if self._cam is None:
+            return
+        if not enabled:
+            self._tec_off(final=False)  # safety: see _tec_off
+        elif self._supports("cooling"):  # pragma: no cover
+            self._put_option("TOUPCAM_OPTION_TEC", 1)
+
+    def _has_cooler(self) -> bool:
+        """The model's flags say it has a TEC -- the flags alone, never a refusal."""
+        return any(
+            self._model_flag & _sdk_constant(self._tc, flag)
+            for flag in _FEATURE_FLAGS["cooling"] or ()
+        )
+
+    def _tec_off(self, *, final: bool) -> None:
+        """Safety write TEC = 0 (review C1). Gated by the TEC flags only: a refusal of
+        any OTHER option (e.g. the target) never suppresses it. Only an earlier E_NOTIMPL
+        for the on/off option itself limits it -- then it is still attempted once more
+        for "cooling off" per connection, and always at disconnect (`final`), and
+        logged."""
+        if self._cam is None or not self._has_cooler():
+            return
+        name = "TOUPCAM_OPTION_TEC"
+        if name in self._refused:
+            if not final and self._tec_off_retried:
+                return
+            self._tec_off_retried = self._tec_off_retried or not final
+            _log.info(
+                "TouptekCameraAdapter(%s): TEC off attempted again despite an earlier "
+                "E_NOTIMPL for the cooler on/off (safety, %s)",
+                self._logical_name,
+                "disconnect" if final else "cooling off",
+            )
+        self._sdk_call(name, lambda: self._cam.put_Option(_sdk_constant(self._tc, name), 0))
+
+    def _target_supported(self) -> bool:
+        return self._supports("cooling") and self._supports("cooling_target")
 
     def get_target_temperature(self) -> float | None:
-        if self._cam is not None and self._supports_cooling:  # pragma: no cover
+        if self._cam is not None and self._target_supported():  # pragma: no cover
             value = self._get_option("TOUPCAM_OPTION_TECTARGET")
             if value is not None:
                 return round(int(value) / 10.0, 1)
@@ -608,30 +752,30 @@ class TouptekCameraAdapter(CameraPort):
 
     def set_target_temperature(self, celsius: float) -> None:
         self._target_temperature_c = float(celsius)
-        if self._cam is not None and self._supports_cooling:  # pragma: no cover
+        if self._cam is not None and self._target_supported():  # pragma: no cover
             self._put_option("TOUPCAM_OPTION_TECTARGET", int(round(celsius * 10)))
 
     def _query_target_temp_range(self) -> tuple[float, float] | None:  # pragma: no cover
-        if self._cam is None or not self._supports_cooling:
+        """Asked once per connect (`_probe_capabilities`)."""
+        if self._cam is None or not (
+            self._supports("cooling") and self._supports("target_temp_range")
+        ):
             return None
-        rng = self._try(lambda: self._cam.get_TecTargetRange())
+        rng = self._sdk_call("target_temp_range", lambda: self._cam.get_TecTargetRange())
         if not rng:
             return None
         return round(rng[0] / 10.0, 1), round(rng[1] / 10.0, 1)
 
     def get_descriptor(self) -> CameraDescriptor:
-        min_gain = max_gain = 100
-        if self._cam is not None:  # pragma: no cover
-            rng = self._try(lambda: self._cam.get_ExpoAGainRange())
-            if rng:
-                min_gain, max_gain = int(rng[0]), int(rng[1])
-        min_exp_ms = max_exp_ms = 2000.0
-        if self._cam is not None:  # pragma: no cover
-            rng = self._try(lambda: self._cam.get_ExpTimeRange())
-            if rng:
-                min_exp_ms = float(rng[0]) / 1000.0
-                max_exp_ms = float(rng[1]) / 1000.0
-        target_range = self._query_target_temp_range()
+        """Built from the capability table; makes no SDK call (S6.5: read on
+        every frame, so the ranges are the ones asked once at connect, plus the
+        bounded re-ask of a transiently failed one, `_reprobe_failed_ranges`)."""
+        self._reprobe_failed_ranges()
+        min_gain, max_gain = self._gain_range if self._gain_range is not None else (100, 100)
+        min_exp_ms, max_exp_ms = (
+            self._exposure_range_ms if self._exposure_range_ms is not None else (2000.0, 2000.0)
+        )
+        target_range = self._target_range_c if self._supports("cooling") else None
         min_target_temp_c = target_range[0] if target_range is not None else None
         max_target_temp_c = target_range[1] if target_range is not None else None
         capabilities = CameraCapabilities(
@@ -639,11 +783,11 @@ class TouptekCameraAdapter(CameraPort):
             max_gain=max_gain,
             min_exposure_ms=min_exp_ms,
             max_exposure_ms=max_exp_ms,
-            supports_cooling=self._supports_cooling,
-            supports_hcg=self._supports_hcg,
-            supports_lcg=True,
-            supports_hdr=self._has_flag("TOUPCAM_FLAG_CGHDR"),
-            supports_black_level=self._supports_black_level,
+            supports_cooling=self._supports("cooling"),
+            supports_hcg=self._supports("conversion_gain"),
+            supports_lcg=True,  # LCG is the SDK's default conversion gain on every model
+            supports_hdr=self._supports("hdr"),
+            supports_black_level=self._supports("black_level"),
             bit_depth=(
                 self._effective_bit_depth(max(0, self._pixel_shift)) if self._bit_depth > 8 else 8
             ),
@@ -652,6 +796,8 @@ class TouptekCameraAdapter(CameraPort):
             sensor_height_px=self._height,
             min_target_temp_c=min_target_temp_c,
             max_target_temp_c=max_target_temp_c,
+            supports_temperature=self._supports("temperature"),
+            supports_raw16=self._supports("raw16"),
         )
         return CameraDescriptor(
             serial_number=self._serial_number,
@@ -741,21 +887,28 @@ class TouptekCameraAdapter(CameraPort):
             return self._index, devices[self._index]
         return self._index, None
 
+    def _option_allowed(self, name: str) -> bool:
+        """Not refused on this connection, and its feature (if any) supported."""
+        feature = _OPTION_FEATURE.get(name)
+        return name not in self._refused and (feature is None or self._supports(feature))
+
     def _get_option(self, name: str) -> Any:  # noqa: ANN401  # pragma: no cover
-        return self._try(lambda: self._cam.get_Option(_sdk_constant(self._tc, name)))
+        if not self._option_allowed(name):
+            return None
+        return self._sdk_call(name, lambda: self._cam.get_Option(_sdk_constant(self._tc, name)))
 
     def _put_option(self, name: str, value: int) -> None:  # pragma: no cover
-        self._try(lambda: self._cam.put_Option(_sdk_constant(self._tc, name), value))
+        if self._option_allowed(name):
+            self._sdk_call(name, lambda: self._cam.put_Option(_sdk_constant(self._tc, name), value))
 
     def _basic_configure(self) -> None:  # pragma: no cover
         self._try(lambda: self._cam.put_AutoExpoEnable(0))
         self._put_option("TOUPCAM_OPTION_AUTOEXPO_TRIGGER", 0)
         # Never trust a pre-existing TEC state (e.g. left on by a crashed prior
         # session) -- every connect starts with cooling actively forced off.
-        # Skipped entirely on hardware with no TEC at all (_supports_cooling
-        # False) -- same fix as disconnect()'s TEC-off, above.
-        if self._supports_cooling:
-            self._put_option("TOUPCAM_OPTION_TEC", 0)
+        # Skipped entirely on hardware with no TEC at all (the table says no
+        # cooling) -- same fix as disconnect()'s TEC-off, above.
+        self._tec_off(final=False)
         self._cooling_enabled = False
         self._put_option("TOUPCAM_OPTION_RAW", 1)
         self._put_option("TOUPCAM_OPTION_BITDEPTH", 1 if self._bit_depth > 8 else 0)

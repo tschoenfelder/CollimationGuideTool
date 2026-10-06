@@ -23,6 +23,14 @@ _FAKE_MOUNT_CAPABILITIES = MountCapabilities(
 )
 
 
+_FAKE_ANGULAR_MOUNT_CAPABILITIES = MountCapabilities(
+    supports_pulse_guiding=True,
+    min_pulse_ms=1,
+    max_pulse_ms=9999,
+    supports_angular_moves=True,
+)
+
+
 class FakeMountAdapter:
     def __init__(self, *, fail_connect: bool = False, reject_first_n_pulses: int = 0) -> None:
         self._fail_connect = fail_connect
@@ -137,6 +145,10 @@ class FakeAngularMountAdapter(FakeMountAdapter):
                 self._sign(direction) * self._true(axis, direction) * duration_ms / 1000.0
             )
         return result
+
+    def capabilities(self) -> MountCapabilities:
+        """S6.5: declares the angular moves it implements (no floor, no stated maximum)."""
+        return _FAKE_ANGULAR_MOUNT_CAPABILITIES
 
     def installed_rate(self, axis: MountAxis, direction: AxisDirection) -> float | None:
         return self._installed.get((axis, direction))

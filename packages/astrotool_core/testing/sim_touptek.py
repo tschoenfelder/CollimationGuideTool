@@ -33,6 +33,16 @@ adapter's real `connect()` -> `_open_device()` -> `_basic_configure()` ->
   and fires the SDK event callback; `exposures` records each exposure's
   start/end on that clock;
 - trigger failure / disconnect / error events;
+- **query bookkeeping and fault injection** (S6.5): every capability/range
+  query the adapter can make (`get_ExpoAGainRange`, `get_ExpTimeRange`,
+  `get_TecTargetRange`, `get_Temperature`, `get_RawFormat`, `get_Option`,
+  `put_Option`) is recorded in `SimulatedToupcam.queries`, so a test can prove
+  a value is asked for once per connect and not per frame; and
+  `SimulatedToupcamSdk.fail_calls` (call name -> signed HRESULT, copied to
+  every handle opened afterwards, also settable per handle) makes a named call
+  fail -- E_NOTIMPL on a call the model's flags claim (a flag/SDK disagreement)
+  or E_FAIL on a range query -- to reproduce the "unsupported capability log
+  spam" defect class (531a952, 4730c55) for calls the matrix alone cannot;
 - the documented **TOUPCAM_OPTION_NOFRAME_TIMEOUT range** (S6.5b): "0 =>
   disable, positive value (>= NOFRAME_TIMEOUT_MIN) => timeout milliseconds"
   with `TOUPCAM_NOFRAME_TIMEOUT_MIN = 500`, as documented by the vendored
@@ -113,6 +123,7 @@ FLAG_RAW16 = SDK_CONSTANTS["TOUPCAM_FLAG_RAW16"]
 FLAG_TEC_ONOFF = SDK_CONSTANTS["TOUPCAM_FLAG_TEC_ONOFF"]
 FLAG_BLACKLEVEL = SDK_CONSTANTS["TOUPCAM_FLAG_BLACKLEVEL"]
 FLAG_CG = SDK_CONSTANTS["TOUPCAM_FLAG_CG"]
+FLAG_CGHDR = SDK_CONSTANTS["TOUPCAM_FLAG_CGHDR"]
 
 OPTION_TEC = SDK_CONSTANTS["TOUPCAM_OPTION_TEC"]
 OPTION_TECTARGET = SDK_CONSTANTS["TOUPCAM_OPTION_TECTARGET"]
@@ -129,6 +140,7 @@ EVENT_DISCONNECTED = SDK_CONSTANTS["TOUPCAM_EVENT_DISCONNECTED"]
 E_NOTIMPL = -2147467263  # 0x80004001 as the SDK's signed HRESULT
 E_ACCESSDENIED = -2147024891  # 0x80070005
 E_INVALIDARG = SDK_CONSTANTS["E_INVALIDARG"] - (1 << 32)  # signed, as the SDK raises it
+E_FAIL = -2147467259  # 0x80004005 "Generic failure" (toupcam.py:608)
 
 
 def _fourcc(code: str) -> int:
@@ -261,6 +273,10 @@ class SimulatedToupcam:
     notimpl_calls: list[str] = field(default_factory=list)
     #: (option, value) puts refused with E_INVALIDARG (documented range only).
     invalid_option_puts: list[tuple[int, int]] = field(default_factory=list)
+    #: Every capability/range query and option call, in order (S6.5).
+    queries: list[str] = field(default_factory=list)
+    #: Call name (as recorded in `queries`) -> signed HRESULT it raises (S6.5).
+    fail_calls: dict[str, int] = field(default_factory=dict)
     calls: list[str] = field(default_factory=list)
     exposures: list[ExposureRecord] = field(default_factory=list)
     closed: bool = False
@@ -276,11 +292,23 @@ class SimulatedToupcam:
         self.notimpl_calls.append(name)
         return HRESULTException(E_NOTIMPL)
 
+    def _query(self, name: str) -> None:
+        """Record one query; raise the injected HRESULT for it, if any."""
+        self.queries.append(name)
+        hr = self.fail_calls.get(name)
+        if hr is None:
+            return
+        if hr == E_NOTIMPL:
+            raise self._notimpl(name)
+        raise HRESULTException(hr)
+
     def _supported_option(self, option: int) -> bool:
         if option in (OPTION_TEC, OPTION_TECTARGET):
             return self.model.has_tec
         if option == OPTION_CG:
-            return bool(self.model.flag & FLAG_CG)
+            # TOUPCAM_FLAG_CGHDR is "Conversion Gain: HCG, LCG, HDR" (toupcam.py:55),
+            # so it implies the conversion-gain option as much as TOUPCAM_FLAG_CG.
+            return bool(self.model.flag & (FLAG_CG | FLAG_CGHDR))
         if option == OPTION_BLACKLEVEL:
             return bool(self.model.flag & FLAG_BLACKLEVEL)
         return True
@@ -308,6 +336,7 @@ class SimulatedToupcam:
 
     # -- options -----------------------------------------------------------------
     def put_Option(self, option: int, value: int) -> None:
+        self._query(f"put_Option(0x{option:02X})")
         if not self._supported_option(option):
             raise self._notimpl(f"put_Option(0x{option:02X})")
         if option == OPTION_NOFRAME_TIMEOUT and value != 0 and value < NOFRAME_TIMEOUT_MIN_MS:
@@ -319,6 +348,7 @@ class SimulatedToupcam:
         self.options[option] = value
 
     def get_Option(self, option: int) -> int:
+        self._query(f"get_Option(0x{option:02X})")
         if not self._supported_option(option):
             raise self._notimpl(f"get_Option(0x{option:02X})")
         return self.options.get(option, 0)
@@ -335,6 +365,7 @@ class SimulatedToupcam:
         self.exposure_us = min(max(int(us), low), high)
 
     def get_ExpTimeRange(self) -> tuple[int, int, int]:
+        self._query("get_ExpTimeRange")
         return self.model.exposure_range_us
 
     def get_ExpoAGain(self) -> int:
@@ -345,20 +376,24 @@ class SimulatedToupcam:
         self.gain = min(max(int(gain), low), high)
 
     def get_ExpoAGainRange(self) -> tuple[int, int, int]:
+        self._query("get_ExpoAGainRange")
         return self.model.gain_range
 
     # -- capability-gated sensor calls -------------------------------------------------
     def get_Temperature(self) -> int:
+        self._query("get_Temperature")
         if not self.model.has_temperature_sensor:
             raise self._notimpl("get_Temperature")
         return self.temperature_c10
 
     def get_TecTargetRange(self) -> tuple[int, int]:
+        self._query("get_TecTargetRange")
         if not self.model.has_tec:
             raise self._notimpl("get_TecTargetRange")
         return self.model.tec_target_range
 
     def get_RawFormat(self) -> tuple[int, int]:
+        self._query("get_RawFormat")
         return _fourcc(self.model.raw_fourcc), self.model.adc_bits
 
     # -- capture -------------------------------------------------------------------------
@@ -436,6 +471,8 @@ class SimulatedToupcamSdk:
         self.handles: list[SimulatedToupcam] = []
         self.scenes: dict[str, Scene] = {}
         self.enum_calls = 0
+        #: Copied to every handle opened afterwards (see `SimulatedToupcam.fail_calls`).
+        self.fail_calls: dict[str, int] = {}
         self.Toupcam = _ToupcamClass(self)
 
     def add_camera(
@@ -461,7 +498,9 @@ class SimulatedToupcamSdk:
     def open(self, device_id: str) -> SimulatedToupcam | None:
         for device in self.devices:
             if device.id == device_id:
-                handle = SimulatedToupcam(device, self.clock, self.scenes[device_id])
+                handle = SimulatedToupcam(
+                    device, self.clock, self.scenes[device_id], fail_calls=dict(self.fail_calls)
+                )
                 self.handles.append(handle)
                 return handle
         return None

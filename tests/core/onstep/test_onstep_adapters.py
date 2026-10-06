@@ -22,7 +22,7 @@ from typing import Any
 
 import pytest
 from astrotool_core.mount.park_port import MountParkStatus
-from astrotool_core.mount.port import AxisDirection, MountAxis
+from astrotool_core.mount.port import AxisDirection, MountAxis, MountStatus
 from astrotool_core.onstep import (
     OnStepConnection,
     OnStepFocuserAdapter,
@@ -1098,3 +1098,35 @@ class TestStopWorkerSafety:
             assert len(workers) == 1, workers
         finally:
             self._run_until_done(clock, *workers)
+
+
+class TestHeldOverMountStatusIsMarked:
+    """S6.5 (proofs/49-stop-during-angular-goto.toml): a `MountStatus` served from the last
+    reading while another operation holds the connection is marked `fresh=False` -- display
+    only, no decision can mistake it for a new reading (like `MountParkStatus.fresh`)."""
+
+    def _busy_reads(self, *, read_first: bool) -> MountStatus:
+        clock = FakeClock()
+        connection, _made = make_simulated_onstep_connection(
+            OnStepScenario(parked=False), clock=clock
+        )
+        lock = install_observable_operation_lock(connection)
+        mount = OnStepMountPulseAdapter(connection)
+        mount.connect()
+        if read_first:
+            assert mount.status().fresh is True  # a real read
+        reads: list[MountStatus] = []
+        with lock:  # another operation (a GOTO) holds the connection
+            reader = threading.Thread(target=lambda: reads.append(mount.status()), daemon=True)
+            reader.start()
+            reader.join(_JOIN_S)
+        (status,) = reads
+        return status
+
+    def test_a_held_over_reading_is_not_fresh(self) -> None:
+        status = self._busy_reads(read_first=True)
+        assert status.connected and status.fresh is False
+
+    def test_nothing_read_yet_is_not_fresh(self) -> None:
+        status = self._busy_reads(read_first=False)
+        assert not status.connected and status.fresh is False

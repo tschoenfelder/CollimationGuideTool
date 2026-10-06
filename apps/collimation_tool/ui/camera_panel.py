@@ -89,7 +89,7 @@ from astrotool_core.camera import (
 from astrotool_core.camera import (
     list_devices as _list_touptek_devices,
 )
-from astrotool_core.config import CameraPanelSettings
+from astrotool_core.config import CameraPanelSettings, camera_settings
 from astrotool_core.frames import demosaic, rgb_to_luma
 from astrotool_core.frames.frame import Frame
 from PySide6.QtCore import QBuffer, QIODevice, QTimer, Signal
@@ -286,7 +286,7 @@ class CameraPanel(QWidget):
         self._target_temp_spin.setDecimals(1)
         self._target_temp_spin.setSingleStep(0.1)
         self._target_temp_spin.setRange(-40.0, 40.0)
-        self._target_temp_spin.setValue(-10.0)
+        self._target_temp_spin.setValue(camera_settings.DEFAULT_TARGET_TEMPERATURE_C)
         self._target_temp_spin.valueChanged.connect(self._on_target_temperature_changed)
         self._temperature_label = QLabel("Temp: --")
         #: Only runs while a camera is connected (started/stopped alongside
