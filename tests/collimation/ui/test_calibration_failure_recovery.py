@@ -138,9 +138,14 @@ def _panel(
     settings: MountAlignmentSettings = _SETTINGS,
 ) -> MountTestMovePanel:
     rig.mount.connect()
+    park = park if park is not None else FakeMountPark(start_parked=True)
+    if enforcer is None:  # #48: terrestrial measurement comes from the global mode
+        enforcer = TrackingEnforcer(
+            park, OperatingMode.TERRESTRIAL, settle_timeout_s=0, clock=FakeClock()
+        )
     panel = MountTestMovePanel(
         rig.mount,
-        mount_park=park if park is not None else FakeMountPark(start_parked=True),
+        mount_park=park,
         get_left_frame=rig.latest("left"),
         get_right_frame=rig.latest("right"),
         wait_for_left_frame=rig.waiter("left"),
@@ -151,7 +156,6 @@ def _panel(
         threaded_captures=True,
         runner=MountTestMoveRunner(clock=FakeClock()),
     )
-    panel._terrestrial_button.click()
     panel._connect_button.setChecked(True)
     panel._timer.setInterval(20)  # the real poll timer, just faster than production's 250 ms
     return panel

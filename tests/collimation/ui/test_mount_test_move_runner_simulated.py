@@ -26,6 +26,7 @@ from astrotool_core.acquisition.stable_frame_acquisition import (
 )
 from astrotool_core.config import MountAlignmentSettings
 from astrotool_core.mount.movement_sizing import CameraGeometry
+from astrotool_core.mount.operating_mode import OperatingMode, TrackingEnforcer
 from astrotool_core.onstep import (
     OnStepMountParkAdapter,
     OnStepMountPulseAdapter,
@@ -108,6 +109,9 @@ class TestMountAlignWorkflow:
         panel = MountTestMovePanel(
             mount,
             mount_park=park,
+            tracking_enforcer=TrackingEnforcer(
+                park, OperatingMode.TERRESTRIAL, settle_timeout_s=0, clock=FakeClock()
+            ),  # #48: terrestrial measurement comes from the global mode's owner
             get_left_frame=lambda: frame("left"),
             get_right_frame=lambda: frame("right"),
             wait_for_left_frame=waiter("left"),
@@ -116,7 +120,6 @@ class TestMountAlignWorkflow:
             camera_geometry=lambda: list(cameras.values()),
             runner=MountTestMoveRunner(clock=runner_clock),
         )
-        panel._terrestrial_button.click()
         panel._connect_button.setChecked(True)
         panel._run_calibration_button.click()
 

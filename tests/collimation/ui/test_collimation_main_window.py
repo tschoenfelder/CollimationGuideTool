@@ -29,6 +29,7 @@ from astrotool_core.focus.fake_focuser import FakeFocuser
 from astrotool_core.focus.port import FocuserStatus
 from astrotool_core.frames.frame import Frame
 from astrotool_core.mount.axis_calibration import AxisResponse, CalibrationMatrix
+from astrotool_core.mount.operating_mode import OperatingMode, TrackingEnforcer
 from astrotool_core.mount.park_port import MountParkPort, MountParkStatus
 from astrotool_core.mount.port import AxisDirection, CommandResult, MountAxis, MountPort
 from astrotool_core.registration.astap_adapter import (
@@ -42,6 +43,7 @@ from astrotool_core.testing.fake_mount import FakeMountAdapter
 from astrotool_core.testing.fake_mount_park import FakeMountPark
 from astrotool_core.testing.fake_touptek import FakeTouptekCamera
 from astrotool_core.testing.frame_factory import donut_image, single_star_image
+from astrotool_core.timing import FakeClock
 from collimation_tool.ui.camera_panel import CameraPanel
 from collimation_tool.ui.focuser_panel import FocuserPanel
 from collimation_tool.ui.main_window import MainWindow
@@ -2173,7 +2175,8 @@ class TestStarFieldMode:
             window._left_panel._start_button.setChecked(False)
             window._right_panel._start_button.setChecked(False)
 
-        window._star_field_mode_button.setChecked(True)
+        window._operating_astronomical_button.click()  # #48: ASTAP star-field follows the mode
+        assert window._star_field_mode_button.isChecked()
         window._on_calibrate_fov()
 
         deadline = time.monotonic() + 15.0
@@ -2211,7 +2214,8 @@ class TestStarFieldMode:
             window._left_panel._start_button.setChecked(False)
             window._right_panel._start_button.setChecked(False)
 
-        window._star_field_mode_button.setChecked(True)
+        window._operating_astronomical_button.click()  # #48: ASTAP star-field follows the mode
+        assert window._star_field_mode_button.isChecked()
         window._on_calibrate_fov()
 
         deadline = time.monotonic() + 15.0
@@ -3679,7 +3683,7 @@ class TestMountTestMovePanel:
         window._mount_panel._connect_button.setChecked(True)
         window._test_move_panel._connect_button.setChecked(True)
         panel = window._test_move_panel
-        panel._terrestrial_button.click()
+        assert panel._target_mode() == "terrestrial"  # #48: the global default mode
 
         # Real (non-flat) content -- an all-zero frame has zero variance
         # and would abort the whole sequence right at AXIS1's own
@@ -4095,6 +4099,9 @@ class TestMountTestMovePanel:
                 ),
             )
 
+        # #48/M04: the star (FWHM) metric comes from the global Astronomical mode, not a
+        # local Star default that contradicted the app's default Terrestrial mode.
+        window._operating_astronomical_button.click()
         window._focuser_panel._connect_button.setChecked(True)
         window._focuser_panel._get_frame = lambda: None
         window._focuser_panel._wait_for_frame = always_fresh_star_frame
@@ -4217,26 +4224,54 @@ class TestMountTestMovePanel:
         window.close()
         assert not window._test_move_panel._connected
 
-    def test_target_follows_the_operating_mode_which_defaults_to_terrestrial(
+    def test_measurement_follows_the_operating_mode_which_defaults_to_terrestrial(
         self, qapp: object
     ) -> None:
-        """Issue #44: the app-wide operating mode (default Terrestrial, tracking
-        required OFF) owns the Target toggle."""
+        """Issue #44/#48: the app-wide operating mode (default Terrestrial, tracking
+        required OFF) alone selects Mount Align's measurement -- no local toggle."""
         window = self._window(mount_park=FakeMountPark(), pulse_mount=FakeMountAdapter())
         panel = window._test_move_panel
-        assert panel._terrestrial_button.isChecked()
-        assert not panel._star_button.isChecked()
         assert panel._target_mode() == "terrestrial"
         window._operating_astronomical_button.click()
-        assert panel._star_button.isChecked()
         assert panel._target_mode() == "star"
 
-    def test_selecting_terrestrial_switches_the_mode(self, qapp: object) -> None:
+    def test_selecting_terrestrial_globally_switches_mount_align_back(self, qapp: object) -> None:
         window = self._window(mount_park=FakeMountPark(), pulse_mount=FakeMountAdapter())
         panel = window._test_move_panel
-        panel._terrestrial_button.click()
+        window._operating_astronomical_button.click()
+        window._operating_terrestrial_button.click()
         assert panel._target_mode() == "terrestrial"
-        assert not panel._star_button.isChecked()
+
+    def test_a_global_mode_change_during_calibration_stops_the_run(self, qapp: object) -> None:
+        """#48: no stale mode -- a calibration started under Terrestrial (whole-frame
+        correlation, tracking off) must not carry on with star measurements and tracking on
+        after the user switches to Astronomical; it is stopped and says why."""
+        pulse_mount = FakeMountAdapter()
+        window = self._window(mount_park=FakeMountPark(start_parked=True), pulse_mount=pulse_mount)
+        self._connect_and_stream_cameras(window)
+        window._mount_panel._connect_button.setChecked(True)
+        window._test_move_panel._connect_button.setChecked(True)
+        panel = window._test_move_panel
+        self._make_scene_move(panel)
+        panel._run_calibration_button.click()
+        deadline = time.monotonic() + 10.0  # real-time safety bound; fake mount moves at once
+        while not any(panel._axis_net_pulse_ms.values()):  # first move done: off its start
+            assert time.monotonic() < deadline, "the first calibration move never completed"
+            time.sleep(0.01)
+            panel._poll()
+        assert panel._calibration_queue or panel._runner.is_busy  # the run is under way
+
+        window._operating_astronomical_button.click()
+
+        assert not panel._calibration_queue and panel._pending is None
+        assert "operating mode changed" in panel._result_label.text()
+        assert "mount may be off its start position" in panel._result_label.text()  # Stop's note
+        assert panel._last_error == "operating mode changed during the run"
+        while panel._runner.is_busy:  # let the already-sent move finish (fake mount: instant)
+            time.sleep(0.01)
+            panel._poll()
+        assert not panel._calibration  # nothing was stored from the mixed run
+        window.close()
 
     def test_star_mode_calibration_aborts_immediately_on_a_textureless_camera(
         self, qapp: object
@@ -4281,7 +4316,7 @@ class TestMountTestMovePanel:
         window._mount_panel._connect_button.setChecked(True)
         window._test_move_panel._connect_button.setChecked(True)
         panel = window._test_move_panel
-        panel._terrestrial_button.click()
+        assert panel._target_mode() == "terrestrial"  # #48: the global default mode
 
         # Same reasoning as the star-mode calibration test above: a real,
         # non-degenerate matrix needs AXIS1's and AXIS2's own measured
@@ -4331,7 +4366,7 @@ class TestMountTestMovePanel:
         window._mount_panel._connect_button.setChecked(True)
         window._test_move_panel._connect_button.setChecked(True)
         panel = window._test_move_panel
-        panel._terrestrial_button.click()
+        assert panel._target_mode() == "terrestrial"  # #48: the global default mode
 
         rng = np.random.default_rng(13)
         base = rng.normal(loc=500.0, scale=80.0, size=(120, 120))
@@ -4399,7 +4434,7 @@ class TestMountTestMovePanel:
         window._mount_panel._connect_button.setChecked(True)
         window._test_move_panel._connect_button.setChecked(True)
         panel = window._test_move_panel
-        panel._terrestrial_button.click()
+        assert panel._target_mode() == "terrestrial"  # #48: the global default mode
 
         rng = np.random.default_rng(14)
         base = rng.normal(loc=500.0, scale=80.0, size=(120, 120))
@@ -4464,7 +4499,7 @@ class TestMountTestMovePanel:
         window._mount_panel._connect_button.setChecked(True)
         window._test_move_panel._connect_button.setChecked(True)
         panel = window._test_move_panel
-        panel._terrestrial_button.click()
+        assert panel._target_mode() == "terrestrial"  # #48: the global default mode
         # Main's own stability window can never resolve (flat content,
         # every sample) -- 2 is the smallest window check_image_stability
         # can ever accept (it needs at least 2 frames to compare a
@@ -4551,7 +4586,8 @@ class TestMountTestMovePanel:
         pulse_mount = FakeMountAdapter()
         panel = MountTestMovePanel(
             pulse_mount,
-            mount_park=FakeMountPark(start_parked=True),
+            mount_park=(park := FakeMountPark(start_parked=True)),
+            tracking_enforcer=_terrestrial_owner(park),  # #48: no local toggle
             get_left_frame=lambda: np.full((120, 120), 500.0, dtype=np.float32),
             get_right_frame=lambda: np.full((120, 120), 500.0, dtype=np.float32),
             # Neither camera's own stability window can ever resolve
@@ -4563,7 +4599,6 @@ class TestMountTestMovePanel:
             ),
         )
         panel._connect_button.setChecked(True)
-        panel._terrestrial_button.click()
 
         self._run_calibration_to_completion(panel, timeout_s=15.0)
 
@@ -4578,11 +4613,19 @@ class TestMountTestMovePanel:
         }
         panel.stop()
 
-    def test_diagnostic_context_reports_the_current_target_mode(self, qapp: object) -> None:
+    def test_diagnostic_context_reports_the_operating_and_measurement_mode(
+        self, qapp: object
+    ) -> None:
+        """#48: Mount Align reports the global mode and the measurement it selects; the
+        collimation target type is reported separately (top-level `target_mode`)."""
         window = self._window(mount_park=FakeMountPark(), pulse_mount=FakeMountAdapter())
-        window._test_move_panel._terrestrial_button.click()
         context = window._diagnostic_context()
-        assert context["mount_test_move"]["target_mode"] == "terrestrial"
+        assert context["mount_test_move"]["operating_mode"] == "terrestrial"
+        assert context["mount_test_move"]["measurement_mode"] == "terrestrial"
+        window._operating_astronomical_button.click()
+        context = window._diagnostic_context()
+        assert context["mount_test_move"]["operating_mode"] == "astronomical"
+        assert context["mount_test_move"]["measurement_mode"] == "star"
 
     def test_nudge_button_solves_and_submits_the_predicted_pulse(self, qapp: object) -> None:
         # A hand-crafted, axis-aligned calibration (rather than one built
@@ -4706,14 +4749,14 @@ class TestMountTestMovePanel:
         pulse_mount.connect()  # FakeMountAdapter rejects pulses until connected
         panel = MountTestMovePanel(
             pulse_mount,
-            mount_park=FakeMountPark(start_parked=True),
+            mount_park=(park := FakeMountPark(start_parked=True)),
+            tracking_enforcer=_terrestrial_owner(park),  # #48: no local toggle
             get_left_frame=displayed,
             get_right_frame=displayed,
             wait_for_left_frame=wait,
             wait_for_right_frame=wait,
         )
         panel._connected = True  # _poll() itself is a no-op otherwise
-        panel._terrestrial_button.click()
         completed = time.monotonic()
         panel._last_pulse_completed_at = completed
 
@@ -4746,7 +4789,8 @@ class TestMountTestMovePanel:
         # real very-different sensor resolutions in this app.
         panel = MountTestMovePanel(
             pulse_mount,
-            mount_park=FakeMountPark(start_parked=True),
+            mount_park=(park := FakeMountPark(start_parked=True)),
+            tracking_enforcer=_terrestrial_owner(park),  # #48: no local toggle
             get_left_frame=lambda: _textured_frame((200, 400)),
             get_right_frame=lambda: _textured_frame((50, 100)),
         )
@@ -4756,7 +4800,6 @@ class TestMountTestMovePanel:
         # capture accepts any frame (only its own "after" correlation
         # can reject one), and this test only cares about the pulse
         # durations submitted, not the resulting measurement.
-        panel._terrestrial_button.click()
 
         def _response(axis: MountAxis, dx_px: float, dy_px: float) -> AxisResponse:
             # duration_ms=1 -> rate is exactly dx_px/dy_px per ms, so the
@@ -4901,7 +4944,7 @@ class TestMountTestMovePanel:
         window._mount_panel._connect_button.setChecked(True)
         window._test_move_panel._connect_button.setChecked(True)
         panel = window._test_move_panel
-        panel._terrestrial_button.click()
+        assert panel._target_mode() == "terrestrial"  # #48: the global default mode
         # Main's own stability window can never resolve (flat content) --
         # a short timeout keeps this test fast.
         panel._settings = MountAlignmentSettings(
@@ -5076,6 +5119,12 @@ class TestMountTestMovePanel:
         window.close()
 
 
+def _terrestrial_owner(park: FakeMountPark) -> TrackingEnforcer:
+    """#48: a standalone Mount Align panel measures terrestrially when the global mode's
+    single owner says Terrestrial -- there is no local toggle to click any more."""
+    return TrackingEnforcer(park, OperatingMode.TERRESTRIAL, settle_timeout_s=0, clock=FakeClock())
+
+
 class _StubbornMountPark(FakeMountPark):
     """A FakeMountPark whose start_tracking() is accepted but ignored --
     simulates a real mount refusing a tracking-mode correction (e.g.
@@ -5091,6 +5140,7 @@ def _static_frame_panel(
     *,
     pulse_mount: FakeMountAdapter | None = None,
     settings: MountAlignmentSettings | None = None,
+    terrestrial: bool = False,
 ) -> MountTestMovePanel:
     # A real detectable star, not a blank frame -- star mode's own
     # _capture() runs detect_sources() on it, which a blank/flat frame
@@ -5100,6 +5150,7 @@ def _static_frame_panel(
     return MountTestMovePanel(
         pulse_mount or FakeMountAdapter(),
         mount_park=mount_park,
+        tracking_enforcer=_terrestrial_owner(mount_park) if terrestrial else None,
         get_left_frame=lambda: star.copy(),
         get_right_frame=lambda: star.copy(),
         # Issue #30: every capture here now goes through the real
@@ -5133,8 +5184,7 @@ class TestTrackingMode:
     def test_terrestrial_mode_repairs_tracking_on_before_capture(self, qapp: object) -> None:
         mount_park = FakeMountPark(start_parked=False)
         mount_park.start_tracking()  # tracking left on from a previous star session
-        panel = _static_frame_panel(mount_park)
-        panel._terrestrial_button.click()
+        panel = _static_frame_panel(mount_park, terrestrial=True)  # #48: global mode owner
 
         result = panel._capture_both("terrestrial")
 
@@ -5925,16 +5975,19 @@ class TestArtificialStarAutofocusWiring:
     def test_selecting_the_artificial_star_target_selects_artificial_star_autofocus(
         self, qapp: object
     ) -> None:
+        from collimation_tool.application.autofocus_controller import AutofocusMode
         from collimation_tool.domain.target_mode import CollimationTargetMode
 
         window = MainWindow(_donut_camera((0.0, 0.0)), device_lister=lambda: [])
-        assert window._focuser_panel._af_star_button.isChecked()
+        # #48/M04: no local Star choice -- the default global mode (Terrestrial) selects it
+        assert window._focuser_panel._autofocus_mode() is AutofocusMode.TERRESTRIAL
 
         window._fine_collimation_panel.set_target_mode(CollimationTargetMode.ARTIFICIAL_STAR)
         assert window._focuser_panel._af_artificial_button.isChecked()
+        assert window._focuser_panel._autofocus_mode() is AutofocusMode.ARTIFICIAL_STAR
 
         window._fine_collimation_panel.set_target_mode(CollimationTargetMode.NATURAL_STAR)
-        assert window._focuser_panel._af_star_button.isChecked()
+        assert window._focuser_panel._autofocus_mode() is AutofocusMode.TERRESTRIAL
 
     def test_the_focuser_panel_gets_an_exposure_control_bound_to_the_main_camera(
         self, qapp: object

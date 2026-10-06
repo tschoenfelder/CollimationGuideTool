@@ -197,6 +197,15 @@ from collimation_tool.ui.mount_park_panel import MountParkPanel
 from collimation_tool.ui.mount_test_move_panel import MountTestMovePanel
 
 _CALIBRATION_POLL_INTERVAL_MS = 200
+#: S6.0c review P-a: how often a pending Terrestrial re-enforce looks for the end of a busy
+#: period (a non-blocking check; same cadence class as the mount park status poll).
+_TRACKING_REENFORCE_POLL_MS = 500
+#: User decision A (2026-10-06): shown when an artificial-star choice switched the mode.
+_ARTIFICIAL_STAR_SWITCHED_NOTE = "Artificial star is a fixed target — switched to Terrestrial mode"
+#: ... and when Astronomical mode returned the target to a natural star.
+_NATURAL_STAR_SWITCHED_NOTE = (
+    "Astronomical mode: target switched to Natural star (an artificial star is a fixed target)"
+)
 
 _DEFAULT_MANUAL_REASON = "Manual capture from UI (no note given)"
 
@@ -298,6 +307,8 @@ class MainWindow(QMainWindow):
                 set=self._left_panel.apply_exposure_gain,
             ),
             measurement_gate=self._measurement_gate,
+            # Issue #48 / M04: the autofocus metric follows the global mode's single owner.
+            operating_mode=lambda: self._tracking_enforcer.mode,
         )
         # The focuser lives on the main optical train only (see
         # FocuserPanel's own docstring) -- pause just the Main camera's
@@ -442,6 +453,10 @@ class MainWindow(QMainWindow):
         self._artificial_star_mode_button = QPushButton("Artificial Star")
         self._artificial_star_mode_button.setCheckable(True)
         self._registration_mode_group.addButton(self._artificial_star_mode_button)
+        # User decision A: an artificial star implies Terrestrial mode.
+        self._artificial_star_mode_button.toggled.connect(
+            lambda checked: self._require_terrestrial_for_artificial_star() if checked else None
+        )
         self._calibrate_fov_button = QPushButton("Calibrate FOV")
         self._calibrate_fov_button.clicked.connect(self._on_calibrate_fov)
         # Off by default — the base action is still the one-shot
@@ -513,6 +528,18 @@ class MainWindow(QMainWindow):
         self._operating_mode_group.addButton(self._operating_terrestrial_button)
         self._operating_mode_group.addButton(self._operating_astronomical_button)
         self._operating_status_label = QLabel("")
+        #: User decision A: why the mode/target was switched automatically; cleared by the next
+        #: mode change the user makes.
+        self._operating_mode_note = ""
+        self._next_operating_mode_note = ""
+        # S6.0c review P-a: a Terrestrial enforcement that found the mount busy (mode change,
+        # measurement gate, connect/unpark check) is owed until a fresh reading exists. Each
+        # tick is a no-op unless one is pending (no mount read), never waits, and the
+        # re-enforce itself runs once.
+        self._tracking_reenforce_timer = QTimer(self)
+        self._tracking_reenforce_timer.setInterval(_TRACKING_REENFORCE_POLL_MS)
+        self._tracking_reenforce_timer.timeout.connect(self._retry_pending_tracking_enforcement)
+        self._tracking_reenforce_timer.start()
         self._operating_terrestrial_button.toggled.connect(
             lambda checked: self._on_operating_toggled(checked, OperatingMode.TERRESTRIAL)
         )
@@ -693,25 +720,60 @@ class MainWindow(QMainWindow):
 
     def _on_operating_toggled(self, checked: bool, mode: OperatingMode) -> None:
         if checked:
+            self._operating_mode_note = self._next_operating_mode_note
+            self._next_operating_mode_note = ""
             self._on_operating_mode_changed(mode)
+
+    def _artificial_star_selected(self) -> bool:
+        return (
+            self._fine_collimation_panel.target_mode is CollimationTargetMode.ARTIFICIAL_STAR
+            or self._artificial_star_mode_button.isChecked()
+        )
+
+    def _require_terrestrial_for_artificial_star(self) -> None:
+        """User decision A (2026-10-06): an artificial star is a fixed target, so choosing it
+        (collimation target or registration) switches the global mode to Terrestrial --
+        through the normal mode switch, so tracking goes OFF (#44, P-a when busy)."""
+        if self._tracking_enforcer.mode is OperatingMode.ASTRONOMICAL:
+            self._next_operating_mode_note = _ARTIFICIAL_STAR_SWITCHED_NOTE
+            self._operating_terrestrial_button.setChecked(True)
 
     def _on_operating_mode_changed(self, mode: OperatingMode) -> None:
         """Issue #44: entering Terrestrial forces mount tracking OFF; entering
-        Astronomical never forces it. Mount Align's Target toggle and the
-        registration mode follow the operating mode."""
+        Astronomical never forces it. Issue #48: Mount Align, autofocus and the
+        registration choices follow the operating mode (its single owner is the
+        TrackingEnforcer)."""
         gate = self._tracking_enforcer.set_mode(mode)
+        if mode is OperatingMode.ASTRONOMICAL and self._artificial_star_selected():
+            # User decision A: the user asked for Astronomical explicitly -- honour it and
+            # return the target to a natural star (the registration choice follows below)
+            # rather than refusing the mode button; the combination can never exist.
+            self._fine_collimation_panel.set_target_mode(CollimationTargetMode.NATURAL_STAR)
+            self._operating_mode_note = _NATURAL_STAR_SWITCHED_NOTE
         self._apply_operating_mode_to_ui(mode)
         self._update_operating_status(gate.reason if not gate.allowed else "")
 
     def _apply_operating_mode_to_ui(self, mode: OperatingMode) -> None:
-        self._test_move_panel.set_target_mode(
-            "terrestrial" if mode is OperatingMode.TERRESTRIAL else "star"
-        )
-        if mode is OperatingMode.ASTRONOMICAL:
+        # Issue #48: both read the mode live; this only refreshes what they show and stops
+        # a run that was started under the previous mode.
+        self._test_move_panel.operating_mode_changed()
+        self._focuser_panel.operating_mode_changed()
+        # Issue #48 + user decision B: ASTAP star-field matching needs a star field, so it is
+        # selectable only in Astronomical; NCC (texture correlation) stays available in both
+        # modes (Moon/planet texture at night). Artificial Star selects Terrestrial (decision A).
+        astronomical = mode is OperatingMode.ASTRONOMICAL
+        if astronomical:
             self._star_field_mode_button.setChecked(True)
         elif self._star_field_mode_button.isChecked():
             self._terrestrial_mode_button.setChecked(True)
+        self._star_field_mode_button.setEnabled(astronomical)
         self._update_operating_status("")
+
+    def _retry_pending_tracking_enforcement(self) -> None:
+        """S6.0c review P-a: the one-shot Terrestrial re-enforce once the busy period ends."""
+        gate = self._tracking_enforcer.retry_pending("busy_ended")
+        if gate is not None:
+            self._update_operating_status(gate.reason if not gate.allowed else "")
 
     def _update_operating_status(self, blocked_reason: str) -> None:
         mode = self._tracking_enforcer.mode
@@ -721,6 +783,8 @@ class MainWindow(QMainWindow):
                 text = f"BLOCKED — {blocked_reason}"
         else:
             text = "Tracking follows the astronomical workflow"
+        if self._operating_mode_note:
+            text = f"{text} — {self._operating_mode_note}"
         self._operating_status_label.setText(text)
 
     def _measurement_gate(self, context: str) -> str | None:
@@ -739,6 +803,8 @@ class MainWindow(QMainWindow):
         self._focuser_panel.select_artificial_star_mode(
             mode is CollimationTargetMode.ARTIFICIAL_STAR
         )
+        if mode is CollimationTargetMode.ARTIFICIAL_STAR:
+            self._require_terrestrial_for_artificial_star()  # user decision A
 
     def _reacquire_via_guide(
         self, acquisition: FocusedStarAcquisition, cancel_check: Callable[[], bool] | None

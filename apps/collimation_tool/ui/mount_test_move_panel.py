@@ -170,8 +170,9 @@ exposed via `diagnostic_context()`'s `last_failure_classes`) and echoed
 into the free-text result label via `_capture_failure_detail()` -- so a
 field failure no longer collapses into one generic "calibration failed".
 
-Issue #30: "Tracking is not slewing" -- this panel's own Target toggle
-also determines a *required mount tracking mode*
+Issue #30: "Tracking is not slewing" -- the measurement mode (issue #48:
+derived from the global Operating mode, no local toggle) also determines a
+*required mount tracking mode*
 (`astrotool_core.mount.tracking_mode.TrackingMode` -- star needs ON,
 terrestrial needs OFF), verified/repaired via `_verify_tracking_mode()`
 from inside `_capture_both` itself, so it runs before every BEFORE
@@ -504,8 +505,9 @@ class _VerifiedReference:
 #: but needs an actual star -- see incident 6fa2aa59: correctly refuses
 #: otherwise). "terrestrial" instead cross-correlates the whole before/
 #: after frame via measure_translation_offset() -- works on any textured
-#: scene (indoors, daytime), whole-pixel precision only. See
-#: MountTestMovePanel's own "Target" toggle.
+#: scene (indoors, daytime), whole-pixel precision only. Issue #48: derived
+#: from the global OperatingMode (Terrestrial -> "terrestrial", Astronomical ->
+#: "star") -- Mount Align has no selector of its own.
 TargetMode = Literal["star", "terrestrial"]
 
 #: What a captured "before"/"after" measurement looks like in each mode --
@@ -807,8 +809,8 @@ class MountTestMovePanel(QWidget):
         #: fixed `pulse_ms`/`rate_preset` calibration, unchanged.
         self._camera_geometry = camera_geometry
         self._calibration_distance_m = calibration_distance_m
-        #: Issue #44: the app-wide tracking policy. Terrestrial operating
-        #: mode requires tracking OFF regardless of this panel's own toggle.
+        #: Issue #44/#48: the app-wide tracking policy AND the single owner of the operating
+        #: mode -- Mount Align's measurement strategy and tracking need derive from its mode.
         self._tracking_enforcer = tracking_enforcer
         self._mount_park = mount_park
         self._get_left_frame = get_left_frame
@@ -1028,20 +1030,13 @@ class MountTestMovePanel(QWidget):
         self._connect_button.toggled.connect(self._on_toggle_connect)
         self._status_label = QLabel("Not connected.")
 
-        self._target_group = QButtonGroup(self)
-        self._target_group.setExclusive(True)
-        self._star_button = QPushButton("Star")
-        self._star_button.setCheckable(True)
-        self._star_button.setChecked(True)  # default -- unchanged prior behavior
-        self._target_group.addButton(self._star_button)
-        self._terrestrial_button = QPushButton("Terrestrial")
-        self._terrestrial_button.setCheckable(True)
-        self._target_group.addButton(self._terrestrial_button)
+        # Issue #48: no local Star/Terrestrial selector -- the global Operating mode decides;
+        # this read-only line only says what it currently selects.
+        self._measurement_mode_label = QLabel("")
+        self._measurement_mode_label.setWordWrap(True)
         target_row = QHBoxLayout()
-        target_row.addWidget(QLabel("Target"))
-        target_row.addWidget(self._star_button)
-        target_row.addWidget(self._terrestrial_button)
-        target_row.addStretch(1)
+        target_row.addWidget(self._measurement_mode_label, stretch=1)
+        self._show_measurement_mode()
 
         self._run_calibration_button = QPushButton("Run Calibration")
         self._run_calibration_button.clicked.connect(self._on_run_calibration_clicked)
@@ -1078,8 +1073,7 @@ class MountTestMovePanel(QWidget):
 
         #: Issue #31 Phase D: shared size selector -- one choice applies
         #: to whichever screen-move button is clicked next, on either
-        #: camera (mirrors the single shared Target toggle above, not a
-        #: per-camera setting).
+        #: camera (one shared choice, not a per-camera setting).
         self._size_group = QButtonGroup(self)
         self._size_group.setExclusive(True)
         self._size_buttons: dict[MovementSize, QPushButton] = {}
@@ -1197,25 +1191,58 @@ class MountTestMovePanel(QWidget):
             self._status_label.setText("Not connected.")
         self._update_buttons_enabled()
 
-    def _target_mode(self) -> TargetMode:
-        return "terrestrial" if self._terrestrial_button.isChecked() else "star"
+    def _operating_mode(self) -> OperatingMode:
+        """Issue #48: the global mode's single owner (the TrackingEnforcer), read live -- no
+        copy that could go stale. Without one (a standalone panel: no app-wide policy wired)
+        the fixed legacy default, star measurement; never a user-selectable local state."""
+        enforcer = self._tracking_enforcer
+        return enforcer.mode if enforcer is not None else OperatingMode.ASTRONOMICAL
 
-    def set_target_mode(self, mode: TargetMode) -> None:
-        """Follow the app-wide operating mode (issue #44)."""
-        button = self._terrestrial_button if mode == "terrestrial" else self._star_button
-        button.setChecked(True)
+    def _target_mode(self) -> TargetMode:
+        """The measurement strategy the global mode selects: whole-frame cross-correlation
+        against a fixed terrestrial scene, or a star centroid in astronomical mode."""
+        return "terrestrial" if self._operating_mode() is OperatingMode.TERRESTRIAL else "star"
+
+    def _show_measurement_mode(self) -> None:
+        if self._target_mode() == "terrestrial":
+            text = "Measurement: terrestrial scene (whole-frame correlation, tracking off)"
+        else:
+            text = "Measurement: star centroid (astronomical, tracking on)"
+        self._measurement_mode_label.setText(f"{text} -- follows the Operating mode")
+
+    def operating_mode_changed(self) -> None:
+        """Issue #48: the global mode changed. Mount Align follows it at once; a calibration or
+        move still running was measured under the previous mode (strategy and tracking) and is
+        stopped rather than finished with mixed evidence."""
+        self._show_measurement_mode()
+        running = (
+            bool(self._calibration_queue)
+            or self._pending is not None
+            or self._capture_job is not None
+            or self._runner.is_busy
+        )
+        if not running:
+            return
+        self._on_stop()
+        self._last_error = "operating mode changed during the run"
+        # Keep Stop's own notes (net commanded offset; controls returning once the interrupted
+        # move call has ended) -- only the cause differs from a user Stop.
+        detail = self._result_label.text().removeprefix("Stopped by the user")
+        self._result_label.setText(
+            f"Stopped: the operating mode changed to {self._operating_mode().value} during the "
+            f"run{detail} Its measurements are discarded; run it again."
+        )
 
     def _required_tracking_mode(self) -> TrackingMode:
         """Issue #30's "Tracking is not slewing": star calibration
         requires tracking ON (so it can measure real astronomical
         motion), terrestrial requires tracking OFF (tracking would
         otherwise add deliberate continuous image motion on top of
-        whatever the calibration pulse itself produces) -- derived
-        directly from this panel's own Target toggle, never a separate
-        setting to keep in sync with it."""
+        whatever the calibration pulse itself produces). Issue #48: the
+        tracking policy decides it from the global mode alone."""
         enforcer = self._tracking_enforcer
-        if enforcer is not None and enforcer.mode is OperatingMode.TERRESTRIAL:
-            return TrackingMode.OFF  # policy wins over the panel's own toggle
+        if enforcer is not None:
+            return enforcer.measurement_tracking()
         return TrackingMode.OFF if self._target_mode() == "terrestrial" else TrackingMode.ON
 
     def _tracking_failure_message(
@@ -3466,7 +3493,12 @@ class MountTestMovePanel(QWidget):
         return [dict(entry) for entry in self._capture_timeline]
 
     def diagnostic_context(self) -> dict[str, Any]:
-        context: dict[str, Any] = {"target_mode": self._target_mode()}
+        # Issue #48: the global mode and the measurement it selects -- the collimation TARGET
+        # type (natural/artificial star) is reported separately by the main window.
+        context: dict[str, Any] = {
+            "operating_mode": self._operating_mode().value,
+            "measurement_mode": self._target_mode(),
+        }
         context["activity"] = self.diagnostic_activity()
         interface = self.interface_state()
         context["mount_interface"] = {

@@ -45,6 +45,7 @@ from typing import Any
 import numpy as np
 from astrotool_core.acquisition.stable_frame_acquisition import FrameAcquisitionResult
 from astrotool_core.focus.port import FocuserPort
+from astrotool_core.mount.operating_mode import OperatingMode
 from astrotool_core.timing import SYSTEM_CLOCK, Clock
 from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import (
@@ -125,8 +126,16 @@ class FocuserPanel(QWidget):
         exposure_control: ExposureControl | None = None,
         measurement_gate: Callable[[str], str | None] | None = None,
         clock: Clock | None = None,
+        operating_mode: Callable[[], OperatingMode] | None = None,
     ) -> None:
         super().__init__()
+        #: Issue #48 / user decision M04: the global operating mode's single owner (read live).
+        #: It selects the autofocus metric -- Terrestrial -> Tenengrad, Astronomical ->
+        #: star/FWHM; this panel has no Star/Terrestrial selector of its own. None (standalone,
+        #: no app-wide mode wired): the fixed legacy default, star/FWHM.
+        self._operating_mode = operating_mode
+        #: Set when a mode change cancelled a running autofocus (shown with its result).
+        self._cancelled_by_mode_change = False
         #: Issue #53 (S3b): the time the confirmation-timeout safety net reads. The Qt
         #: poll timer stays the tick source; tests inject a `FakeClock`.
         self._clock: Clock = clock if clock is not None else SYSTEM_CLOCK
@@ -197,24 +206,16 @@ class FocuserPanel(QWidget):
         move_row.addWidget(self._stop_button)
         move_row.addStretch(1)
 
-        # Issue #33: Auto Focus mode toggle + run/cancel + status -- same
-        # QButtonGroup convention MountTestMovePanel already established
-        # for its own Star/Terrestrial toggle. Star selected by default.
-        self._af_mode_group = QButtonGroup(self)
-        self._af_mode_group.setExclusive(True)
-        self._af_star_button = QPushButton("Star")
-        self._af_star_button.setCheckable(True)
-        self._af_star_button.setChecked(True)
-        self._af_mode_group.addButton(self._af_star_button)
-        self._af_terrestrial_button = QPushButton("Terrestrial")
-        self._af_terrestrial_button.setCheckable(True)
-        self._af_mode_group.addButton(self._af_terrestrial_button)
+        # Issue #48 / M04: no Star/Terrestrial selector -- the metric follows the global
+        # Operating mode; this read-only line says which one it selects.
+        self._af_metric_label = QLabel("")
+        self._af_metric_label.setWordWrap(True)
         # Issue #33 enhancement: ONE artificial star, star-specific metric,
-        # same target through the sweep -- distinct from natural-star and
-        # terrestrial-scene autofocus.
+        # same target through the sweep -- a TARGET TYPE (orthogonal to the
+        # operating mode, AGENTS.md), set from the collimation target mode.
         self._af_artificial_button = QPushButton("Artificial star")
         self._af_artificial_button.setCheckable(True)
-        self._af_mode_group.addButton(self._af_artificial_button)
+        self._af_artificial_button.toggled.connect(lambda _checked: self._show_af_metric())
 
         self._auto_focus_button = QPushButton("Auto Focus")
         self._auto_focus_button.clicked.connect(self._on_auto_focus_clicked)
@@ -233,9 +234,9 @@ class FocuserPanel(QWidget):
         # whatever width it's actually given instead.
         autofocus_mode_row = FlowLayout()
         autofocus_mode_row.addWidget(QLabel("Auto Focus"))
-        autofocus_mode_row.addWidget(self._af_star_button)
-        autofocus_mode_row.addWidget(self._af_terrestrial_button)
         autofocus_mode_row.addWidget(self._af_artificial_button)
+        autofocus_mode_row.addWidget(self._af_metric_label)
+        self._show_af_metric()
 
         autofocus_row = FlowLayout()
         autofocus_row.addWidget(self._auto_focus_button)
@@ -381,16 +382,11 @@ class FocuserPanel(QWidget):
             camera_label=self._optical_train_label,
             focuser_label=self._optical_train_label,
         )
-        if self._af_artificial_button.isChecked():
-            mode = AutofocusMode.ARTIFICIAL_STAR
-        elif self._af_terrestrial_button.isChecked():
-            mode = AutofocusMode.TERRESTRIAL
-        else:
-            mode = AutofocusMode.STAR
-        started = self._autofocus_runner.submit(controller, mode)
+        started = self._autofocus_runner.submit(controller, self._autofocus_mode())
         if not started:
             return  # a run is already in flight
         self._autofocus_running = True
+        self._cancelled_by_mode_change = False
         self._auto_focus_status_label.setText(f"Auto focusing ({self._optical_train_label})…")
         self._update_move_buttons_enabled()
         self._autofocus_poll_timer.start()
@@ -406,19 +402,47 @@ class FocuserPanel(QWidget):
         self._autofocus_running = False
         result = outcome.result
         self._last_autofocus_result = result
-        self._auto_focus_status_label.setText(_format_autofocus_status(result))
+        text = _format_autofocus_status(result)
+        if self._cancelled_by_mode_change:
+            text += " (cancelled: the operating mode changed during the run)"
+            self._cancelled_by_mode_change = False
+        self._auto_focus_status_label.setText(text)
         self._update_move_buttons_enabled()
 
+    def _autofocus_mode(self) -> AutofocusMode:
+        """Issue #48 / M04: the artificial-star target type when selected, otherwise the
+        metric the global operating mode selects (Terrestrial -> Tenengrad, else star/FWHM)."""
+        if self._af_artificial_button.isChecked():
+            return AutofocusMode.ARTIFICIAL_STAR
+        mode = self._operating_mode() if self._operating_mode is not None else None
+        if mode is OperatingMode.TERRESTRIAL:
+            return AutofocusMode.TERRESTRIAL
+        return AutofocusMode.STAR
+
+    def _show_af_metric(self) -> None:
+        mode = self._autofocus_mode()
+        if mode is AutofocusMode.ARTIFICIAL_STAR:
+            text = "Metric: artificial star (single star, FWHM)"
+        elif mode is AutofocusMode.TERRESTRIAL:
+            text = "Metric: Tenengrad (terrestrial scene) -- follows the Operating mode"
+        else:
+            text = "Metric: star FWHM (astronomical) -- follows the Operating mode"
+        self._af_metric_label.setText(text)
+
+    def operating_mode_changed(self) -> None:
+        """Issue #48 / M04: the global mode changed -- the metric follows at once. A run still
+        in flight was started under the previous mode (metric, tracking) and is cancelled."""
+        self._show_af_metric()
+        if self._autofocus_running:
+            self._cancelled_by_mode_change = True
+            self._autofocus_runner.cancel()
+
     def select_artificial_star_mode(self, selected: bool) -> None:
-        """Select (or leave) the artificial-star autofocus mode -- called
+        """Select (or leave) the artificial-star autofocus target type -- called
         by MainWindow when the collimation target mode changes (issue #39/#33:
         the mode is inferred, not left for the user to work out). Leaving it
-        only ever falls back to natural-star mode when artificial-star was the
-        active choice; a terrestrial choice is left alone."""
-        if selected:
-            self._af_artificial_button.setChecked(True)
-        elif self._af_artificial_button.isChecked():
-            self._af_star_button.setChecked(True)
+        falls back to the metric the global operating mode selects (#48/M04)."""
+        self._af_artificial_button.setChecked(selected)
 
     def _poll_status(self) -> None:
         if not self._connected:
@@ -474,6 +498,9 @@ class FocuserPanel(QWidget):
             "max_position": status.max_position,
             "moving": status.moving,
             "last_connect_error": self._last_connect_error,
+            # Issue #48: what the next Auto Focus would use, derived from the global mode
+            # and the artificial-star target type (reported separately by the main window).
+            "autofocus_mode": self._autofocus_mode().value,
         }
         # OnStepFocuserAdapter-only diagnostic extra (duck-typed, same
         # convention as MountParkPanel's confirm_home/home_confirmed) --

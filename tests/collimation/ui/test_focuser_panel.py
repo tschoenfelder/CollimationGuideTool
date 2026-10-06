@@ -18,7 +18,9 @@ from astrotool_core.acquisition.stable_frame_acquisition import (
     FrameAcquisitionStatus,
 )
 from astrotool_core.focus.fake_focuser import FakeFocuser
+from astrotool_core.mount.operating_mode import OperatingMode
 from astrotool_core.testing.frame_factory import single_star_image
+from collimation_tool.application.autofocus_controller import AutofocusMode
 from collimation_tool.application.autofocus_search import AutofocusStatus
 from collimation_tool.ui.focuser_panel import FocuserPanel
 
@@ -180,11 +182,50 @@ class TestAutoFocusButtonEnablement:
             panel._connect_button.setChecked(False)
 
 
-class TestModeToggle:
-    def test_star_mode_is_selected_by_default(self, qapp: object) -> None:
+class TestModeFollowsTheOperatingMode:
+    """Issue #48 / user decision M04: no local Star/Terrestrial selector -- the metric follows
+    the global operating mode (Terrestrial -> Tenengrad, Astronomical -> star/FWHM)."""
+
+    def test_without_a_global_mode_wired_the_metric_is_star(self, qapp: object) -> None:
         panel = FocuserPanel(FakeFocuser())
-        assert panel._af_star_button.isChecked()
-        assert not panel._af_terrestrial_button.isChecked()
+
+        assert panel._autofocus_mode() is AutofocusMode.STAR
+        assert not hasattr(panel, "_af_star_button")
+        assert not hasattr(panel, "_af_terrestrial_button")
+
+    def test_the_metric_is_read_live_from_the_global_mode(self, qapp: object) -> None:
+        mode = [OperatingMode.TERRESTRIAL]
+        panel = FocuserPanel(FakeFocuser(), operating_mode=lambda: mode[0])
+
+        assert panel._autofocus_mode() is AutofocusMode.TERRESTRIAL
+        mode[0] = OperatingMode.ASTRONOMICAL
+        assert panel._autofocus_mode() is AutofocusMode.STAR
+
+    def test_a_mode_change_during_a_run_cancels_it(self, qapp: object) -> None:
+        mode = [OperatingMode.ASTRONOMICAL]
+        panel = FocuserPanel(
+            FakeFocuser(),
+            get_frame=lambda: _star_frame(),
+            wait_for_frame=_always_fresh_frame,
+            set_auto_exposure_paused=lambda paused: None,
+            operating_mode=lambda: mode[0],
+        )
+        cancels: list[bool] = []
+        panel._autofocus_runner.submit = lambda _c, _m: True  # type: ignore[method-assign,assignment]
+        panel._autofocus_runner.cancel = lambda: cancels.append(True)  # type: ignore[method-assign]
+        panel._connect_button.setChecked(True)
+        try:
+            panel._on_auto_focus_clicked()
+            assert panel._autofocus_running
+
+            mode[0] = OperatingMode.TERRESTRIAL
+            panel.operating_mode_changed()
+
+            assert cancels == [True]
+            assert "tenengrad" in panel._af_metric_label.text().lower()
+        finally:
+            panel._autofocus_running = False
+            panel._connect_button.setChecked(False)
 
 
 class TestAutoFocusRun:
@@ -294,7 +335,7 @@ class TestArtificialStarMode:
         panel = _artificial_panel()
 
         assert not panel._af_artificial_button.isChecked()
-        assert panel._af_star_button.isChecked()
+        assert panel._autofocus_mode() is AutofocusMode.STAR
 
     def test_choosing_it_runs_autofocus_in_artificial_star_mode(self, qapp: object) -> None:
         panel = _artificial_panel()
@@ -354,18 +395,20 @@ class TestArtificialStarMode:
         assert panel._af_artificial_button.isChecked()
 
         panel.select_artificial_star_mode(False)
-        assert panel._af_star_button.isChecked()
+        assert panel._autofocus_mode() is AutofocusMode.STAR
         assert not panel._af_artificial_button.isChecked()
 
-    def test_deselecting_artificial_star_leaves_a_terrestrial_choice_alone(
+    def test_deselecting_artificial_star_returns_to_the_global_modes_metric(
         self, qapp: object
     ) -> None:
-        panel = _artificial_panel()
-        panel._af_terrestrial_button.setChecked(True)
+        """Migrated (#48/M04): the terrestrial choice is the global mode's, not a local one."""
+        panel = _artificial_panel(operating_mode=lambda: OperatingMode.TERRESTRIAL)
+        panel.select_artificial_star_mode(True)
+        assert panel._autofocus_mode() is AutofocusMode.ARTIFICIAL_STAR
 
         panel.select_artificial_star_mode(False)
 
-        assert panel._af_terrestrial_button.isChecked()
+        assert panel._autofocus_mode() is AutofocusMode.TERRESTRIAL
 
     def test_the_exposure_control_is_handed_to_the_controller(self, qapp: object) -> None:
         from collimation_tool.application.autofocus_controller import ExposureControl

@@ -29,6 +29,7 @@ from astrotool_core.acquisition.stable_frame_acquisition import (
 from astrotool_core.config import MountAlignmentSettings
 from astrotool_core.mount import AxisDirection, MountAxis
 from astrotool_core.mount.movement_sizing import CameraGeometry
+from astrotool_core.mount.operating_mode import OperatingMode, TrackingEnforcer
 from astrotool_core.target.translation_offset import measure_translation_offset
 from astrotool_core.testing.fake_mount import FakeMountAdapter
 from astrotool_core.testing.fake_mount_park import FakeMountPark
@@ -179,9 +180,13 @@ def _panel(
     settings: MountAlignmentSettings = _SETTINGS,
 ) -> MountTestMovePanel:
     rig.mount.connect()
+    park = FakeMountPark(start_parked=True)
     panel = MountTestMovePanel(
         rig.mount,
-        mount_park=FakeMountPark(start_parked=True),
+        mount_park=park,
+        tracking_enforcer=TrackingEnforcer(
+            park, OperatingMode.TERRESTRIAL, settle_timeout_s=0, clock=FakeClock()
+        ),  # #48: terrestrial measurement comes from the global mode's owner
         get_left_frame=rig.latest("left"),
         get_right_frame=rig.latest("right"),
         wait_for_left_frame=rig.waiter("left"),
@@ -190,7 +195,6 @@ def _panel(
         camera_geometry=(lambda: geometry) if geometry is not None else None,
         runner=MountTestMoveRunner(clock=FakeClock()),  # S3b: runner waits on fake time
     )
-    panel._terrestrial_button.click()
     panel._connect_button.setChecked(True)
     return panel
 

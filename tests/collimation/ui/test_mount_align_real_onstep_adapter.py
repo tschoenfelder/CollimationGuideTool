@@ -171,7 +171,12 @@ class _Rig:
         panel = MountTestMovePanel(
             self.mount,
             mount_park=self.park,
-            tracking_enforcer=tracking_enforcer,
+            # #48: terrestrial measurement comes from the global mode's owner
+            tracking_enforcer=tracking_enforcer
+            if tracking_enforcer is not None
+            else TrackingEnforcer(
+                self.park, OperatingMode.TERRESTRIAL, settle_timeout_s=0, clock=FakeClock()
+            ),
             get_left_frame=self.getter("left"),
             get_right_frame=self.getter("right"),
             wait_for_left_frame=self.waiter("left"),
@@ -180,7 +185,6 @@ class _Rig:
             camera_geometry=lambda: cameras,
             runner=MountTestMoveRunner(clock=self.runner_clock),
         )
-        panel._terrestrial_button.click()  # texture-based (cross-correlation) measurement
         panel._connect_button.setChecked(True)
         return panel
 

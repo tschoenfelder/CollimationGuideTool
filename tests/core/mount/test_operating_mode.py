@@ -25,6 +25,7 @@ from astrotool_core.testing import (
 )
 from astrotool_core.testing.fake_mount_park import FakeMountPark
 from astrotool_core.testing.sim_onstep import OnStepScenario
+from astrotool_core.timing import FakeClock
 
 _JOIN_S = 5.0  # real-time safety bound for test threads, never a policy wait
 
@@ -346,3 +347,364 @@ class TestDecisionsNeverUseHeldOverReadings:
             busy.release()
         assert result == TrackingVerificationResult(TrackingVerificationStatus.BUSY, None)
         assert busy.client.emergency_stop_calls == 0
+
+
+# ---------------------------------------------------------------------------------------------
+# S6.4 (#48 + S6.0c review P-a + S3a): the TrackingEnforcer is the ONE owner of every tracking
+# decision. It reads/waits through an injected clock, refuses a tracking-ON request while the
+# global mode is Terrestrial (a stale request must never re-enable tracking), owns the
+# measurement tracking each mode needs, and -- when entering Terrestrial found the mount busy --
+# re-enforces exactly once as soon as a fresh reading exists again.
+# ---------------------------------------------------------------------------------------------
+
+
+class _BusyFakeMount(FakeMountPark):
+    """A park port whose connection another operation holds while `busy`: it serves a
+    held-over (not fresh) reading, like `OnStepMountParkAdapter` during a GOTO."""
+
+    def __init__(self) -> None:
+        super().__init__(start_parked=False)
+        self.busy = False
+
+    def status(self) -> MountParkStatus:
+        status = super().status()
+        if self.busy:
+            return MountParkStatus(status.available, status.parked, status.tracking, fresh=False)
+        return status
+
+
+class _LaggingStopMount(FakeMountPark):
+    """stop_tracking() takes effect only after a few status reads (async INDI driver)."""
+
+    def __init__(self) -> None:
+        super().__init__(start_parked=False)
+        self.reads_until_off = 3
+
+    def stop_tracking(self) -> None:
+        self.stop_tracking_count += 1
+
+    def status(self) -> MountParkStatus:
+        if self.stop_tracking_count and self.reads_until_off > 0:
+            self.reads_until_off -= 1
+            if self.reads_until_off == 0:
+                self._tracking = False
+        return super().status()
+
+
+class TestClockPassThrough:
+    def test_the_settle_poll_waits_on_the_injected_clock(self) -> None:
+        mount = _LaggingStopMount()
+        mount.start_tracking()
+        clock = FakeClock()
+        enforcer = TrackingEnforcer(
+            mount, OperatingMode.TERRESTRIAL, settle_timeout_s=3.0, clock=clock
+        )
+
+        gate = enforcer.enforce("calibration")
+
+        assert gate == TrackingGate(True, "tracking off verified (repaired)")
+        assert clock.sleeps, "the settle poll did not wait on the injected clock"
+
+    def test_a_mount_that_never_settles_times_out_on_fake_time(self) -> None:
+        clock = FakeClock()
+        enforcer = TrackingEnforcer(
+            _tracking_mount(refuse_stop=True),
+            OperatingMode.TERRESTRIAL,
+            settle_timeout_s=3.0,
+            clock=clock,
+        )
+
+        gate = enforcer.enforce("calibration")
+
+        assert not gate.allowed
+        assert clock.monotonic() >= 3.0  # the whole timeout elapsed -- in fake time only
+
+
+class TestTrackingDecisionsComeOnlyFromTheGlobalMode:
+    def test_the_measurement_tracking_follows_the_mode(self) -> None:
+        enforcer = _enforcer(FakeMountPark(start_parked=False), OperatingMode.TERRESTRIAL)
+        assert enforcer.measurement_tracking() is TrackingMode.OFF
+
+        enforcer.set_mode(OperatingMode.ASTRONOMICAL)
+
+        assert enforcer.measurement_tracking() is TrackingMode.ON
+
+    def test_a_tracking_on_request_in_terrestrial_mode_is_refused_and_sends_nothing(
+        self,
+    ) -> None:
+        """E.g. a Mount Align capture requested in Astronomical mode whose tracking check runs
+        after the user switched to Terrestrial: it must fail closed, never start tracking."""
+        mount = FakeMountPark(start_parked=False)
+        enforcer = _enforcer(mount, OperatingMode.TERRESTRIAL)
+
+        gate = enforcer.verify(TrackingMode.ON, "mount_align")
+
+        assert mount.start_tracking_count == 0
+        assert mount.status().tracking is False
+        assert not gate.allowed
+        assert "terrestrial" in gate.reason.lower()
+        step = enforcer.evidence()["transitions"][-1]
+        assert step["command"] is None and step["allowed"] is False
+
+    def test_a_tracking_on_request_in_astronomical_mode_is_still_repaired(self) -> None:
+        mount = FakeMountPark(start_parked=False)
+        enforcer = _enforcer(mount, OperatingMode.ASTRONOMICAL)
+
+        gate = enforcer.verify(TrackingMode.ON, "mount_align")
+
+        assert gate.allowed
+        assert mount.status().tracking is True
+
+
+class TestReenforceWhenTheBusyPeriodEnds:
+    """S6.0c review P-a: entering Terrestrial while the mount is busy is denied (fail closed);
+    once the busy period ends the enforcer turns tracking off ONCE by itself -- not only at the
+    next measurement gate."""
+
+    def _busy_astronomical(self) -> tuple[_BusyFakeMount, TrackingEnforcer]:
+        mount = _BusyFakeMount()
+        mount.start_tracking()
+        enforcer = _enforcer(mount, OperatingMode.ASTRONOMICAL)
+        mount.busy = True
+        gate = enforcer.set_mode(OperatingMode.TERRESTRIAL)
+        assert gate == TrackingGate(False, MOUNT_BUSY_REASON)  # S6.0c semantics, unchanged
+        return mount, enforcer
+
+    def test_entering_terrestrial_while_busy_leaves_a_pending_re_enforce(self) -> None:
+        _mount, enforcer = self._busy_astronomical()
+
+        assert enforcer.reenforce_pending is True
+
+    def test_while_still_busy_the_retry_sends_nothing_and_stays_closed(self) -> None:
+        mount, enforcer = self._busy_astronomical()
+        trail_before = len(enforcer.evidence()["transitions"])
+
+        assert enforcer.retry_pending("busy_ended") is None
+
+        assert mount.stop_tracking_count == 0
+        assert enforcer.measurement_allowed() is False
+        assert enforcer.reenforce_pending is True
+        assert len(enforcer.evidence()["transitions"]) == trail_before  # no trail spam
+
+    def test_when_the_busy_period_ends_tracking_is_turned_off_once(self) -> None:
+        mount, enforcer = self._busy_astronomical()
+        mount.busy = False
+
+        gate = enforcer.retry_pending("busy_ended")
+
+        assert gate == TrackingGate(True, "tracking off verified (repaired)")
+        assert mount.status().tracking is False and mount.stop_tracking_count == 1
+        assert enforcer.measurement_allowed() is True
+        assert enforcer.reenforce_pending is False
+        assert enforcer.evidence()["transitions"][-1]["context"] == "busy_ended"
+        assert enforcer.retry_pending("busy_ended") is None  # one-shot
+        assert mount.stop_tracking_count == 1
+
+    def test_switching_back_to_astronomical_cancels_the_pending_re_enforce(self) -> None:
+        mount, enforcer = self._busy_astronomical()
+        enforcer.set_mode(OperatingMode.ASTRONOMICAL)
+        mount.busy = False
+
+        assert enforcer.reenforce_pending is False
+        assert enforcer.retry_pending("busy_ended") is None
+        assert mount.status().tracking is True and mount.stop_tracking_count == 0
+
+    def test_a_measurement_gate_that_succeeds_first_clears_the_pending_re_enforce(self) -> None:
+        mount, enforcer = self._busy_astronomical()
+        mount.busy = False
+        assert enforcer.enforce("autofocus").allowed
+
+        assert enforcer.reenforce_pending is False
+        assert enforcer.retry_pending("busy_ended") is None
+        assert mount.stop_tracking_count == 1
+
+    def test_on_the_real_park_adapter_the_re_enforce_runs_after_the_goto_releases(self) -> None:
+        busy = _BusyConnection(read_first=True)
+        busy.client.tracking = True  # tracking while astronomical
+        enforcer = TrackingEnforcer(busy.park, OperatingMode.ASTRONOMICAL, settle_timeout_s=0)
+
+        outcome, got = busy.decide(lambda: enforcer.set_mode(OperatingMode.TERRESTRIAL))
+
+        assert outcome == "done" and got == [TrackingGate(False, MOUNT_BUSY_REASON)]
+        assert busy.client.emergency_stop_calls == 0
+        gate = enforcer.retry_pending("busy_ended")  # decide() released the connection
+        assert gate is not None and gate.allowed
+        assert busy.client.tracking is False and busy.client.emergency_stop_calls == 1
+
+
+class _UnconfirmedStopMount(_BusyFakeMount):
+    """OnStepMountParkAdapter.stop_tracking() is OnStep's emergency stop, which raises when the
+    driver never confirms it (field: OnStepAdapter#17)."""
+
+    def stop_tracking(self) -> None:
+        self.stop_tracking_count += 1
+        raise RuntimeError("emergency stop not confirmed")
+
+
+class TestDeviceErrorsCloseTheGateWithoutRetrying:
+    """S6.4 review fix 1: a raising stop must neither crash the caller (a Qt slot ticking every
+    500 ms) nor be resent on every tick."""
+
+    def test_a_raising_stop_closes_the_gate_with_the_reason(self) -> None:
+        mount = _UnconfirmedStopMount()
+        mount.start_tracking()
+        enforcer = _enforcer(mount, OperatingMode.TERRESTRIAL)
+
+        gate = enforcer.enforce("connect")
+
+        assert not gate.allowed
+        assert "emergency stop not confirmed" in gate.reason
+        assert enforcer.measurement_allowed() is False
+        step = enforcer.evidence()["transitions"][-1]
+        assert step["command"] == "stop_tracking" and step["allowed"] is False
+
+    def test_the_pending_re_enforce_sends_one_stop_and_never_repeats_it(self) -> None:
+        mount = _UnconfirmedStopMount()
+        mount.start_tracking()
+        enforcer = _enforcer(mount, OperatingMode.ASTRONOMICAL)
+        mount.busy = True
+        enforcer.set_mode(OperatingMode.TERRESTRIAL)
+        assert enforcer.reenforce_pending
+        mount.busy = False
+
+        gates = [enforcer.retry_pending("busy_ended") for _ in range(3)]  # three timer ticks
+
+        assert mount.stop_tracking_count == 1
+        assert gates[0] is not None and not gates[0].allowed
+        assert gates[1:] == [None, None]
+        assert enforcer.reenforce_pending is False
+        assert enforcer.measurement_allowed() is False  # still closed, never "verified"
+
+
+class _SwitchesModeDuringTheCheck(FakeMountPark):
+    """A worker's tracking-ON decision waits for a fresh reading; meanwhile the GUI thread
+    switches the global mode to Terrestrial (S6.4 review fix 3, check-then-act)."""
+
+    def __init__(self) -> None:
+        super().__init__(start_parked=False)
+        self.enforcer: TrackingEnforcer | None = None
+        self._fired = False
+
+    def decision_status(self, *, wait_fresh_s: float) -> MountParkStatus:
+        if not self._fired and self.enforcer is not None:
+            self._fired = True
+            self.enforcer.set_mode(OperatingMode.TERRESTRIAL)
+        return self.status()
+
+
+class TestModeSwitchDuringATrackingOnCheck:
+    def test_the_check_is_denied_and_tracking_is_turned_off_on_the_next_tick(self) -> None:
+        mount = _SwitchesModeDuringTheCheck()
+        enforcer = _enforcer(mount, OperatingMode.ASTRONOMICAL)
+        mount.enforcer = enforcer
+
+        gate = enforcer.verify(TrackingMode.ON, "mount_align", fresh_wait_s=0.5)
+
+        assert enforcer.mode is OperatingMode.TERRESTRIAL
+        assert not gate.allowed and "terrestrial" in gate.reason.lower()
+        assert enforcer.measurement_allowed() is False
+        assert enforcer.reenforce_pending is True
+        followup = enforcer.retry_pending("busy_ended")
+        assert followup is not None and followup.allowed
+        assert mount.status().tracking is False
+
+
+class _InterleavedMount(FakeMountPark):
+    """Drives one deterministic interleaving of a WORKER's tracking-ON check (Mount Align
+    capture, fresh reading via `decision_status`) and the GUI's switch to Terrestrial
+    (tracking-OFF check, plain `status()` reads):
+
+      worker passes the mode check (Astronomical) and asks for a fresh reading
+        -> the GUI thread switches to Terrestrial and READS tracking OFF, then pauses
+      worker gets its reading (OFF), sends start_tracking, finishes (conflict recorded)
+        -> the GUI resumes and stores its now-stale "tracking off verified"."""
+
+    def __init__(self) -> None:
+        super().__init__(start_parked=False)
+        self.enforcer: TrackingEnforcer | None = None
+        self.gui_thread: threading.Thread | None = None
+        self.gui_has_read = threading.Event()
+        self.worker_done = threading.Event()
+        self._gui_ident: int | None = None
+        self._gui_reads = 0
+
+    def _run_gui(self) -> None:
+        assert self.enforcer is not None
+        self._gui_ident = threading.get_ident()
+        self.enforcer.set_mode(OperatingMode.TERRESTRIAL)
+
+    def decision_status(self, *, wait_fresh_s: float) -> MountParkStatus:
+        if self.gui_thread is None:  # the worker's first fresh read: let the GUI switch now
+            self.gui_thread = threading.Thread(target=self._run_gui, daemon=True)
+            self.gui_thread.start()
+            assert self.gui_has_read.wait(_JOIN_S)
+        return super().status()
+
+    def status(self) -> MountParkStatus:
+        reading = super().status()
+        if threading.get_ident() == self._gui_ident:
+            self._gui_reads += 1
+            if self._gui_reads == 2:  # ensure_tracking_mode's decision read (1st = evidence)
+                self.gui_has_read.set()
+                assert self.worker_done.wait(_JOIN_S)
+        return reading
+
+
+class TestConcurrentChecksNeverLoseTheConflict:
+    """S6.4 round 3 (#44): the GUI's tracking-OFF check and a worker's tracking-ON check
+    finishing in the 'wrong' order must not leave tracking ON behind a 'verified' gate."""
+
+    def test_a_stale_off_verification_never_overwrites_the_conflict(self) -> None:
+        mount = _InterleavedMount()
+        enforcer = _enforcer(mount, OperatingMode.ASTRONOMICAL)
+        mount.enforcer = enforcer
+
+        worker_gate = enforcer.verify(TrackingMode.ON, "mount_align", fresh_wait_s=0.5)
+        mount.worker_done.set()
+        assert mount.gui_thread is not None
+        mount.gui_thread.join(_JOIN_S)
+
+        assert not worker_gate.allowed
+        assert mount.status().tracking is True  # the worker's start_tracking did land
+        assert enforcer.measurement_allowed() is False, enforcer.last_gate
+        assert enforcer.reenforce_pending is True
+        followup = enforcer.retry_pending("busy_ended")
+        assert followup is not None and followup.allowed
+        assert mount.status().tracking is False
+
+
+class _RaisingStatusMount(FakeMountPark):
+    def status(self) -> MountParkStatus:
+        raise ConnectionError("INDI connection lost")
+
+
+class TestARaisingStatusReadFailsClosed:
+    """S6.4 round 3: verify()'s evidence reads (before/after) and its decision read must
+    never raise into the caller (a Qt slot) -- the gate closes with the reason."""
+
+    @pytest.mark.parametrize("required", [TrackingMode.OFF, TrackingMode.ON])
+    def test_verify_closes_the_gate_with_the_reason(self, required: TrackingMode) -> None:
+        enforcer = _enforcer(_RaisingStatusMount(), OperatingMode.ASTRONOMICAL)
+
+        gate = enforcer.verify(required, "mount_align")
+
+        assert not gate.allowed
+        assert "INDI connection lost" in gate.reason
+        step = enforcer.evidence()["transitions"][-1]
+        assert step["tracking_before"] is None and step["tracking_after"] is None
+
+    def test_a_terrestrial_enforce_closes_the_gate_and_owes_nothing(self) -> None:
+        enforcer = _enforcer(_RaisingStatusMount(), OperatingMode.TERRESTRIAL)
+
+        gate = enforcer.enforce("connect")
+
+        assert not gate.allowed and "INDI connection lost" in gate.reason
+        assert enforcer.reenforce_pending is False
+
+    def test_an_astronomical_enforce_does_not_raise(self) -> None:
+        enforcer = _enforcer(_RaisingStatusMount(), OperatingMode.ASTRONOMICAL)
+
+        gate = enforcer.enforce("calibration")
+
+        assert gate.allowed  # astronomical never forces tracking; the evidence is None
+        assert enforcer.evidence()["transitions"][-1]["tracking_before"] is None
