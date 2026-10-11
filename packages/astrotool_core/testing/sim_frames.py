@@ -174,3 +174,46 @@ class CameraFrameSource:
             )
 
         return wait
+
+
+@dataclass
+class OnDemandFrameSource:
+    """`NextFrame` over a pixel callback: like a camera that starts one exposure of
+    `exposure_s` when asked (no backlog, no stream), rendered when it ends, stamped by `clock`.
+    For workflows whose scene follows a simulated device (S6.7: reacquisition guide frames).
+    `delivered` records (exposure start, exposure end) of every frame handed out."""
+
+    render: Callable[[], np.ndarray]
+    clock: Clock
+    exposure_s: float = 0.1
+    delivered: list[tuple[float, float]] = field(default_factory=list)
+
+    _started_at: float | None = None
+
+    def next_frame(self, remaining_s: float) -> DeliveredFrame | None:
+        # An exposure, once started, continues across calls (a caller may wait in slices).
+        if self._started_at is None:
+            self._started_at = self.clock.monotonic()
+        start = self._started_at
+        end = start + self.exposure_s
+        now = self.clock.monotonic()
+        if end > now + remaining_s:
+            self.clock.sleep(max(0.0, remaining_s))
+            return None
+        if end > now:
+            self.clock.sleep(end - now)
+        self._started_at = None
+        self.delivered.append((start, end))
+        return DeliveredFrame(np.asarray(self.render(), np.float32), end, self.exposure_s)
+
+    def waiter(self) -> Callable[[float, float], FrameAcquisitionResult]:
+        def wait(reference: float, timeout_s: float) -> FrameAcquisitionResult:
+            return acquire_stable_frame(
+                self.next_frame,
+                is_available=lambda: True,
+                reference_monotonic=reference,
+                timeout_s=timeout_s,
+                clock=self.clock,
+            )
+
+        return wait

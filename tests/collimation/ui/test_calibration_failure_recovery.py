@@ -12,7 +12,11 @@ loop is never blocked while a capture is in flight.
 
 The mount runner's own waits (stop_tracking gate delay, retries, settle) run on a FakeClock
 (#53, S3b): they are not what these tests observe, and on the real clock they only added
-wall time. Captures and the panel's own timeouts stay on the real clock (S6.6/S6.7)."""
+wall time. S6.7: the panel's capture timing (frame deadlines, stability window, motion
+reference, progress) and the frame stamps run on the same FakeClock; each frame still takes a
+short REAL time (`real_frame_s`) so a capture is genuinely in flight on its worker thread while
+the event loop is observed. A test that must watch a window for ~0.5 s real uses the slower
+rig (`_SLOW_REAL_FRAME_S`)."""
 
 from __future__ import annotations
 
@@ -40,7 +44,11 @@ from collimation_tool.ui.mount_test_move_runner import MountTestMoveRunner
 from PySide6.QtCore import QTimer
 from PySide6.QtTest import QTest
 
-_EXPOSURE_S = 0.12  # a capture window (3 fresh frames) takes ~0.5 s: long enough to observe
+_EXPOSURE_S = 0.12  # fake exposure of every frame (the panel's deadlines scale from it)
+#: Real time one frame takes on the worker thread: short by default (fast suite), the full
+#: exposure where a test observes a capture window (~0.5 s) while it is in flight.
+_FAST_REAL_FRAME_S = 0.02
+_SLOW_REAL_FRAME_S = _EXPOSURE_S
 _SETTINGS = MountAlignmentSettings(
     settle_ms=0,
     frame_settle_ms=0,
@@ -61,8 +69,13 @@ def _texture(seed: int, shape: tuple[int, int]) -> np.ndarray:
 class _Rig:
     """Frame streams driven by the mount's cumulative pulses; failure modes are plain flags."""
 
-    def __init__(self, mount: FakeMountAdapter) -> None:
+    def __init__(
+        self, mount: FakeMountAdapter, *, real_frame_s: float = _FAST_REAL_FRAME_S
+    ) -> None:
         self.mount = mount
+        #: S6.7: frames are stamped on this clock, which the panel and its runner share.
+        self.clock = FakeClock()
+        self.real_frame_s = real_frame_s
         self.px_per_ms = {"left": 0.05, "right": 0.04}
         self.base = {k: _texture(i + 1, _SHAPES[k]) for i, k in enumerate(("left", "right"))}
         self.alt = {k: _texture(i + 50, _SHAPES[k]) for i, k in enumerate(("left", "right"))}
@@ -89,21 +102,27 @@ class _Rig:
             if self.raise_in_waiter:
                 raise RuntimeError("camera SDK exploded while waiting for a frame")
             if self.never_fresh[key]:
-                time.sleep(min(timeout_s, 0.35))  # the field case: a fresh frame never arrives
+                # The field case: a fresh frame never arrives (the whole budget passes).
+                time.sleep(self.real_frame_s)
+                self.clock.sleep(max(0.0, timeout_s))
                 return FrameAcquisitionResult(FrameAcquisitionStatus.EXPOSURE_OVERLAPPED_MOTION)
 
             def next_frame(_remaining: float) -> DeliveredFrame | None:
-                time.sleep(_EXPOSURE_S)  # a real exposure: starts now, delivered when it ends
+                # An exposure starts now and is delivered when it ends (fake time); it also
+                # takes a little real time, so the capture is really in flight on its thread.
+                time.sleep(self.real_frame_s)
+                self.clock.sleep(_EXPOSURE_S)
                 self.draws[key] += 1
                 jitter = self.jitter[key]
                 extra = jitter(self.draws[key]) if jitter is not None else 0
-                return DeliveredFrame(self.clean(key, extra), time.monotonic(), _EXPOSURE_S)
+                return DeliveredFrame(self.clean(key, extra), self.clock.monotonic(), _EXPOSURE_S)
 
             return acquire_stable_frame(
                 next_frame,
                 is_available=lambda: True,
                 reference_monotonic=reference,
                 timeout_s=timeout_s,
+                clock=self.clock,
             )
 
         return wait
@@ -154,7 +173,8 @@ def _panel(
         tracking_enforcer=enforcer,
         camera_geometry=geometry,
         threaded_captures=True,
-        runner=MountTestMoveRunner(clock=FakeClock()),
+        runner=MountTestMoveRunner(clock=rig.clock),
+        clock=rig.clock,
     )
     panel._connect_button.setChecked(True)
     panel._timer.setInterval(20)  # the real poll timer, just faster than production's 250 ms
@@ -192,7 +212,7 @@ class TestTheEventLoopStaysResponsive:
     def test_run_calibration_returns_at_once_and_the_loop_keeps_ticking(
         self, qapp: object
     ) -> None:
-        rig = _Rig(FakeMountAdapter())
+        rig = _Rig(FakeMountAdapter(), real_frame_s=_SLOW_REAL_FRAME_S)
         panel = _panel(rig)
         heartbeat = _Heartbeat()
 

@@ -1,6 +1,7 @@
 import time
 
 import numpy as np
+import pytest
 from astrotool_core.acquisition.acquisition_state import AcquisitionState
 from astrotool_core.acquisition.stream_controller import FrameMailbox, StreamController
 from astrotool_core.camera.fake_camera import FakeCamera
@@ -169,3 +170,51 @@ class TestFrameMailboxRing:
         assert latest is not None and latest.sequence == 3
         assert mailbox.wait_latest(after_sequence=0, timeout_s=0.05) is None  # popped
         assert mailbox.dropped_count == 2
+
+
+class _StampedCamera(FakeCamera):
+    """S6.7: a camera whose frames say when their exposure started (like the ToupTek
+    adapter's trigger stamp), 5 s before capture() returns (long readout/pull)."""
+
+    def capture(self, exposure_seconds: float) -> Frame:
+        frame = super().capture(exposure_seconds)
+        return Frame(
+            pixels=frame.pixels,
+            header=frame.header,
+            exposure_seconds=2.0,
+            exposure_started_at=time.monotonic() - 5.0,
+        )
+
+
+def test_a_known_exposure_start_stamps_the_end_of_the_exposure_not_of_the_readout() -> None:
+    """S6.7: consumers derive the exposure start as captured_at - exposure_seconds; the
+    after-capture stamp put it AFTER the real start. With a known start the mailbox stamp is
+    start + exposure (here 3 s before capture() returned)."""
+    camera = _StampedCamera()
+    camera.connect()
+    controller = StreamController(camera, name="stamped")
+    controller.start_stream(exposure_s=0.01, cadence_s=0.05)
+    try:
+        mailbox_frame = controller.mailbox.wait_latest(timeout_s=2.0)
+    finally:
+        controller.stop_stream()
+    assert mailbox_frame is not None
+    started = mailbox_frame.frame.exposure_started_at
+    assert started is not None
+    assert mailbox_frame.captured_at_monotonic - 2.0 == pytest.approx(started, abs=1e-6)
+    assert mailbox_frame.captured_at_monotonic < time.monotonic() - 2.5
+
+
+def test_without_a_known_start_the_after_capture_stamp_is_kept() -> None:
+    camera = FakeCamera()
+    camera.connect()
+    controller = StreamController(camera, name="plain")
+    before = time.monotonic()
+    controller.start_stream(exposure_s=0.01, cadence_s=0.05)
+    try:
+        mailbox_frame = controller.mailbox.wait_latest(timeout_s=2.0)
+    finally:
+        controller.stop_stream()
+    assert mailbox_frame is not None
+    assert mailbox_frame.frame.exposure_started_at is None
+    assert mailbox_frame.captured_at_monotonic >= before

@@ -3,6 +3,9 @@ per acceptance criterion (AC 1.1-1.7)."""
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
+
 import numpy as np
 import pytest
 from astrotool_core.mount.axis_calibration import AxisResponse, CalibrationMatrix
@@ -21,6 +24,8 @@ from astrotool_core.registration.result import (
     RegistrationStatus,
 )
 from astrotool_core.testing.frame_factory import StarSpec, single_star_image, star_field_image
+from astrotool_core.testing.sim_frames import OnDemandFrameSource
+from astrotool_core.timing import FakeClock
 from collimation_tool.application.star_acquisition import AcquisitionStatus, FocusedStarAcquisition
 
 _MAIN_SHAPE = (80, 100)  # height, width
@@ -32,6 +37,16 @@ _RESPONSE_VECTORS = {
     (MountAxis.AXIS2, AxisDirection.POSITIVE): (0.0, 10.0),
     (MountAxis.AXIS2, AxisDirection.NEGATIVE): (0.0, -10.0),
 }
+
+
+def _fresh_frames(render: Callable[[], np.ndarray]) -> dict[str, Any]:
+    """S6.7: a guide camera exposing on demand on a FakeClock -- every measurement after a
+    correction is a fresh frame (production refuses to move without one)."""
+    clock = FakeClock()
+    return {
+        "clock": clock,
+        "wait_guide_frame_after": OnDemandFrameSource(render, clock, exposure_s=0.1).waiter(),
+    }
 
 
 def _make_calibration(px_per_ms: float = 0.1, duration_ms: int = 100) -> CalibrationMatrix:
@@ -187,6 +202,7 @@ class TestAC1_4GuideAssistedReacquisition:
         result = controller.attempt_guide_reacquisition(
             mount.render_frame, mount=mount, guide_calibration=calibration,
             registration=registration, prior_main=prior_main,
+            **_fresh_frames(mount.render_frame),
         )
 
         assert result.status is AcquisitionStatus.SEARCHING_GUIDE
@@ -209,6 +225,7 @@ class TestAC1_4GuideAssistedReacquisition:
         result = controller.attempt_guide_reacquisition(
             mount.render_frame, mount=mount, guide_calibration=calibration,
             registration=registration, prior_main=prior_main,
+            **_fresh_frames(mount.render_frame),
         )
 
         assert result.failure_reason == "insufficient_calibration_confidence"
@@ -246,6 +263,7 @@ class TestAC1_4GuideAssistedReacquisition:
         result = controller.attempt_guide_reacquisition(
             mount.render_frame, mount=mount, guide_calibration=calibration,
             registration=registration, prior_main=prior_main,
+            **_fresh_frames(mount.render_frame),
         )
 
         assert result.status is AcquisitionStatus.LOST
@@ -265,6 +283,7 @@ class TestAC1_4GuideAssistedReacquisition:
         result = controller.attempt_guide_reacquisition(
             mount.render_frame, mount=mount, guide_calibration=calibration,
             registration=registration, prior_main=prior_main,
+            **_fresh_frames(mount.render_frame),
             cancel_check=lambda: True,
         )
 
@@ -294,6 +313,7 @@ class TestAC1_4GuideAssistedReacquisition:
         result = controller.attempt_guide_reacquisition(
             mount.render_frame, mount=mount, guide_calibration=calibration,
             registration=registration, prior_main=prior_main,
+            **_fresh_frames(mount.render_frame),
         )
 
         assert result.status is AcquisitionStatus.LOST

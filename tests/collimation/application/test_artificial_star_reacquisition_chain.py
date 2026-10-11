@@ -18,6 +18,8 @@ from astrotool_core.mount.port import (
 from astrotool_core.registration.artificial_star_registrar import ArtificialStarRegistrar
 from astrotool_core.registration.optical_prior import OpticalPrior
 from astrotool_core.testing.frame_factory import airy_pattern_image, single_star_image
+from astrotool_core.testing.sim_frames import OnDemandFrameSource
+from astrotool_core.timing import FakeClock
 from collimation_tool.application.fine_collimation_controller import FineCollimationController
 from collimation_tool.application.star_acquisition import (
     AcquisitionResult,
@@ -109,11 +111,15 @@ def test_a_37_registration_drives_guide_reacquisition_inside_the_fine_loop() -> 
 
     calibration = _calibration()
     mount = _GuideMount(calibration, start=(240.0, 200.0))
+    clock = FakeClock()
 
     def reacquirer(acq: FocusedStarAcquisition, cancel: object) -> AcquisitionResult:
         return acq.attempt_guide_reacquisition(
             mount.render_frame, mount=mount, guide_calibration=calibration,
             registration=registration, prior_main=prior_main,
+            # S6.7: every measurement after a move is a fresh frame (fake time).
+            clock=clock,
+            wait_guide_frame_after=OnDemandFrameSource(mount.render_frame, clock).waiter(),
         )
 
     # Star tracked near Main's right side, lost for two frames, then back

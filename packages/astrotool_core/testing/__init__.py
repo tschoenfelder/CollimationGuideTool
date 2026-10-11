@@ -35,6 +35,7 @@ from astrotool_core.testing.sim_frames import (
     FrameSpec,
     FrameTimeline,
     MotionWindow,
+    OnDemandFrameSource,
     frames_from_replay,
 )
 from astrotool_core.testing.sim_indi_filter_wheel import (
@@ -77,6 +78,7 @@ __all__ = [
     "FrameSpec",
     "FrameTimeline",
     "MotionWindow",
+    "OnDemandFrameSource",
     "ObservableRLock",
     "OnStepScenario",
     "SimulatedIndiClient",

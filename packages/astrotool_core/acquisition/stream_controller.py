@@ -156,6 +156,14 @@ class StreamController:
                 cycle_start = time.monotonic()
                 frame = self.camera.capture(exposure_s)
                 captured_at = time.monotonic()  # after capture, to reflect true frame age
+                started = frame.exposure_started_at
+                if started is not None:
+                    # S6.7: the end of the exposure itself (trigger + exposure), not the end
+                    # of readout/pull/copy: consumers derive the exposure START as
+                    # captured_at - exposure_seconds (acquire_stable_frame), and the later
+                    # after-capture stamp put that start AFTER the real one (unsafe for the
+                    # fresh-frame-after-motion rule). Never later than the after-capture stamp.
+                    captured_at = min(captured_at, started + frame.exposure_seconds)
                 self._seq += 1
                 self.mailbox.put(frame, sequence=self._seq, captured_at=captured_at)
                 elapsed = time.monotonic() - cycle_start

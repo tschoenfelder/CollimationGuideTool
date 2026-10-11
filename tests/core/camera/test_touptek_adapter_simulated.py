@@ -437,3 +437,27 @@ class TestIdentity:
         assert adapter.get_descriptor().logical_name == "GPCMOS02000KPA"
         assert adapter.device_id == guide.id != main.id
         assert sdk.enum_calls == 1
+
+
+class TestExposureStartIsStampedAtTheTrigger:
+    """S6.7: the adapter stamps the software trigger (on its clock) into
+    `Frame.exposure_started_at` -- never later than the real exposure start, unlike the
+    stream's after-capture stamp (exposure end + readout + pull + copy)."""
+
+    def test_the_frame_carries_the_trigger_time(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        clock = FakeClock(50.0)
+        sdk = SimulatedToupcamSdk(clock=clock)
+        device = sdk.add_camera("G3M678M")
+        install_simulated_toupcam(monkeypatch, sdk)
+        adapter = TouptekCameraAdapter(camera_id=device.id, clock=clock)
+        adapter.connect()
+        adapter.set_exposure_ms(1500.0)
+        clock.advance(3.0)
+
+        frame = adapter.capture(1.5)
+
+        exposure = sdk.handles[-1].exposures[-1]
+        assert frame.exposure_started_at is not None
+        assert frame.exposure_started_at <= exposure.start
+        assert frame.exposure_started_at == pytest.approx(exposure.start)
+        assert frame.exposure_seconds == pytest.approx(exposure.end - exposure.start)

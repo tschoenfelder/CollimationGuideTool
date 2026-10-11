@@ -244,7 +244,6 @@ from __future__ import annotations
 import logging
 import math
 import threading
-import time
 import traceback
 from collections import deque
 from collections.abc import Callable
@@ -254,6 +253,7 @@ from typing import Any, Literal
 
 import numpy as np
 from astrotool_core.acquisition import (
+    DEFAULT_FRESH_FRAME_BUDGET,
     CommandedMovementContext,
     DeliveredFrame,
     FrameAcquisitionResult,
@@ -263,6 +263,7 @@ from astrotool_core.acquisition import (
     StabilityStatus,
     StableFrameWaiter,
     acquire_verified_frames,
+    measurement_reference,
 )
 from astrotool_core.config import MountAlignmentSettings
 from astrotool_core.mount import (
@@ -298,6 +299,7 @@ from astrotool_core.mount.movement_sizing import (
 from astrotool_core.mount.operating_mode import OperatingMode, TrackingEnforcer
 from astrotool_core.target.detector import detect_sources
 from astrotool_core.target.translation_offset import measure_translation_offset
+from astrotool_core.timing import SYSTEM_CLOCK, Clock
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -319,12 +321,12 @@ from collimation_tool.ui.mount_test_move_runner import (
 )
 
 FrameGetter = Callable[[], np.ndarray | None]
-#: How long an "after" capture waits for a frame that's provably fresh
-#: (its own exposure entirely postdates the pulse+settle completion)
-#: before giving up -- treated the same as any other missing "after"
-#: frame (see _finish_calibration_step/_finish_nudge's own "no frame
-#: available" abort path), not silently downgraded to a stale one.
-_FRESH_FRAME_TIMEOUT_S = 2.0
+#: S6.7: how long an "after" capture waits for a frame that's provably fresh (its own exposure
+#: entirely postdates the pulse+settle completion) is the shared fresh-frame-after-motion rule
+#: (`astrotool_core.acquisition.fresh_frame_after_motion`: `DEFAULT_FRESH_FRAME_BUDGET`, 2 s
+#: floor, two exposures + 1 s) -- a timeout is treated the same as any other missing "after"
+#: frame (see _finish_calibration_step/_finish_nudge's own "no frame available" abort path),
+#: never silently downgraded to a stale one.
 
 #: Issue #27/#30: this panel composes `astrotool_core.acquisition.
 #: motion_aware_acquisition.acquire_verified_frames` over its own two named
@@ -796,9 +798,15 @@ class MountTestMovePanel(QWidget):
         camera_geometry: Callable[[], list[CameraGeometry]] | None = None,
         calibration_distance_m: Callable[[str], float | None] | None = None,
         threaded_captures: bool = False,
+        clock: Clock | None = None,
     ) -> None:
         super().__init__()
         self._mount = mount
+        #: S6.7 / S3b(c): the capture timing (motion-completed reference, verified-reference
+        #: max age, capture-job elapsed time, the stability window's waits) runs on this clock.
+        #: Production: the real clock -- the same timebase the cameras stamp frames in and the
+        #: runner (default) reports in. Tests pass the FakeClock they give the runner/frames.
+        self._clock: Clock = clock if clock is not None else SYSTEM_CLOCK
         #: Issue #49: True runs every stability-verified capture (a wait that can take tens of
         #: seconds with long exposures) on a worker thread and continues on the GUI thread from
         #: the poll timer -- the event loop never blocks. False (default) runs the same request
@@ -1311,7 +1319,7 @@ class MountTestMovePanel(QWidget):
         picture"): the very next real run after `wait_for_frame_after()`
         became exposure-*start*-aware (commit c4847ab) -- both cameras
         were really exposing at 2000ms, comparable to the fixed
-        `_FRESH_FRAME_TIMEOUT_S=2.0`. That check's own worst case (a
+        fixed 2.0 s budget. That check's own worst case (a
         frame already mid-exposure when the reference is set must be
         skipped entirely, not just the ones delivered too early) can need
         up to *two* full exposures before a valid one arrives -- a fixed
@@ -1320,20 +1328,20 @@ class MountTestMovePanel(QWidget):
         "before" frames were ever saved, the "after" wait timed out
         outright even though the camera was streaming fine.
 
-        Falls back to the original fixed constant when exposure isn't
+        Falls back to the budget's floor when exposure isn't
         known (`_get_left/right_exposure_gain` unwired, e.g. a caller
         that doesn't need `diagnostic_camera_state()`) -- deliberately
         doesn't slow every wait down by default when there's nothing to
-        scale from."""
+        scale from.
+
+        S6.7: the numbers are the shared rule's (`DEFAULT_FRESH_FRAME_BUDGET`, its one owner)."""
         exposures_ms = [
             state[0]
             for state in (self._get_left_exposure_gain(), self._get_right_exposure_gain())
             if state is not None
         ]
-        if not exposures_ms:
-            return _FRESH_FRAME_TIMEOUT_S
-        slowest_s = max(exposures_ms) / 1000.0
-        return max(_FRESH_FRAME_TIMEOUT_S, 2.0 * slowest_s + 1.0)
+        slowest_s = max(exposures_ms) / 1000.0 if exposures_ms else None
+        return DEFAULT_FRESH_FRAME_BUDGET.timeout_s(slowest_s)
 
     def _verified_capture_timeout_s(self) -> float:
         """Total deadline for one `verify_stability=True` capture -- has
@@ -1480,17 +1488,19 @@ class MountTestMovePanel(QWidget):
             # from -- "prove stability starting right now" for the first step (`after_monotonic`
             # is None) doesn't need it.
             after = request.after_monotonic
-            result.base_reference = after if after is not None else time.monotonic()
+            result.base_reference = after if after is not None else self._clock.monotonic()
             result.settle_s = self._settings.frame_settle_ms / 1000.0 if after is not None else 0.0
             result.results = acquire_verified_frames(
                 {"left": self._wait_for_left_frame, "right": self._wait_for_right_frame},
-                reference_monotonic=result.base_reference + result.settle_s,
+                # S6.7: the shared rule -- exposure must start after the motion ended + settle.
+                reference_monotonic=measurement_reference(result.base_reference, result.settle_s),
                 timeout_s=request.timeout_s,
                 stability_tolerance_px=self._settings.stability_tolerance_px,
                 stability_sample_count=self._settings.stability_sample_count,
                 stability_sample_interval_s=self._settings.stability_sample_interval_s,
                 movement_context=request.movement_context,
                 cancelled=cancelled,
+                clock=self._clock,
             )
             result.left_frame = result.results["left"].frame
             result.right_frame = result.results["right"].frame
@@ -1567,7 +1577,7 @@ class MountTestMovePanel(QWidget):
         captured = {k: m for k, m in result.raw.items() if m is not None}
         if request.verify_stability and captured:
             self._verified_reference = _VerifiedReference(
-                taken_at=time.monotonic(),
+                taken_at=self._clock.monotonic(),
                 submit_count=getattr(self._runner, "submit_count", None),
                 mode=mode,
                 measurements=dict(captured),
@@ -1584,7 +1594,7 @@ class MountTestMovePanel(QWidget):
             return None
         if getattr(self._runner, "submit_count", None) != reference.submit_count:
             return None
-        if time.monotonic() - reference.taken_at > _REFERENCE_MAX_AGE_S:
+        if self._clock.monotonic() - reference.taken_at > _REFERENCE_MAX_AGE_S:
             return None
         return dict(reference.measurements)
 
@@ -1607,7 +1617,9 @@ class MountTestMovePanel(QWidget):
             return
         request = self._snapshot_capture_request(mode, label, after_monotonic, True)
         self._capture_generation += 1
-        job = _CaptureJob(self._capture_generation, label, request, then, time.monotonic())
+        job = _CaptureJob(
+            self._capture_generation, label, request, then, self._clock.monotonic()
+        )
         self._capture_job = job
         self._show_capture_progress(job)
         threading.Thread(
@@ -1626,7 +1638,7 @@ class MountTestMovePanel(QWidget):
             job.done.set()
 
     def _show_capture_progress(self, job: _CaptureJob) -> None:
-        elapsed = time.monotonic() - job.started_at
+        elapsed = self._clock.monotonic() - job.started_at
         what = job.label.replace("_", " ")
         self._result_label.setText(
             f"Capturing {what} -- waiting for fresh, stable frames from both cameras "
@@ -1703,7 +1715,9 @@ class MountTestMovePanel(QWidget):
             "threaded_captures": self._threaded_captures,
             "capture_in_flight": job is not None,
             "capture_label": job.label if job is not None else None,
-            "capture_elapsed_s": (time.monotonic() - job.started_at) if job is not None else 0.0,
+            "capture_elapsed_s": (
+                (self._clock.monotonic() - job.started_at) if job is not None else 0.0
+            ),
             "runner_busy": self._runner.is_busy,
             "poll_timer_active": self._timer.isActive(),
             "calibration_queue_len": len(self._calibration_queue),
@@ -3326,7 +3340,12 @@ class MountTestMovePanel(QWidget):
             # complete), not later, so any Qt-event-loop delay before the
             # "after" capture actually runs only ever makes the freshness
             # check stricter, never looser.
-            completed_at = time.monotonic()
+            completed_at = self._clock.monotonic()
+            # S6.7 review: EVERY runner outcome may have moved the mount -- also one whose
+            # pending action Stop dropped, and a failed calibration's stranded return -- so its
+            # end is always the next BEFORE capture's motion reference (frames exposed during
+            # that move must never pass as fresh).
+            self._last_pulse_completed_at = completed_at
             self._last_motion_paths = outcome.motion_paths
             self._last_pulse_timing = {
                 "motion_started_at": outcome.motion_started_at,

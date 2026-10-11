@@ -91,6 +91,10 @@ class FrameAcquisitionStatus(Enum):
 class FrameAcquisitionResult:
     status: FrameAcquisitionStatus
     frame: DeliveredFrame | None = None
+    #: S6.7: the longest exposure among the frames this wait was delivered (accepted or
+    #: rejected), None when none arrived -- lets the fresh-frame service scale its deadline to
+    #: an exposure it did not know up front (`fresh_frame_after_motion`).
+    longest_exposure_s: float | None = None
 
     @property
     def ok(self) -> bool:
@@ -140,25 +144,30 @@ def acquire_stable_frame(
         return FrameAcquisitionResult(FrameAcquisitionStatus.CAMERA_UNAVAILABLE)
     deadline = now() + timeout_s
     saw_overlapping_exposure = False
+    longest: float | None = None
     while True:
         if is_cancelled():
-            return FrameAcquisitionResult(FrameAcquisitionStatus.CANCELLED)
+            return FrameAcquisitionResult(
+                FrameAcquisitionStatus.CANCELLED, longest_exposure_s=longest
+            )
         remaining = deadline - now()
         if remaining <= 0:
             break
         frame = next_frame(remaining)
         if frame is None:
             break
+        if longest is None or frame.exposure_seconds > longest:
+            longest = frame.exposure_seconds
         exposure_start = frame.captured_at_monotonic - frame.exposure_seconds
         if exposure_start >= reference_monotonic:
-            return FrameAcquisitionResult(FrameAcquisitionStatus.OK, frame)
+            return FrameAcquisitionResult(FrameAcquisitionStatus.OK, frame, longest)
         saw_overlapping_exposure = True
     status = (
         FrameAcquisitionStatus.EXPOSURE_OVERLAPPED_MOTION
         if saw_overlapping_exposure
         else FrameAcquisitionStatus.TIMEOUT
     )
-    return FrameAcquisitionResult(status)
+    return FrameAcquisitionResult(status, longest_exposure_s=longest)
 
 
 def acquire_settled_frames(

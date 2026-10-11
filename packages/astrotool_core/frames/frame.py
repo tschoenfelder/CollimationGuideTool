@@ -28,6 +28,10 @@ class Frame:
     bit_depth: sensor bit depth (8 or 16).
     timestamp: capture timestamp (``time.monotonic()`` seconds).
     data: raw FITS bytes (empty when constructed directly from an array).
+    exposure_started_at: S6.7 -- when the exposure was triggered (``time.monotonic()``
+        seconds, the camera adapter's clock), or None when the source does not know it
+        (fakes, replay). A trigger stamp is at or BEFORE the real exposure start, so a
+        freshness check based on it can only be stricter than the truth.
     """
 
     pixels: np.ndarray[Any, np.dtype[Any]]
@@ -36,6 +40,7 @@ class Frame:
     bit_depth: int = 16
     timestamp: float = field(default_factory=time.monotonic)
     data: bytes = field(default=b"")
+    exposure_started_at: float | None = None
 
     @property
     def height(self) -> int:

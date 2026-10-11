@@ -344,6 +344,9 @@ class TouptekCameraAdapter(CameraPort):
         self._device_id = ""
         self._frame_ready = threading.Event()
         self._abort = threading.Event()
+        #: S6.7: when the last software trigger was sent (on `self._clock`) -- the exposure
+        #: starts at or after it; carried as `Frame.exposure_started_at`.
+        self._last_trigger_at: float | None = None
         self._capture_error: Exception | None = None
         self._capture_lock = threading.Lock()
         self._pixel_shift: int = -1  # -1=not yet detected; 0/2/4=right-shift to native range
@@ -611,6 +614,7 @@ class TouptekCameraAdapter(CameraPort):
         try:
             actual_exposure_s = self.get_exposure_ms() / 1000.0
             raw_u16 = self._capture_raw(actual_exposure_s + self._timeout_extra_s)
+            exposure_started_at = self._last_trigger_at
             if self._pixel_shift < 0:
                 self._pixel_shift = _detect_pixel_shift(raw_u16)
             shift = max(0, self._pixel_shift)
@@ -626,6 +630,7 @@ class TouptekCameraAdapter(CameraPort):
                 header=hdr,
                 exposure_seconds=actual_exposure_s,
                 bit_depth=self._effective_bit_depth(shift),
+                exposure_started_at=exposure_started_at,
             )
         finally:
             self._capture_lock.release()
@@ -946,6 +951,9 @@ class TouptekCameraAdapter(CameraPort):
     def _capture_raw(self, timeout_s: float) -> np.ndarray:  # pragma: no cover
         self._drain_state()
         self._put_option("TOUPCAM_OPTION_FLUSH", 3)
+        # S6.7: stamped just BEFORE the trigger -- never later than the real exposure start,
+        # unlike the after-capture stamp (exposure end + readout + pull + copy).
+        self._last_trigger_at = self._clock.monotonic()
         self._cam.Trigger(1)
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:

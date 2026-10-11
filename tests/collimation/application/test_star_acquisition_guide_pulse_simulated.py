@@ -56,6 +56,7 @@ from collimation_tool.application.guide_pulse_reacquisition import (
 from collimation_tool.application.star_acquisition import (
     ASTRONOMICAL_REACQUISITION_UNAVAILABLE,
     MOUNT_TRACKING_STOPPED,
+    NO_FRESH_FRAME_SOURCE,
     OPERATING_MODE_CHANGED,
     AcquisitionResult,
     AcquisitionStatus,
@@ -312,16 +313,18 @@ class TestAstronomicalReacquisitionWithGuidePulses:
         ]
         assert sky.distance_to_target() <= 6.0
 
-    def test_without_a_fresh_frame_source_the_latest_frame_is_used(
+    def test_without_a_fresh_frame_source_nothing_is_sent(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """Interim (until S6.7): no settled-frame waiter wired -> the latest frame after the
-        policy's settle, as on the S6.0b angular path."""
+        """S6.7 (replaces the S6.0d interim latest-frame fallback): no fresh-frame source wired
+        -> no guide pulse at all and an explicit reason; never a latest/stale frame."""
         sky = _Sky(monkeypatch, start=(250.0, 170.0))
 
         result = sky.reacquire(fresh_frames=False)
 
-        assert result.failure_reason is None, result
+        assert result.failure_reason == NO_FRESH_FRAME_SOURCE, result
+        assert result.detail
+        assert sky.client.guide_pulse_calls == []
         assert sky.frame_starts == []
 
 

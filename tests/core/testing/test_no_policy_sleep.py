@@ -79,12 +79,6 @@ POLICY_ROOTS = (
 )
 
 POLICY_WALL_CLOCK_ALLOWLIST: dict[str, str] = {
-    "apps/collimation_tool/ui/mount_test_move_panel.py": (
-        "pending S6.6/S6.7: the capture-job timeout, the reusable reference's max age and the "
-        "motion-completed reference are measured on the real clock in the panel itself; the "
-        "clock arrives with the Mount Align orchestration leaving the panel (the runner it "
-        "drives is on the injected clock since S3b)"
-    ),
     "packages/astrotool_core/acquisition/stream_controller.py": (
         "FrameMailbox.wait_latest/wait_next_after block on a Condition until a real-time "
         "deadline, and the capture loop's cadence wait is a stop-event wait used as a sleep; "
@@ -462,7 +456,6 @@ def test_the_allowlists_are_pinned() -> None:
         "packages/astrotool_core/camera/touptek_adapter.py",
     }
     assert set(POLICY_WALL_CLOCK_ALLOWLIST) == {
-        "apps/collimation_tool/ui/mount_test_move_panel.py",
         "packages/astrotool_core/acquisition/stream_controller.py",
         "packages/astrotool_core/filter_wheel/indi_filter_wheel_adapter.py",
     }

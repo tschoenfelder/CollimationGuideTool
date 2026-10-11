@@ -19,6 +19,15 @@ _wait_for_move_settled`) -- so by the time `measure()` runs here, the
 physical move is already known complete, and passing the clock's
 `monotonic()` (captured right then) as `wait_for_frame`'s own `reference_monotonic` is
 guaranteed to reject any frame whose exposure started before that.
+
+S6.7 (T05): that wait is the shared fresh-frame-after-motion rule
+(`astrotool_core.acquisition.fresh_frame_after_motion`) -- an exposure-scaled
+deadline instead of the fixed 5 s that made every exposure above ~2 s on a
+streaming camera fail as "frame acquisition failed". Until a frame shows the
+camera's real exposure the budget assumes 2 s (= the old 5 s); a delivered
+frame with a longer exposure extends it, and later waits of the run are scaled
+from the exposure last seen (e.g. lowered by the artificial-star exposure
+control). No widget is read for it (the run is on a worker thread, #49).
 """
 
 from __future__ import annotations
@@ -28,7 +37,11 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 import numpy as np
-from astrotool_core.acquisition.stable_frame_acquisition import FrameAcquisitionResult
+from astrotool_core.acquisition.fresh_frame_after_motion import FreshFrameBudget, FreshFrameSource
+from astrotool_core.acquisition.stable_frame_acquisition import (
+    FrameAcquisitionResult,
+    FrameAcquisitionStatus,
+)
 from astrotool_core.focus.port import FocuserPort
 from astrotool_core.focus.search_bounds import DEFAULT_ENVELOPE_STEPS
 from astrotool_core.focus.star_focus_metric import StarTargetTracker, measure_star_focus
@@ -51,6 +64,10 @@ SetAutoExposurePaused = Callable[[bool], None]
 #: attempts (unchanged values; named for the issue #53 migration).
 _RETURN_SETTLE_TIMEOUT_S = 10.0
 _RETURN_POLL_INTERVAL_S = 0.05
+
+#: S6.7 (T05): the fresh-frame budget while the exposure is still unknown assumes 2 s
+#: (2 x 2 s + 1 s = the previous fixed 5 s); see the module docstring.
+AUTOFOCUS_FRESH_FRAME_BUDGET = FreshFrameBudget(assumed_exposure_s=2.0)
 
 
 class AutofocusMode(Enum):
@@ -114,7 +131,7 @@ class AutofocusController:
         get_frame: GetFrame,
         wait_for_frame: WaitForFrame,
         set_auto_exposure_paused: SetAutoExposurePaused,
-        frame_timeout_s: float = 5.0,
+        fresh_frame_budget: FreshFrameBudget = AUTOFOCUS_FRESH_FRAME_BUDGET,
         terrestrial_sample_count: int = 3,
         coarse_step: int = 250,
         fine_step: int = 25,
@@ -140,11 +157,14 @@ class AutofocusController:
         self._tracker_max_shift_px = tracker_max_shift_px
         self._focuser = focuser
         self._get_frame = get_frame
-        self._wait_for_frame = wait_for_frame
         self._set_auto_exposure_paused = set_auto_exposure_paused
         self._camera_label = camera_label
         self._focuser_label = focuser_label
-        self._frame_timeout_s = frame_timeout_s
+        #: S6.7: one fresh-frame source per controller (a run), learning the exposure.
+        self._cancel_check: Callable[[], bool] | None = None
+        self._frames = FreshFrameSource(
+            wait_for_frame, budget=fresh_frame_budget, clock=self._clock
+        )
         self._terrestrial_sample_count = max(1, terrestrial_sample_count)
         self._star_edge_margin_px = star_edge_margin_px
         self._terrestrial_tile_size_px = terrestrial_tile_size_px
@@ -159,6 +179,8 @@ class AutofocusController:
     def run(
         self, mode: AutofocusMode, cancel_check: Callable[[], bool] | None = None
     ) -> AutofocusResult:
+        # S6.7 review: a Stop also ends a long fresh-frame wait (within one wait slice).
+        self._cancel_check = cancel_check
         self._set_auto_exposure_paused(True)
         artificial = mode is AutofocusMode.ARTIFICIAL_STAR
         control = self._exposure_control if artificial else None
@@ -216,6 +238,18 @@ class AutofocusController:
         if override is not None:
             status, failure_reason = override
         elif (
+            status in (AutofocusStatus.FRAME_ACQUISITION_FAILED, AutofocusStatus.NO_USABLE_EVIDENCE)
+            and failure_reason is None
+            and (frame_reason := self._frame_failure_reason()) is not None
+        ):
+            # S6.7: the last fresh-frame wait produced no frame -- say so (also when it was the
+            # very first measurement, which the searcher reports as no usable evidence); a
+            # Stop that ended the wait is a cancellation.
+            if frame_reason == "cancelled":
+                status = AutofocusStatus.CANCELLED
+            else:
+                failure_reason = frame_reason
+        elif (
             artificial
             and status is AutofocusStatus.NO_USABLE_EVIDENCE
             and failure_reason is None
@@ -239,6 +273,17 @@ class AutofocusController:
             start_value=search_result.start_value,
             exposure_attempts=tuple(attempts),
         )
+
+    def _frame_failure_reason(self) -> str | None:
+        """S6.7: why the last fresh-frame wait produced no frame -- explicit, e.g.
+        'fresh_frame_timeout: no frame arrived (waited 5.0 s of 5.0 s; exposure unknown)'."""
+        last = self._frames.last_result
+        if last is None or last.ok:
+            return None
+        if last.status is FrameAcquisitionStatus.CANCELLED:
+            return "cancelled"
+        code = "fresh_frame_timeout" if last.timed_out else last.status.value
+        return f"{code}: {last.describe()}"
 
     def _return_to(self, position: int) -> None:
         """Best-effort return to the original start position between
@@ -275,8 +320,8 @@ class AutofocusController:
         return FocusSample(value=measurement.fwhm_px, confidence=1.0 / 3.0)
 
     def _acquire_fresh_frame(self) -> np.ndarray | None:
-        reference_monotonic = self._clock.monotonic()
-        acquisition = self._wait_for_frame(reference_monotonic, self._frame_timeout_s)
+        # The searcher has already waited for the focuser move to complete: it ended now.
+        acquisition = self._frames.after_motion(cancelled=self._cancel_check)
         if not acquisition.ok or acquisition.frame is None:
             return None
         return acquisition.frame.pixels

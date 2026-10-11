@@ -6,6 +6,14 @@ from astrotool_core.acquisition.auto_exposure import (
     AutoExposureResult,
     compute_auto_exposure,
 )
+from astrotool_core.acquisition.fresh_frame_after_motion import (
+    DEFAULT_FRESH_FRAME_BUDGET,
+    FreshFrameBudget,
+    FreshFrameResult,
+    FreshFrameSource,
+    acquire_fresh_frame_after_motion,
+    measurement_reference,
+)
 from astrotool_core.acquisition.image_stability import (
     StabilityCheckResult,
     StabilityStatus,
@@ -35,6 +43,7 @@ from astrotool_core.acquisition.stream_controller import (
 )
 
 __all__ = [
+    "DEFAULT_FRESH_FRAME_BUDGET",
     "AcquisitionState",
     "AutoExposureConfig",
     "AutoExposureResult",
@@ -44,6 +53,9 @@ __all__ = [
     "FrameAcquisitionResult",
     "FrameAcquisitionStatus",
     "FrameMailbox",
+    "FreshFrameBudget",
+    "FreshFrameResult",
+    "FreshFrameSource",
     "MailboxFrame",
     "MotionAwareFrameResult",
     "MotionAwareStatus",
@@ -52,6 +64,7 @@ __all__ = [
     "StabilityStatus",
     "StableFrameWaiter",
     "StreamController",
+    "acquire_fresh_frame_after_motion",
     "acquire_settled_frames",
     "acquire_stable_frame",
     "acquire_verified_frame",
@@ -59,4 +72,5 @@ __all__ = [
     "capture_once",
     "check_image_stability",
     "compute_auto_exposure",
+    "measurement_reference",
 ]

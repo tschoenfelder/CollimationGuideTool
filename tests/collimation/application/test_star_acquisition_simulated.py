@@ -17,9 +17,11 @@ from __future__ import annotations
 
 import math
 import random
+from collections.abc import Callable
 
 import numpy as np
 import pytest
+from astrotool_core.acquisition import StableFrameWaiter
 from astrotool_core.config import MountAlignmentSettings
 from astrotool_core.mount import AxisDirection, AxisResponse, CalibrationMatrix, MountAxis
 from astrotool_core.mount.movement_sizing import SIDEREAL_ARCSEC_PER_S
@@ -33,6 +35,7 @@ from astrotool_core.registration.result import (
 )
 from astrotool_core.testing import OnStepScenario, make_simulated_onstep_connection
 from astrotool_core.testing.frame_factory import single_star_image
+from astrotool_core.testing.sim_frames import OnDemandFrameSource
 from astrotool_core.testing.sim_onstep import AXIS_STATE_REFUSED, SimulatedOnStepIndiClient
 from astrotool_core.timing import FakeClock
 from collimation_tool.application.star_acquisition import AcquisitionStatus, FocusedStarAcquisition
@@ -44,6 +47,12 @@ _UNIT_ARCSEC_PER_MS = (
     MountAlignmentSettings().calibration_center_rate_x * SIDEREAL_ARCSEC_PER_S / 1000.0
 )
 _SIGN = {AxisDirection.POSITIVE: 1.0, AxisDirection.NEGATIVE: -1.0}
+
+
+def _fresh_frames(render: Callable[[], np.ndarray], clock: FakeClock) -> StableFrameWaiter:
+    """S6.7: the guide camera exposes on demand on the sky's clock; every measurement after a
+    move is a frame exposed after it (production refuses to move without this source)."""
+    return OnDemandFrameSource(render, clock, exposure_s=0.1).waiter()
 
 
 def _registration() -> tuple[OpticalPrior, CrossCameraRegistrationResult]:
@@ -148,6 +157,7 @@ class TestGuideReacquisitionOnTheProductionAdapter:
             registration=registration,
             prior_main=prior_main,
             clock=sky.clock,
+            wait_guide_frame_after=_fresh_frames(sky.render, sky.clock),
         )
 
         assert result.failure_reason is None, result
@@ -170,6 +180,7 @@ class TestGuideReacquisitionOnTheProductionAdapter:
             registration=registration,
             prior_main=prior_main,
             clock=sky.clock,
+            wait_guide_frame_after=_fresh_frames(sky.render, sky.clock),
         )
 
         assert result.status is AcquisitionStatus.LOST
@@ -191,6 +202,7 @@ class TestGuideReacquisitionOnTheProductionAdapter:
             registration=registration,
             prior_main=prior_main,
             clock=sky.clock,
+            wait_guide_frame_after=_fresh_frames(sky.render, sky.clock),
         )
 
         assert sky.client.axis_move_calls == []
@@ -229,6 +241,7 @@ def test_the_configured_center_rate_is_passed_through(center_rate_x: float) -> N
         prior_main=prior_main,
         clock=sky.clock,
         center_rate_x=center_rate_x,
+        wait_guide_frame_after=_fresh_frames(sky.render, sky.clock),
     )
 
     assert result.failure_reason is None, result
@@ -264,6 +277,7 @@ class TestALatchedStop:
             registration=registration,
             prior_main=prior_main,
             clock=sky.clock,
+            wait_guide_frame_after=_fresh_frames(sky.render, sky.clock),
         )
 
         assert result.failure_reason is None, result
@@ -289,6 +303,7 @@ class TestALatchedStop:
                 registration=registration,
                 prior_main=prior_main,
                 clock=sky.clock,
+                wait_guide_frame_after=_fresh_frames(frame_then_stop, sky.clock),
             )
         finally:
             self._join_stop_worker(sky.mount)
@@ -319,6 +334,7 @@ class TestAFrameSizedReacquisitionStep:
             registration=registration,
             prior_main=prior_main,
             clock=sky.clock,
+            wait_guide_frame_after=_fresh_frames(sky.render, sky.clock),
         )
 
         assert result.failure_reason is None, result
@@ -341,6 +357,7 @@ class TestAFrameSizedReacquisitionStep:
             registration=registration,
             prior_main=prior_main,
             clock=sky.clock,
+            wait_guide_frame_after=_fresh_frames(sky.render, sky.clock),
         )
 
         assert result.failure_reason is None, result
@@ -386,6 +403,7 @@ class TestTheTrackerKeepsTheStarAcrossACorrection:
             registration=registration,
             prior_main=prior_main,
             clock=sky.clock,
+            wait_guide_frame_after=_fresh_frames(sky.render, sky.clock),
         )
 
         assert sky.client.axis_move_calls, result

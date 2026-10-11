@@ -53,8 +53,11 @@ from collimation_tool.ui.mount_test_move_panel import (
     MountTestMovePanel,
     MovementSize,
     ScreenDirection,
+    _CaptureRequest,
+    _CaptureResult,
     _degenerate_calibration_message,
 )
+from collimation_tool.ui.mount_test_move_runner import MountTestMoveRunner
 
 _SHAPE = (240, 240)
 _CENTER = (120.0, 120.0)
@@ -3267,6 +3270,46 @@ class _SlowMountPark(FakeMountPark):
         super().unpark()
 
 
+#: S6.7 / S3b(c): a camera delivers a frame per this much fake time (test doubles that return a
+#: frame instantly would otherwise never move fake time inside a stability window).
+_FAKE_FRAME_INTERVAL_S = 0.05
+
+
+class _FakeTimeMountTestMovePanel(MountTestMovePanel):
+    """MainWindow's Mount Align panel on fake time: the panel's capture timing and its runner
+    share one FakeClock (S6.7 made both injectable), and every frame wait takes
+    `_FAKE_FRAME_INTERVAL_S` of that time, like a camera delivering frames."""
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        clock = FakeClock()
+        kwargs.setdefault("clock", clock)
+        kwargs.setdefault("runner", MountTestMoveRunner(clock=clock))
+        super().__init__(*args, **kwargs)  # type: ignore[arg-type]
+        self.fake_clock = clock
+
+    def _capture_blocking(
+        self,
+        request: _CaptureRequest,
+        cancelled: Callable[[], bool] | None = None,
+        *,
+        fresh_wait_s: float = 0.0,
+    ) -> _CaptureResult:
+        waiters = (self._wait_for_left_frame, self._wait_for_right_frame)
+
+        def ticking(waiter: StableFrameWaiter) -> StableFrameWaiter:
+            def wait(reference: float, timeout_s: float) -> FrameAcquisitionResult:
+                self.fake_clock.sleep(_FAKE_FRAME_INTERVAL_S)
+                return waiter(reference, timeout_s)
+
+            return wait
+
+        self._wait_for_left_frame, self._wait_for_right_frame = (ticking(w) for w in waiters)
+        try:
+            return super()._capture_blocking(request, cancelled, fresh_wait_s=fresh_wait_s)
+        finally:
+            self._wait_for_left_frame, self._wait_for_right_frame = waiters
+
+
 class TestMountTestMovePanel:
     """Mount-alignment tool — see MountTestMovePanel's docstring.
     FakeMountAdapter stands in for a real IndiMountPulseAdapter here; the
@@ -3289,7 +3332,17 @@ class TestMountTestMovePanel:
     rather than fighting a real streaming camera's own timing to script
     two different frames at two
     different moments (see ReplayCamera/StreamController: frames arrive on
-    a background thread, not one-per-_poll_frame()-call)."""
+    a background thread, not one-per-_poll_frame()-call).
+
+    S6.7 / S3b(c): MainWindow's panel runs on fake time here (`_FakeTimeMountTestMovePanel`):
+    runner settles/retries, the stability window's waits and the capture deadlines no longer
+    cost real seconds."""
+
+    @pytest.fixture(autouse=True)
+    def _mount_align_on_fake_time(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        import collimation_tool.ui.main_window as main_window_module
+
+        monkeypatch.setattr(main_window_module, "MountTestMovePanel", _FakeTimeMountTestMovePanel)
 
     def _window(self, *, mount_park: FakeMountPark, pulse_mount: FakeMountAdapter) -> MainWindow:
         return MainWindow(
@@ -4591,12 +4644,16 @@ class TestMountTestMovePanel:
             get_left_frame=lambda: np.full((120, 120), 500.0, dtype=np.float32),
             get_right_frame=lambda: np.full((120, 120), 500.0, dtype=np.float32),
             # Neither camera's own stability window can ever resolve
-            # (flat content) -- a short timeout keeps this test fast
-            # (still bounded below by the fixed 2.0s exposure-unaware
-            # freshness floor x the default 3-sample window, ~6s).
+            # (flat content): each capture runs to its deadline (the 2.0 s
+            # freshness floor x the 3-sample window, ~6 s per camera) --
+            # S6.7: on fake time (panel + runner share one FakeClock; the
+            # 50 ms sample interval is what moves it, the instant getter
+            # fallback takes no time), so no real seconds are spent.
             settings=MountAlignmentSettings(
-                stability_sample_interval_s=0.0, stability_timeout_s=0.2
+                stability_sample_interval_s=0.05, stability_timeout_s=0.2
             ),
+            clock=(clock := FakeClock()),
+            runner=MountTestMoveRunner(clock=clock),
         )
         panel._connect_button.setChecked(True)
 

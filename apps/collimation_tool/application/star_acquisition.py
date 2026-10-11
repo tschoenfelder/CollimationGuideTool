@@ -38,7 +38,13 @@ from dataclasses import dataclass
 from enum import Enum
 
 import numpy as np
-from astrotool_core.acquisition import StableFrameWaiter, acquire_settled_frames
+from astrotool_core.acquisition import (
+    FrameAcquisitionStatus,
+    FreshFrameBudget,
+    FreshFrameResult,
+    FreshFrameSource,
+    StableFrameWaiter,
+)
 from astrotool_core.mount.axis_calibration import CalibrationMatrix
 from astrotool_core.mount.operating_mode import OperatingMode
 from astrotool_core.mount.port import MountPort
@@ -82,10 +88,27 @@ from collimation_tool.application.recenter_policy import (
 _STEP_TRACKER_RADIUS_FRACTION = 0.35
 _STEP_FRAME_FRACTION = 0.25
 
-#: S6.0d interim (until the shared fresh-frame service, S6.7): how long one stage of the
-#: guide-pulse path's settled-frame wait may take -- covers two guide exposures of up to the
-#: ~2 s observed in field diagnostics plus margin.
-GUIDE_FRESH_FRAME_TIMEOUT_S = 6.0
+#: S6.7: every reacquisition measurement after a move uses a guide frame whose exposure started
+#: after the move ended plus the policy's settle (`fresh_frame_after_motion`, the rule's one
+#: owner). Until a frame shows the guide camera's real exposure the budget assumes 2.5 s (two
+#: exposures + margin = 6 s, the ~2 s guide exposures seen in field diagnostics); a frame
+#: showing a longer exposure extends it, so long exposures are waited for, not timed out.
+_GUIDE_FRESH_FRAME_BUDGET = FreshFrameBudget(assumed_exposure_s=2.5)
+
+#: S6.7: no fresh guide frame arrived in the exposure-scaled time after a move (`detail` says
+#: what was seen) -- the run stops instead of measuring a stale frame.
+FRESH_FRAME_TIMEOUT = "fresh_frame_timeout"
+#: S6.7: the guide camera stopped streaming during the run.
+GUIDE_CAMERA_UNAVAILABLE = "guide_camera_unavailable"
+#: S6.7: no fresh-frame source (`wait_guide_frame_after`) was given -- nothing is moved, since
+#: no measurement after a move could be trusted.
+NO_FRESH_FRAME_SOURCE = "no_fresh_frame_source"
+_NO_FRESH_FRAME_SOURCE_DETAIL = (
+    "no fresh-frame source for the guide camera: a measurement after a mount move could not be "
+    "proven to come from a frame exposed after the move -- nothing was moved"
+)
+#: The measure()-failure reasons a frame-acquisition failure stands behind.
+_LOST_STAR_REASONS = frozenset({"star_lost", "target_not_found_guide"})
 
 #: Issue #15's own machine-readable failure-reason vocabulary, verbatim.
 _CORRECTION_REASON_TO_FAILURE_REASON = {
@@ -149,9 +172,35 @@ def _with_warnings(message: str, warnings: tuple[str, ...]) -> str | None:
     return "; ".join(parts) or None
 
 
+def _fresh_frame_failure(
+    reason: str, frame: FreshFrameResult | None, warnings: tuple[str, ...] = ()
+) -> AcquisitionResult | None:
+    """S6.7: a lost star behind which the fresh-frame wait failed is that failure, said
+    explicitly (timeout / camera gone / cancelled) -- not a 'star lost'. None otherwise."""
+    if reason not in _LOST_STAR_REASONS or frame is None or frame.ok:
+        return None
+    if frame.status is FrameAcquisitionStatus.CANCELLED:
+        return AcquisitionResult(AcquisitionStatus.CANCELLED, None, None, "cancelled")
+    failure = (
+        GUIDE_CAMERA_UNAVAILABLE
+        if frame.status is FrameAcquisitionStatus.CAMERA_UNAVAILABLE
+        else FRESH_FRAME_TIMEOUT
+    )
+    detail = f"guide frame after the move: {frame.describe()}"
+    return AcquisitionResult(
+        AcquisitionStatus.LOST, None, None, failure, _with_warnings(detail, warnings)
+    )
+
+
 def _failed_correction(
-    correction: MountCorrectionResult, warnings: tuple[str, ...]
+    correction: MountCorrectionResult,
+    warnings: tuple[str, ...],
+    frame: FreshFrameResult | None = None,
 ) -> AcquisitionResult:
+    if not correction.tracking_off:
+        frame_failure = _fresh_frame_failure(correction.reason, frame, warnings)
+        if frame_failure is not None:
+            return frame_failure
     failure_reason = _CORRECTION_REASON_TO_FAILURE_REASON.get(correction.reason, correction.reason)
     if correction.tracking_off:  # S6.0d: the mount stopped tracking -- say so first
         failure_reason = MOUNT_TRACKING_STOPPED
@@ -299,14 +348,20 @@ class FocusedStarAcquisition:
         reading, None = unknown) -- see `guide_pulse_reacquisition`. A refusal is
         `astronomical_reacquisition_unavailable` with the reason in `detail`, nothing sent. On
         the guide-pulse path `guide_calibration` (Mount Align's angular matrix) is not used: the
-        guide pulses are calibrated here once per session, and every measurement uses a frame
-        from `wait_guide_frame_after` whose exposure started after the last pulse plus a settle
-        (`acquire_settled_frames`; without it, the latest frame after the policy's settle --
-        the S6.7 fresh-frame service will replace both). OnStepAdapter warnings go to `detail`
+        guide pulses are calibrated here once per session. OnStepAdapter warnings go to `detail`
         on success; a failed pulse after which the mount no longer tracks is
         `mount_tracking_stopped`. `current_operating_mode()` (the mode's owner, re-read) is
         checked between guide pulses: leaving Astronomical ends the run as
-        `operating_mode_changed`, nothing further sent."""
+        `operating_mode_changed`, nothing further sent.
+
+        S6.7 (both paths): every measurement during the run uses a frame from
+        `wait_guide_frame_after` whose exposure STARTED after the preceding move ended plus the
+        policy's settle (`RecenterConfig.settle_ms`), waited for under an exposure-scaled
+        deadline (`fresh_frame_after_motion`); `get_guide_frame` (the latest displayed frame) is
+        only read once, for the identity check before anything moves. Without
+        `wait_guide_frame_after` nothing moves (`no_fresh_frame_source`); a wait that ends
+        without a fresh frame ends the run as `fresh_frame_timeout` (or
+        `guide_camera_unavailable`), the reason in `detail` -- never a stale measurement."""
         decision = choose_reacquisition_motion(operating_mode, tracking_state, mount)
         if decision.motion is None:
             return AcquisitionResult(
@@ -365,28 +420,29 @@ class FocusedStarAcquisition:
         )
         guide_tracker.acquire(identity.source.x, identity.source.y)
 
-        source_clock = clock or SYSTEM_CLOCK
-        settle_ms = RecenterConfig().settle_ms
-
-        def next_guide_frame() -> np.ndarray | None:
-            if not guide_pulses or wait_guide_frame_after is None:
-                return get_guide_frame()
-            settled = acquire_settled_frames(
-                {"guide": wait_guide_frame_after},
-                reference_monotonic=source_clock.monotonic(),
-                timeout_s=GUIDE_FRESH_FRAME_TIMEOUT_S,
-                settle_ms=settle_ms,
-                clock=source_clock,
-            )["guide"]
-            return settled.frame.pixels if settled.ok and settled.frame is not None else None
+        if wait_guide_frame_after is None:
+            return AcquisitionResult(
+                AcquisitionStatus.LOST, None, None, NO_FRESH_FRAME_SOURCE,
+                _NO_FRESH_FRAME_SOURCE_DETAIL,
+            )
+        # S6.7: the policy's settle becomes part of the fresh-frame rule (the exposure must
+        # start after the move ended + settle) instead of a blind sleep before a latest frame.
+        frames = FreshFrameSource(
+            wait_guide_frame_after,
+            settle_s=RecenterConfig().settle_ms / 1000.0,
+            budget=_GUIDE_FRESH_FRAME_BUDGET,
+            clock=clock or SYSTEM_CLOCK,
+        )
 
         def measure() -> TrackingResult:
-            frame = next_guide_frame()
-            if frame is None:
+            # Called right after a blocking move returned (or before the first one): the
+            # motion has ended now.
+            fresh = frames.after_motion(cancelled=cancel_check)
+            if not fresh.ok or fresh.frame is None:
                 return TrackingResult(
                     state=TrackingState.LOST, x=None, y=None, matched_source=None
                 )
-            return guide_tracker.update(detect_sources(frame).sources)
+            return guide_tracker.update(detect_sources(fresh.frame.pixels).sources)
 
         max_step_px = min(
             _STEP_TRACKER_RADIUS_FRACTION * self._guide_max_position_error_px,
@@ -404,13 +460,14 @@ class FocusedStarAcquisition:
                 current_operating_mode=current_operating_mode,
                 clock=clock,
                 max_step_px=max_step_px,
-                settled_frames=wait_guide_frame_after is not None,
                 calibration_config=guide_pulse_calibration,
+                frames=frames,
             )
         assert guide_calibration is not None  # checked above for the angular path
         policy = CollimationRecenterPolicy(
             mount,
             guide_calibration,
+            RecenterConfig(settle_ms=0),  # S6.7: the settle is in the fresh-frame rule
             clock=clock,
             center_rate_x=center_rate_x,
             max_step_px=max_step_px,
@@ -418,7 +475,7 @@ class FocusedStarAcquisition:
         correction = policy.center(measure, reference=target_center, cancel_check=cancel_check)
         if correction.success:
             return AcquisitionResult(AcquisitionStatus.SEARCHING_GUIDE, None, target_center, None)
-        return _failed_correction(correction, ())
+        return _failed_correction(correction, (), frames.last_result)
 
     def _recenter_with_guide_pulses(
         self,
@@ -430,8 +487,8 @@ class FocusedStarAcquisition:
         current_operating_mode: Callable[[], OperatingMode] | None,
         clock: Clock | None,
         max_step_px: float,
-        settled_frames: bool,
         calibration_config: GuidePulseCalibrationConfig | None,
+        frames: FreshFrameSource,
     ) -> AcquisitionResult:
         """S6.0d: calibrate the guide pulses once per session, then the closed loop. Between
         pulses the operating mode is re-read (review A2): leaving Astronomical ends the run."""
@@ -453,8 +510,8 @@ class FocusedStarAcquisition:
             cancel_check=guide_cancel,
             clock=clock,
             max_step_px=max_step_px,
-            settled_frames=settled_frames,
             calibration_config=calibration_config,
+            frames=frames,
         )
         if mode_changed:
             return AcquisitionResult(
@@ -471,8 +528,8 @@ class FocusedStarAcquisition:
         cancel_check: Callable[[], bool],
         clock: Clock | None,
         max_step_px: float,
-        settled_frames: bool,
         calibration_config: GuidePulseCalibrationConfig | None,
+        frames: FreshFrameSource,
     ) -> AcquisitionResult:
         calibrated = self._guide_pulse_matrix
         calibration_warnings: tuple[str, ...] = ()
@@ -487,6 +544,11 @@ class FocusedStarAcquisition:
             )
             if outcome.matrix is None:
                 assert outcome.failure_reason is not None
+                frame_failure = _fresh_frame_failure(
+                    outcome.failure_reason, frames.last_result, outcome.warnings
+                )
+                if frame_failure is not None:
+                    return frame_failure
                 status = (
                     AcquisitionStatus.CANCELLED
                     if outcome.failure_reason == "cancelled"
@@ -501,8 +563,7 @@ class FocusedStarAcquisition:
         policy = CollimationRecenterPolicy(
             mount,
             calibrated,
-            # The settle happens in the settled-frame wait when one is wired.
-            RecenterConfig(settle_ms=0) if settled_frames else None,
+            RecenterConfig(settle_ms=0),  # S6.7: the settle is in the fresh-frame rule
             clock=clock,
             max_step_px=max_step_px,
             guide_pulses=True,
@@ -514,7 +575,7 @@ class FocusedStarAcquisition:
                 AcquisitionStatus.SEARCHING_GUIDE, None, target_center, None,
                 _with_warnings("", warnings),
             )
-        return _failed_correction(correction, warnings)
+        return _failed_correction(correction, warnings, frames.last_result)
 
     def confirm_returned_to_main(self, main_frame: np.ndarray) -> AcquisitionResult:
         """AC 1.5: after `attempt_guide_reacquisition` reports success,
