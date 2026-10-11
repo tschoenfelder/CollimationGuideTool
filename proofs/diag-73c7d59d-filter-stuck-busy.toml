@@ -12,16 +12,21 @@ modules = [
 fix_commits = ["3fc09ae"]
 dataset_uuids = ["73c7d59d"]
 focused_command = """pytest -q \
-tests/collimation/ui/test_filter_wheel_panel.py::TestOneActionAtATime::test_a_wheel_stuck_reporting_busy_forever_still_recovers"""
+tests/collimation/ui/test_filter_wheel_panel.py::TestOneActionAtATime::test_a_wheel_stuck_reporting_busy_forever_still_recovers tests/collimation/ui/test_focuser_panel_simulated.py::TestStuckBusyRecovers::test_a_focuser_stuck_busy_forever_releases_the_move_lock_after_the_timeout"""
 broader_tier = "component"
 field_only_assumptions = [
     "Why the real EFW stayed Busy is not reproduced (driver/hardware); the fix only bounds the UI's wait.",
 ]
 gaps = [
-    "FocuserPanel half of 3fc09ae has NO regression test: with 3fc09ae fully reverted in a separate worktree (2026-10-01, at 645846e) all 23 tests of tests/collimation/ui/test_focuser_panel.py still pass. A 'focuser stuck reporting moving forever re-enables In/Out after the confirmation timeout' component test is missing (S7 gap).",
+    "Closed in S7 (2026-10-11): the FocuserPanel half of 3fc09ae, missing at S2 (all 23 tests of test_focuser_panel.py passed with 3fc09ae reverted), is now pinned by test_focuser_panel_simulated.py::TestStuckBusyRecovers (added with the #51 simulators), revert-proven below. tests/collimation/ui/test_panel_confirmation_timeouts.py::test_focuser_lock_is_held_inside_the_timeout_and_released_after_it still passes with the fix reverted (its focuser does not stay Busy), so it is not listed.",
 ]
 
 [[regression_tests]]
 node = "tests/collimation/ui/test_filter_wheel_panel.py::TestOneActionAtATime::test_a_wheel_stuck_reporting_busy_forever_still_recovers"
 failed_before_fix = true
 evidence = "Revert-proof 2026-10-01, separate worktree at 645846e, `git revert -n 3fc09ae` with tests kept at HEAD: tests/collimation/ui/test_filter_wheel_panel.py:201: assert panel._slot_combo.isEnabled() -> AssertionError: assert False"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_focuser_panel_simulated.py::TestStuckBusyRecovers::test_a_focuser_stuck_busy_forever_releases_the_move_lock_after_the_timeout"
+failed_before_fix = true
+evidence = "S7 revert-proof 2026-10-11, separate worktree wt-s7-impl at e59cd09, FocuserPanel._poll_status hunk of 3fc09ae undone by hand (timeout back in the `elif` reachable only while not moving; injected clock kept): tests/collimation/ui/test_focuser_panel_simulated.py:115: assert panel._move_in_flight is False -> AssertionError (1 failed, 49 passed across test_focuser_panel*.py and test_panel_confirmation_timeouts.py)"

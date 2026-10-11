@@ -1,0 +1,74 @@
+# Proof manifest (S7) -- schema in proofs/README.md. Run: python scripts/prove.py 15-focused-star-acquisition
+issues = [15]
+summary = "Fine-collimation Stage 1 (#15): select a focused star, track it in an ROI, reacquire it in the full main frame and, when it leaves the main FOV, via the guide camera with verified mount corrections, preserving target identity and failing with machine-readable reasons. S7 maps every AC to its lowest-tier test; AC 1.1 gained an end-to-end synthetic ROI-extraction test."
+modules = [
+    "apps/collimation_tool/application/star_acquisition.py",
+    "packages/astrotool_core/target/identity_match.py",
+    "packages/astrotool_core/target/roi.py",
+]
+fix_commits = ["ff05812"]
+dataset_uuids = []
+focused_command = """pytest -q \ntests/core/target/test_roi_extraction_synthetic.py \ntests/core/target/test_roi.py::TestComputeRoiBounds \ntests/collimation/application/test_star_acquisition.py::TestAC1_2FollowStarInsideRoi \ntests/core/target/test_roi_tracker.py::test_nearby_source_within_tolerance_keeps_locked_and_updates_position \ntests/collimation/application/test_star_acquisition.py::TestAC1_3StarLeavesRoiButStaysInFrame \ntests/collimation/application/test_star_acquisition.py::TestAC1_4GuideAssistedReacquisition \ntests/collimation/application/test_star_acquisition_simulated.py::TestGuideReacquisitionOnTheProductionAdapter::test_the_star_is_brought_back_to_mains_field \ntests/collimation/application/test_star_acquisition.py::TestAC1_5TransferBackToMainTracking \ntests/collimation/application/test_star_acquisition.py::TestAC1_6PreserveTargetIdentity \ntests/core/target/test_identity_match.py::TestResolveIdentity \ntests/collimation/application/test_star_acquisition.py::TestAC1_7ReacquisitionFailure"""
+broader_tier = "component"
+field_only_assumptions = [
+    "AC 1.4/1.5 (still unchecked on GitHub): guide-camera identification of the real star on a real sky and the real mount's correction converging back into the main FOV are proven only on the OnStep simulator and synthetic frames.",
+    "Real seeing/scintillation keeps the tracked star within the ROI tolerance used by RoiTracker.",
+]
+gaps = [
+    "AC 1.7 lists target_not_found_main/target_not_found_guide/target_ambiguous/mount_correction_rejected/reacquisition_diverging/reacquisition_timeout/cancelled: each has its own test in test_star_acquisition.py except that 'stops automatic mount corrections' is asserted only through the result status, not by counting mount calls after the failure.",
+]
+
+[[regression_tests]]
+node = "tests/core/target/test_roi_extraction_synthetic.py"
+failed_before_fix = false
+reason_no_prefix_repro = "New S7 low-tier test (2026-10-11) for an AC that had no direct proof; it passes on today's code and was never run against pre-ff05812 code (the feature did not exist before)."
+
+[[regression_tests]]
+node = "tests/core/target/test_roi.py::TestComputeRoiBounds"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in ff05812: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_star_acquisition.py::TestAC1_2FollowStarInsideRoi"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in ff05812: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/core/target/test_roi_tracker.py::test_nearby_source_within_tolerance_keeps_locked_and_updates_position"
+failed_before_fix = false
+reason_no_prefix_repro = "RoiTracker predates #15 (it was reused, previously unwired); #15 fixed a lock-tolerance bug in it but no pre-fix run of this test was recorded."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_star_acquisition.py::TestAC1_3StarLeavesRoiButStaysInFrame"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in ff05812: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_star_acquisition.py::TestAC1_4GuideAssistedReacquisition"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in ff05812: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_star_acquisition_simulated.py::TestGuideReacquisitionOnTheProductionAdapter::test_the_star_is_brought_back_to_mains_field"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after ff05812 landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_star_acquisition.py::TestAC1_5TransferBackToMainTracking"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in ff05812: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_star_acquisition.py::TestAC1_6PreserveTargetIdentity"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in ff05812: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/core/target/test_identity_match.py::TestResolveIdentity"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in ff05812: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_star_acquisition.py::TestAC1_7ReacquisitionFailure"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in ff05812: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."

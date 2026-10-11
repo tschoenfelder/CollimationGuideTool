@@ -1,0 +1,51 @@
+# Proof manifest (S7) -- schema in proofs/README.md. Run: python scripts/prove.py 37-artificial-star-registration
+issues = [37]
+summary = "Artificial-star / single-point-source cross-camera registration (#37): a third registrar matches the one usable point source of the smaller-FOV frame to the one candidate near its prior-predicted position in the larger-FOV frame (scale from optical priors, rotation an explicit assumed prior), rejects saturated/donut/edge/zero/multi-candidate cases explicitly, needs no ASTAP, and the UI offers it as a third mode with a red marker at the matched point. S7 adds hot-pixel/noise tests."
+modules = [
+    "packages/astrotool_core/registration/artificial_star_registrar.py",
+    "packages/astrotool_core/registration/result.py",
+    "apps/collimation_tool/ui/fov_calibrator.py",
+    "apps/collimation_tool/ui/live_view.py",
+]
+fix_commits = ["73ac24a"]
+dataset_uuids = []
+focused_command = """pytest -q \ntests/core/registration/test_artificial_star_registrar.py \ntests/core/registration/test_artificial_star_hot_pixel.py \ntests/collimation/ui/test_fov_calibrator.py::TestSubmitArtificialStar \ntests/collimation/ui/test_live_view.py::TestMatchedPointMarker \ntests/collimation/ui/test_collimation_main_window.py::TestArtificialStarMode \ntests/core/registration/test_alignment.py::TestDeriveAlignmentGuidance"""
+broader_tier = "component"
+field_only_assumptions = [
+    "The ArtificialStarRegistrar has not been run on a real artificial star (pinhole/fiber) seen by both real cameras.",
+    "assumed_rotation_deg = 0 (cameras mechanically co-aligned) holds on the rig closely enough for the 0.35 x guide-size match tolerance.",
+]
+gaps = [
+    "No real artificial-star capture is committed as a regression (datasets/collimation/artificial_star holds only a README).",
+    "Diagnostics content (point-source/correspondence/prior evidence) is asserted only through result.diagnostics keys used by individual tests, not as a complete reproducibility contract.",
+]
+
+[[regression_tests]]
+node = "tests/core/registration/test_artificial_star_registrar.py"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 73ac24a: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/core/registration/test_artificial_star_hot_pixel.py"
+failed_before_fix = false
+reason_no_prefix_repro = "New S7 low-tier test (2026-10-11) for an AC that had no direct proof; it passes on today's code and was never run against pre-73ac24a code (the feature did not exist before)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_fov_calibrator.py::TestSubmitArtificialStar"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 73ac24a: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_live_view.py::TestMatchedPointMarker"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 73ac24a: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_collimation_main_window.py::TestArtificialStarMode"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 73ac24a: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/core/registration/test_alignment.py::TestDeriveAlignmentGuidance"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after 73ac24a landed, so there is no pre-fix failure to show."

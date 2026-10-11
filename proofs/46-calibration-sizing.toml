@@ -1,0 +1,78 @@
+# Proof manifest (S7) -- schema in proofs/README.md. Run: python scripts/prove.py 46-calibration-sizing
+issues = [46]
+summary = "Mount Align calibration move sizing (#46, 4b94860): the first move is sized up front to ~25 % of the smallest FOV (finite-distance FOV, preset rate, cap, minimum useful move), adapted on the MEASURED pixel displacement (undershoot grows, overshoot/alias shrinks, bounded retries), a wider camera gets a larger follow-up only when below 10 %, and an unmeasurable camera is reported, not faked. The OnStepAdapter angular path (S6.0) is proven by proofs/46-mount-align-angular-path.toml."
+modules = [
+    "packages/astrotool_core/mount/movement_sizing.py",
+    "apps/collimation_tool/ui/mount_test_move_panel.py",
+    "packages/astrotool_core/config/mount_alignment_settings.py",
+]
+fix_commits = ["4b94860"]
+dataset_uuids = []
+focused_command = """pytest -q \ntests/core/mount/test_movement_sizing.py::TestRates \ntests/core/mount/test_movement_sizing.py::TestFirstMoveSeed \ntests/core/mount/test_movement_sizing.py::TestMeasuredFraction \ntests/core/mount/test_movement_sizing.py::TestAdaptiveResizing \ntests/core/mount/test_movement_sizing.py::TestWideCameraFollowUp \ntests/collimation/ui/test_calibration_sizing.py \ntests/collimation/ui/test_calibration_angular.py::TestBootstrapThenAngular \ntests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestCalibrationMovesTheRealAdapter::test_the_first_move_is_the_up_front_25_percent_angular_seed \ntests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestCalibrationMovesTheRealAdapter::test_the_wide_camera_gets_its_own_larger_angular_follow_up \ntests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestStopDuringABlockingAngularGoto::test_the_nudge_click_that_starts_a_goto_does_not_block_the_gui_thread \ntests/collimation/ui/test_calibration_frame_validity.py::TestStability::test_stability_never_reached_fails_explicitly_and_never_measures \ntests/core/config/test_mount_alignment_settings.py::TestCalibrationSizingSettings"""
+broader_tier = "component"
+field_only_assumptions = [
+    "The 25 % band is reached on the real rig in the first one or two moves (real plate scales, real rate preset 6 = 20x sidereal).",
+]
+gaps = [
+    "'AGENTS.md records and enforces this architectural decision' is documentation; no automated check reads AGENTS.md.",
+]
+
+[[regression_tests]]
+node = "tests/core/mount/test_movement_sizing.py::TestRates"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 4b94860: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/core/mount/test_movement_sizing.py::TestFirstMoveSeed"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 4b94860: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/core/mount/test_movement_sizing.py::TestMeasuredFraction"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 4b94860: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/core/mount/test_movement_sizing.py::TestAdaptiveResizing"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 4b94860: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/core/mount/test_movement_sizing.py::TestWideCameraFollowUp"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 4b94860: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_calibration_sizing.py"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 4b94860: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_calibration_angular.py::TestBootstrapThenAngular"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after 4b94860 landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestCalibrationMovesTheRealAdapter::test_the_first_move_is_the_up_front_25_percent_angular_seed"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after 4b94860 landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestCalibrationMovesTheRealAdapter::test_the_wide_camera_gets_its_own_larger_angular_follow_up"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after 4b94860 landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestStopDuringABlockingAngularGoto::test_the_nudge_click_that_starts_a_goto_does_not_block_the_gui_thread"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after 4b94860 landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_calibration_frame_validity.py::TestStability::test_stability_never_reached_fails_explicitly_and_never_measures"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after 4b94860 landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/core/config/test_mount_alignment_settings.py::TestCalibrationSizingSettings"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 4b94860: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."

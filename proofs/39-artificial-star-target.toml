@@ -1,0 +1,60 @@
+# Proof manifest (S7) -- schema in proofs/README.md. Run: python scripts/prove.py 39-artificial-star-target
+issues = [39]
+summary = "Artificial star as a collimation target (#39, 597e291): selectable target mode, no ASTAP or sky coordinates, rough donut collimation source-agnostic, focused frames into the fine pipeline, a finite-distance caveat instead of infinity-focus assumptions (never shown as 'collimated'), and guide-assisted recovery consuming the #37 registration. The angular/guide-pulse reacquisition fixes are proven by 39-reacquisition-angular and 39-astro-guide-pulse; this manifest maps the remaining ACs."
+modules = [
+    "apps/collimation_tool/domain/target_mode.py",
+    "apps/collimation_tool/application/fine_collimation_controller.py",
+    "apps/collimation_tool/ui/fine_collimation_panel.py",
+]
+fix_commits = ["597e291"]
+dataset_uuids = []
+focused_command = """pytest -q \ntests/collimation/domain/test_target_mode.py \ntests/collimation/ui/test_fine_collimation_panel.py::TestArtificialStarHonesty \ntests/collimation/application/test_artificial_star_reacquisition_chain.py::test_a_37_registration_drives_guide_reacquisition_inside_the_fine_loop \ntests/collimation/ui/test_collimation_main_window.py::TestArtificialStarTargetMode::test_selecting_artificial_star_labels_the_rough_panel_and_diagnostics \ntests/collimation/ui/test_collimation_main_window.py::TestArtificialStarTargetMode::test_the_rough_recommendation_text_names_the_target_mode \ntests/collimation/ui/test_collimation_main_window.py::TestArtificialStarTargetMode::test_reacquisition_without_a_registration_fails_explicitly \ntests/collimation/ui/test_operating_mode_ui.py::TestArtificialStarImpliesTerrestrial::test_selecting_an_artificial_star_target_switches_to_terrestrial"""
+broader_tier = "component"
+field_only_assumptions = [
+    "Guide-assisted reacquisition of a real artificial star moves the real mount and converges (mount motion during reacquisition is real-hardware-unverified).",
+    "Real defocused artificial-star donuts are measured like the synthetic ones.",
+]
+gaps = [
+    "No real artificial-star collimation capture is committed as a regression.",
+    "'Terrestrial artificial-star operation works with tracking OFF' is pinned by the mode coupling (artificial star implies terrestrial, see proofs/48-one-mode-source.toml) rather than by an end-to-end collimation run with tracking asserted OFF.",
+]
+
+[[regression_tests]]
+node = "tests/collimation/domain/test_target_mode.py"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 597e291: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_fine_collimation_panel.py::TestArtificialStarHonesty"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 597e291: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_artificial_star_reacquisition_chain.py::test_a_37_registration_drives_guide_reacquisition_inside_the_fine_loop"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 597e291: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_collimation_main_window.py::TestArtificialStarTargetMode::test_selecting_artificial_star_labels_the_rough_panel_and_diagnostics"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 597e291: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_collimation_main_window.py::TestArtificialStarTargetMode::test_the_rough_recommendation_text_names_the_target_mode"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 597e291: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_collimation_main_window.py::TestArtificialStarTargetMode::test_reacquisition_without_a_registration_fails_explicitly"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 597e291: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_operating_mode_ui.py::TestArtificialStarImpliesTerrestrial::test_selecting_an_artificial_star_target_switches_to_terrestrial"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after 597e291 landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_fine_collimation_panel.py::TestArtificialStarHonesty::test_the_same_result_for_a_natural_star_is_still_collimated"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 597e291: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."

@@ -1,0 +1,69 @@
+# Proof manifest (S7) -- schema in proofs/README.md. Run: python scripts/prove.py 35-autofocus-final-validation
+issues = [35]
+summary = "Field failure 73a007b6 (#35): terrestrial autofocus reported success on a curve that never turned over before the search boundary, and a final position worse than the start could be reported as success. Fix (758e221): 'reached the boundary while still rising' is BEST_AT_SEARCH_LIMIT, a fresh post-move confirmation worse than the start returns to the start position as INCONSISTENT_CURVE; the run records camera/optical-train/focuser identity."
+modules = [
+    "apps/collimation_tool/application/autofocus_search.py",
+    "apps/collimation_tool/application/autofocus_controller.py",
+    "apps/collimation_tool/ui/focuser_panel.py",
+]
+fix_commits = ["758e221"]
+dataset_uuids = ["73a007b6-6c9b-41e2-a3e5-66a21ec71ffd"]
+focused_command = """pytest -q \ntests/collimation/application/test_autofocus_search.py::TestBoundarySafetyNet::test_boundary_reached_while_still_rising_is_not_reported_success \ntests/collimation/application/test_autofocus_search.py::TestFinalValidation::test_final_confirmation_worse_than_start_is_reported_inconsistent \ntests/regressions/test_issue_35_autofocus_search_regression.py::test_terrestrial_curve_never_turns_over_before_search_boundary \ntests/collimation/application/test_autofocus_controller.py::TestAutofocusControllerStarMode::test_result_records_camera_and_focuser_identity \ntests/collimation/ui/test_focuser_panel.py::TestAutoFocusRun::test_optical_train_label_appears_in_status_text_and_diagnostics \ntests/collimation/application/test_autofocus_controller.py::TestAutofocusControllerTerrestrialMode::test_terrestrial_mode_samples_multiple_frames_per_position \ntests/collimation/application/test_autofocus_controller.py::TestAutofocusControllerStarMode::test_wait_for_frame_is_called_with_a_reference_timestamp_for_every_sample \ntests/collimation/application/test_autofocus_search.py::TestRejectionCancellationAndFrameLoss::test_frame_acquisition_failure_mid_search_aborts_to_best_known_safe \ntests/collimation/application/test_autofocus_search.py::TestHardSafetyEnvelope \ntests/collimation/application/test_autofocus_controller.py::TestAutofocusControllerStarMode::test_a_full_star_mode_run_converges_and_reports_success"""
+broader_tier = "integration"
+field_only_assumptions = [
+    "WHY the real terrestrial curve in 73a007b6 never turned over (scene, exposure, focuser travel) is not reproduced; the fix makes the outcome honest.",
+]
+gaps = [
+    "'Frames used for autofocus come only from the selected camera' has no direct test: only identity recording (test_result_records_camera_and_focuser_identity) and the main-camera exposure binding are pinned, not the frame source wiring per train.",
+    "The datasets/regressions/35-terrestrial-metric-inversion case (test_regression_datasets.py) did NOT fail with both #35 fixes removed (S7 revert-proof) -- it pins the metric, not the search outcome.",
+]
+
+[[regression_tests]]
+node = "tests/collimation/application/test_autofocus_search.py::TestBoundarySafetyNet::test_boundary_reached_while_still_rising_is_not_reported_success"
+failed_before_fix = true
+evidence = "S7 revert-proof 2026-10-11, worktree wt-s7-impl at e59cd09, both #35 fixes neutralized in autofocus_search.py (reached_boundary_while_rising forced False; the start-value confirmation check disabled): tests/collimation/application/test_autofocus_search.py:262: AssertionError: assert <AutofocusStatus.SUCCESS: 'success'> is <AutofocusStatus.BEST_AT_SEARCH_LIMIT: 'best_at_search_limit'>"
+
+[[regression_tests]]
+node = "tests/collimation/application/test_autofocus_search.py::TestFinalValidation::test_final_confirmation_worse_than_start_is_reported_inconsistent"
+failed_before_fix = true
+evidence = "Same revert-proof: tests/collimation/application/test_autofocus_search.py:300: AssertionError: assert <AutofocusStatus.SUCCESS: 'success'> is <AutofocusStatus.INCONSISTENT_CURVE: 'inconsistent_curve'>"
+
+[[regression_tests]]
+node = "tests/regressions/test_issue_35_autofocus_search_regression.py::test_terrestrial_curve_never_turns_over_before_search_boundary"
+failed_before_fix = true
+evidence = "Same revert-proof: tests/regressions/test_issue_35_autofocus_search_regression.py:87: AssertionError: assert <AutofocusStatus.SUCCESS: 'success'> is <AutofocusStatus.BEST_AT_SEARCH_LIMIT: 'best_at_search_limit'>"
+
+[[regression_tests]]
+node = "tests/collimation/application/test_autofocus_controller.py::TestAutofocusControllerStarMode::test_result_records_camera_and_focuser_identity"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 758e221: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_focuser_panel.py::TestAutoFocusRun::test_optical_train_label_appears_in_status_text_and_diagnostics"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 758e221: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_autofocus_controller.py::TestAutofocusControllerTerrestrialMode::test_terrestrial_mode_samples_multiple_frames_per_position"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 758e221: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_autofocus_controller.py::TestAutofocusControllerStarMode::test_wait_for_frame_is_called_with_a_reference_timestamp_for_every_sample"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 758e221: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_autofocus_search.py::TestRejectionCancellationAndFrameLoss::test_frame_acquisition_failure_mid_search_aborts_to_best_known_safe"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 758e221: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_autofocus_search.py::TestHardSafetyEnvelope"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 758e221: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_autofocus_controller.py::TestAutofocusControllerStarMode::test_a_full_star_mode_run_converges_and_reports_success"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 758e221: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."

@@ -1,0 +1,41 @@
+# Proof manifest (S7) -- schema in proofs/README.md. Run: python scripts/prove.py 49-acceptance-criteria
+issues = [49]
+summary = "AC coverage for #49 beyond proofs/49.toml (threaded captures, fed00fa) and proofs/49-stop-during-angular-goto.toml (Stop during a GOTO): every other Run Calibration failure class returns to idle and is retryable, poll timers/runner state are reported and reset, Stop then a new run works, and failure diagnostics survive the reset."
+modules = [
+    "apps/collimation_tool/ui/mount_test_move_panel.py",
+]
+fix_commits = ["fed00fa"]
+dataset_uuids = ["6d33f37c"]
+focused_command = """pytest -q \ntests/collimation/ui/test_calibration_failure_recovery.py::TestOtherFailureClasses \ntests/collimation/ui/test_calibration_failure_recovery.py::TestStop::test_stop_then_a_new_run_works \ntests/collimation/ui/test_calibration_failure_recovery.py::TestStop::test_stop_while_the_mount_is_moving_drops_the_calibration \ntests/collimation/ui/test_calibration_failure_recovery.py::TestDiagnostics::test_activity_reports_state_capture_runner_and_timer \ntests/collimation/ui/test_calibration_failure_recovery.py::TestTheEventLoopStaysResponsive::test_the_progress_text_reports_elapsed_time"""
+broader_tier = "component"
+field_only_assumptions = [
+    "No other hardware-dependent wait remains on the GUI thread in the real rig's Mount Align flow (tests cover the capture and GOTO paths).",
+]
+gaps = [
+    "'Poll timers are stopped/reset on terminal failure' is asserted through the activity snapshot (TestDiagnostics) and the idle state, not by inspecting every QTimer of the panel.",
+]
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_calibration_failure_recovery.py::TestOtherFailureClasses"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after fed00fa landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_calibration_failure_recovery.py::TestStop::test_stop_then_a_new_run_works"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after fed00fa landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_calibration_failure_recovery.py::TestStop::test_stop_while_the_mount_is_moving_drops_the_calibration"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after fed00fa landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_calibration_failure_recovery.py::TestDiagnostics::test_activity_reports_state_capture_runner_and_timer"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after fed00fa landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_calibration_failure_recovery.py::TestTheEventLoopStaysResponsive::test_the_progress_text_reports_elapsed_time"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after fed00fa landed, so there is no pre-fix failure to show."

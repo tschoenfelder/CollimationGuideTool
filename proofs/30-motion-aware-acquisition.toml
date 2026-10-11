@@ -1,0 +1,97 @@
+# Proof manifest (S7) -- schema in proofs/README.md. Run: python scripts/prove.py 30-motion-aware-acquisition
+issues = [30]
+summary = "Motion-aware stable-frame acquisition for Mount Align (#30): tracking state is enforced per measurement mode and re-verified after moves; frames whose exposure overlaps a commanded move are never measured; a minimum settle is only a lower bound, image stability is verified on consecutive frames (BEFORE and AFTER), wind keeps a frame invalid, failure is bounded, cancellable and explicit, and it works for any number of frame sources."
+modules = [
+    "packages/astrotool_core/acquisition/image_stability.py",
+    "packages/astrotool_core/acquisition/motion_aware_acquisition.py",
+    "packages/astrotool_core/mount/tracking_mode.py",
+    "apps/collimation_tool/ui/mount_test_move_panel.py",
+]
+fix_commits = ["44e2916", "185b94d", "d7be090"]
+dataset_uuids = []
+focused_command = """pytest -q \ntests/core/mount/test_tracking_mode.py::TestEnsureTrackingMode \ntests/core/mount/test_operating_mode.py::TestTerrestrialForcesTrackingOff::test_tracking_reenabled_by_a_movement_side_effect_is_turned_off_again \ntests/collimation/ui/test_calibration_failure_recovery.py::TestOtherFailureClasses::test_a_tracking_state_failure_is_reported_and_recoverable \ntests/core/acquisition/test_stable_frame_acquisition.py::TestAcquireStableFrame \ntests/core/acquisition/test_stable_frame_acquisition.py::TestAcquireSettledFrames::test_is_independent_of_how_many_sources_are_configured \ntests/core/acquisition/test_motion_aware_acquisition.py::TestAcquireVerifiedFrame \ntests/core/acquisition/test_motion_aware_acquisition.py::TestAcquireVerifiedFrames \ntests/core/acquisition/test_image_stability.py::TestCheckImageStability \ntests/core/acquisition/test_fresh_frame_after_motion.py::TestStaleAndOverlappingFramesAreNeverReturned \ntests/collimation/ui/test_calibration_frame_validity.py::TestOverlappingAndStaleFramesAreNeverMeasured \ntests/collimation/ui/test_calibration_frame_validity.py::TestStability \ntests/collimation/ui/test_calibration_frame_validity.py::TestNudgeBeforeIsVerified \ntests/collimation/ui/test_calibration_frame_validity.py::TestDiagnosticsTimeline \ntests/core/acquisition/test_image_stability_evidence.py \ntests/core/acquisition/test_motion_aware_acquisition_simulated.py"""
+broader_tier = "component"
+field_only_assumptions = [
+    "The stability thresholds (tolerance px, sample count/interval, timeout) have not been validated live with this wiring (wind, real mount ringing).",
+    "OnStep's real tracking state after a commanded move (whether a move re-enables tracking) is reproduced by fakes only.",
+]
+gaps = [
+    "'Tracking and commanded slew/pulse are different physical states' is pinned only by the MountStatus shape (separate tracking/slewing bools, tests/contracts/test_mount_contract.py) and the simulator's slewing flag, not by a dedicated behavioral test.",
+    "'Stability verification is separate from the production translation estimator': image_stability.py reuses measure_translation_offset_with_tier for consecutive-frame shifts; the separation is a separate step/decision, not a separate algorithm. No test pins the separation itself.",
+    "'Architecture permits future adaptive settling' is a design statement with no test.",
+]
+
+[[regression_tests]]
+node = "tests/core/mount/test_tracking_mode.py::TestEnsureTrackingMode"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 44e2916/185b94d/d7be090: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/core/mount/test_operating_mode.py::TestTerrestrialForcesTrackingOff::test_tracking_reenabled_by_a_movement_side_effect_is_turned_off_again"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after d7be090 landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_calibration_failure_recovery.py::TestOtherFailureClasses::test_a_tracking_state_failure_is_reported_and_recoverable"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after d7be090 landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/core/acquisition/test_stable_frame_acquisition.py::TestAcquireStableFrame"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 44e2916/185b94d/d7be090: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/core/acquisition/test_stable_frame_acquisition.py::TestAcquireSettledFrames::test_is_independent_of_how_many_sources_are_configured"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 44e2916/185b94d/d7be090: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/core/acquisition/test_motion_aware_acquisition.py::TestAcquireVerifiedFrame"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 44e2916/185b94d/d7be090: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/core/acquisition/test_motion_aware_acquisition.py::TestAcquireVerifiedFrames"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 44e2916/185b94d/d7be090: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/core/acquisition/test_image_stability.py::TestCheckImageStability"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 44e2916/185b94d/d7be090: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/core/acquisition/test_fresh_frame_after_motion.py::TestStaleAndOverlappingFramesAreNeverReturned"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after d7be090 landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_calibration_frame_validity.py::TestOverlappingAndStaleFramesAreNeverMeasured"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after d7be090 landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_calibration_frame_validity.py::TestStability"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after d7be090 landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_calibration_frame_validity.py::TestNudgeBeforeIsVerified"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after d7be090 landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_calibration_frame_validity.py::TestDiagnosticsTimeline"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after d7be090 landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/core/acquisition/test_image_stability_evidence.py"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after d7be090 landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/core/acquisition/test_motion_aware_acquisition_simulated.py"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 44e2916/185b94d/d7be090: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."

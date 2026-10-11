@@ -1,0 +1,52 @@
+# Proof manifest (S7) -- schema in proofs/README.md. Run: python scripts/prove.py 43-acceptance-criteria
+issues = [43]
+summary = "AC coverage for #43 (fe91004f) beyond proofs/43.toml: maps every acceptance criterion to its test and records the S7 guard-isolation revert-proof -- the 'every direction must move' guard alone is pinned by the dead-direction test (it fails when ONLY that guard is removed, with _is_no_motion and the degenerate-axis check intact)."
+modules = [
+    "apps/collimation_tool/ui/mount_test_move_panel.py",
+]
+fix_commits = ["be6fc48"]
+dataset_uuids = ["fe91004f-1e52-4d93-a69d-6fb8cc0d5e7d"]
+focused_command = """pytest -q \ntests/collimation/ui/test_calibration_frame_validity.py::TestNoMotionIsExplicit::test_one_dead_direction_is_never_hidden_by_the_working_ones \ntests/collimation/ui/test_calibration_frame_validity.py::TestOverlappingAndStaleFramesAreNeverMeasured \ntests/collimation/ui/test_calibration_frame_validity.py::TestStability::test_stability_never_reached_fails_explicitly_and_never_measures \ntests/collimation/ui/test_calibration_frame_validity.py::TestNudgeBeforeIsVerified \ntests/collimation/ui/test_calibration_frame_validity.py::TestDiagnosticsTimeline \ntests/core/acquisition/test_fresh_frame_after_motion.py::TestLongExposures \ntests/core/acquisition/test_stable_frame_acquisition.py::TestAcquireStableFrame::test_skips_a_frame_whose_exposure_overlapped_the_reference_and_accepts_the_next_one"""
+broader_tier = "component"
+field_only_assumptions = [
+    "WHY the real mount produced no image motion in fe91004f is not reproduced (see proofs/43.toml).",
+]
+gaps = [
+    "#43 dataset: no frames of fe91004f exist in datasets/ or local_test_data/ (checked 2026-10-11), so no real-frame regression could be added.",
+    "'Existing star-mode calibration behavior remains unchanged' has no star-mode-specific Mount Align calibration test beyond the shared rig tests.",
+]
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_calibration_frame_validity.py::TestNoMotionIsExplicit::test_one_dead_direction_is_never_hidden_by_the_working_ones"
+failed_before_fix = true
+evidence = "S7 guard-isolation revert-proof 2026-10-11, worktree wt-s7-impl at e59cd09, ONLY the 'any direction with steady_state magnitude <= 0' guard disabled (if False and any(...)), _is_no_motion and is_degenerate untouched: tests/collimation/ui/test_calibration_frame_validity.py:460: AssertionError: assert CalibrationMatrix(... AXIS2 NEGATIVE dx_px=0.0, dy_px=0.0, px_per_ms=0.0) is None (16 other tests of the file passed)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_calibration_frame_validity.py::TestOverlappingAndStaleFramesAreNeverMeasured"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after be6fc48 landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_calibration_frame_validity.py::TestStability::test_stability_never_reached_fails_explicitly_and_never_measures"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after be6fc48 landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_calibration_frame_validity.py::TestNudgeBeforeIsVerified"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after be6fc48 landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_calibration_frame_validity.py::TestDiagnosticsTimeline"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after be6fc48 landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/core/acquisition/test_fresh_frame_after_motion.py::TestLongExposures"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after be6fc48 landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/core/acquisition/test_stable_frame_acquisition.py::TestAcquireStableFrame::test_skips_a_frame_whose_exposure_overlapped_the_reference_and_accepts_the_next_one"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after be6fc48 landed, so there is no pre-fix failure to show."

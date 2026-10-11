@@ -1,0 +1,60 @@
+# Proof manifest (S7) -- schema in proofs/README.md. Run: python scripts/prove.py 44-terrestrial-tracking-off
+issues = [44]
+summary = "Terrestrial mode never leaves mount tracking ON (#44, a279869): one OperatingMode + TrackingEnforcer turns tracking off on entering terrestrial mode, on connect and after a move side effect, never enables it in terrestrial mode, blocks every terrestrial measurement path (Mount Align, FOV calibration, autofocus, fine collimation) fail-closed with a reason when it cannot disable tracking, and records mode/tracking transitions for diagnostics. The later single-mode-source and busy-mount fixes are proven by 48-one-mode-source / 49-stop-during-angular-goto."
+modules = [
+    "packages/astrotool_core/mount/operating_mode.py",
+    "packages/astrotool_core/mount/tracking_mode.py",
+    "apps/collimation_tool/ui/main_window.py",
+]
+fix_commits = ["a279869"]
+dataset_uuids = []
+focused_command = """pytest -q \ntests/core/mount/test_operating_mode.py::TestTerrestrialForcesTrackingOff \ntests/core/mount/test_operating_mode.py::TestModeTransitions \ntests/core/mount/test_operating_mode.py::TestDiagnosticsTrail \ntests/collimation/ui/test_operating_mode_ui.py::TestConnectEnforcement \ntests/collimation/ui/test_operating_mode_ui.py::TestMeasurementPathsFailClosed \ntests/collimation/ui/test_operating_mode_ui.py::TestMountAlignFollowsPolicy::test_a_blocked_policy_is_reported_by_mount_align \ntests/collimation/ui/test_operating_mode_ui.py::TestOperatingModeSelector \ntests/collimation/ui/test_operating_mode_ui.py::TestDiagnostics \ntests/core/mount/test_tracking_mode.py::TestEnsureTrackingMode"""
+broader_tier = "component"
+field_only_assumptions = [
+    "The real OnStep mount reports and obeys tracking OFF over INDI after connect and after an angular GOTO (fakes/simulator only).",
+]
+
+[[regression_tests]]
+node = "tests/core/mount/test_operating_mode.py::TestTerrestrialForcesTrackingOff"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in a279869: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/core/mount/test_operating_mode.py::TestModeTransitions"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in a279869: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/core/mount/test_operating_mode.py::TestDiagnosticsTrail"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in a279869: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_operating_mode_ui.py::TestConnectEnforcement"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in a279869: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_operating_mode_ui.py::TestMeasurementPathsFailClosed"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in a279869: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_operating_mode_ui.py::TestMountAlignFollowsPolicy::test_a_blocked_policy_is_reported_by_mount_align"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in a279869: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_operating_mode_ui.py::TestOperatingModeSelector"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in a279869: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_operating_mode_ui.py::TestDiagnostics"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in a279869: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/core/mount/test_tracking_mode.py::TestEnsureTrackingMode"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in a279869: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."

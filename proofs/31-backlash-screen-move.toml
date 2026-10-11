@@ -1,0 +1,94 @@
+# Proof manifest (S7) -- schema in proofs/README.md. Run: python scripts/prove.py 31-backlash-screen-move
+issues = [31]
+summary = "Mount Align bootstrap calibration (#31): every direction of both axes is measured (first vs repeat move -> measured backlash deficit and steady-state rate), per participating camera, and screen-relative moves are solved from the measured 2-D responses (direction-specific rates). Movement through OnStepAdapter only, sized from the smallest FOV with distance seeds and a wide-FOV follow-up (with #46/S6.0, see proofs/46-mount-align-angular-path.toml)."
+modules = [
+    "packages/astrotool_core/mount/axis_calibration.py",
+    "apps/collimation_tool/ui/mount_test_move_panel.py",
+    "packages/astrotool_core/config/mount_alignment_settings.py",
+]
+fix_commits = ["ef2ce57"]
+dataset_uuids = []
+focused_command = """pytest -q \ntests/collimation/test_onstep_boundary.py::test_no_source_file_bypasses_onstepadapter \ntests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestManualMovesMoveTheRealAdapter::test_an_uncalibrated_ra_nudge_moves_the_mount \ntests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestManualMovesMoveTheRealAdapter::test_an_uncalibrated_dec_minus_nudge_moves_the_mount \ntests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestManualMovesMoveTheRealAdapter::test_a_screen_move_after_calibration_moves_the_mount \ntests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestStopDuringABlockingAngularGoto::test_the_nudge_click_that_starts_a_goto_does_not_block_the_gui_thread \ntests/collimation/ui/test_calibration_angular.py::TestBootstrapThenAngular::test_the_angular_size_is_the_calculated_25_percent_of_the_frame \ntests/core/mount/test_movement_sizing.py::TestFiniteDistance \ntests/core/mount/test_movement_sizing.py::TestFirstMoveSeed \ntests/core/mount/test_movement_sizing.py::TestWideCameraFollowUp \ntests/core/mount/test_movement_sizing.py::TestSymmetryAndCameraCount::test_any_number_of_cameras_participate_not_just_two \ntests/collimation/ui/test_calibration_frame_validity.py::TestStability::test_one_camera_unstable_one_stable_excludes_only_the_unstable_one \ntests/core/mount/test_axis_calibration.py::TestDirectionCharacterization \ntests/core/mount/test_axis_calibration.py::TestSolveScreenMove \ntests/core/mount/test_axis_calibration.py::test_calibrate_axis_multi_pulses_once_and_measures_every_measurer \ntests/collimation/ui/test_calibration_frame_validity.py::TestOverlappingAndStaleFramesAreNeverMeasured::test_a_poisoned_frame_never_reaches_the_estimator"""
+broader_tier = "component"
+field_only_assumptions = [
+    "The real OnStep mount's backlash/reversal deficit and the 8-step per-direction calibration have never been run live.",
+    "Screen-relative moves converge on the real mount with the real camera rotation.",
+]
+gaps = [
+    "'AGENTS.md contains this decision' is a documentation AC with no automated check (only the OnStep import-boundary test pins the code side).",
+]
+
+[[regression_tests]]
+node = "tests/collimation/test_onstep_boundary.py::test_no_source_file_bypasses_onstepadapter"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after ef2ce57 landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestManualMovesMoveTheRealAdapter::test_an_uncalibrated_ra_nudge_moves_the_mount"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after ef2ce57 landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestManualMovesMoveTheRealAdapter::test_an_uncalibrated_dec_minus_nudge_moves_the_mount"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after ef2ce57 landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestManualMovesMoveTheRealAdapter::test_a_screen_move_after_calibration_moves_the_mount"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after ef2ce57 landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestStopDuringABlockingAngularGoto::test_the_nudge_click_that_starts_a_goto_does_not_block_the_gui_thread"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after ef2ce57 landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_calibration_angular.py::TestBootstrapThenAngular::test_the_angular_size_is_the_calculated_25_percent_of_the_frame"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after ef2ce57 landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/core/mount/test_movement_sizing.py::TestFiniteDistance"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after ef2ce57 landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/core/mount/test_movement_sizing.py::TestFirstMoveSeed"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after ef2ce57 landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/core/mount/test_movement_sizing.py::TestWideCameraFollowUp"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after ef2ce57 landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/core/mount/test_movement_sizing.py::TestSymmetryAndCameraCount::test_any_number_of_cameras_participate_not_just_two"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after ef2ce57 landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_calibration_frame_validity.py::TestStability::test_one_camera_unstable_one_stable_excludes_only_the_unstable_one"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after ef2ce57 landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/core/mount/test_axis_calibration.py::TestDirectionCharacterization"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in ef2ce57: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/core/mount/test_axis_calibration.py::TestSolveScreenMove"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in ef2ce57: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/core/mount/test_axis_calibration.py::test_calibrate_axis_multi_pulses_once_and_measures_every_measurer"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in ef2ce57: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_calibration_frame_validity.py::TestOverlappingAndStaleFramesAreNeverMeasured::test_a_poisoned_frame_never_reaches_the_estimator"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after ef2ce57 landed, so there is no pre-fix failure to show."

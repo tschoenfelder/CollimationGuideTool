@@ -1,0 +1,48 @@
+# Proof manifest (S7) -- schema in proofs/README.md. Run: python scripts/prove.py 32-sparse-star-translation
+issues = [32]
+summary = "Same-camera movement estimation on star-only/point-source terrestrial frames (#32): the one production estimator (measure_translation_offset[_with_tier]) recovers known software shifts on sparse-star content in both axes/signs/diagonals or cleanly rejects them, never a wrong offset; a stationary pair reads ~0 with high confidence; no ASTAP, no hardware. No algorithm change was needed (adad591 added the corpus and evidence)."
+modules = [
+    "packages/astrotool_core/target/translation_offset.py",
+    "packages/astrotool_core/testing/shift_grid.py",
+]
+fix_commits = ["adad591"]
+dataset_uuids = []
+focused_command = """pytest -q \ntests/core/target/test_translation_offset.py::TestSparseStarContent \ntests/core/target/test_translation_offset.py::TestMeasureTranslationOffsetWithTier::test_agrees_with_measure_translation_offset_on_the_offset_itself \ntests/core/target/test_translation_offset.py::TestMaxUnaliasedShiftPx \ntests/core/testing/test_shift_grid.py \ntests/regressions/test_regression_datasets.py::test_regression_case \ntests/regressions/test_regression_dataset_intake.py"""
+broader_tier = "integration"
+field_only_assumptions = [
+    "The real point-source frames of the #28 corpus live only in the git-ignored local_test_data/28_corpus; on CI datasets/regressions/28 skips cleanly, so the real-frame part of the proof runs only on a machine with that tree.",
+]
+gaps = [
+    "AC 'a visually obvious persistent point-source displacement is not rejected solely because texture is absent': TestSparseStarContent accepts 'recovered OR cleanly rejected', so a rejection of an obvious shift would still pass. No test pins acceptance for an obvious sparse-star shift.",
+    "Real UUID failure pairs: the intake mechanism exists (tests/regressions), but no real #32 field pair is committed under datasets/regressions/.",
+]
+
+[[regression_tests]]
+node = "tests/core/target/test_translation_offset.py::TestSparseStarContent"
+failed_before_fix = false
+reason_no_prefix_repro = "#32 found no estimator defect (adad591 added evidence, not a behavior change), so there is no pre-fix failure to reproduce."
+
+[[regression_tests]]
+node = "tests/core/target/test_translation_offset.py::TestMeasureTranslationOffsetWithTier::test_agrees_with_measure_translation_offset_on_the_offset_itself"
+failed_before_fix = false
+reason_no_prefix_repro = "#32 found no estimator defect (adad591 added evidence, not a behavior change), so there is no pre-fix failure to reproduce."
+
+[[regression_tests]]
+node = "tests/core/target/test_translation_offset.py::TestMaxUnaliasedShiftPx"
+failed_before_fix = false
+reason_no_prefix_repro = "#32 found no estimator defect (adad591 added evidence, not a behavior change), so there is no pre-fix failure to reproduce."
+
+[[regression_tests]]
+node = "tests/core/testing/test_shift_grid.py"
+failed_before_fix = false
+reason_no_prefix_repro = "#32 found no estimator defect (adad591 added evidence, not a behavior change), so there is no pre-fix failure to reproduce."
+
+[[regression_tests]]
+node = "tests/regressions/test_regression_datasets.py::test_regression_case"
+failed_before_fix = false
+reason_no_prefix_repro = "Parametrized over datasets/regressions/ (incl. 28): the #28/#32 real-frame cases skip on any checkout without local_test_data/28_corpus; no pre-fix defect exists."
+
+[[regression_tests]]
+node = "tests/regressions/test_regression_dataset_intake.py"
+failed_before_fix = false
+reason_no_prefix_repro = "#32 found no estimator defect (adad591 added evidence, not a behavior change), so there is no pre-fix failure to reproduce."

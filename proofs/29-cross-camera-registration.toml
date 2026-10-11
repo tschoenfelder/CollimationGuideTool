@@ -1,0 +1,112 @@
+# Proof manifest (S7) -- schema in proofs/README.md. Run: python scripts/prove.py 29-cross-camera-registration
+issues = [29]
+summary = "Cross-camera FOV registration (#29): one common CrossCameraRegistrationResult, separate terrestrial (NCC, real shared evidence only) and star-field (ASTAP behind an adapter) registrars, polygon geometry that does not assume nesting (partial overlap, OAG, zero overlap), optical priors for scale, full 360-degree rotation, and alignment guidance derived from the result. S7 adds a camera-name/label independence test."
+modules = [
+    "packages/astrotool_core/registration/result.py",
+    "packages/astrotool_core/registration/geometry.py",
+    "packages/astrotool_core/registration/terrestrial_registrar.py",
+    "packages/astrotool_core/registration/star_field_registrar.py",
+    "packages/astrotool_core/registration/astap_adapter.py",
+    "packages/astrotool_core/registration/alignment.py",
+    "apps/collimation_tool/ui/fov_calibrator.py",
+]
+fix_commits = ["6a2f38b", "3c5228e", "da73769", "6260b53"]
+dataset_uuids = []
+focused_command = """pytest -q \ntests/core/registration/test_registrar_camera_name_independence.py \ntests/core/registration/test_geometry.py::TestOverlap \ntests/core/registration/test_optical_prior.py \ntests/core/registration/test_terrestrial_registrar.py::TestRotation::test_supports_arbitrary_rotation_across_the_full_360_degree_range \ntests/core/registration/test_terrestrial_registrar.py::TestScale::test_scale_steps_one_trusts_the_optical_prior_ratio_exactly \ntests/core/registration/test_terrestrial_registrar.py::TestExposureInvariance \ntests/core/registration/test_terrestrial_registrar.py::TestNoValidRegistration \ntests/core/registration/test_terrestrial_registrar.py::TestAmbiguousMatch \ntests/core/registration/test_terrestrial_registrar.py::TestAccuracyConstants \ntests/core/registration/test_terrestrial_registrar_real_data.py \ntests/core/registration/test_astap_adapter.py \ntests/core/registration/test_star_field_registrar.py::TestGeometryFromWcs \ntests/core/registration/test_star_field_registrar.py::TestStarFieldRegistrar \ntests/core/registration/test_alignment.py::TestDeriveAlignmentGuidance \ntests/collimation/ui/test_fov_calibrator.py::TestFovCalibrator \ntests/collimation/ui/test_collimation_main_window.py::TestFovCalibration::test_a_confident_match_sets_the_guide_panels_polygon \ntests/collimation/ui/test_collimation_main_window.py::TestDiagnosticsCapture::test_capture_includes_the_fov_calibration_result_once_one_has_run"""
+broader_tier = "component"
+field_only_assumptions = [
+    "A real positive terrestrial Main+Guide match after mount re-pointing has not been observed on the rig (issue stays field-verify pending).",
+    "ASTAP availability, runtime and solve success on the Pi with the real star fields.",
+    "Real-world accuracy (~5 px desirable / <50 px acceptable) is measured only on the two committed fov_registration datasets, not across conditions.",
+]
+gaps = [
+    "'Cross-camera registration stays separate from measure_translation_offset (#28)' and 'architecture permits ... optimized independently' are structural; no import-boundary test pins them.",
+    "'The application can indicate whether repeated guide-scope adjustment improves alignment' has no test: guidance is a single-shot label (TestFovCalibration in test_collimation_main_window.py), there is no trend/improvement indicator.",
+    "registration/alignment.py renders user text naming 'Main'/'Guide' (derive_alignment_guidance); the new name-independence test deliberately covers the registrar/geometry modules only.",
+    "Bayer green-weighting AC is pinned only indirectly by the real-data demosaic test (test_skipping_demosaic_produces_a_spurious_match_not_the_real_finding), not by a synthetic per-channel test.",
+]
+
+[[regression_tests]]
+node = "tests/core/registration/test_registrar_camera_name_independence.py"
+failed_before_fix = false
+reason_no_prefix_repro = "New S7 low-tier test (2026-10-11) for an AC that had no direct proof; it passes on today's code and was never run against pre-the #29 series code (the feature did not exist before)."
+
+[[regression_tests]]
+node = "tests/core/registration/test_geometry.py::TestOverlap"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in the #29 series (6a2f38b..6260b53): the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/core/registration/test_optical_prior.py"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in the #29 series (6a2f38b..6260b53): the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/core/registration/test_terrestrial_registrar.py::TestRotation::test_supports_arbitrary_rotation_across_the_full_360_degree_range"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in the #29 series (6a2f38b..6260b53): the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/core/registration/test_terrestrial_registrar.py::TestScale::test_scale_steps_one_trusts_the_optical_prior_ratio_exactly"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in the #29 series (6a2f38b..6260b53): the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/core/registration/test_terrestrial_registrar.py::TestExposureInvariance"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in the #29 series (6a2f38b..6260b53): the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/core/registration/test_terrestrial_registrar.py::TestNoValidRegistration"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in the #29 series (6a2f38b..6260b53): the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/core/registration/test_terrestrial_registrar.py::TestAmbiguousMatch"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in the #29 series (6a2f38b..6260b53): the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/core/registration/test_terrestrial_registrar.py::TestAccuracyConstants"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in the #29 series (6a2f38b..6260b53): the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/core/registration/test_terrestrial_registrar_real_data.py"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in the #29 series (6a2f38b..6260b53): the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/core/registration/test_astap_adapter.py"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in the #29 series (6a2f38b..6260b53): the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/core/registration/test_star_field_registrar.py::TestGeometryFromWcs"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in the #29 series (6a2f38b..6260b53): the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/core/registration/test_star_field_registrar.py::TestStarFieldRegistrar"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in the #29 series (6a2f38b..6260b53): the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/core/registration/test_alignment.py::TestDeriveAlignmentGuidance"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in the #29 series (6a2f38b..6260b53): the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_fov_calibrator.py::TestFovCalibrator"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in the #29 series (6a2f38b..6260b53): the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_collimation_main_window.py::TestFovCalibration::test_a_confident_match_sets_the_guide_panels_polygon"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in the #29 series (6a2f38b..6260b53): the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_collimation_main_window.py::TestDiagnosticsCapture::test_capture_includes_the_fov_calibration_result_once_one_has_run"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in the #29 series (6a2f38b..6260b53): the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."

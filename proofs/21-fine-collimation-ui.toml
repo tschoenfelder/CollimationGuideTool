@@ -1,0 +1,40 @@
+# Proof manifest (S7) -- schema in proofs/README.md. Run: python scripts/prove.py 21-fine-collimation-ui
+issues = [21]
+summary = "Fine-collimation Stage 7 UI (#21): a valid focused-star result shows the stacked star, error direction, confidence and radial profile; an invalid/low-confidence/failed result says why and never shows a green 'collimated' state. S7 maps both ACs to the panel component tests."
+modules = [
+    "apps/collimation_tool/ui/fine_collimation_panel.py",
+    "apps/collimation_tool/ui/fine_collimation_runner.py",
+    "apps/collimation_tool/application/fine_collimation_controller.py",
+]
+fix_commits = ["73ff47b"]
+dataset_uuids = []
+focused_command = """pytest -q \ntests/collimation/ui/test_fine_collimation_panel.py::TestAC7_1ValidResult \ntests/collimation/ui/test_fine_collimation_panel.py::TestAC7_2InvalidResult \ntests/collimation/ui/test_fine_collimation_panel.py::TestInitialState \ntests/collimation/ui/test_fine_collimation_panel.py::TestArtificialStarHonesty::test_a_symmetric_artificial_star_result_is_never_shown_as_collimated \ntests/collimation/ui/test_fine_collimation_runner.py::TestFineCollimationRunner"""
+broader_tier = "component"
+field_only_assumptions = [
+    "The live fine-collimation loop on the real rig (real stacked star, real seeing) has not been run; the panel is proven on synthetic outcomes only.",
+]
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_fine_collimation_panel.py::TestAC7_1ValidResult"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 73ff47b: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_fine_collimation_panel.py::TestAC7_2InvalidResult"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 73ff47b: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_fine_collimation_panel.py::TestInitialState"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 73ff47b: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_fine_collimation_panel.py::TestArtificialStarHonesty::test_a_symmetric_artificial_star_result_is_never_shown_as_collimated"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after 73ff47b landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_fine_collimation_runner.py::TestFineCollimationRunner"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 73ff47b: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."

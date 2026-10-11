@@ -1,0 +1,108 @@
+# Proof manifest (S7) -- schema in proofs/README.md. Run: python scripts/prove.py 33-autofocus
+issues = [33]
+summary = "Per-optical-train autofocus (#33): one bounded search workflow (start +/- 1000 steps and device limits, no extrapolation, consistent final-approach direction for backlash, cancellable, final revalidation) with separate star (FWHM, rejects saturated/clipped, robust multi-star median) and terrestrial (multi-tile Tenengrad, moving-tile rejection, low confidence) metrics; plus artificial single-star autofocus with target tracking and exposure reduction."
+modules = [
+    "apps/collimation_tool/application/autofocus_controller.py",
+    "apps/collimation_tool/application/autofocus_search.py",
+    "apps/collimation_tool/ui/focuser_panel.py",
+    "packages/astrotool_core/focus/search_bounds.py",
+    "packages/astrotool_core/focus/star_focus_metric.py",
+    "packages/astrotool_core/focus/terrestrial_focus_metric.py",
+]
+fix_commits = ["4190389", "b17e95e"]
+dataset_uuids = []
+focused_command = """pytest -q \ntests/collimation/ui/test_focuser_panel.py::TestAutoFocusButtonEnablement \ntests/core/focus/test_search_bounds.py \ntests/collimation/application/test_autofocus_search.py::TestHardSafetyEnvelope \ntests/collimation/application/test_autofocus_search.py::TestConsistentDirectionFinalApproach \ntests/collimation/application/test_autofocus_controller_simulated.py::TestAutofocusWorkflow::test_the_final_approach_absorbs_backlash \ntests/collimation/application/test_autofocus_controller_fresh_frames_simulated.py::TestStreamingExposures \ntests/collimation/application/test_autofocus_controller.py::TestAutofocusControllerStarMode \ntests/core/focus/test_star_focus_metric.py::TestMeasureStarFocus \ntests/core/focus/test_terrestrial_focus_metric.py::TestMeasureTerrestrialFocus \ntests/collimation/application/test_autofocus_search.py::TestRejectionCancellationAndFrameLoss \ntests/collimation/application/test_autofocus_search.py::TestFinalValidation \ntests/collimation/application/test_autofocus_search.py::TestBoundedFocusSearcherHappyPath::test_full_focus_curve_is_recorded \ntests/collimation/ui/test_focuser_panel.py::TestAutoFocusRun::test_a_full_run_updates_the_status_label_and_diagnostics \ntests/core/focus/test_star_target_tracker.py \ntests/collimation/application/test_autofocus_artificial_star.py \ntests/collimation/application/test_autofocus_search.py::TestInvalidSamplesForASingleArtificialStar \ntests/collimation/ui/test_focuser_panel.py::TestArtificialStarMode"""
+broader_tier = "component"
+field_only_assumptions = [
+    "A real focus sweep on the rig (real focuser backlash, real seeing, real artificial star) has not been run; convergence is proven on simulated curves/rigs.",
+    "The 'HWFM' wording was resolved as FWHM (star width) in the implementation; that choice is not confirmed against the user's intent in a field run.",
+]
+gaps = [
+    "'Terrestrial autofocus does not reuse the star-width algorithm' is pinned only by mode routing (focuser panel tests), not by a test that inspects which metric module is called.",
+    "'Camera exposure/gain variation is controlled' is proven for exposure (frozen and restored); gain is not asserted.",
+]
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_focuser_panel.py::TestAutoFocusButtonEnablement"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 4190389/b17e95e: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/core/focus/test_search_bounds.py"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 4190389/b17e95e: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_autofocus_search.py::TestHardSafetyEnvelope"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 4190389/b17e95e: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_autofocus_search.py::TestConsistentDirectionFinalApproach"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 4190389/b17e95e: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_autofocus_controller_simulated.py::TestAutofocusWorkflow::test_the_final_approach_absorbs_backlash"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after 4190389 landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_autofocus_controller_fresh_frames_simulated.py::TestStreamingExposures"
+failed_before_fix = false
+reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after 4190389 landed, so there is no pre-fix failure to show."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_autofocus_controller.py::TestAutofocusControllerStarMode"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 4190389/b17e95e: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/core/focus/test_star_focus_metric.py::TestMeasureStarFocus"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 4190389/b17e95e: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/core/focus/test_terrestrial_focus_metric.py::TestMeasureTerrestrialFocus"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 4190389/b17e95e: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_autofocus_search.py::TestRejectionCancellationAndFrameLoss"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 4190389/b17e95e: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_autofocus_search.py::TestFinalValidation"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 4190389/b17e95e: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_autofocus_search.py::TestBoundedFocusSearcherHappyPath::test_full_focus_curve_is_recorded"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 4190389/b17e95e: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_focuser_panel.py::TestAutoFocusRun::test_a_full_run_updates_the_status_label_and_diagnostics"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 4190389/b17e95e: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/core/focus/test_star_target_tracker.py"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 4190389/b17e95e: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_autofocus_artificial_star.py"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 4190389/b17e95e: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_autofocus_search.py::TestInvalidSamplesForASingleArtificialStar"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 4190389/b17e95e: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_focuser_panel.py::TestArtificialStarMode"
+failed_before_fix = false
+reason_no_prefix_repro = "Feature/AC test written together with the implementation in 4190389/b17e95e: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
