@@ -1,0 +1,120 @@
+# Proof manifest -- schema in proofs/README.md.
+# Run: python scripts/prove.py 52-fresh-frame-after-motion
+issues = [52, 43, 30, 39]
+summary = """S6.7 (rollout blocker from S6.0b; audit T05): "a measurement after motion uses a frame whose \
+exposure STARTED after the motion ended (+ settle), under an exposure-scaled deadline with an explicit \
+timeout outcome" had no single owner. Reacquisition's angular path measured the latest displayed guide \
+frame after a blind 750 ms settle (a 2 s exposure that started during the GOTO was measured); its \
+guide-pulse path and autofocus used fixed budgets (6 s per stage, 5 s) that time out any streaming \
+exposure above ~2-2.5 s; without a waiter reacquisition silently fell back to the latest frame; Mount \
+Align's capture timing ran on the real clock. Fix: astrotool_core.acquisition.fresh_frame_after_motion \
+owns the rule (measurement_reference, FreshFrameBudget = max(2 s, 2 x exposure + 1 s), deadline anchored \
+at max(now, reference), extended when a delivered frame reveals a longer exposure via the new \
+FrameAcquisitionResult.longest_exposure_s, explicit TIMEOUT/OVERLAPPED/UNAVAILABLE/CANCELLED). \
+Reacquisition (both paths) uses it for every post-move measurement and refuses to move without a \
+fresh-frame source (no_fresh_frame_source); frame failures surface as fresh_frame_timeout / \
+guide_camera_unavailable. Autofocus uses it (assumed 2 s until a frame shows the exposure; failure \
+reason explicit). Mount Align takes its per-frame budget and reference from the same owner and runs \
+its capture timing on an injected clock. Review fixes: every runner outcome (also a move whose pending action Stop dropped, or a stranded return) is the next BEFORE capture's motion reference; waits run in 0.5 s slices so Stop (also autofocus' cancel) ends them within one slice, capped at 61 s (2 x MAX_MEASUREMENT_EXPOSURE_S 30 s + 1 s); the ToupTek adapter stamps the software trigger into Frame.exposure_started_at and StreamController stamps captured_at = trigger + exposure (was after capture = exposure end + readout + pull + copy, which put the derived exposure start AFTER the real one)."""
+modules = [
+    "packages/astrotool_core/acquisition/fresh_frame_after_motion.py",
+    "packages/astrotool_core/acquisition/stable_frame_acquisition.py",
+    "packages/astrotool_core/acquisition/__init__.py",
+    "apps/collimation_tool/application/star_acquisition.py",
+    "apps/collimation_tool/application/autofocus_controller.py",
+    "apps/collimation_tool/ui/mount_test_move_panel.py",
+    "packages/astrotool_core/frames/frame.py",
+    "packages/astrotool_core/camera/touptek_adapter.py",
+    "packages/astrotool_core/acquisition/stream_controller.py",
+]
+fix_commits = ["9fc3fa2"]
+dataset_uuids = []
+focused_command = "pytest -q tests/core/acquisition/test_stream_controller.py tests/core/camera/test_touptek_adapter_simulated.py::TestExposureStartIsStampedAtTheTrigger tests/core/acquisition/test_fresh_frame_after_motion.py tests/collimation/application/test_star_acquisition_fresh_frames_simulated.py tests/collimation/application/test_autofocus_controller_fresh_frames_simulated.py tests/collimation/ui/test_mount_test_move_panel_fresh_frames.py tests/collimation/application/test_star_acquisition_guide_pulse_simulated.py::TestAstronomicalReacquisitionWithGuidePulses::test_without_a_fresh_frame_source_nothing_is_sent"
+broader_tier = "component"
+field_only_assumptions = [
+    "On the real ToupTek SDK the exposure starts at or after Trigger(1) returns control (the adapter stamps just before calling it), and get_ExpoTime() is the exposure actually used for that frame -- so captured_at = trigger + exposure is never later than the real exposure end.",
+    "MailboxFrame.captured_at is now the exposure END (trigger + exposure) for ToupTek frames instead of the after-pull stamp: frame ages (e.g. GuideTool's latest_frame_age_s) grow by the readout/pull time -- stricter, never looser.",
+    "OnStepAdapter's move_angular (GOTO) and guide_pulse return only once the motion has ended, so 'now' at the next measurement is the motion end (the 750 ms settle is then added to the exposure-start bound).",
+    "750 ms (reacquisition) / frame_settle_ms (Mount Align) are enough mechanical settle after a move on the rig; unchanged values, now applied as an exposure-start bound instead of a blind sleep.",
+    "Guide/main exposures above ~5 s with no frame delivered inside the first assumed budget (reacquisition 6 s, autofocus 5 s) end as an explicit fresh_frame_timeout on the FIRST wait (no exposure hint is wired); later waits scale from the exposure seen.",
+]
+gaps = [
+    "Deferred to S6.6 (files owned by S6.2): a GUI-thread exposure snapshot passed as exposure_hint for reacquisition (main_window) and autofocus (focuser_panel); reading the spinbox off the GUI thread is #49-forbidden. Until then the first wait of a run cannot know an exposure > ~5 s.",
+    "Frames WITHOUT exposure_started_at (FakeCamera, ReplayCamera, FakeTouptekCamera -- test doubles only; every production camera is the ToupTek adapter) keep the after-capture stamp, so for them the derived start is late by the readout time. No readout bound is subtracted for that fallback (it would shift every FrameTimeline/rig boundary while no production source uses it).",
+    "Mount Align's stability window (acquire_verified_frame) still hands each waiter call its whole remaining budget; Stop does not wait for it (the job is abandoned and its result discarded, #49), but the worker thread finishes only at the deadline.",
+    "Mount Align nudges still wait for BEFORE/AFTER measurement frames (AGENTS.md manual-move rule): not decoupled -- the nudge measurement is pinned by proofs/43.toml (test_a_nudge_that_moved_nothing_is_not_a_confirmed_displacement), so removing it needs a product decision (S6.6).",
+    "The Mount Align tests in test_mount_test_move_panel_fresh_frames.py cannot run on the pre-S6.7 code (no clock seam: import/constructor error), and Mount Align's exposure-start rule and 2E+1 scaling predate S6.7 -- they characterize the migrated timing, not a reproduced defect.",
+    "On the guide-pulse path the pre-S6.7 two-stage settled wait was already fresh for short exposures; the [0.5/2.0-guide_pulse] cases of the freshness test fail pre-fix only because the recorder counts the discarded stage-1 frame (see evidence). Its real pre-fix defects are the long-exposure timeout and the silent latest-frame fallback.",
+    "TestMountTestMovePanel runs MainWindow's panel on fake time via a test subclass; tests that also stream real ReplayCamera frames into CameraPanel.wait_for_frame_after mix the fake panel clock with real frame stamps (freshness trivially satisfied there); real freshness is covered by test_calibration_frame_validity.py and the new FrameTimeline tests.",
+    "test_calibration_failure_recovery.py is now on fake time for every wait but stays ~70 s: the remainder is CPU in the translation estimator (cProfile: ~23 of 27 s of the slowest test in measure_translation_offset_with_tier), not waiting.",
+]
+
+[[regression_tests]]
+node = "tests/collimation/application/test_star_acquisition_fresh_frames_simulated.py::TestEveryMeasurementAfterAMotionIsFresh::test_no_measured_frame_started_before_the_motion_ended_and_settled"
+failed_before_fix = true
+evidence = "Pre-fix run 2026-10-07, separate worktree scratchpad/wt_head at 18cf0a6 (production identical to d6cfccc), current test copied in: tests/collimation/application/test_star_acquisition_fresh_frames_simulated.py:286: assert [(106.0, 108.14, 107.39), ...] == [] (angular path, 2 s stream: the latest displayed frame, exposure started 1.4 s before the GOTO ended, was measured). The guide_pulse cases also fail there, but only through the recorder counting the discarded stage-1 frame (see gaps)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_star_acquisition_fresh_frames_simulated.py::TestLongExposures::test_a_long_guide_exposure_is_waited_for_not_timed_out"
+failed_before_fix = true
+evidence = "Same worktree run: tests/collimation/application/test_star_acquisition_fresh_frames_simulated.py:308: AssertionError: AcquisitionResult(status=LOST, failure_reason='target_not_found_guide') for 4 s and 6 s guide exposures on both paths (fixed 6 s settled-frame stage / stale latest frame)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_star_acquisition_fresh_frames_simulated.py::TestExplicitOutcomes::test_without_a_fresh_frame_source_nothing_moves_and_it_says_why"
+failed_before_fix = true
+evidence = "Same worktree run: tests/collimation/application/test_star_acquisition_fresh_frames_simulated.py:322: assert SEARCHING_GUIDE is LOST (the mount was moved and measured on the latest displayed frame with no fresh-frame source)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_star_acquisition_fresh_frames_simulated.py::TestExplicitOutcomes::test_a_stream_that_stops_after_a_move_is_an_explicit_frame_timeout"
+failed_before_fix = true
+evidence = "Same worktree run: tests/collimation/application/test_star_acquisition_fresh_frames_simulated.py:348: assert 'target_not_found_guide' == 'fresh_frame_timeout' (guide-pulse path; the angular path failed at :347, it kept measuring stale latest frames and 'succeeded')."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_autofocus_controller_fresh_frames_simulated.py::TestStreamingExposures::test_focus_is_found_and_no_scored_frame_overlapped_a_focuser_move"
+failed_before_fix = true
+evidence = "Same worktree run (T05): tests/collimation/application/test_autofocus_controller_fresh_frames_simulated.py:112: AssertionError: AutofocusResult(status=FRAME_ACQUISITION_FAILED, ...) for 3 s and 4 s streaming exposures (fixed 5 s wait); 0.5 s and 1 s pass pre-fix."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_autofocus_controller_fresh_frames_simulated.py::TestExplicitTimeout"
+failed_before_fix = true
+evidence = "Same worktree run: tests/collimation/application/test_autofocus_controller_fresh_frames_simulated.py:131: assert (None is not None) -- no failure reason said why autofocus stopped (also :153 and :169)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_star_acquisition_guide_pulse_simulated.py::TestAstronomicalReacquisitionWithGuidePulses::test_without_a_fresh_frame_source_nothing_is_sent"
+failed_before_fix = false
+reason_no_prefix_repro = "Replaces the S6.0d interim test that pinned the latest-frame fallback (test_without_a_fresh_frame_source_the_latest_frame_is_used); the same behaviour is proven failing pre-fix by test_without_a_fresh_frame_source_nothing_moves_and_it_says_why[guide_pulse] above. Not re-run separately on 18cf0a6."
+
+[[regression_tests]]
+node = "tests/core/acquisition/test_fresh_frame_after_motion.py"
+failed_before_fix = false
+reason_no_prefix_repro = "Unit tests of the new owner module (budget boundaries, stale backlog, overlap, long/unknown exposures, explicit outcomes, deadline before/at/after); the module did not exist before S6.7."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_test_move_panel_fresh_frames.py"
+failed_before_fix = false
+reason_no_prefix_repro = "Mount Align's exposure-start rule and 2E+1 budget predate S6.7; these pin the migration onto the shared owner and the injected clock (reference, budget, timeout on fake time, 60 s reference max age before/at/after). The pre-S6.7 panel has no clock seam, so the module cannot even import/construct there (test_mount_test_move_panel_fresh_frames.py:15)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_test_move_panel_fresh_frames.py::TestEveryMoveEndIsTheNextReference"
+failed_before_fix = true
+evidence = "Review fix 2, run 2026-10-10 in the shared tree before the one-line _poll_inner change (test first): tests/collimation/ui/test_mount_test_move_panel_fresh_frames.py:175: assert 100.0 == 105.0 and :190: assert [100.0] == [105.0] -- after Stop the next nudge's BEFORE still referenced the previous move's end."
+
+[[regression_tests]]
+node = "tests/core/acquisition/test_fresh_frame_after_motion.py::TestStopAndTheCap"
+failed_before_fix = false
+reason_no_prefix_repro = "Review fix 3 (slices, cancel within one slice, 61 s cap) changes the service introduced by S6.7 itself; no pre-S6.7 code had the service. On HEAD the equivalent waits were uncancellable for their whole fixed budget."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_autofocus_controller_fresh_frames_simulated.py::TestStop"
+failed_before_fix = false
+reason_no_prefix_repro = "Review fix 3: autofocus never passed its cancel into the frame wait before; on HEAD this test cannot reach CANCELLED within one slice (the fixed 5 s wait ignored cancel), not re-run separately there."
+
+[[regression_tests]]
+node = "tests/core/camera/test_touptek_adapter_simulated.py::TestExposureStartIsStampedAtTheTrigger"
+failed_before_fix = false
+reason_no_prefix_repro = "Review fix 4 adds Frame.exposure_started_at; the pre-fix Frame has no such field, so the test cannot run there. The defect (start derived after the real one) is pinned by test_stream_controller.py below."
+
+[[regression_tests]]
+node = "tests/core/acquisition/test_stream_controller.py::test_a_known_exposure_start_stamps_the_end_of_the_exposure_not_of_the_readout"
+failed_before_fix = false
+reason_no_prefix_repro = "Needs Frame.exposure_started_at (added by the fix) to construct its camera double; pre-fix the stamp was always after capture() returned (stream_controller.py:158)."

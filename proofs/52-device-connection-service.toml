@@ -1,0 +1,130 @@
+# Proof manifest -- schema in proofs/README.md. Run: python scripts/prove.py 52-device-connection-service
+issues = [52]
+summary = """S6.2 (#52 audit K01-K03): device connect/disconnect handling was written five \
+times and the copies disagreed -- GuideTool caught only ConnectionError and never released the \
+previous camera (the #45 ERROR_BUSY class); FilterWheelPanel neither logged a connect failure \
+nor kept it for diagnostics (the ca5bb92 class); CameraPanel's stream start called \
+camera.connect() unguarded; a failing first status read, focuser abort or tracking-off on quit \
+(OnStepAdapter#17) raised out of the panel and skipped the release of the shared OnStep \
+connection; MainWindow.closeEvent stopped panels without isolation; OnStepConnection.acquire \
+closed the client only for (ConnectionError, RuntimeError, TimeoutError, ValueError), missing \
+OnStepAdapter's KeyError and a socket.gaierror (OSError). One owner now: \
+astrotool_core.session.device_connection -- LIFECYCLE_FAILURES (any Exception) split into \
+device failures (WARNING) and INTERNAL_ERRORS (AttributeError/TypeError/NameError/\
+AssertionError/ImportError: ERROR, "Internal error" wording, `internal` in diagnostics, and \
+handed to sys.excepthook so the #10 incident capture still writes a bundle as when they \
+escaped); one log record per failure with its traceback; phases \
+CONNECT/START/WAIT/CANCEL/DISCONNECT/SHUTDOWN; all-or-nothing open with guaranteed release; \
+close/stop_each that never raise or skip; switch_device = release previous, open + verify \
+candidate, restore the previous through the same all-or-nothing open with its own identity \
+check. Focuser, MountPark, FilterWheel and Camera panels, the GuideTool and closeEvent bind to \
+it; acquire() closes the client on any failure. A static contract scans apps/ for re-stated \
+failure wording and apps/+packages/ for a connect() guarded by handlers that do not cover \
+Exception. Tooling (same change): scripts/prove.py batches the `pytest --collect-only` node ids \
+(the single command line had reached ~32,000 of Windows' 32,767 characters). Placed in \
+astrotool_core (not collimation_tool.application) because the GuideTool needs the same failure \
+set and switch order."""
+modules = [
+    "packages/astrotool_core/session/device_connection.py",
+    "packages/astrotool_core/session/__init__.py",
+    "packages/astrotool_core/onstep/connection.py",
+    "apps/collimation_tool/ui/focuser_panel.py",
+    "apps/collimation_tool/ui/mount_park_panel.py",
+    "apps/collimation_tool/ui/filter_wheel_panel.py",
+    "apps/collimation_tool/ui/camera_panel.py",
+    "apps/collimation_tool/ui/main_window.py",
+    "apps/guide_tool/ui/main_window.py",
+]
+fix_commits = ["80220a6"]
+dataset_uuids = []
+focused_command = """pytest -q \
+tests/core/session/test_device_connection.py \
+tests/contracts/test_connection_failure_contract.py \
+tests/core/onstep/test_onstep_simulator.py::TestConnectErrorVariants \
+tests/collimation/ui/test_focuser_panel_simulated.py \
+tests/collimation/ui/test_mount_park_panel_simulated.py \
+tests/collimation/ui/test_filter_wheel_panel_simulated.py \
+tests/collimation/ui/test_filter_wheel_panel.py::TestDiagnosticContext \
+tests/collimation/ui/test_camera_panel_simulated.py \
+tests/collimation/ui/test_main_window_quit_isolation.py \
+tests/guide/ui/test_guide_main_window.py::TestCameraSwitchLifecycle \
+tests/guide/ui/test_guide_main_window.py::TestInternalErrorsStillProduceAnIncident \
+tests/core/testing/test_prove.py::TestCollectBatching"""
+broader_tier = "component"
+field_only_assumptions = [
+    "That every rig port's disconnect() is harmless after a failed or partial connect() is taken from the port contracts and the adapters' code (OnStep shims guard with _held, IndiFilterWheelAdapter closes its client unconditionally, TouptekCameraAdapter abandons a half-open handle) -- the all-or-nothing release after a failed START/WAIT has not run on the real EFW/ToupTek/OnStep yet.",
+    "A real OnStepAdapter#17 unconfirmed emergency stop on quit is only simulated (stop_confirms=False); the real driver path ends in the same RuntimeError per mount_park_adapter.py:143.",
+]
+gaps = [
+    "MountTestMovePanel's connect handler still has its own copy of the K01 pattern (mount_test_move_panel.py, outside the S6.2 contract; pinned in tests/contracts/test_connection_failure_contract.py::_ALLOWED_WORDING until S6.6 binds it to DeviceConnectionService).",
+    "mount_pulse_adapter.py:138 still restates the OnStep operation exception tuple (K02 adapter side, not in the S6.2 contract) and focuser_adapter.py converts only ValueError (L02 reachability) -- S6.3/S6.6.",
+    "Panel status polls after connect (periodic status() raising) stay unguarded -- operation/poll lifecycle is S6.3.",
+    "The S6.4 P-a 500 ms re-enforce timer stays in MainWindow (coordinator decision): mode/tracking policy that must tick whether or not any panel's connection is open (S6.4 tests unchanged).",
+    "The internal-error routing tests failed pre-S6.2 because the exception escaped the handler (then sys.excepthook captured it in the real app); they pin that the contained path still reaches the hook -- the review probe against the first S6.2 draft (swallowed: 1 WARNING, no traceback, 0 hook calls, no bundle) has no separate committed state.",
+    "The wording scan covers apps/ only: in packages/ the phrases are the adapters' own exception messages (the device's reason), reported by the owner.",
+]
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_simulator.py::TestConnectErrorVariants::test_a_failed_connect_leaves_nothing_open_and_a_retry_succeeds"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-10, separate worktree at d6cfccc (HEAD production; only the new session/device_connection.py module and today's tests copied in): [KeyError] and [OSError-gaierror] tests/core/onstep/test_onstep_simulator.py:122: AssertionError: assert 0 == 1 (acquire() never called close()); the other 5 variants passed pre-fix"
+
+[[regression_tests]]
+node = "tests/core/session/test_device_connection.py"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-10, separate worktree at d6cfccc (HEAD production; only the new session/device_connection.py module and today's tests copied in): TestOverTheSimulatedOnStepConnection [KeyError] and [OSError] tests/core/session/test_device_connection.py:476: AssertionError: assert (None is None and 0 == 1). The other classes (phases, internal-error classification, switch/restore, stop_each, normalized failure) exercise the new service directly and passed on the copied module."
+
+[[regression_tests]]
+node = "tests/contracts/test_connection_failure_contract.py"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-10, separate worktree at d6cfccc (HEAD production; only the new session/device_connection.py module and today's tests copied in): tests/contracts/test_connection_failure_contract.py:134: AssertionError: connect/disconnect failure wording re-stated outside packages/astrotool_core/session/device_connection.py (focuser/mount_park/filter_wheel/camera panels, guide main window); tests/contracts/test_connection_failure_contract.py:155: AssertionError: a connect() guarded by handlers that do not cover Exception (apps/guide_tool/ui/main_window.py:199, packages/astrotool_core/onstep/connection.py:104)"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_focuser_panel_simulated.py::TestEveryConnectionPhaseLeavesThePanelRetryable"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-10, separate worktree at d6cfccc (HEAD production; only the new session/device_connection.py module and today's tests copied in): wait tests/collimation/ui/test_focuser_panel_simulated.py:173: AssertionError: assert 'Connect failed' in 'Not connected.'; cancel tests/collimation/ui/test_focuser_panel_simulated.py:130: RuntimeError: focuser abort not confirmed (raised out of stop(), release skipped); disconnect tests/collimation/ui/test_focuser_panel_simulated.py:218: assert not True; internal tests/collimation/ui/test_focuser_panel_simulated.py:130: AttributeError (escaped stop()). The connect-logged-once test passed pre-fix (ca5bb92 already logged)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_focuser_panel_simulated.py::TestConnectErrorVariantsAreShownNotRaised::test_the_failure_is_shown_and_a_retry_connects"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-10, separate worktree at d6cfccc (HEAD production; only the new session/device_connection.py module and today's tests copied in), [KeyError] only (assertion changed by S6.2 to the normalized reason): tests/collimation/ui/test_focuser_panel_simulated.py:79: assert \"'UTC'\" == \"KeyError: 'UTC'\""
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_park_panel_simulated.py"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-10, separate worktree at d6cfccc (HEAD production; only the new session/device_connection.py module and today's tests copied in): connect [KeyError]/[OSError] tests/collimation/ui/test_mount_park_panel_simulated.py:87: AssertionError: assert 0 == 1 (failed OnStep client never closed); tests/collimation/ui/test_mount_park_panel_simulated.py:99: assert \"'UTC'\" == \"KeyError: 'UTC'\"; start tests/collimation/ui/test_mount_park_panel_simulated.py:127: assert (not True) (connected with the button unchecked, K03); wait tests/collimation/ui/test_mount_park_panel_simulated.py:143: assert (not True); cancel packages/astrotool_core/onstep/mount_park_adapter.py:143: RuntimeError: OnStep still reports motion after stop -- raised out of MountParkPanel.stop(), shared OnStep connection never released; disconnect tests/collimation/ui/test_mount_park_panel_simulated.py:183: assert not True. Only the [TimeoutError]/[ConnectionError] connect variants passed pre-fix."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_filter_wheel_panel_simulated.py::TestEveryConnectionPhaseLeavesThePanelRetryable"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-10, separate worktree at d6cfccc (HEAD production; only the new session/device_connection.py module and today's tests copied in): all 4 failed -- tests/collimation/ui/test_filter_wheel_panel_simulated.py:95: AssertionError: assert 0 == 1 (no log line: the missed ca5bb92 fix); tests/collimation/ui/test_filter_wheel_panel_simulated.py:119: assert 0 == 1; tests/collimation/ui/test_filter_wheel_panel_simulated.py:134: assert (not True); tests/collimation/ui/test_filter_wheel_panel_simulated.py:63: OSError: socket already gone (raised out of stop())"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_filter_wheel_panel.py::TestDiagnosticContext::test_reports_the_full_state_shape"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-10, separate worktree at d6cfccc (HEAD production; only the new session/device_connection.py module and today's tests copied in): tests/collimation/ui/test_filter_wheel_panel.py:54: AssertionError (no last_connect_error / connection in diagnostic_context)"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_camera_panel_simulated.py"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-10, separate worktree at d6cfccc (HEAD production; only the new session/device_connection.py module and today's tests copied in): all 6 failed -- tests/collimation/ui/test_camera_panel_simulated.py:59: assert not True (Start stream left checked after the unguarded connect raised; same for a failing stream start and an internal error); tests/collimation/ui/test_camera_panel_simulated.py:60: AssertionError: assert 'Stop stream' == 'Start stream'; tests/collimation/ui/test_camera_panel_simulated.py:34: OSError: USB transfer aborted / OSError: device gone (raised out of stop(), camera never released)"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_main_window_quit_isolation.py"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-10, separate worktree at d6cfccc (HEAD production; only the new session/device_connection.py module and today's tests copied in): tests/collimation/ui/test_main_window_quit_isolation.py:39: RuntimeError: OnStep still reports motion after stop (raised out of closeEvent; every later panel skipped); same line: TypeError: bad call (internal-error case)"
+
+[[regression_tests]]
+node = "tests/guide/ui/test_guide_main_window.py::TestCameraSwitchLifecycle"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-10, separate worktree at d6cfccc (HEAD production; only the new session/device_connection.py module and today's tests copied in): tests/guide/ui/test_guide_main_window.py:240: AssertionError: assert False (previous SDK handle never closed); tests/guide/ui/test_guide_main_window.py:253 and :263: AssertionError (same, same-camera reconnect / demo); tests/guide/ui/test_guide_main_window.py:204: TimeoutError: camera enumeration timed out (escaped the Connect handler); tests/guide/ui/test_guide_main_window.py:291: AssertionError: assert False (handle left open past quit). The failing-release-on-quit test passed pre-fix (quit never released the camera at all)."
+
+[[regression_tests]]
+node = "tests/guide/ui/test_guide_main_window.py::TestInternalErrorsStillProduceAnIncident"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-10, separate worktree at d6cfccc (HEAD production; only the new session/device_connection.py module and today's tests copied in): tests/guide/ui/test_guide_main_window.py:324: AttributeError: 'NoneType' object has no attribute 'Toupcam' (escaped the Connect handler; see gaps for what this pins)"
+
+[[regression_tests]]
+node = "tests/core/testing/test_prove.py::TestCollectBatching"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-10, separate worktree at d6cfccc (HEAD production; only the new session/device_connection.py module and today's tests copied in), scripts/prove.py at HEAD: tests/core/testing/test_prove.py:477: AttributeError: module 'prove' has no attribute 'node_batches'; tests/core/testing/test_prove.py:506: AssertionError: assert 1 > 1 (one collect-only command for every node id)"

@@ -54,14 +54,14 @@ Status: `todo` · `in-progress` · `done` · `field-only` (only real hardware ca
 | S6.0d | #39, user decision | Astronomical-mode reacquisition via OnStepAdapter 0.5.0 `guide_pulse` (tracking preserved): capability-detected (main stays pinned to published 0.4.1 → clear 'needs OnStepAdapter ≥ 0.5.0' message), separate guide-pulse calibration (guide rate is not exposed), simulator modelled on the 0.5.0 source, distinct capability so Mount Align's timed/angular choice is unaffected; pin bump only after 0.5.0 is published and the supervised physical acceptance passed | issue agent | APPROVE-WITH-FIXES (Stop/tracking-off reporting, probes, mode re-read) → fixed | done | feb46e5 | `python scripts/prove.py 39-astro-guide-pulse` |
 | S6.0e | #39, S6.0d | OnStepAdapter 0.5.0 published 2026-10-06 (release v0.5.0; wheel sha256 2420ba1c…). **Correction (S6.0e):** the published wheel is NOT the pre-release build S6.0d was checked against — it was rebuilt after OnStepAdapter d7c5284 (post-chunk wait for the guide flag `G` to clear, refusal/timeout there emergency-stops); the S6.0d simulator differed in 494/3150 cases and was updated to 0/3150; a permanent contract test now replays the fake against the installed controller. Bump the pyproject pin 0.4.1 → 0.5.0, make the real capability path the default in tests (keep the 0.4.1-absence case simulated), contract-check the production adapter against the installed 0.5.0, update install.md; Pi venv upgrade happens at the S8 rollout | issue agent | APPROVE-WITH-FIXES (real-facade contract test, Pi reinstall steps) → fixed | done | 23a9cb2 | `python scripts/prove.py 39-astro-guide-pulse` |
 | S6.1 | #55 | Single-source device defaults + config-source contract test | issue agent | APPROVE-WITH-FIXES (diagnostics call-time, scanner blind spots) → fixed | done | 37db9f0, 61d1e27 | `python scripts/prove.py 55-single-source-defaults` |
-| S6.2 | #52 | `DeviceConnectionService` (Focuser → MountPark → MountTestMove) | | | todo | | |
+| S6.2 | #52 | `DeviceConnectionService` (Focuser → MountPark → MountTestMove) | issue agent | APPROVE-WITH-FIXES (internal-error masking, contract scan, restore, prove.py batching) → fixed | done | 80220a6 | `python scripts/prove.py 52-device-connection-service` |
 | S6.3 | #52 | `OperationLifecycle` + bounded Busy timeout (FilterWheel, Focuser) | | | todo | | |
 | S6.4 | #48 | Remove Mount Align **and autofocus** local Star/Terrestrial toggles; derive from global OperatingMode (M04 decided). Also (from S6.0c review P-a): switching to Terrestrial while the mount is busy stores the mode but the gate stays BLOCKED until the next measurement gate — add a one-shot re-enforce when the busy period ends | issue agent | 3 rounds: APPROVE-WITH-FIXES (+2 user decisions) → APPROVE → hardening | done | be7353e | `python scripts/prove.py 48-one-mode-source` |
 | S6.5 | #55 | ToupTek capability table (unsupported features contract-driven) | issue agent | APPROVE-WITH-FIXES (cooler-left-on safety, range retry) → APPROVE | done | 5f38a4c | `python scripts/prove.py 55-capability-tables` |
 | S6.5a | production defect (found by S4 review) | `touptek_adapter.py:54` `_FLAG_MONO = 0x40` is the SDK's `TOUPCAM_FLAG_USB30`; real `TOUPCAM_FLAG_MONO` is `0x10` (resources/touptek/toupcam.py:24/26). `is_color_sensor()` (line 639) therefore answers "not USB3": a colour USB3 camera would be treated as mono (no debayer). Option fallbacks also wrong (RGB 0x16→0x0c, FLUSH 0x36→0x3d, NOFRAME_TIMEOUT 0x3F→0x01, AUTOEXPO_TRIGGER 0x5A→0x51) — only used when the SDK lacks the name. Failing regression first (S4 leaves a strict xfail), then fix; check which rig cameras are affected | issue agent | APPROVE-WITH-FIXES → pairing gap closed structurally | done | 4864cc8 | `python scripts/prove.py 51-touptek` |
 | S6.5b | production defect (found by S6.5a) | `touptek_adapter._prepare_capture_mode` puts `TOUPCAM_OPTION_NOFRAME_TIMEOUT = 1` (1 ms); the SDK requires ≥ `TOUPCAM_NOFRAME_TIMEOUT_MIN` = 500 ms (`resources/touptek/toupcam.py:109`, `:682`) → either rejected (log warning) or a 1 ms no-frame timeout on the rig. Characterize on the simulator, decide the intended value from the SDK docs, fix; add a connect-time log of `model.flag` so the S6.5a camera-flag inferences become known on the next Pi run | issue agent | APPROVE-WITH-FIXES → fixed | done | 973d0ab | `python scripts/prove.py 51-touptek-noframe` |
 | S6.6 | #52 | Mount Align orchestration out of `mount_test_move_panel.py` into application layer | | | todo | | |
-| S6.7 | #52 | Fresh-frame-after-motion service shared by Mount Align + autofocus | | | todo | | |
+| S6.7 | #52 | Fresh-frame-after-motion service shared by Mount Align + autofocus | issue agent | APPROVE-WITH-FIXES (Stop/cap, stale nudge reference, trigger-time stamp) → fixed | done | 9fc3fa2 | `python scripts/prove.py 52-fresh-frame-after-motion` |
 | S6.8 | #55, #31, #46 | Verify no competing movement path remains | | | todo | | |
 | S7 | #15 #21 #29–#33 #35 #37 #39 #43 #44 #46 #49 | Proof manifests + missing low-tier tests; field-only assumptions listed | | | todo | | |
 | S8 | all | Release gate green, issue evidence comments, ask user before Pi sync | coordinator | — | todo | | |
@@ -418,6 +418,8 @@ not change · dependencies · non-goals · proof required.
 
 | Date | Task | Commit | What was proven |
 |------|------|--------|-----------------|
+| 2026-10-11 | S6.7 | 9fc3fa2 | ROLLOUT BLOCKER cleared: one owner of the fresh-frame-after-motion rule (reacquisition, autofocus, Mount Align); cancellable + capped waits; ToupTek exposure start stamped at trigger; TestMountTestMovePanel 517 s → 17 s |
+| 2026-10-11 | S6.2 | 80220a6 | One device connection lifecycle (focuser, park, filter wheel, camera, GuideTool, closeEvent); internal errors still produce incident bundles; prove.py batching |
 | 2026-10-07 | S6.0e | 23a9cb2 | OnStepAdapter 0.5.0 pinned; published build ≠ S6.0d pre-release (post-chunk G-flag wait) — simulator updated (494→0/3150 diffs), contract tests vs the installed controller and the real facade chain; install.md Pi upgrade with force-reinstall + build check |
 | 2026-10-07 | S6.4 | be7353e | #48 + M04: global Operating Mode is the single source for Mount Align and autofocus; user decisions A (artificial star ⇒ Terrestrial) and B (NCC both modes); TrackingEnforcer hardened (lock, fail-closed reads/stops, mid-check mode switch, P-a re-enforce) |
 | 2026-10-06 | S6.5 | 5f38a4c | Camera + mount capability tables; unsupported features decided once, no per-frame SDK calls; bounded range retry; TEC-off never suppressed (65,000-case exhaustive check); one owner for the cooling default |
@@ -564,5 +566,24 @@ not change · dependencies · non-goals · proof required.
   global Operating Mode to Terrestrial (tracking OFF) with a visible note — Astronomical + Artificial star
   must not exist. (2) NCC FOV registration stays available in both modes (Moon/planets at night); only
   ASTAP star-field matching is restricted to Astronomical.
+- **S6.2 findings (2026-10-07).** Mount Align's connect handler still a K01 copy → S6.6 (pinned in the
+  connection-failure contract test). `mount_pulse_adapter.py:138` restates the OnStep exception tuple;
+  `focuser_adapter.py` converts only ValueError (K02 adapter side, makes L02 reachable) → S6.3. Periodic
+  panel status polls that raise after connect are unguarded → S6.3. `IndiFilterWheelAdapter.connect` can
+  leave its client open if the post-connect probe raises (service release covers it; adapter fix → S6.3).
+  ToupTek enumeration cache is process-lifetime (a camera plugged in later stays invisible; pre-existing).
+  **Tooling:** `prove.py --validate-all` passes all manifests' node ids in one `pytest --collect-only`
+  command line → WinError 206 (command line too long) on Windows as manifests grow; batch it (S8 at the
+  latest). **Process:** agents share the session scratchpad — an agent removed another agent's worktree;
+  worktrees must be named per task (e.g. `wt-<task>-<role>`) and only the owner removes them.
+- **USER DECISION (2026-10-10, S6.7): nudges.** A manual RA/Dec nudge returns as soon as the mount move
+  completes (AGENTS.md manual-move rule); #43's no-motion check runs afterwards in the background on fresh
+  frames and only adds a warning if nothing moved → S6.6 (owner of mount_test_move_panel's nudge path).
+- **Coordinator decision (2026-10-10, S6.2):** the S6.4 P-a 500 ms re-enforce timer stays in MainWindow —
+  it is mode/tracking policy that must tick whether or not a connection is open; the connection service is
+  not its natural owner (contract deviation accepted).
+- **S6.7 follow-ups → S6.6.** No GUI-thread exposure snapshot is wired into reacquisition (main_window) or
+  autofocus (focuser_panel), so a first frame > ~5 s can still end in an explicit fresh_frame_timeout
+  (never a stale measurement). Audit leftovers T04 (1000 vs 750 ms settle), D07, L05.
 - **S5 live contradictions (9)** are listed in `docs/quality/duplication-audit.md`; each is owned by an
   S6 step and gets a failing regression before its fix.
