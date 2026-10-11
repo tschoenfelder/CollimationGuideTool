@@ -401,6 +401,41 @@ not change · dependencies · non-goals · proof required.
 - **Frozen:** S6.0b/S6.0d/S6.4 decisions; #49 off-GUI-thread waits.
 - **Proof:** failing-then-passing tests; manifest; TestMountTestMovePanel wall time before/after.
 
+### S6.3 — OperationLifecycle + interruptible waits (#52 L-items, #53 leftovers)
+
+- **Allowed files:** a small application-level operation-lifecycle helper (idle/running/cancelled/failed/
+  succeeded, guaranteed cleanup), the runners (`ui/autofocus_runner.py`, `ui/fine_collimation_runner.py`,
+  FovCalibrator, `ui/mount_test_move_runner.py` waits/retry only), `focuser_panel.py` /
+  `filter_wheel_panel.py` / `mount_park_panel.py` (Busy/confirmation timeout + periodic status-poll
+  guarding only), `filter_wheel/indi_filter_wheel_adapter.py` (S4 findings: disconnect-while-moving
+  reported as Busy forever; out-of-range slot Alert invisible; client left open if post-connect probe
+  raises; refresh throttle on the real clock), `onstep/focuser_adapter.py` + `onstep/mount_pulse_adapter.py`
+  (K02 adapter side: one owner of the OnStep exception set), `mount/operating_mode.py` / `tracking_mode.py`
+  (settle poll interruptible), `astrotool_core/acquisition/stream_controller.py` (clock seam; cadence
+  `Event.wait`), their tests; `tests/core/testing/test_no_policy_sleep.py` allowlist shrink.
+- **Behavior:** exceptions in any runner leave it idle and retryable (L01/L02: AutofocusRunner,
+  FineCollimationRunner, FovCalibrator lack try/finally); MountParkPanel stuck-Busy elif ordering (L02);
+  autofocus search treats not-yet-Busy focuser as settled (L-item) — verify & fix; Stop interrupts waits in
+  progress (runner fresh-park/unpark/gate/retry/settle/re-park; tracking settle poll; autofocus settle);
+  `_pulse_with_retry` honours Stop (flip the S3b strict xfail); panel polls never raise into Qt.
+- **Tests first:** phase-injection per runner/panel/adapter on the #51 simulators + FakeClock.
+- **Frozen:** S6.0c stop/lock semantics, S6.2 lifecycle service, S6.4 enforcer semantics, S6.7 rule.
+- **Non-goals:** Mount Align panel orchestration (S6.6).
+- **Proof:** failing-then-passing tests; manifest; sleep-guard allowlist shrinks.
+
+### S7 — proof manifests for the open HIGH issues
+
+- **Allowed files:** `proofs/*.toml` (new), new test modules only (no production changes), `tests/conftest.py`
+  tier table only.
+- **Scope:** #15, #21, #29, #30, #31, #32, #33, #35, #37, #39 (beyond 39-*), #43, #44, #46, #49 — one
+  manifest each (unless an existing manifest already covers it — then extend/link), mapping every AC in
+  `gh issue view <n>` to tests; add the missing lowest-tier tests where an AC has only high-level or no
+  proof; list field-only assumptions honestly. Gaps listed in earlier manifests (S2: FocuserPanel half of
+  3fc09ae, #43 guard isolation, #43 dataset) are closed here where possible with tests.
+- **Non-goals:** changing production code (record defects found as dependencies).
+- **Proof:** every listed issue has a manifest; `prove.py --validate-all` green; an AC→test table per
+  issue in the report.
+
 ### S5 — #55 + #52 duplication inventory (analysis only)
 
 - **Allowed files:** new `docs/quality/duplication-audit.md` only.
