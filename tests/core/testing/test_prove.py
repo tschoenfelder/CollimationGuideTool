@@ -462,3 +462,50 @@ def test_proof_env_puts_this_checkouts_code_first() -> None:
         str(root / "packages"),
         str(root / "apps"),
     ]
+
+
+class TestCollectBatching:
+    """S6.2 review: every manifest's node ids went into ONE `pytest --collect-only` command line,
+    which had reached ~32,000 of Windows' 32,767-character limit (WinError 206 at 33 more)."""
+
+    _NODES = [
+        f"tests/collimation/ui/test_panel_{i:03d}.py::TestSomething::test_{'x' * 80}"
+        for i in range(400)
+    ]
+
+    def test_batches_keep_order_cover_every_node_and_stay_within_the_budget(self) -> None:
+        batches = prove.node_batches(self._NODES, budget=2_000)
+        assert [n for batch in batches for n in batch] == self._NODES
+        assert len(batches) > 1
+        assert all(sum(len(n) + 1 for n in batch) <= 2_000 for batch in batches)
+
+    def test_an_oversized_node_gets_its_own_batch_and_nothing_is_empty(self) -> None:
+        huge = "tests/x/test_y.py::" + "t" * 50
+        assert prove.node_batches(["a", huge, "b"], budget=10) == [["a"], [huge], ["b"]]
+        assert prove.node_batches([]) == []
+
+    def test_collect_runs_one_short_command_per_batch_and_reports_failing_batches(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        calls: list[list[str]] = []
+
+        class _Result:
+            def __init__(self, returncode: int) -> None:
+                self.returncode = returncode
+                self.stdout = "ERROR not found" if returncode else ""
+                self.stderr = ""
+
+        def run(args: list[str], **_kwargs: object) -> _Result:
+            calls.append(args)
+            return _Result(1 if self._NODES[-1] in args else 0)
+
+        monkeypatch.setattr(prove.subprocess, "run", run)
+
+        problems = prove._collect_problems(self._NODES)
+
+        assert len(calls) > 1
+        assert all(len(" ".join(args)) < 32_767 // 2 for args in calls)
+        collected = [a for args in calls for a in args if a.startswith("tests/")]
+        assert collected == self._NODES
+        assert len(problems) == 1 and "ERROR not found" in problems[0]
+        assert prove._collect_problems([]) == []

@@ -160,6 +160,7 @@ from astrotool_core.registration.alignment import derive_alignment_guidance
 from astrotool_core.registration.astap_adapter import AstapCliSolver, AstapSolver
 from astrotool_core.registration.optical_prior import OpticalPrior
 from astrotool_core.registration.result import CrossCameraRegistrationResult, RegistrationMethod
+from astrotool_core.session import stop_each
 from PySide6.QtCore import Qt, QTimer
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
@@ -1139,12 +1140,21 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 — Qt override
         self._calibrate_fov_poll_timer.stop()
-        self._left_panel.stop()
-        self._right_panel.stop()
-        self._focuser_panel.stop()
-        for wheel_panel in self._filter_wheel_panels:
-            wheel_panel.stop()  # one physical wheel, stopped once
-        self._mount_panel.stop()
-        self._test_move_panel.stop()
-        self._fine_collimation_panel.stop()
+        # #52 K03 (S6.2): each panel's stop is isolated -- one raising stop (e.g. a mount whose
+        # tracking-off is not confirmed) used to skip every panel after it.
+        stops: list[tuple[str, Callable[[], object]]] = [
+            ("Main camera panel", self._left_panel.stop),
+            ("Guide camera panel", self._right_panel.stop),
+            ("Focuser panel", self._focuser_panel.stop),
+        ]
+        stops += [
+            (f"{wheel_panel.title} panel", wheel_panel.stop)  # one physical wheel, stopped once
+            for wheel_panel in self._filter_wheel_panels
+        ]
+        stops += [
+            ("Mount panel", self._mount_panel.stop),
+            ("Mount Align panel", self._test_move_panel.stop),
+            ("Fine collimation panel", self._fine_collimation_panel.stop),
+        ]
+        stop_each(stops)
         super().closeEvent(event)

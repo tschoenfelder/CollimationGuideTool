@@ -10,6 +10,8 @@ issued-at timestamp the same way the existing panel tests do.
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 from astrotool_core.acquisition.stable_frame_acquisition import (
     FrameAcquisitionResult,
@@ -18,6 +20,7 @@ from astrotool_core.acquisition.stable_frame_acquisition import (
 from astrotool_core.onstep import (
     OnStepFocuserAdapter,
 )
+from astrotool_core.session import describe_failure
 from astrotool_core.testing import (
     FocuserScenario,
     OnStepScenario,
@@ -72,7 +75,8 @@ class TestConnectErrorVariantsAreShownNotRaised:
         assert "Connect failed" in panel._status_label.text()
         assert str(error) in panel._status_label.text()
         assert not panel._connect_button.isChecked()
-        assert panel.diagnostic_context()["last_connect_error"] == str(error)
+        # S6.2: the one normalized reason (a bare str(KeyError) would be just "'UTC'").
+        assert panel.diagnostic_context()["last_connect_error"] == describe_failure(error)
 
         panel._connect_button.setChecked(True)  # the controller answers now
         assert panel._status_label.text() == "Position 5000 / 10000"
@@ -111,3 +115,127 @@ class TestStuckBusyRecovers:
         assert panel._move_in_flight is False
         assert panel._auto_focus_button.isEnabled()
         panel.stop()
+
+
+def _fail_next(
+    monkeypatch: pytest.MonkeyPatch, target: object, name: str, error: Exception
+) -> None:
+    """Make `target.name` raise `error` once, then behave normally again."""
+    real = getattr(target, name)
+    armed = [True]
+
+    def once(*args: object, **kwargs: object) -> object:
+        if armed[0]:
+            armed[0] = False
+            raise error
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(target, name, once)
+
+
+def _warnings(caplog: pytest.LogCaptureFixture, text: str) -> list[str]:
+    return [
+        r.getMessage()
+        for r in caplog.records
+        if r.levelname == "WARNING" and text in r.getMessage()
+    ]
+
+
+class TestEveryConnectionPhaseLeavesThePanelRetryable:
+    """#52 K01/K03 (S6.2): a failure injected in each lifecycle phase -- connect, the first
+    status read (wait), the motion abort on quit (cancel) and the release (disconnect) -- is
+    shown and logged once, never raised; the shared OnStep connection is given back and the
+    next Connect works."""
+
+    def test_connect_failure_is_logged_exactly_once(
+        self, qapp: object, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        error = TimeoutError("INDI property LX200 OnStep.CONNECTION did not update")
+        panel, _ = _focuser_panel(OnStepScenario(connect_errors=[error]), FakeClock())
+
+        with caplog.at_level("WARNING"):
+            panel._connect_button.setChecked(True)
+
+        assert len(_warnings(caplog, "CONNECTION did not update")) == 1
+        panel.stop()
+
+    def test_a_status_read_failing_right_after_connect_releases_the_connection(
+        self, qapp: object, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        connection, _ = make_simulated_onstep_connection(OnStepScenario(), clock=FakeClock())
+        adapter = OnStepFocuserAdapter(connection)
+        panel = FocuserPanel(adapter)
+        _fail_next(monkeypatch, adapter, "status", TimeoutError("focuser status timed out"))
+
+        with caplog.at_level("WARNING"):
+            panel._connect_button.setChecked(True)
+
+        assert "Connect failed" in panel._status_label.text()
+        assert "focuser status timed out" in panel._status_label.text()
+        assert not panel._connect_button.isChecked()
+        assert not panel._connected
+        assert connection.client is None  # released: nothing half-open
+        assert len(_warnings(caplog, "focuser status timed out")) == 1
+        assert panel.diagnostic_context()["last_connect_error"] == "focuser status timed out"
+
+        panel._connect_button.setChecked(True)  # retry
+        assert panel._connected
+        assert panel._status_label.text() == "Position 5000 / 10000"
+        panel.stop()
+
+    def test_a_failing_abort_on_quit_still_releases_the_connection(
+        self, qapp: object, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        connection, _ = make_simulated_onstep_connection(OnStepScenario(), clock=FakeClock())
+        adapter = OnStepFocuserAdapter(connection)
+        panel = FocuserPanel(adapter)
+        panel._connect_button.setChecked(True)
+        _fail_next(monkeypatch, adapter, "stop", RuntimeError("focuser abort not confirmed"))
+
+        with caplog.at_level("WARNING"):
+            panel.stop()  # must not raise
+
+        assert connection.client is None
+        assert not panel._connected
+        assert len(_warnings(caplog, "focuser abort not confirmed")) == 1
+
+        panel._connect_button.setChecked(False)
+        panel._connect_button.setChecked(True)  # retryable
+        assert panel._connected and connection.client is not None
+        panel.stop()
+
+    def test_a_failing_release_on_disconnect_is_shown_and_reconnect_works(
+        self, qapp: object, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        connection, made = make_simulated_onstep_connection(OnStepScenario(), clock=FakeClock())
+        panel = FocuserPanel(OnStepFocuserAdapter(connection))
+        panel._connect_button.setChecked(True)
+        _fail_next(monkeypatch, made[0], "close", OSError("socket already gone"))
+
+        with caplog.at_level("WARNING"):
+            panel._connect_button.setChecked(False)  # must not raise
+
+        assert not panel._connected
+        assert "Disconnect failed" in panel._status_label.text()
+        assert len(_warnings(caplog, "socket already gone")) == 1
+
+        panel._connect_button.setChecked(True)
+        assert panel._connected
+        assert panel._status_label.text() == "Position 5000 / 10000"
+        panel.stop()
+
+    def test_an_internal_error_in_the_abort_on_quit_reaches_the_incident_hook(
+        self, qapp: object, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        hook: list[type[BaseException]] = []
+        monkeypatch.setattr(sys, "excepthook", lambda t, _v, _tb: hook.append(t))
+        connection, _ = make_simulated_onstep_connection(OnStepScenario(), clock=FakeClock())
+        adapter = OnStepFocuserAdapter(connection)
+        panel = FocuserPanel(adapter)
+        panel._connect_button.setChecked(True)
+        _fail_next(monkeypatch, adapter, "stop", AttributeError("'NoneType' has no 'stop'"))
+
+        panel.stop()  # must not raise
+
+        assert hook == [AttributeError]
+        assert connection.client is None  # the release still ran

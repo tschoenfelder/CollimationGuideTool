@@ -92,6 +92,14 @@ from astrotool_core.camera import (
 from astrotool_core.config import CameraPanelSettings, camera_settings
 from astrotool_core.frames import demosaic, rgb_to_luma
 from astrotool_core.frames.frame import Frame
+from astrotool_core.session import (
+    ConnectionPhase,
+    SwitchResult,
+    close_device,
+    open_device,
+    run_phase,
+    switch_device,
+)
 from PySide6.QtCore import QBuffer, QIODevice, QTimer, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -120,6 +128,15 @@ _RECENT_FRAMES_KEPT = 3
 
 def default_camera_factory(camera_id: str) -> CameraPort:
     return TouptekCameraAdapter(camera_id=camera_id)
+
+
+def _check_identity(camera: CameraPort, requested_id: str) -> None:
+    """Issue #40/#45: the opened device must be the one requested, never a stale other one."""
+    actual_id = getattr(camera, "device_id", None)
+    if actual_id and actual_id != requested_id:
+        raise ConnectionError(
+            f"opened device {actual_id!r} instead of the requested {requested_id!r}"
+        )
 
 
 def _format_recommendation(
@@ -171,6 +188,8 @@ class CameraPanel(QWidget):
         super().__init__()
         self._device_lister = device_lister
         self._camera_factory = camera_factory
+        #: #52 (S6.2): the name this panel's camera lifecycle failures are logged under.
+        self._device_name = f"{title} camera"
         self._excluded_camera_id: str | None = None
 
         self._exposure_gain_requested.connect(self._apply_exposure_gain_on_ui_thread)
@@ -456,9 +475,26 @@ class CameraPanel(QWidget):
         self._camera_combo.setEnabled(not checked)
         self._connect_button.setEnabled(not checked)
         if checked:
-            self._camera.connect()
-            self._stream = StreamController(self._camera, name="collimation")
-            self._stream.start_stream(self._exposure_spin.value() / 1000.0, cadence_s=0.2)
+            # #52 K01 (S6.2): connect used to be unguarded here -- a camera that could not be
+            # opened raised out of the click with the button left checked. CONNECT then START
+            # (the capture thread), all or nothing: on failure the camera is released again.
+            stream = StreamController(self._camera, name="collimation")
+            exposure_s = self._exposure_spin.value() / 1000.0
+            failure = open_device(
+                self._device_name,
+                self._camera,
+                start=lambda: stream.start_stream(exposure_s, cadence_s=0.2),
+            )
+            if failure is not None:
+                self._last_stream_error = failure.message
+                self._start_button.blockSignals(True)
+                self._start_button.setChecked(False)
+                self._start_button.blockSignals(False)
+                self._camera_combo.setEnabled(True)
+                self._connect_button.setEnabled(True)
+                self._recommendation_label.setText(f"Stream not started — {failure.status_text}")
+                return
+            self._stream = stream
             self._last_sequence = 0
             self._recent_high_sequence = 0
             self._last_stream_error = None
@@ -470,11 +506,16 @@ class CameraPanel(QWidget):
             self._timer.stop()
             self._temperature_timer.stop()
             self._temperature_label.setText("Temp: --")
-            if self._stream is not None:
-                self._stream.stop_stream()
-                self._stream = None
+            running, self._stream = self._stream, None
+            failure = (
+                run_phase(self._device_name, ConnectionPhase.CANCEL, running.stop_stream)
+                if running is not None
+                else None
+            )
             self._start_button.setText("Start stream")
-            self._recommendation_label.setText("Stream stopped.")
+            self._recommendation_label.setText(
+                f"Stream stopped — {failure.status_text}" if failure else "Stream stopped."
+            )
 
     def _on_connect_camera(self) -> None:
         """Switch this panel to the camera selected in the combo (issue #45).
@@ -491,9 +532,12 @@ class CameraPanel(QWidget):
         previous_device = self._connected_device
         requested_id = device.camera_id if isinstance(device, TouptekDeviceInfo) else None
         previous_id = previous_device.camera_id if previous_device else None
-        release_error = self._release_camera(previous_camera)
 
         if device is None:
+            release = run_phase(
+                self._device_name, ConnectionPhase.DISCONNECT, previous_camera.disconnect
+            )
+            release_error = release.message if release is not None else None
             self._activate_camera(self._demo_camera, None)
             self._camera_status_label.setText(f"Camera: {DEMO_CAMERA_LABEL}")
             self._record_switch(requested_id, previous_id, "ok", release_error)
@@ -502,19 +546,25 @@ class CameraPanel(QWidget):
             return
 
         assert isinstance(device, TouptekDeviceInfo)
-        candidate: CameraPort | None = None
-        try:
-            candidate = self._camera_factory(device.camera_id)
-            candidate.connect()
-            actual_id = getattr(candidate, "device_id", None)
-            if actual_id and actual_id != device.camera_id:
-                raise ConnectionError(
-                    f"opened device {actual_id!r} instead of the requested {device.camera_id!r}"
-                )
-        except Exception as exc:  # noqa: BLE001 -- any SDK error must not escape as an incident
-            if candidate is not None:
-                self._release_camera(candidate)
-            self._handle_failed_switch(exc, previous_camera, previous_device, requested_id)
+        camera_id = device.camera_id
+        # #52 (S6.2): the #45 order -- release the old camera, open + identity-check the new
+        # one, restore the old one on failure -- is owned by the connection service.
+        result = switch_device(
+            self._device_name,
+            previous_camera,
+            lambda: self._camera_factory(camera_id),
+            verify=lambda camera: _check_identity(camera, camera_id),
+            restore_previous=previous_device is not None,
+            verify_previous=(
+                (lambda camera: _check_identity(camera, previous_id))
+                if previous_id is not None
+                else None
+            ),
+        )
+        release_error = result.release_failure.message if result.release_failure else None
+        candidate = result.device
+        if candidate is None:
+            self._handle_failed_switch(result, previous_camera, previous_device, requested_id)
             return
         self._activate_camera(candidate, device)
         # Issue #40: sourced from the RESPONSE (the adapter's own
@@ -528,16 +578,6 @@ class CameraPanel(QWidget):
         self._record_switch(requested_id, previous_id, "ok", release_error)
         self.connected_device_changed.emit(device)
         self.settings_changed.emit()
-
-    @staticmethod
-    def _release_camera(camera: CameraPort) -> str | None:
-        """Close a camera's SDK handle; returns the error text if that failed."""
-        try:
-            camera.disconnect()
-        except Exception as exc:  # noqa: BLE001
-            _log.warning("camera disconnect failed: %s", exc)
-            return str(exc)
-        return None
 
     def _activate_camera(self, camera: CameraPort, device: TouptekDeviceInfo | None) -> None:
         self._camera = camera
@@ -563,22 +603,21 @@ class CameraPanel(QWidget):
 
     def _handle_failed_switch(
         self,
-        exc: Exception,
+        result: SwitchResult[CameraPort],
         previous_camera: CameraPort,
         previous_device: TouptekDeviceInfo | None,
         requested_id: str | None,
     ) -> None:
         previous_id = previous_device.camera_id if previous_device else None
-        text = f"Camera: connect failed — {exc}"
-        restored = True
-        if previous_device is not None:
-            try:
-                previous_camera.connect()
-            except Exception as restore_exc:  # noqa: BLE001
-                restored = False
-                text += (
-                    f" (previous camera could not be re-opened: {restore_exc}; using demo camera)"
-                )
+        failure = result.failure
+        assert failure is not None  # switch_device: no device <=> a failure
+        text = f"Camera: {failure.status_text}"
+        restored = result.restore_failure is None
+        if result.restore_failure is not None:
+            text += (
+                " (previous camera could not be re-opened: "
+                f"{result.restore_failure.message}; using demo camera)"
+            )
         if not restored:
             self._camera = self._demo_camera
             self._connected_device = None
@@ -596,7 +635,7 @@ class CameraPanel(QWidget):
             self._init_camera_controls()
         self._camera_status_label.setText(text)
         self._sync_combo_to(self._connected_device.camera_id if self._connected_device else None)
-        self._record_switch(requested_id, previous_id, "failed", str(exc))
+        self._record_switch(requested_id, previous_id, "failed", failure.message)
 
     def _sync_combo_to(self, camera_id: str | None) -> None:
         """Point the combo at the actually-active camera without triggering
@@ -1042,7 +1081,10 @@ class CameraPanel(QWidget):
         `stop`/`park`/`unpark`-style calls elsewhere in this app."""
         self._timer.stop()
         self._temperature_timer.stop()
-        if self._stream is not None:
-            self._stream.stop_stream()
-            self._stream = None
-        self._camera.disconnect()
+        # #52 K03 (S6.2): a failing stream stop never skips the release; nothing raises.
+        stream, self._stream = self._stream, None
+        close_device(
+            self._device_name,
+            self._camera,
+            cancel=stream.stop_stream if stream is not None else None,
+        )

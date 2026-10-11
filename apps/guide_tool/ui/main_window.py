@@ -43,6 +43,7 @@ from astrotool_core.camera import (
 )
 from astrotool_core.diagnostics import DiagnosticService
 from astrotool_core.frames.frame import Frame
+from astrotool_core.session import ConnectionPhase, run_phase, stop_each, switch_device
 from PySide6.QtCore import QTimer
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
@@ -64,6 +65,8 @@ from guide_tool.ui.live_view import LiveViewLabel
 _POLL_INTERVAL_MS = 150
 _RECENT_FRAMES_KEPT = 3
 _DEFAULT_MANUAL_REASON = "Manual capture from UI (no note given)"
+#: #52 (S6.2): the name this window's camera lifecycle failures are logged under.
+_CAMERA_NAME = "Guide camera"
 
 
 def _default_camera_factory(camera_id: str) -> CameraPort:
@@ -187,23 +190,44 @@ class MainWindow(QMainWindow):
             self._status_label.setText("Stopped.")
 
     def _on_connect_camera(self) -> None:
+        """#52 K01/K03 (S6.2): the previous camera is released first (the SDK allows one open
+        handle per device, #45 -- it used to stay open for good) and any failure is reported
+        through the shared connection service (only `ConnectionError` used to be caught)."""
         device = self._camera_combo.currentData()
+        previous = self._current_camera
         if device is None:
-            self._controller = GuideController(self._demo_camera, measure_only=True)
-            self._current_camera = self._demo_camera
-            self._camera_status_label.setText(f"Camera: {_DEMO_CAMERA_LABEL}")
+            run_phase(_CAMERA_NAME, ConnectionPhase.DISCONNECT, previous.disconnect)
+            self._use_camera(self._demo_camera, f"Camera: {_DEMO_CAMERA_LABEL}")
             return
 
         assert isinstance(device, TouptekDeviceInfo)
-        candidate = self._camera_factory(device.camera_id)
-        try:
-            candidate.connect()
-        except ConnectionError as exc:
-            self._camera_status_label.setText(f"Camera: connect failed — {exc}")
+        camera_id = device.camera_id
+        result = switch_device(
+            _CAMERA_NAME,
+            previous,
+            lambda: self._camera_factory(camera_id),
+            restore_previous=previous is not self._demo_camera,
+        )
+        if result.device is not None:
+            self._use_camera(result.device, f"Camera: {device.display_name}")
             return
-        self._controller = GuideController(candidate, measure_only=True)
-        self._current_camera = candidate
-        self._camera_status_label.setText(f"Camera: {device.display_name}")
+        failure = result.failure
+        assert failure is not None  # switch_device: no device <=> a failure
+        text = f"Camera: {failure.status_text}"
+        if result.restore_failure is not None:
+            text += (
+                " (previous camera could not be re-opened: "
+                f"{result.restore_failure.message}; using demo camera)"
+            )
+            self._use_camera(self._demo_camera, text)
+            return
+        self._camera_status_label.setText(text)  # the previous camera (and controller) stay
+
+    def _use_camera(self, camera: CameraPort, status_text: str) -> None:
+        # GuideController binds its camera at construction (module docstring).
+        self._controller = GuideController(camera, measure_only=True)
+        self._current_camera = camera
+        self._camera_status_label.setText(status_text)
 
     def _poll_status(self) -> None:
         status = self._controller.status()
@@ -241,5 +265,12 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 — Qt override
         self._timer.stop()
-        self._controller.stop()
+        # #52 K03 (S6.2): stop guiding, then release the camera's SDK handle (it used to stay
+        # open past quit); each step isolated, nothing raises out of quit.
+        stop_each(
+            [
+                ("Guide controller", self._controller.stop),
+                (_CAMERA_NAME, self._current_camera.disconnect),
+            ]
+        )
         super().closeEvent(event)

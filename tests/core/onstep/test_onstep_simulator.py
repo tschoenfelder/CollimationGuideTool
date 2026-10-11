@@ -61,9 +61,13 @@ class TestConnectErrorVariants:
     RuntimeError (already connected / Safe-flip or guard checks), ValueError
     (unparseable TIME_UTC) or KeyError (a missing UTC/East/West element), and
     closes its own transport first. `acquire()` must leave no half-open state
-    for any of them (304178e) and a retry must work. KeyError is not in
-    `acquire()`'s own except tuple: it propagates without `acquire()` calling
-    close() -- still no half-open state, because the client closed itself."""
+    for any of them (304178e) and a retry must work.
+
+    S6.2 (#52 K02): `acquire()` closes the client on EVERY failure. It used to close only on
+    its own `(ConnectionError, RuntimeError, TimeoutError, ValueError)` tuple, so a KeyError
+    (a reply missing UTC/East/West) and an OSError the client does not catch itself (e.g.
+    `socket.gaierror` from an unresolvable indiserver host, indi_transport.py `connect`) were
+    re-raised without `close()` -- the client object was dropped half-closed."""
 
     @pytest.mark.parametrize(
         ("failure", "acquire_closes"),
@@ -86,8 +90,11 @@ class TestConnectErrorVariants:
                 ),
                 1,
             ),
-            # Not in acquire()'s except tuple: only 0.4.1's own self-close happens.
-            (ConnectFailure(KeyError("UTC")), 0),
+            # S6.2: closed by acquire() too (was 0 -- outside its old except tuple).
+            (ConnectFailure(KeyError("UTC")), 1),
+            # socket.gaierror: an OSError but not a ConnectionError -- neither 0.4.1's
+            # except tuple nor acquire()'s old one closed the client.
+            (ConnectFailure(OSError("[Errno 11001] getaddrinfo failed"), self_closes=False), 1),
         ],
         ids=[
             "TimeoutError",
@@ -96,6 +103,7 @@ class TestConnectErrorVariants:
             "ValueError",
             "RuntimeError-already-connected",
             "KeyError",
+            "OSError-gaierror",
         ],
     )
     def test_a_failed_connect_leaves_nothing_open_and_a_retry_succeeds(

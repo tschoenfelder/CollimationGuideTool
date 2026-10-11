@@ -481,22 +481,50 @@ def commit_problems(manifest: Manifest) -> tuple[list[str], list[str]]:
     return [f"fix commit {c} not found in git" for c in missing], []
 
 
+#: Budget for the node ids of ONE `pytest --collect-only` command line. Windows caps a whole
+#: command line at 32,767 characters (CreateProcess); with every manifest's node ids in one
+#: call the line had reached ~32,000 (S6.2 review). Far below the cap, leaving room for the
+#: interpreter path and the fixed arguments.
+COLLECT_ARGS_BUDGET = 8_000
+
+
+def node_batches(nodes: Sequence[str], budget: int = COLLECT_ARGS_BUDGET) -> list[list[str]]:
+    """Split node ids, in order, into batches whose joined length (one separator each) stays
+    within `budget`. A single node id longer than the budget gets a batch of its own."""
+    batches: list[list[str]] = []
+    current: list[str] = []
+    used = 0
+    for node in nodes:
+        cost = len(node) + 1
+        if current and used + cost > budget:
+            batches.append(current)
+            current, used = [], 0
+        current.append(node)
+        used += cost
+    if current:
+        batches.append(current)
+    return batches
+
+
 def _collect_problems(nodes: Sequence[str]) -> list[str]:
-    """`pytest --collect-only` the listed node ids; any that fails to collect is a problem."""
-    if not nodes:
-        return []
-    result = subprocess.run(
-        [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider", *nodes],
-        cwd=REPO_ROOT,
-        env=proof_env(os.environ, REPO_ROOT),
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    if result.returncode == 0:
-        return []
-    tail = "\n".join((result.stdout + result.stderr).strip().splitlines()[-15:])
-    return [f"pytest --collect-only failed for the listed regression tests:\n{tail}"]
+    """`pytest --collect-only` the listed node ids, in command lines of bounded length (see
+    `COLLECT_ARGS_BUDGET`); any batch that fails to collect is a problem."""
+    problems: list[str] = []
+    for batch in node_batches(nodes):
+        result = subprocess.run(
+            [sys.executable, "-m", "pytest", "--collect-only", "-q", "-p", "no:cacheprovider"]
+            + batch,
+            cwd=REPO_ROOT,
+            env=proof_env(os.environ, REPO_ROOT),
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if result.returncode == 0:
+            continue
+        tail = "\n".join((result.stdout + result.stderr).strip().splitlines()[-15:])
+        problems.append(f"pytest --collect-only failed for the listed regression tests:\n{tail}")
+    return problems
 
 
 def _run_focused(manifest: Manifest) -> int:

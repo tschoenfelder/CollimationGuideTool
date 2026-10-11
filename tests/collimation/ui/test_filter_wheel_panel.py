@@ -58,6 +58,13 @@ class TestDiagnosticContext:
             "moving": True,
             "reason": None,
             "requested_slot": None,
+            # #52 K01 (S6.2): the ca5bb92 diagnostics fields the other panels already had.
+            "last_connect_error": None,
+            "connection": {
+                "connected": True,
+                "last_connect_error": None,
+                "last_connection_failure": None,
+            },
         }
 
 

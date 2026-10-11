@@ -97,13 +97,20 @@ class OnStepConnection:
         """Open (first user) or share (later users) the client. Raises
         `ConnectionError` (or whatever `connect()` itself raises) if the
         controller cannot be reached; a failed open leaves no half-open
-        state and no user count behind."""
+        state and no user count behind.
+
+        S6.2 (#52 K02): the client is closed on ANY failure, not on a list of
+        expected exception types -- the old `(ConnectionError, RuntimeError,
+        TimeoutError, ValueError)` missed OnStepAdapter's KeyError (a reply
+        missing UTC/East/West) and a `socket.gaierror` (an OSError) from an
+        unresolvable host. Which failures callers report is decided once, in
+        `astrotool_core.session.device_connection`."""
         with self._lock:
             if self._client is None:
                 client = self._client_factory(config=self._config)
                 try:
                     client.connect(timeout=self._timeout)
-                except (ConnectionError, RuntimeError, TimeoutError, ValueError):
+                except BaseException:
                     client.close()
                     raise
                 self._client = client

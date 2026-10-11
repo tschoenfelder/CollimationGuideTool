@@ -23,6 +23,7 @@ from collections.abc import Sequence
 from typing import Any
 
 from astrotool_core.filter_wheel.port import FilterWheelPort, FilterWheelState
+from astrotool_core.session import DeviceConnectionService
 from astrotool_core.timing import SYSTEM_CLOCK, Clock
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
@@ -44,6 +45,11 @@ _SLOT_CHANGE_CONFIRMATION_TIMEOUT_S = 10.0
 
 def _slot_label(slot: int, name: str | None) -> str:
     return f"{slot} — {name}" if name else str(slot)
+
+
+def _filter_text(text: str) -> str:
+    """This panel's "Filter: ..." status-line style (lower-case after the prefix)."""
+    return f"Filter: {text[:1].lower()}{text[1:]}"
 
 
 def _status_text(status: FilterWheelState, requested_slot: int | None) -> str:
@@ -76,7 +82,12 @@ class FilterWheelPanel(QWidget):
         #: Issue #41: the optical trains that share this ONE physical wheel.
         self._used_by: tuple[str, ...] = tuple(used_by)
         self._title = title
-        self._connected = False
+        #: #52 K01/K03 (S6.2): connect/disconnect lifecycle and failure reporting -- this panel
+        #: used to show a connect failure but neither log it nor keep it for diagnostics (the
+        #: "shown-and-lost" defect ca5bb92 fixed in the other panels). WAIT = first status read.
+        self._connection = DeviceConnectionService(
+            title, filter_wheel, wait=lambda: filter_wheel.status()
+        )
         #: Issue #47: whether THIS panel commands the wheel -- decided by
         #: main_window.py from the shared config's active train, not by this
         #: panel itself. False keeps this panel exactly as #34 shipped it.
@@ -133,20 +144,23 @@ class FilterWheelPanel(QWidget):
     def _set_slot_change_in_flight(self, value: bool) -> None:
         self._slot_change_in_flight = value
 
+    @property
+    def _connected(self) -> bool:
+        return self._connection.connected
+
     def _on_toggle_connect(self, checked: bool) -> None:
         if checked:
-            try:
-                self._filter_wheel.connect()
-            except Exception as exc:  # noqa: BLE001 -- any failure must be shown, never swallowed
-                self._status_label.setText(f"Filter: connect failed — {exc}")
+            failure = self._connection.connect()
+            if failure is not None:
+                self._status_label.setText(_filter_text(failure.status_text))
                 # blockSignals: resetting the button's checked state here
                 # must not re-enter this handler with checked=False, which
                 # would immediately overwrite the error message above.
                 self._connect_button.blockSignals(True)
                 self._connect_button.setChecked(False)
                 self._connect_button.blockSignals(False)
+                self._update_selector_enabled()
                 return
-            self._connected = True
             self._set_slot_change_in_flight(False)
             self._combo_signature = None  # force a fresh populate on this connect
             self._connect_button.setText("Disconnect")
@@ -154,8 +168,7 @@ class FilterWheelPanel(QWidget):
             self._poll_status()
         else:
             self._timer.stop()
-            self._filter_wheel.disconnect()
-            self._connected = False
+            failures = self._connection.disconnect()
             # Real gap (issue #47's own "disconnect during movement" test
             # case): _slot_change_in_flight was cleared here but a stale
             # _requested_slot survived a disconnect mid-move, so the next
@@ -164,7 +177,9 @@ class FilterWheelPanel(QWidget):
             self._set_slot_change_in_flight(False)
             self._requested_slot = None
             self._connect_button.setText("Connect")
-            self._status_label.setText("Filter: not connected")
+            self._status_label.setText(
+                _filter_text(failures[-1].status_text) if failures else "Filter: not connected"
+            )
         self._update_selector_enabled()
 
     def _refresh_combo(self) -> None:
@@ -287,11 +302,11 @@ class FilterWheelPanel(QWidget):
             "moving": status.moving,
             "reason": status.reason,
             "requested_slot": self._requested_slot,
+            "last_connect_error": self._connection.last_connect_error,
+            "connection": self._connection.diagnostic_context(),
         }
 
     def stop(self) -> None:
         """Stop polling and disconnect. Safe to call whether or not connected."""
         self._timer.stop()
-        if self._connected:
-            self._filter_wheel.disconnect()
-            self._connected = False
+        self._connection.disconnect()  # #52 K03: never raises out of quit

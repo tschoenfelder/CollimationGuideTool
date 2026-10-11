@@ -38,7 +38,6 @@ done.
 
 from __future__ import annotations
 
-import logging
 from collections.abc import Callable
 from typing import Any
 
@@ -46,6 +45,7 @@ import numpy as np
 from astrotool_core.acquisition.stable_frame_acquisition import FrameAcquisitionResult
 from astrotool_core.focus.port import FocuserPort
 from astrotool_core.mount.operating_mode import OperatingMode
+from astrotool_core.session import ConnectionFailure, DeviceConnectionService
 from astrotool_core.timing import SYSTEM_CLOCK, Clock
 from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import (
@@ -66,8 +66,6 @@ from collimation_tool.application.autofocus_controller import (
 from collimation_tool.application.autofocus_search import AutofocusStatus
 from collimation_tool.ui.autofocus_runner import AutofocusRunner
 from collimation_tool.ui.flow_layout import FlowLayout
-
-_log = logging.getLogger(__name__)
 
 _POLL_INTERVAL_MS = 250
 _STEP_SIZES = (1, 10, 100, 200)
@@ -146,13 +144,12 @@ class FocuserPanel(QWidget):
         #: Issue #33 (artificial star): lets Auto Focus lower exposure when
         #: the star saturates at focus (restored after every run).
         self._exposure_control = exposure_control
-        self._connected = False
-        #: Field report (2026-09-29, diagnostic e1ddabca-...): a caught
-        #: connect() failure only ever lived in the status label's transient
-        #: text -- a manual diagnostic capture afterward showed nothing at
-        #: all (no exception, no log line) about why. Recorded here so both
-        #: the log (below) and diagnostic_context() can surface it.
-        self._last_connect_error: str | None = None
+        #: #52 K01/K03 (S6.2): connect/disconnect lifecycle, failure reporting (one log line,
+        #: `last_connect_error` -- diagnostic e1ddabca) and guaranteed release. WAIT = the first
+        #: status read; CANCEL = the motion abort on quit (the focuser kept moving after quit).
+        self._connection = DeviceConnectionService(
+            title, focuser, wait=lambda: focuser.status(), cancel=lambda: focuser.stop()
+        )
         # Issue #35: this panel is wired to exactly one optical train
         # today (see module docstring) -- carried through into Auto
         # Focus's own status text and diagnostic evidence so that fact
@@ -276,36 +273,36 @@ class FocuserPanel(QWidget):
         step_id = self._step_group.checkedId()
         return step_id if step_id != -1 else _DEFAULT_STEP_SIZE
 
+    @property
+    def _connected(self) -> bool:
+        return self._connection.connected
+
     def _on_toggle_connect(self, checked: bool) -> None:
         if checked:
-            try:
-                self._focuser.connect()
-            except Exception as exc:  # noqa: BLE001 -- any failure must be shown, never swallowed
-                self._last_connect_error = str(exc)
-                _log.warning("FocuserPanel: connect failed: %s", exc)
-                self._status_label.setText(f"Connect failed — {exc}")
-                # blockSignals: resetting the button's checked state here
-                # must not re-enter this handler with checked=False, which
-                # would immediately overwrite the error message above with
-                # "Not connected.".
-                self._connect_button.blockSignals(True)
-                self._connect_button.setChecked(False)
-                self._connect_button.blockSignals(False)
-                self._update_move_buttons_enabled()
+            failure = self._connection.connect()
+            if failure is not None:
+                self._show_connection_failure(failure)
                 return
-            self._last_connect_error = None
-            self._connected = True
             self._set_move_in_flight(False)
             self._connect_button.setText("Disconnect")
             self._timer.start()
             self._poll_status()
         else:
             self._timer.stop()
-            self._focuser.disconnect()
-            self._connected = False
+            failures = self._connection.disconnect()
             self._set_move_in_flight(False)
             self._connect_button.setText("Connect")
-            self._status_label.setText("Not connected.")
+            self._status_label.setText(failures[-1].status_text if failures else "Not connected.")
+        self._update_move_buttons_enabled()
+
+    def _show_connection_failure(self, failure: ConnectionFailure) -> None:
+        self._status_label.setText(failure.status_text)
+        # blockSignals: resetting the button's checked state here must not re-enter
+        # this handler with checked=False, which would overwrite the reason with
+        # "Not connected.".
+        self._connect_button.blockSignals(True)
+        self._connect_button.setChecked(False)
+        self._connect_button.blockSignals(False)
         self._update_move_buttons_enabled()
 
     def _begin_move(self, steps: int) -> None:
@@ -497,7 +494,8 @@ class FocuserPanel(QWidget):
             "position": status.position,
             "max_position": status.max_position,
             "moving": status.moving,
-            "last_connect_error": self._last_connect_error,
+            "last_connect_error": self._connection.last_connect_error,
+            "connection": self._connection.diagnostic_context(),
             # Issue #48: what the next Auto Focus would use, derived from the global mode
             # and the artificial-star target type (reported separately by the main window).
             "autofocus_mode": self._autofocus_mode().value,
@@ -570,7 +568,5 @@ class FocuserPanel(QWidget):
         self._autofocus_poll_timer.stop()
         if self._autofocus_running:
             self._autofocus_runner.cancel()
-        if self._connected:
-            self._focuser.stop()
-            self._focuser.disconnect()
-            self._connected = False
+        # #52 K03: a failing abort never skips the release, and nothing raises out of quit.
+        self._connection.disconnect(cancel_motion=True)

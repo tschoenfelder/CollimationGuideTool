@@ -1,12 +1,17 @@
 import json
+import sys
 import time
 from pathlib import Path
 
+import pytest
 from astrotool_core.camera.fake_camera import FakeCamera
 from astrotool_core.camera.touptek_adapter import TouptekDeviceInfo
 from astrotool_core.diagnostics import DiagnosticService
+from astrotool_core.testing import SimulatedToupcamSdk, install_simulated_toupcam
 from astrotool_core.testing.fake_touptek import FakeTouptekCamera
+from astrotool_core.timing import FakeClock
 from guide_tool.ui.main_window import MainWindow
+from PySide6.QtGui import QCloseEvent
 
 
 def test_window_starts_idle(qapp: object) -> None:
@@ -190,3 +195,146 @@ class TestDiagnosticsCapture:
             incident["context"]["camera_descriptor"]["serial_number"]
             == fake_touptek.get_descriptor().serial_number
         )
+
+
+class _TimeoutOnConnectCamera(FakeTouptekCamera):
+    """A vendor SDK error that is not a ConnectionError (the 7bb7b68 bug class)."""
+
+    def connect(self) -> None:
+        raise TimeoutError("camera enumeration timed out")
+
+
+class TestCameraSwitchLifecycle:
+    """#52 K01/K03 (S6.2) on the simulated ToupTek SDK: GuideTool caught only ConnectionError
+    on Connect and never released the previous camera (the #45 ERROR_BUSY class CameraPanel
+    fixed: the SDK allows one open handle per device)."""
+
+    @staticmethod
+    def _window(
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> tuple[MainWindow, SimulatedToupcamSdk]:
+        sdk = SimulatedToupcamSdk(clock=FakeClock())
+        install_simulated_toupcam(monkeypatch, sdk)
+        sdk.add_camera("GPCMOS02000KPA", device_id="cam-a")
+        sdk.add_camera("G3M678M", device_id="cam-b")
+        devices = [
+            TouptekDeviceInfo(index=0, camera_id="cam-a", display_name="GPCMOS02000KPA"),
+            TouptekDeviceInfo(index=1, camera_id="cam-b", display_name="G3M678M"),
+        ]
+        return MainWindow(FakeCamera(), device_lister=lambda: devices), sdk
+
+    @staticmethod
+    def _connect(window: MainWindow, combo_index: int) -> None:
+        window._camera_combo.setCurrentIndex(combo_index)
+        window._on_connect_camera()
+
+    def test_switching_to_another_camera_releases_the_previous_handle(
+        self, qapp: object, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        window, sdk = self._window(monkeypatch)
+        self._connect(window, 1)
+        handle_a = sdk.handles[-1]
+
+        self._connect(window, 2)
+
+        assert handle_a.closed
+        assert not sdk.handles[-1].closed and sdk.handles[-1].device.id == "cam-b"
+        assert "G3M678M" in window._camera_status_label.text()
+
+    def test_reconnecting_the_same_camera_releases_the_old_handle_first(
+        self, qapp: object, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        window, sdk = self._window(monkeypatch)
+        self._connect(window, 1)
+        first = sdk.handles[-1]
+
+        self._connect(window, 1)
+
+        assert first.closed and len(sdk.handles) == 2 and not sdk.handles[-1].closed
+
+    def test_choosing_the_demo_camera_releases_the_real_one(
+        self, qapp: object, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        window, sdk = self._window(monkeypatch)
+        self._connect(window, 1)
+
+        self._connect(window, 0)
+
+        assert sdk.handles[-1].closed
+
+    def test_a_non_connectionerror_failure_is_shown_and_the_previous_camera_restored(
+        self, qapp: object, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        window, sdk = self._window(monkeypatch)
+        self._connect(window, 1)
+        controller_a = window._controller
+        monkeypatch.setattr(window, "_camera_factory", lambda _id: _TimeoutOnConnectCamera())
+
+        with caplog.at_level("WARNING"):
+            self._connect(window, 2)  # must not raise
+
+        assert "connect failed" in window._camera_status_label.text().lower()
+        assert "camera enumeration timed out" in window._camera_status_label.text()
+        assert window._controller is controller_a
+        assert not sdk.handles[-1].closed and sdk.handles[-1].device.id == "cam-a"  # re-opened
+        logged = [r for r in caplog.records if "camera enumeration timed out" in r.getMessage()]
+        assert len(logged) == 1
+
+    def test_quitting_releases_the_camera(
+        self, qapp: object, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        window, sdk = self._window(monkeypatch)
+        self._connect(window, 1)
+
+        window.closeEvent(QCloseEvent())
+
+        assert sdk.handles[-1].closed
+
+    def test_a_failing_release_on_quit_does_not_skip_stopping_the_controller(
+        self, qapp: object, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        window, _ = self._window(monkeypatch)
+        self._connect(window, 1)
+        monkeypatch.setattr(
+            window._current_camera, "disconnect", lambda: (_ for _ in ()).throw(OSError("gone"))
+        )
+        stops: list[None] = []
+        monkeypatch.setattr(window._controller, "stop", lambda: stops.append(None))
+
+        window.closeEvent(QCloseEvent())  # must not raise
+
+        assert stops == [None]
+
+
+class TestInternalErrorsStillProduceAnIncident:
+    """S6.2 review: a programming error in the Connect path used to escape to sys.excepthook,
+    where the app's #10 hook writes an incident bundle. Contained now, it must still do so."""
+
+    def test_an_internal_error_on_connect_is_captured_as_a_bundle(
+        self, qapp: object, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        from guide_tool.main import _install_excepthook
+
+        monkeypatch.setattr(sys, "excepthook", lambda *_args: None)  # restored after the test
+        diagnostics = DiagnosticService(app_name="GuideTool", diagnostics_dir=tmp_path)
+        _install_excepthook(diagnostics)
+        devices = [TouptekDeviceInfo(index=0, camera_id="dev-1", display_name="OAG Guide Cam")]
+
+        def broken_factory(_camera_id: str) -> FakeTouptekCamera:
+            raise AttributeError("'NoneType' object has no attribute 'Toupcam'")
+
+        window = MainWindow(
+            FakeCamera(),
+            device_lister=lambda: devices,
+            camera_factory=broken_factory,
+            diagnostics=diagnostics,
+        )
+        window._camera_combo.setCurrentIndex(1)
+
+        window._on_connect_camera()  # must not raise
+
+        assert "Internal error" in window._camera_status_label.text()
+        bundles = list(tmp_path.iterdir())
+        assert len(bundles) == 1
+        incident = json.loads((bundles[0] / "incident.json").read_text(encoding="utf-8"))
+        assert "AttributeError" in json.dumps(incident)

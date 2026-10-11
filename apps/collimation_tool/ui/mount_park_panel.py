@@ -14,18 +14,16 @@ second click can race the first). Deliberately minimal, matching
 
 from __future__ import annotations
 
-import logging
 import threading
 from collections.abc import Callable
 from typing import Any
 
 from astrotool_core.mount.operating_mode import OperatingMode, TrackingEnforcer
 from astrotool_core.mount.park_port import MountParkPort
+from astrotool_core.session import ConnectionFailure, DeviceConnectionService
 from astrotool_core.timing import SYSTEM_CLOCK, Clock
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
-
-_log = logging.getLogger(__name__)
 
 _POLL_INTERVAL_MS = 250
 #: See FocuserPanel's identical constant for the reasoning — a safety net
@@ -51,11 +49,17 @@ class MountParkPanel(QWidget):
         #: Issue #44: terrestrial mode => tracking OFF, enforced on connect
         #: and after unpark, and surfaced in the status line.
         self._tracking_enforcer = tracking_enforcer
-        self._connected = False
-        #: See FocuserPanel's identical field for the reasoning -- a caught
-        #: connect() failure otherwise only ever lived in the status
-        #: label's transient text, invisible to a manual diagnostic capture.
-        self._last_connect_error: str | None = None
+        #: #52 K01/K03 (S6.2): connect/disconnect lifecycle and failure reporting. START = the
+        #: #44 tracking enforcement on connect (before the panel counts as connected, so a
+        #: crash there can no longer leave the button and label inconsistent); WAIT = the first
+        #: status read; CANCEL = tracking off on quit (the mount kept tracking after quit).
+        self._connection = DeviceConnectionService(
+            title,
+            mount,
+            start=lambda: self._enforce_tracking("connect"),
+            wait=lambda: mount.status(),
+            cancel=lambda: mount.stop_tracking(),
+        )
         #: See module docstring's "one action at a time".
         self._action_in_flight = False
         self._pending_action: str | None = None  # "park" | "unpark" | None
@@ -107,35 +111,37 @@ class MountParkPanel(QWidget):
 
         self._update_buttons_enabled()
 
+    @property
+    def _connected(self) -> bool:
+        return self._connection.connected
+
     def _on_toggle_connect(self, checked: bool) -> None:
         if checked:
-            try:
-                self._mount.connect()
-            except Exception as exc:  # noqa: BLE001 -- any failure must be shown, never swallowed
-                self._last_connect_error = str(exc)
-                _log.warning("MountParkPanel: connect failed: %s", exc)
-                self._status_label.setText(f"Connect failed — {exc}")
-                self._connect_button.blockSignals(True)
-                self._connect_button.setChecked(False)
-                self._connect_button.blockSignals(False)
-                self._update_buttons_enabled()
-                return
-            self._last_connect_error = None
-            self._connected = True
             self._action_in_flight = False
             self._pending_action = None
-            self._enforce_tracking("connect")
+            failure = self._connection.connect()
+            if failure is not None:
+                self._show_connection_failure(failure)
+                return
             self._connect_button.setText("Disconnect")
             self._timer.start()
             self._poll_status()
         else:
             self._timer.stop()
-            self._mount.disconnect()
-            self._connected = False
+            failures = self._connection.disconnect()
             self._action_in_flight = False
             self._pending_action = None
             self._connect_button.setText("Connect")
-            self._status_label.setText("Not connected.")
+            self._status_label.setText(failures[-1].status_text if failures else "Not connected.")
+        self._update_buttons_enabled()
+
+    def _show_connection_failure(self, failure: ConnectionFailure) -> None:
+        self._status_label.setText(failure.status_text)
+        # blockSignals: resetting the button must not re-enter this handler with
+        # checked=False, which would overwrite the reason with "Not connected.".
+        self._connect_button.blockSignals(True)
+        self._connect_button.setChecked(False)
+        self._connect_button.blockSignals(False)
         self._update_buttons_enabled()
 
     def _enforce_tracking(self, context: str) -> None:
@@ -276,7 +282,8 @@ class MountParkPanel(QWidget):
             "available": status.available,
             "parked": status.parked,
             "tracking": status.tracking,
-            "last_connect_error": self._last_connect_error,
+            "last_connect_error": self._connection.last_connect_error,
+            "connection": self._connection.diagnostic_context(),
         }
 
     def stop(self) -> None:
@@ -288,7 +295,6 @@ class MountParkPanel(QWidget):
         separate, explicit user action, not something quitting does on its
         own initiative)."""
         self._timer.stop()
-        if self._connected:
-            self._mount.stop_tracking()
-            self._mount.disconnect()
-            self._connected = False
+        # #52 K03: tracking off that is not confirmed (OnStepAdapter#17) never skips the release
+        # of the shared OnStep connection, and nothing raises out of quit.
+        self._connection.disconnect(cancel_motion=True)
