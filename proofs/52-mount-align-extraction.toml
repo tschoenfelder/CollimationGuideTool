@@ -1,0 +1,105 @@
+# Proof manifest -- schema in proofs/README.md. Run: python scripts/prove.py 52-mount-align-extraction
+issues = [52]
+summary = """S6.6a (#52 audit section 4, R4/R5/R7/R8/R9/R10/R12-adjacent): mount_test_move_panel.py \
+(193,578 bytes, 3,680 lines, 107 functions) owned capture validity, failure classification and wording, \
+translation measurement, calibration move sizing + net accounting, per-camera calibration results, nudge \
+and screen-move sizing, availability and every runner submission inside one QWidget. Behaviour-neutral \
+extraction into ten small Qt-free application modules (collimation_tool.application.mount_align_*: \
+messages, failures, measurement, capture, plan, sizing, calibration, positioning, motion, interface), \
+mount and settings read through injected callables, no mega-controller; the panel keeps widgets, \
+timers, the step queue / capture-job hand-off and thin delegating methods, and its public API \
+(MountTestMovePanel, MeasurementFailureClass, MovementSize, ScreenDirection, MountInterfaceState, \
+TargetMode) is unchanged. Every Mount Align motion is now submitted through mount_align_motion \
+(submit_axis_move / submit_motion_sequence), the one place the timed-vs-angular primitive is chosen. \
+Panel after: 112,648 bytes, 2,276 lines, 84 functions; the unchanged Mount Align suite (251 tests) \
+passed after every step."""
+modules = [
+    "apps/collimation_tool/ui/mount_test_move_panel.py",
+    "apps/collimation_tool/application/mount_align_messages.py",
+    "apps/collimation_tool/application/mount_align_failures.py",
+    "apps/collimation_tool/application/mount_align_measurement.py",
+    "apps/collimation_tool/application/mount_align_capture.py",
+    "apps/collimation_tool/application/mount_align_plan.py",
+    "apps/collimation_tool/application/mount_align_sizing.py",
+    "apps/collimation_tool/application/mount_align_calibration.py",
+    "apps/collimation_tool/application/mount_align_positioning.py",
+    "apps/collimation_tool/application/mount_align_motion.py",
+    "apps/collimation_tool/application/mount_align_interface.py",
+]
+fix_commits = ["6b6d899"]
+dataset_uuids = []
+focused_command = """pytest -q \
+tests/collimation/application/test_mount_align_capture.py \
+tests/collimation/application/test_mount_align_sizing.py \
+tests/collimation/application/test_mount_align_calibration.py \
+tests/collimation/application/test_mount_align_positioning.py \
+tests/collimation/application/test_mount_align_interface.py \
+tests/collimation/ui/test_mount_align_real_onstep_adapter.py \
+tests/collimation/ui/test_calibration_angular.py \
+tests/collimation/ui/test_calibration_failure_recovery.py \
+tests/collimation/ui/test_calibration_frame_validity.py \
+tests/collimation/ui/test_calibration_sizing.py \
+tests/collimation/ui/test_mount_test_move_panel_fresh_frames.py \
+tests/collimation/ui/test_operating_mode_ui.py \
+tests/collimation/ui/test_mount_interface_state.py \
+tests/collimation/ui/test_collimation_main_window.py::TestMountTestMovePanel"""
+broader_tier = "component"
+field_only_assumptions = []
+gaps = [
+    "Not extracted (stays in the panel, S6.6b/S6.8): the calibration step SEQUENCER -- the queue, before/after capture continuations, abort/stranded-return and the step-completion handling (_start_next_calibration_step, _submit_calibration_step, _finish_calibration_step, _after_after_capture, _abort_calibration, _poll_inner) -- and the threaded capture job hand-off (_request_capture/_run_capture_job/_poll_capture_job); the decisions they take are now application calls, the control flow is still Qt-timer driven in the panel.",
+    "Compatibility shims kept for the existing tests (only import-path edits were allowed): read-only properties _sizing_log, _angular_active, _calibration_rate_preset, _axis_net_pulse_ms, _calibration_partial, _calibration_failed_cameras and thin delegating methods (_init_sizing, _capture_failure_detail, _capture_blocking, _reusable_reference, _fresh_frame_timeout_s, _build_response ...). They can go once the panel tests move to the application modules.",
+    "Neutrality evidence is the unchanged suite passing before (baseline 251 passed) and after each of the six steps (251/251/251+21/251+37/251+45/251+55; 60 new component tests are collected in total). A reviewer's differential harness (13 scenarios on the real panel and runner with fakes, HEAD vs this change) produced byte-identical labels, runner/mount call sequences, failure classes, matrices and diagnostics. The new application tests were written against the moved code (the functions did not exist as units before); they pin the same behaviour the panel tests already cover through the widget.",
+    "Three existing tests changed only their imports: test_collimation_main_window.py and test_mount_align_real_onstep_adapter.py import the moved private value types from the application modules; test_calibration_frame_validity.py's translation-estimator spy now patches collimation_tool.application.mount_align_measurement (where build_response calls measure_translation_offset).",
+    "mount_test_move_runner.py (R12) stays in ui/ -- outside this contract's file list; mount_align_motion types the runner through a Protocol instead of importing it.",
+    "Call-order micro-differences, all pure reads (reviewer-corrected): in _init_sizing camera_geometry() now runs before _mount_is_angular_only() (mount.capabilities()) and mount_supports_angular runs after the distance read; a nudge reads the operating mode once more before sizing; a screen move reads _target_mode() eagerly on the success path. get_descriptor()/capabilities()/mode reads are read-only queries; the differential harness shows identical observable behaviour.",
+]
+
+[[regression_tests]]
+node = "tests/collimation/application/test_mount_align_capture.py"
+failed_before_fix = false
+reason_no_prefix_repro = "behaviour-neutral refactor: direct component tests of the moved capture/measurement/failure/wording code; the units did not exist before S6.6a (the same behaviour was only reachable through the panel, pinned by the unchanged Mount Align suite)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_mount_align_sizing.py"
+failed_before_fix = false
+reason_no_prefix_repro = "behaviour-neutral refactor: direct component tests of CalibrationSizing (moved verbatim from the panel's _init_sizing/_retry_probe_if_needed/_after_axis_group/_learn_rate/_net_return...)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_mount_align_calibration.py"
+failed_before_fix = false
+reason_no_prefix_repro = "behaviour-neutral refactor: direct component tests of CalibrationResults (moved from _measure_step_responses/_record_direction_response/_finish_calibration)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_mount_align_positioning.py"
+failed_before_fix = false
+reason_no_prefix_repro = "behaviour-neutral refactor: direct component tests of nudge/screen-move sizing and the single motion-submission point (moved from _begin_nudge/_on_screen_move_clicked/_plan_angular_screen_move and the three runner.submit* call sites)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_mount_align_interface.py"
+failed_before_fix = false
+reason_no_prefix_repro = "behaviour-neutral refactor: direct component tests of mount_interface_state, evaluate_nudge, CalibrationSizing.abort_return and the calibration labels (moved from interface_state/_after_nudge_after_capture/_abort_calibration)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_collimation_main_window.py::TestMountTestMovePanel"
+failed_before_fix = false
+reason_no_prefix_repro = "behaviour-neutral refactor: passed unchanged (import paths only) before and after every extraction step -- the neutrality proof, not a defect reproduction."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py"
+failed_before_fix = false
+reason_no_prefix_repro = "behaviour-neutral refactor: the production OnStep adapter chain through the panel passed unchanged (import path only) before and after every step."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_calibration_sizing.py"
+failed_before_fix = false
+reason_no_prefix_repro = "behaviour-neutral refactor: #46 sizing through the panel passed unchanged before and after."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_calibration_angular.py"
+failed_before_fix = false
+reason_no_prefix_repro = "behaviour-neutral refactor: angular calibration through the panel (incl. _init_sizing/_sizing_log) passed unchanged before and after."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_calibration_frame_validity.py"
+failed_before_fix = false
+reason_no_prefix_repro = "behaviour-neutral refactor: capture validity through the panel passed before and after (the estimator spy's import path moved with build_response)."
