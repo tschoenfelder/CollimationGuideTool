@@ -60,7 +60,7 @@ Status: `todo` · `in-progress` · `done` · `field-only` (only real hardware ca
 | S6.5 | #55 | ToupTek capability table (unsupported features contract-driven) | issue agent | APPROVE-WITH-FIXES (cooler-left-on safety, range retry) → APPROVE | done | 5f38a4c | `python scripts/prove.py 55-capability-tables` |
 | S6.5a | production defect (found by S4 review) | `touptek_adapter.py:54` `_FLAG_MONO = 0x40` is the SDK's `TOUPCAM_FLAG_USB30`; real `TOUPCAM_FLAG_MONO` is `0x10` (resources/touptek/toupcam.py:24/26). `is_color_sensor()` (line 639) therefore answers "not USB3": a colour USB3 camera would be treated as mono (no debayer). Option fallbacks also wrong (RGB 0x16→0x0c, FLUSH 0x36→0x3d, NOFRAME_TIMEOUT 0x3F→0x01, AUTOEXPO_TRIGGER 0x5A→0x51) — only used when the SDK lacks the name. Failing regression first (S4 leaves a strict xfail), then fix; check which rig cameras are affected | issue agent | APPROVE-WITH-FIXES → pairing gap closed structurally | done | 4864cc8 | `python scripts/prove.py 51-touptek` |
 | S6.5b | production defect (found by S6.5a) | `touptek_adapter._prepare_capture_mode` puts `TOUPCAM_OPTION_NOFRAME_TIMEOUT = 1` (1 ms); the SDK requires ≥ `TOUPCAM_NOFRAME_TIMEOUT_MIN` = 500 ms (`resources/touptek/toupcam.py:109`, `:682`) → either rejected (log warning) or a 1 ms no-frame timeout on the rig. Characterize on the simulator, decide the intended value from the SDK docs, fix; add a connect-time log of `model.flag` so the S6.5a camera-flag inferences become known on the next Pi run | issue agent | APPROVE-WITH-FIXES → fixed | done | 973d0ab | `python scripts/prove.py 51-touptek-noframe` |
-| S6.6 | #52 | Mount Align orchestration out of `mount_test_move_panel.py` into application layer | | | todo | | |
+| S6.6 | #52 | Mount Align orchestration out of `mount_test_move_panel.py` into application layer (S6.6a done `6b6d899`; S6.6b behaviour follow-ups open) | | | todo | | |
 | S6.7 | #52 | Fresh-frame-after-motion service shared by Mount Align + autofocus | issue agent | APPROVE-WITH-FIXES (Stop/cap, stale nudge reference, trigger-time stamp) → fixed | done | 9fc3fa2 | `python scripts/prove.py 52-fresh-frame-after-motion` |
 | S6.8 | #55, #31, #46 | Verify no competing movement path remains | | | todo | | |
 | S7 | #15 #21 #29–#33 #35 #37 #39 #43 #44 #46 #49 | Proof manifests + missing low-tier tests; field-only assumptions listed | issue agent | coordinator verification (worktree, all proofs PASS) | done | 5f7c689 | `python scripts/prove.py <issue>` |
@@ -452,6 +452,12 @@ not change · dependencies · non-goals · proof required.
 
 ### S6.6b — Mount Align behaviour follow-ups (after S6.6a)
 
+**Contract (2026-10-12).** Allowed: `ui/mount_test_move_panel.py` + `application/mount_align_*.py`,
+`application/star_acquisition.py` / `recenter_policy.py` (capability + cancel wiring only),
+`ui/main_window.py` + `ui/focuser_panel.py` (exposure snapshot wiring only), `onstep/` (new `errors.py`),
+`testing/fake_*` doubles, D04 pinned doubles, their tests, `tests/contracts/*` pins. NOT the runner's
+motion/tracking logic and not a new motion executor (that is the S6.8 fix). Every behaviour change gets a
+failing test first; manifest per sub-item group.
 Collected from the tracker: user nudge decision (return immediately, #43 check in background); M02 (one
 tracking-verification path); M05 (one artificial-star owner; `_calibration_distance_m`); duck-typed
 capability callers → `MountCapabilities`; `TrackingEnforcer`/`ensure_tracking_mode` `cancel=` wired from
@@ -489,6 +495,8 @@ screen move non-floor refusal after the first axis moved (message); timed-mount 
 
 | Date | Task | Commit | What was proven |
 |------|------|--------|-----------------|
+| 2026-10-12 | S6.6a | 6b6d899 | Mount Align orchestration → 10 Qt-free application modules; panel 194 kB→113 kB; reviewer's differential harness byte-identical across 13 scenarios |
+| 2026-10-11 | S6.8 analysis | 1534d6d | 25 movement paths inventoried, 13 findings (docs/quality/movement-paths.md) |
 | 2026-10-11 | S6.3 | b22b871 | OperationLifecycle for runners; Stop interrupts every wait (S3b xfail flipped); stuck-Busy rules unified; panel polls guarded; filter-wheel connection-loss/Alert/probe fixes; one OnStep error set |
 | 2026-10-11 | S7 | 5f7c689 | Manifests for all 14 open HIGH issues with AC→test tables; 3 new unit tests; S2 gaps closed (FocuserPanel 3fc09ae, #43 guard isolation); no defects found |
 | 2026-10-11 | S6.7 | 9fc3fa2 | ROLLOUT BLOCKER cleared: one owner of the fresh-frame-after-motion rule (reacquisition, autofocus, Mount Align); cancellable + capped waits; ToupTek exposure start stamped at trigger; TestMountTestMovePanel 517 s → 17 s |
@@ -658,5 +666,18 @@ screen move non-floor refusal after the first axis moved (message); timed-mount 
 - **S6.7 follow-ups → S6.6.** No GUI-thread exposure snapshot is wired into reacquisition (main_window) or
   autofocus (focuser_panel), so a first frame > ~5 s can still end in an explicit fresh_frame_timeout
   (never a stale measurement). Audit leftovers T04 (1000 vs 750 ms settle), D07, L05.
+- **USER DECISION (2026-10-11, S6.8 finding F1/M03): Mount Align in Astronomical mode moves with
+  OnStepAdapter 0.5.0 guide pulses while tracking** (like astronomical reacquisition); tracking is never
+  turned off by Mount Align. Terrestrial keeps angular moves (tracking OFF per #44). Consequences for the
+  S6.8 fix: one shared mount-motion executor choosing angular vs guide-pulse from the global mode;
+  calibration/screen-move sizing in guide-pulse ms (20..5000 ms per pulse, chunked; guide rate not exposed
+  → calibrate in guide-ms like S6.0d); 25%-of-frame steps may need several pulses and are slower;
+  runner's unconditional `stop_tracking()` before moves removed. Other S6.8 HIGH/MEDIUM items (F3 park
+  without Stop, F5 fine-collimation Cancel, F6 focuser Stop behind move lock, F7 one in-flight motion
+  app-wide, F8 quit during move) are folded into the S6.8 fix contract.
+- **Pre-existing flake (S8):** `test_calibration_failure_recovery.py::TestEveryFailureReturnsToIdle::
+  test_failure_then_a_second_run_without_restarting[unstable_image]` (proof 49) fails ~1 in 6–8 local runs
+  on HEAD and on S6.6a alike (panel stuck capturing at ~4 s) — real-time residue in that test; investigate
+  in S8 before the rollout.
 - **S5 live contradictions (9)** are listed in `docs/quality/duplication-audit.md`; each is owned by an
   S6 step and gets a failing regression before its fix.
