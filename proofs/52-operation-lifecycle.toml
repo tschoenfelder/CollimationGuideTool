@@ -1,0 +1,198 @@
+# Proof manifest -- schema in proofs/README.md. Run: python scripts/prove.py 52-operation-lifecycle
+issues = [52, 53]
+summary = """S6.3 (#52 audit L01/L02/L04/T01b/K02, #53 leftovers, S4/S6.2/S6.4 adapter findings): \
+AutofocusRunner, FineCollimationRunner and FovCalibrator (3 entry points) had no try/finally -- one \
+exception left is_busy True until restart (L02); MountParkPanel still had the pre-3fc09ae `elif`, so a \
+park/unpark that never reached its target kept Park/Unpark disabled forever (L01); FocuserPanel's poll \
+comment contradicted its is_moving gating (L01); panel status polls raised into Qt (L04); the autofocus \
+search treated a not-yet-Busy focuser as settled and measured at the old position (T01b); Stop did not \
+end a wait in progress (MountTestMoveRunner fresh-park/unpark/gate/retry/settle/re-park -- a rejected \
+pulse was re-sent after Stop --, the tracking settle poll, the autofocus exposure settle and \
+move-settle); IndiFilterWheelAdapter reported a cached Busy forever after indiserver dropped, hid an \
+out-of-range slot's Alert, left its client open when the post-connect probe raised and throttled \
+refreshes on time.monotonic; mount_pulse_adapter restated the OnStep exception tuple three times and \
+OnStepFocuserAdapter converted only ValueError (K02, which made L02 reachable from an INDI \
+TimeoutError); StreamController's cadence wait was an Event.wait on the real clock. Fix: one small \
+application helper, collimation_tool.application.operation_lifecycle -- OperationLifecycle (one \
+operation at a time, guaranteed terminal state succeeded/failed/cancelled + published outcome, Stop \
+event), completion_verdict (seen-Busy-then-idle or safety-net timeout, timeout checked whatever the \
+reading) and StatusPollGuard (poll never raises, logged once per streak, internal errors to the #10 \
+hook) -- used by the three runners and the three panels; every MountTestMoveRunner wait takes the Stop \
+event and nothing further (no unpark, retry, re-park) is sent after Stop; ensure_tracking_mode / \
+TrackingEnforcer.enforce/verify take a cancel event (unconfirmed -> REPAIR_FAILED, fail closed); the \
+searcher's settle needs the move SEEN to finish and honours cancel; AutofocusController.run takes the \
+runner's stop event for the exposure settle; ONSTEP_OPERATION_ERRORS is the one OnStep exception set \
+(OSError, RuntimeError, ValueError, KeyError) used by the pulse and focuser shims; the filter-wheel \
+adapter follows the client's connection, reports Alert in `reason` only once Busy was seen after the \
+command or a 1 s grace (injected clock) passed -- a cached or refresh-re-announced old Alert is not a \
+rejection --, closes on a raising probe and takes clock=/client_factory= (the simulator helper uses \
+them); a raising on_error still yields a FAILED outcome; an autofocus move-settle timeout is logged \
+once per search; StreamController takes clock= and the \
+sleep-guard policy allowlist loses the filter-wheel entry."""
+modules = [
+    "apps/collimation_tool/application/operation_lifecycle.py",
+    "apps/collimation_tool/application/autofocus_controller.py",
+    "apps/collimation_tool/application/autofocus_search.py",
+    "apps/collimation_tool/ui/autofocus_runner.py",
+    "apps/collimation_tool/ui/fine_collimation_runner.py",
+    "apps/collimation_tool/ui/fov_calibrator.py",
+    "apps/collimation_tool/ui/mount_test_move_runner.py",
+    "apps/collimation_tool/ui/focuser_panel.py",
+    "apps/collimation_tool/ui/filter_wheel_panel.py",
+    "apps/collimation_tool/ui/mount_park_panel.py",
+    "packages/astrotool_core/filter_wheel/indi_filter_wheel_adapter.py",
+    "packages/astrotool_core/onstep/focuser_adapter.py",
+    "packages/astrotool_core/onstep/mount_pulse_adapter.py",
+    "packages/astrotool_core/mount/tracking_mode.py",
+    "packages/astrotool_core/mount/operating_mode.py",
+    "packages/astrotool_core/acquisition/stream_controller.py",
+    "packages/astrotool_core/testing/sim_indi_filter_wheel.py",
+]
+fix_commits = ["b22b871"]
+dataset_uuids = []
+focused_command = """pytest -q \
+tests/collimation/application/test_operation_lifecycle.py \
+tests/collimation/ui/test_autofocus_runner.py::TestAWorkerExceptionLeavesTheRunnerRetryable \
+tests/collimation/ui/test_fine_collimation_runner.py::TestAWorkerExceptionLeavesTheRunnerRetryable \
+tests/collimation/ui/test_fov_calibrator.py::TestAWorkerExceptionLeavesTheCalibratorRetryable \
+tests/collimation/ui/test_mount_test_move_runner_timing.py::TestStopInEachWaitState \
+tests/collimation/ui/test_panel_operation_lifecycle.py \
+tests/collimation/application/test_autofocus_search.py::TestMoveSettle \
+tests/collimation/application/test_autofocus_search.py::TestMoveSettleTimeoutIsLoggedOnce \
+tests/collimation/application/test_autofocus_artificial_star.py::TestExposureSettleOnFakeTime \
+tests/core/filter_wheel/test_indi_filter_wheel_adapter_simulated.py \
+tests/core/onstep/test_onstep_error_normalization.py \
+tests/core/mount/test_tracking_mode.py::TestSettlePollIsInterruptible \
+tests/core/mount/test_operating_mode.py::TestClockPassThrough \
+tests/core/acquisition/test_stream_controller.py::test_the_capture_cadence_waits_on_the_injected_clock_and_stop_ends_it \
+tests/core/testing/test_no_policy_sleep.py"""
+broader_tier = "component"
+field_only_assumptions = [
+    "OnStepAdapter's focuser move_absolute blocks until the target is reached (simulator semantics, sim_onstep.py), so the stricter autofocus move-settle costs no wait on the rig; a driver reporting a position different from both start and target still counts as arrived. Not yet observed on the real OnStep focuser.",
+    "libindi answers an out-of-range FILTER_SLOT with Alert and a fresh vector (indifilterinterface.cpp per the simulator docstring); the rig's ToupTek EFW driver is unverified. The panel only offers slots the wheel reports, so the Alert path is reachable mainly programmatically.",
+    "After Stop with park_after=True the runner no longer sends the re-park (a park is motion); production Mount Align always passes park_after=False, so no field behaviour changes there.",
+    "OnStep's delayed auto-tracking after UNPARK (if it still exists behind OnStepAdapter 0.5.0's confirmed TRACK_OFF) could re-enable tracking right after a Stop that followed an unpark; the panel's Stop sends OnStep's emergency stop (abort + TRACK_OFF), but a TRACK_ON landing after it is not re-checked by the runner.",
+    "Stop decisions (accepted by the coordinator, S6.3 review): after Stop no unpark/stop_tracking is sent from the fresh-park wait and no re-park is sent -- the mount may be left unparked with tracking off (the panel's emergency stop).",
+    "MountParkPanel runs the #44 tracking enforcement only after a CONFIRMED unpark (not after the 30 s safety net); mitigated by OnStepAdapter 0.5.0's own TRACK_OFF on unpark.",
+    "The real indiserver-drop path (IndiClient._mark_disconnected from the reader thread) is modelled by SimulatedIndiClient.drop_connection; not exercised against a real dropped indiserver.",
+]
+gaps = [
+    "CONFIRMED-1 (S6.3 review): ensure_tracking_mode / TrackingEnforcer.enforce/verify accept cancel=, but no production caller passes a Stop event yet -- the Mount Align capture worker / mount_test_move_panel is S6.6; until then a Stop does not shorten the tracking settle poll in production.",
+    "MountTestMoveRunner keeps its own busy/outcome lifecycle (6b0a215, already guaranteed) -- its contract here was waits/retry only; adopting OperationLifecycle there is S6.6/S6.8.",
+    "Stop events are not yet WIRED into the TrackingEnforcer callers (Mount Align capture worker, mount_test_move_panel) or into a FineCollimationController/FovCalibrator wait -- the seams exist (enforce/verify/ensure_tracking_mode cancel=), the callers are S6.6.",
+    "sim_indi_filter_wheel.make_simulated_filter_wheel_adapter (testing/, outside the S6.3 file list) was changed to pass clock=/client_factory= -- needed so the stale-Alert grace runs on the simulator's clock.",
+    "test_operation_lifecycle.py::TestOperationLifecycle::test_a_raising_error_handler_still_yields_a_failed_outcome covers a review fix of the new helper (no pre-S6.3 state).",
+    "A crashed FOV calibration is reported as NO_VALID_REGISTRATION with diagnostics['error'] (RegistrationStatus has no error member; result.py and MainWindow's text are outside the contract); a crashed autofocus run has start_position -1 (unknown).",
+    "test_panel_operation_lifecycle.py::TestFocuserPanelStuckBusy pins the documented behaviour behind the FocuserPanel comment fix and passed pre-fix (comment-only correction).",
+    "FrameMailbox's Condition waits stay on the real clock (allowlisted, producer/consumer hand-off).",
+]
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_autofocus_runner.py::TestAWorkerExceptionLeavesTheRunnerRetryable"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-11, separate worktree wt-s63-impl at eb81123 (HEAD production, only the S6.3 tests copied in, PYTHONPATH = worktree apps/packages): tests/collimation/ui/test_autofocus_runner.py:128: assert False (is_busy still True 3 s after the run raised) and tests/collimation/ui/test_autofocus_runner.py:156: assert False"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_fine_collimation_runner.py::TestAWorkerExceptionLeavesTheRunnerRetryable"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-11 (worktree wt-s63-impl at eb81123): tests/collimation/ui/test_fine_collimation_runner.py:113: assert False (is_busy stranded)"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_fov_calibrator.py::TestAWorkerExceptionLeavesTheCalibratorRetryable"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-11 (worktree wt-s63-impl at eb81123): terrestrial and star_field tests/collimation/ui/test_fov_calibrator.py:397: assert False; artificial_star tests/collimation/ui/test_fov_calibrator.py:444: assert False (is_busy stranded in all three entry points)"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_test_move_runner_timing.py::TestStopInEachWaitState"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-11 (worktree wt-s63-impl at eb81123): fresh-park tests/collimation/ui/test_mount_test_move_runner_timing.py:488: assert [('unpark', 0.5)] == [] (unpark sent after Stop, wait ran to 0.5); unpark wait :500: assert 0.75 == 0.3; gate delay :511: assert 0.3 == 0.1; retry :519: assert [0.0, 0.3] == [0.0] (the S3b strict xfail -- a rejected pulse re-sent after Stop); settle :39: runner never finished (settle not cut short); re-park wait :547: assert (None is not None); stop before re-park :560: assert ['unpark', 'park'] == ['unpark']"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_panel_operation_lifecycle.py::TestMountParkPanelStuckTransition"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-11 (worktree wt-s63-impl at eb81123): tests/collimation/ui/test_panel_operation_lifecycle.py:123: assert not True (still in flight 30.25 s after a park that never took effect: the pre-3fc09ae elif)"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_panel_operation_lifecycle.py::TestStatusPollsNeverRaise"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-11 (worktree wt-s63-impl at eb81123): the raising read escaped the QTimer slot -- tests/collimation/ui/test_panel_operation_lifecycle.py:47: RuntimeError: INDI focuser status unreadable; tests/collimation/ui/test_panel_operation_lifecycle.py:70: ConnectionError: IndiClient: send failed, connection lost; tests/collimation/ui/test_panel_operation_lifecycle.py:84: KeyError: 'UTC'"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_panel_operation_lifecycle.py::TestFilterWheelAlert"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-11 (worktree wt-s63-impl at eb81123): tests/collimation/ui/test_panel_operation_lifecycle.py:253: assert not True (slot change still in flight 1 s after the driver's Alert; only the 10 s timeout would end it; re-run 2026-10-11 after the review fix)"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_panel_operation_lifecycle.py::TestFocuserPanelStuckBusy"
+failed_before_fix = false
+reason_no_prefix_repro = "The FocuserPanel L01 item was a contradiction between a comment and the code; the code (In/Out gated on the driver's Busy, documented in _on_stop) was kept and the comment corrected, so this test pins unchanged behaviour (it also covers the S2 gap: the stuck-moving timeout half of 3fc09ae had no FocuserPanel test)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_autofocus_search.py::TestMoveSettle"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-11 (worktree wt-s63-impl at eb81123): tests/collimation/application/test_autofocus_search.py:680: AssertionError: assert 2500 == 2000 (samples taken at the old position before the lagging Busy appeared); tests/collimation/application/test_autofocus_search.py:710: AssertionError: SUCCESS is not CANCELLED (stuck-Busy settle waited out 10 s twice instead of honouring cancel)"
+
+[[regression_tests]]
+node = "tests/collimation/application/test_autofocus_artificial_star.py::TestExposureSettleOnFakeTime::test_a_stop_event_ends_the_settle_wait_at_the_stop_instant"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-11 (worktree wt-s63-impl at eb81123): tests/collimation/application/test_autofocus_artificial_star.py:345: TypeError: AutofocusController.run() got an unexpected keyword argument 'cancel_event' (no way to end the exposure settle; the pinned sibling test shows it ran its full 0.5 s)"
+
+[[regression_tests]]
+node = "tests/core/filter_wheel/test_indi_filter_wheel_adapter_simulated.py::TestInvalidSlot::test_a_refresh_re_announcing_the_old_alert_before_busy_is_not_a_rejection"
+failed_before_fix = false
+reason_no_prefix_repro = "Guards a misfire of the first S6.3 draft (review finding: a getProperties refresh re-announcing the old Alert as a new vector between Set and Busy read as 'rejected'), not a pre-S6.3 defect: before S6.3 an Alert was never reported at all (TestInvalidSlot failures above)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_autofocus_search.py::TestMoveSettleTimeoutIsLoggedOnce"
+failed_before_fix = false
+reason_no_prefix_repro = "Diagnostic logging added with the stricter T01b settle (review request); before S6.3 the settle wait timed out silently and no test pinned a log line."
+
+[[regression_tests]]
+node = "tests/core/filter_wheel/test_indi_filter_wheel_adapter_simulated.py::TestDisconnectWhileMoving"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-11 (worktree wt-s63-impl at eb81123): tests/core/filter_wheel/test_indi_filter_wheel_adapter_simulated.py:222: assert (True, True, 2) == (False, False, None) (cached Busy reported forever after the drop)"
+
+[[regression_tests]]
+node = "tests/core/filter_wheel/test_indi_filter_wheel_adapter_simulated.py::TestInvalidSlot"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-11 (worktree wt-s63-impl at eb81123): tests/core/filter_wheel/test_indi_filter_wheel_adapter_simulated.py:143: AssertionError: assert (None is not None) (Alert invisible, re-run 2026-10-11 after the review fix); tests/core/filter_wheel/test_indi_filter_wheel_adapter_simulated.py:154: AssertionError: assert None is not None"
+
+[[regression_tests]]
+node = "tests/core/filter_wheel/test_indi_filter_wheel_adapter_simulated.py::TestConnectCleanup"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-11 (worktree wt-s63-impl at eb81123): tests/core/filter_wheel/test_indi_filter_wheel_adapter_simulated.py:301: assert True is False (client left connected after the probe raised)"
+
+[[regression_tests]]
+node = "tests/core/filter_wheel/test_indi_filter_wheel_adapter_simulated.py::TestPropertyRefreshThrottle"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-11 (worktree wt-s63-impl at eb81123): tests/core/filter_wheel/test_indi_filter_wheel_adapter_simulated.py:315: TypeError: IndiFilterWheelAdapter.__init__() got an unexpected keyword argument 'clock' (throttle only on time.monotonic)"
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_error_normalization.py"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-11 (worktree wt-s63-impl at eb81123): collection ImportError: cannot import name 'ONSTEP_OPERATION_ERRORS' from 'astrotool_core.onstep.mount_pulse_adapter' (no single owner); the behaviour it pins was failing in the main tree before the adapter change: focuser move_absolute raising TimeoutError/KeyError/OSError/RuntimeError propagated (only ValueError converted, focuser_adapter.py:108 at eb81123) and move_angular raising KeyError/OSError propagated (mount_pulse_adapter.py:373 at eb81123)"
+
+[[regression_tests]]
+node = "tests/core/mount/test_tracking_mode.py::TestSettlePollIsInterruptible"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-11 (worktree wt-s63-impl at eb81123): tests/core/mount/test_tracking_mode.py:182: TypeError: ensure_tracking_mode() got an unexpected keyword argument 'cancel'; tests/core/mount/test_tracking_mode.py:197: same"
+
+[[regression_tests]]
+node = "tests/core/mount/test_operating_mode.py::TestClockPassThrough::test_stop_ends_the_settle_poll_and_the_gate_fails_closed"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-11 (worktree wt-s63-impl at eb81123): tests/core/mount/test_operating_mode.py:436: TypeError: TrackingEnforcer.enforce() got an unexpected keyword argument 'cancel'"
+
+[[regression_tests]]
+node = "tests/core/acquisition/test_stream_controller.py::test_the_capture_cadence_waits_on_the_injected_clock_and_stop_ends_it"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-11 (worktree wt-s63-impl at eb81123): tests/core/acquisition/test_stream_controller.py:231: TypeError: StreamController.__init__() got an unexpected keyword argument 'clock'"
+
+[[regression_tests]]
+node = "tests/core/testing/test_no_policy_sleep.py"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-11 (worktree wt-s63-impl at eb81123), allowlist shrunk first: tests/core/testing/test_no_policy_sleep.py:332: AssertionError: Real-clock deadline arithmetic or an Event/Condition wait used as a sleep in policy code (issue #53) -- indi_filter_wheel_adapter.py's time.monotonic throttle"
+
+[[regression_tests]]
+node = "tests/collimation/application/test_operation_lifecycle.py"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-11 (worktree wt-s63-impl at eb81123): collection ModuleNotFoundError: No module named 'collimation_tool.application.operation_lifecycle' -- the helper is new; its behaviour (guaranteed terminal state, completion_verdict boundaries, poll guard) is what the runner/panel tests above prove failed before, e.g. tests/collimation/ui/test_autofocus_runner.py:128"
