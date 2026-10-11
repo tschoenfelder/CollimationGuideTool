@@ -34,7 +34,7 @@ from astrotool_core.target.translation_offset import measure_translation_offset
 from astrotool_core.testing.fake_mount import FakeMountAdapter
 from astrotool_core.testing.fake_mount_park import FakeMountPark
 from astrotool_core.timing import FakeClock
-from collimation_tool.ui import mount_test_move_panel as panel_module
+from collimation_tool.application import mount_align_measurement as panel_module
 from collimation_tool.ui.mount_test_move_panel import (
     MeasurementFailureClass,
     MountTestMovePanel,

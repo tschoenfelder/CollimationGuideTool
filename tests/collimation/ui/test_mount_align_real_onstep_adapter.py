@@ -51,13 +51,13 @@ from astrotool_core.testing.fake_onstep_indi_client import (
 )
 from astrotool_core.testing.sim_onstep import SimulatedOnStepIndiClient
 from astrotool_core.timing import FakeClock
+from collimation_tool.application.mount_align_capture import CaptureJob as _CaptureJob
 from collimation_tool.ui.focuser_panel import FocuserPanel
 from collimation_tool.ui.mount_park_panel import MountParkPanel
 from collimation_tool.ui.mount_test_move_panel import (
     MountTestMovePanel,
     MovementSize,
     ScreenDirection,
-    _CaptureJob,
 )
 from collimation_tool.ui.mount_test_move_runner import MountTestMoveRunner
 
