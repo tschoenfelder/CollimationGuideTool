@@ -24,6 +24,7 @@ position this class reasons about is the target it itself just commanded.
 from __future__ import annotations
 
 import contextlib
+import logging
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
@@ -35,6 +36,8 @@ from astrotool_core.focus.search_bounds import (
     compute_search_bounds,
 )
 from astrotool_core.timing import SYSTEM_CLOCK, Clock
+
+_log = logging.getLogger(__name__)
 
 
 class AutofocusStatus(Enum):
@@ -60,6 +63,9 @@ class AutofocusStatus(Enum):
     #: improvement margin. Explicitly NOT `SUCCESS` (no improvement was
     #: made or claimed) and NOT a failure.
     ALREADY_FOCUSED = "already_focused"
+    #: S6.3 (#52 L02): the run ended on an unexpected exception (a device or camera error
+    #: that escaped); `failure_reason` names it. Produced by `AutofocusRunner`.
+    ERROR = "error"
 
 
 @dataclass(frozen=True)
@@ -192,12 +198,17 @@ class BoundedFocusSearcher:
         source_clock = clock or SYSTEM_CLOCK
         self._sleep = sleep or source_clock.sleep
         self._now = now or source_clock.monotonic
+        self._cancel_check: Callable[[], bool] | None = None
+        self._settle_timeout_logged = False
 
     def search(
         self,
         measure: FocusMeasurer,
         cancel_check: Callable[[], bool] | None = None,
     ) -> BoundedSearchResult:
+        #: S6.3: also ends a move-settle wait in progress (see `_wait_for_move_settled`).
+        self._cancel_check = cancel_check
+        self._settle_timeout_logged = False
         if not self._focuser.is_available:
             return BoundedSearchResult(
                 status=AutofocusStatus.FOCUSER_UNAVAILABLE,
@@ -411,7 +422,7 @@ class BoundedFocusSearcher:
                 AutofocusStatus.MOVE_REJECTED, run.best_position,
                 reason="the focuser rejected the commanded move",
             )
-        self._wait_for_move_settled()
+        self._wait_for_move_settled(clamped, result.start_position, run.best_position)
         return clamped
 
     def _safe_return_to(self, run: _Run, position: int) -> None:
@@ -437,10 +448,40 @@ class BoundedFocusSearcher:
         self._record(run, position, sample)
         return sample
 
-    def _wait_for_move_settled(self) -> None:
+    def _wait_for_move_settled(
+        self, target: int, start_position: int, best_position: int | None
+    ) -> None:
+        """S6.3 (audit T01b): settled = the move was SEEN to finish -- Busy seen and idle
+        again, or idle and already away from the start position / at the target (a port
+        whose `move_absolute` returns only once there, like OnStepAdapter's, costs no wait
+        at all, even if the driver reports a position a few steps off the target). Merely
+        "`is_moving()` is False" is not enough: a driver's Busy lags the command
+        (FocuserPanel's module docstring), and the sample would be taken at the old
+        position. Bounded by the move-settle timeout (then the search goes on, as before);
+        a cancel ends the wait at once."""
         deadline = self._now() + self._move_settle_timeout_s
-        while self._focuser.is_moving() and self._now() < deadline:
+        seen_moving = False
+        while self._now() < deadline:
+            if self._cancel_check is not None and self._cancel_check():
+                raise _SearchAbort(AutofocusStatus.CANCELLED, best_position)
+            if self._focuser.is_moving():
+                seen_moving = True
+            else:
+                position = self._focuser.get_position()
+                if seen_moving or position == target or position != start_position:
+                    return
             self._sleep(self._move_poll_interval_s)
+        if not self._settle_timeout_logged:
+            # S6.3 review: diagnosable on the rig (e.g. a focuser that never reports Busy
+            # and whose reported position does not change) -- once per search, not per move.
+            self._settle_timeout_logged = True
+            _log.warning(
+                "autofocus: move to %s not confirmed within %.1f s (start %s, reported "
+                "position %s, busy seen %s, moving now %s) -- measuring anyway; further "
+                "timeouts in this search are not logged",
+                target, self._move_settle_timeout_s, start_position,
+                self._focuser.get_position(), seen_moving, self._focuser.is_moving(),
+            )
 
     def _make_result(
         self,

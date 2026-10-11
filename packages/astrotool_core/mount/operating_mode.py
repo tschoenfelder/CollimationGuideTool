@@ -150,18 +150,31 @@ class TrackingEnforcer:
     def last_gate(self) -> TrackingGate:
         return self._last_gate
 
-    def enforce(self, context: str, *, fresh_wait_s: float = 0.0) -> TrackingGate:
+    def enforce(
+        self,
+        context: str,
+        *,
+        fresh_wait_s: float = 0.0,
+        cancel: threading.Event | None = None,
+    ) -> TrackingGate:
         """Check (and, in TERRESTRIAL mode, repair) tracking for `context`. `fresh_wait_s`:
-        0 on the GUI thread; off it, see `ensure_tracking_mode` (S6.0c re-review R1)."""
+        0 on the GUI thread; off it, see `ensure_tracking_mode` (S6.0c re-review R1).
+        `cancel` (S6.3): a Stop event that ends the repair's settle poll at once (an
+        unconfirmed repair is a closed gate)."""
         required = self.required_tracking(self._mode)
         if required is None:
             gate = TrackingGate(True, "astronomical mode: tracking is workflow-dependent")
             self._record(context, before=self._tracking_now(), command=None, after=None, gate=gate)
             return self._remember(gate)
-        return self.verify(required, context, fresh_wait_s=fresh_wait_s)
+        return self.verify(required, context, fresh_wait_s=fresh_wait_s, cancel=cancel)
 
     def verify(
-        self, required: TrackingMode, context: str, *, fresh_wait_s: float = 0.0
+        self,
+        required: TrackingMode,
+        context: str,
+        *,
+        fresh_wait_s: float = 0.0,
+        cancel: threading.Event | None = None,
     ) -> TrackingGate:
         """Verify `required` tracking for `context` (used by callers whose
         workflow-specific requirement is stricter than the mode policy). #48: tracking ON is
@@ -183,6 +196,7 @@ class TrackingEnforcer:
                 settle_timeout_s=self._settle_timeout_s,
                 clock=self._clock,
                 fresh_wait_s=fresh_wait_s,
+                cancel=cancel,
             )
         except Exception as exc:  # noqa: BLE001 -- a device error is a closed gate, never a crash
             # S6.4 review: e.g. OnStep's stop_tracking (an emergency stop) raising when the

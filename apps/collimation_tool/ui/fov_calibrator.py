@@ -27,12 +27,18 @@ Issue #29 moved the actual matching algorithm into
 logic, zero Qt dependency) — this module is unchanged in *shape*, only in
 which function it now drives and the `OpticalPrior`-based (rather than a
 bare `approx_scale` float) calling convention that came with it.
+
+S6.3 (#52 L02): the lifecycle of all three entry points (one calibration at a time,
+guaranteed terminal state) is `OperationLifecycle`'s -- an exception in any of them used to
+leave `is_busy` True for good ("Calibrate FOV" disabled until restart). A crashed run now
+ends as a not-ok result (`NO_VALID_REGISTRATION`, the exception in `diagnostics["error"]`)
+of the method that was running; progress is cleared either way.
 """
 
 from __future__ import annotations
 
 import tempfile
-import threading
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -42,9 +48,15 @@ from astrotool_core.frames.frame import Frame
 from astrotool_core.registration.artificial_star_registrar import ArtificialStarRegistrar
 from astrotool_core.registration.astap_adapter import AstapSolver
 from astrotool_core.registration.optical_prior import OpticalPrior
-from astrotool_core.registration.result import CrossCameraRegistrationResult
+from astrotool_core.registration.result import (
+    CrossCameraRegistrationResult,
+    RegistrationMethod,
+    RegistrationStatus,
+)
 from astrotool_core.registration.star_field_registrar import StarFieldHints, StarFieldRegistrar
 from astrotool_core.registration.terrestrial_registrar import TerrestrialRegistrar
+
+from collimation_tool.application.operation_lifecycle import OperationLifecycle
 
 #: Target size (pixels) for the guide frame's larger dimension after
 #: downsampling — see _auto_search_downsample and
@@ -81,10 +93,23 @@ class FovCalibrationOutcome:
     result: CrossCameraRegistrationResult
 
 
+def _crashed(method: RegistrationMethod, exc: Exception) -> FovCalibrationOutcome:
+    return FovCalibrationOutcome(
+        result=CrossCameraRegistrationResult(
+            method=method,
+            status=RegistrationStatus.NO_VALID_REGISTRATION,
+            diagnostics={"error": f"{type(exc).__name__}: {exc}"},
+        )
+    )
+
+
 class FovCalibrator:
     def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._busy = False
+        self._lifecycle: OperationLifecycle[FovCalibrationOutcome] = OperationLifecycle(
+            "fov-calibrator"
+        )
+        #: The lifecycle's lock: guards `_latest_outcome` and `_progress` too.
+        self._lock = self._lifecycle.lock
         self._latest_outcome: FovCalibrationOutcome | None = None
         #: (completed, total) candidates scored so far — see
         #: latest_progress(). None while idle or before the first
@@ -116,18 +141,11 @@ class FovCalibrator:
             if search_downsample is not None
             else _auto_search_downsample(guide_mono)
         )
-        with self._lock:
-            if self._busy:
-                return False
-            self._busy = True
-            self._progress = None
-        threading.Thread(
-            target=self._run,
-            args=(main_mono, guide_mono, prior_a, prior_b, downsample),
-            daemon=True,
-            name="fov-calibrator",
-        ).start()
-        return True
+        return self._start(
+            RegistrationMethod.TERRESTRIAL,
+            lambda: self._run(main_mono, guide_mono, prior_a, prior_b, downsample),
+            "fov-calibrator",
+        )
 
     def submit_star_field(
         self,
@@ -140,7 +158,7 @@ class FovCalibrator:
         hints: StarFieldHints | None = None,
     ) -> bool:
         """Same "run at most one at a time, drop rather than queue"
-        contract as submit() -- shares its lock/_busy state, since both
+        contract as submit() -- shares its one lifecycle, since both
         are still just "the one calibration currently running", whichever
         mode it was started in. ASTAP solves files on disk, not in-memory
         arrays (see astap_adapter), so this writes both frames to real
@@ -148,18 +166,11 @@ class FovCalibrator:
         established way to serialize a bare pixel array to real FITS
         bytes elsewhere in this codebase) and cleans them up once the
         background run finishes, success or failure."""
-        with self._lock:
-            if self._busy:
-                return False
-            self._busy = True
-            self._progress = None
-        threading.Thread(
-            target=self._run_star_field,
-            args=(main_mono, guide_mono, prior_a, prior_b, solver, hints),
-            daemon=True,
-            name="fov-calibrator-star-field",
-        ).start()
-        return True
+        return self._start(
+            RegistrationMethod.STAR_FIELD,
+            lambda: self._run_star_field(main_mono, guide_mono, prior_a, prior_b, solver, hints),
+            "fov-calibrator-star-field",
+        )
 
     def _run_star_field(
         self,
@@ -169,7 +180,7 @@ class FovCalibrator:
         prior_b: OpticalPrior,
         solver: AstapSolver,
         hints: StarFieldHints | None,
-    ) -> None:
+    ) -> FovCalibrationOutcome:
         registrar = StarFieldRegistrar(solver)
         with tempfile.TemporaryDirectory(prefix="fov_calibrator_") as tmp_dir:
             path_a = Path(tmp_dir) / "main.fits"
@@ -181,10 +192,7 @@ class FovCalibrator:
                 Frame(pixels=guide_mono, header=fits.Header(), exposure_seconds=0.0).to_fits_bytes()
             )
             result = registrar.register(path_a, path_b, prior_a, prior_b, hints=hints)
-        with self._lock:
-            self._latest_outcome = FovCalibrationOutcome(result=result)
-            self._busy = False
-            self._progress = None
+        return FovCalibrationOutcome(result=result)
 
     def submit_artificial_star(
         self,
@@ -201,18 +209,13 @@ class FovCalibrator:
         single-point-source registration is comparatively cheap -- no
         rotation/scale grid search -- so this needs no downsample/
         progress-callback plumbing)."""
-        with self._lock:
-            if self._busy:
-                return False
-            self._busy = True
-            self._progress = None
-        threading.Thread(
-            target=self._run_artificial_star,
-            args=(main_mono, guide_mono, prior_a, prior_b, assumed_rotation_deg),
-            daemon=True,
-            name="fov-calibrator-artificial-star",
-        ).start()
-        return True
+        return self._start(
+            RegistrationMethod.ARTIFICIAL_STAR,
+            lambda: self._run_artificial_star(
+                main_mono, guide_mono, prior_a, prior_b, assumed_rotation_deg
+            ),
+            "fov-calibrator-artificial-star",
+        )
 
     def _run_artificial_star(
         self,
@@ -221,15 +224,36 @@ class FovCalibrator:
         prior_a: OpticalPrior,
         prior_b: OpticalPrior,
         assumed_rotation_deg: float,
-    ) -> None:
+    ) -> FovCalibrationOutcome:
         registrar = ArtificialStarRegistrar()
         result = registrar.register(
             main_mono, guide_mono, prior_a, prior_b, assumed_rotation_deg=assumed_rotation_deg
         )
-        with self._lock:
-            self._latest_outcome = FovCalibrationOutcome(result=result)
-            self._busy = False
-            self._progress = None
+        return FovCalibrationOutcome(result=result)
+
+    def _start(
+        self,
+        method: RegistrationMethod,
+        work: Callable[[], FovCalibrationOutcome],
+        thread_name: str,
+    ) -> bool:
+        """The shared "run at most one at a time, drop rather than queue" start of all three
+        entry points (one lifecycle: whichever mode, it is the one calibration running)."""
+        return self._lifecycle.start(
+            work,
+            on_error=lambda exc: _crashed(method, exc),
+            publish=self._publish,
+            on_begin=self._reset_progress,
+            thread_name=thread_name,
+        )
+
+    def _reset_progress(self) -> None:
+        self._progress = None  # called under self._lock
+
+    def _publish(self, outcome: FovCalibrationOutcome) -> None:
+        # Called under self._lock, together with the terminal transition.
+        self._latest_outcome = outcome
+        self._progress = None  # nothing left to report once finished
 
     def _on_progress(self, completed: int, total: int) -> None:
         with self._lock:
@@ -242,15 +266,12 @@ class FovCalibrator:
         prior_a: OpticalPrior,
         prior_b: OpticalPrior,
         search_downsample: int,
-    ) -> None:
+    ) -> FovCalibrationOutcome:
         result = self._registrar.register(
             main_mono, guide_mono, prior_a, prior_b,
             search_downsample=search_downsample, progress_callback=self._on_progress,
         )
-        with self._lock:
-            self._latest_outcome = FovCalibrationOutcome(result=result)
-            self._busy = False
-            self._progress = None  # nothing left to report once finished
+        return FovCalibrationOutcome(result=result)
 
     def take_latest(self) -> FovCalibrationOutcome | None:
         """Return and clear the latest completed outcome, if any —
@@ -271,5 +292,4 @@ class FovCalibrator:
 
     @property
     def is_busy(self) -> bool:
-        with self._lock:
-            return self._busy
+        return self._lifecycle.is_busy

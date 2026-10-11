@@ -25,6 +25,12 @@ from astrotool_core.timing import SYSTEM_CLOCK, Clock
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
+from collimation_tool.application.operation_lifecycle import (
+    CompletionVerdict,
+    StatusPollGuard,
+    completion_verdict,
+)
+
 _POLL_INTERVAL_MS = 250
 #: See FocuserPanel's identical constant for the reasoning — a safety net
 #: in case a transition settles faster than this panel could ever catch
@@ -60,6 +66,8 @@ class MountParkPanel(QWidget):
             wait=lambda: mount.status(),
             cancel=lambda: mount.stop_tracking(),
         )
+        #: S6.3 (#52 L04): the periodic status poll never raises into Qt.
+        self._poll_guard = StatusPollGuard(title)
         #: See module docstring's "one action at a time".
         self._action_in_flight = False
         self._pending_action: str | None = None  # "park" | "unpark" | None
@@ -211,8 +219,19 @@ class MountParkPanel(QWidget):
         return None if confirmed is None else bool(confirmed)
 
     def _poll_status(self) -> None:
+        """One QTimer tick. S6.3 (#52 L04): never raises into Qt -- a failing status read is
+        shown, logged once per failure streak, and the transition safety net keeps running."""
         if not self._connected:
             return
+        failure = self._poll_guard.run(self._poll_once)
+        if failure is not None:
+            self._status_label.setText(failure)
+            if self._action_worker is None:
+                self._observe_transition(busy=None)
+            self._park_button.setEnabled(False)
+            self._unpark_button.setEnabled(False)
+
+    def _poll_once(self) -> None:
         status = self._mount.status()
         if not status.available:
             self._status_label.setText("Connected — no mount interface detected.")
@@ -247,24 +266,30 @@ class MountParkPanel(QWidget):
             # "Busy" here means "not yet settled at the target state" --
             # still parked right after an unpark request, or vice versa.
             target_parked = self._pending_action == "park"
-            busy = status.available and status.parked != target_parked
-            if busy:
-                self._seen_busy_since_action = True
-            elif self._seen_busy_since_action:
-                settled_action = self._pending_action
-                self._action_in_flight = False
-                self._pending_action = None
-                if settled_action == "unpark":
-                    self._enforce_tracking("unpark")
-            elif (
-                self._action_issued_at is not None
-                and self._clock.monotonic() - self._action_issued_at
-                > _TRANSITION_CONFIRMATION_TIMEOUT_S
-            ):
-                # Safety net — see _TRANSITION_CONFIRMATION_TIMEOUT_S's docstring.
-                self._action_in_flight = False
-                self._pending_action = None
+            self._observe_transition(busy=status.available and status.parked != target_parked)
         self._update_buttons_enabled()
+
+    def _observe_transition(self, *, busy: bool | None) -> None:
+        """S6.3 (#52 L01): `completion_verdict`, the one rule of the one-action-at-a-time
+        panels. This panel still had the pre-3fc09ae shape -- the safety-net timeout sat in an
+        `elif` reachable only while NOT busy, so a park/unpark that never reached its target
+        kept Park/Unpark disabled forever (ports without `long_running_actions`)."""
+        if not self._action_in_flight:
+            return
+        self._seen_busy_since_action, verdict = completion_verdict(
+            busy=busy,
+            seen_busy=self._seen_busy_since_action,
+            issued_at=self._action_issued_at,
+            now=self._clock.monotonic(),
+            timeout_s=_TRANSITION_CONFIRMATION_TIMEOUT_S,
+        )
+        if verdict is CompletionVerdict.PENDING:
+            return
+        settled_action = self._pending_action
+        self._action_in_flight = False
+        self._pending_action = None
+        if verdict is CompletionVerdict.CONFIRMED and settled_action == "unpark":
+            self._enforce_tracking("unpark")
 
     def _update_buttons_enabled(self) -> None:
         self._confirm_home_button.setEnabled(self._connected and self._mount.is_available)

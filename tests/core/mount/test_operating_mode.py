@@ -420,6 +420,35 @@ class TestClockPassThrough:
         assert clock.monotonic() >= 3.0  # the whole timeout elapsed -- in fake time only
 
 
+    def test_stop_ends_the_settle_poll_and_the_gate_fails_closed(self) -> None:
+        """S6.3 (S6.4 finding): a Stop during the 3 s settle poll ends it at once; the
+        unconfirmed repair is a closed gate, never a silent pass."""
+        clock = FakeClock()
+        cancel = threading.Event()
+        clock.call_at(0.5, cancel.set)
+        enforcer = TrackingEnforcer(
+            _tracking_mount(refuse_stop=True),
+            OperatingMode.TERRESTRIAL,
+            settle_timeout_s=3.0,
+            clock=clock,
+        )
+
+        gate = enforcer.enforce("calibration", cancel=cancel)
+
+        assert not gate.allowed
+        assert clock.monotonic() == 0.5
+
+        clock2 = FakeClock()
+        cancel2 = threading.Event()
+        clock2.call_at(0.5, cancel2.set)
+        enforcer2 = TrackingEnforcer(
+            _tracking_mount(refuse_stop=True), OperatingMode.TERRESTRIAL,
+            settle_timeout_s=3.0, clock=clock2,
+        )
+        assert not enforcer2.verify(TrackingMode.OFF, "capture", cancel=cancel2).allowed
+        assert clock2.monotonic() == 0.5
+
+
 class TestTrackingDecisionsComeOnlyFromTheGlobalMode:
     def test_the_measurement_tracking_follows_the_mode(self) -> None:
         enforcer = _enforcer(FakeMountPark(start_parked=False), OperatingMode.TERRESTRIAL)

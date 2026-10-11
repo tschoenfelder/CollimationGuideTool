@@ -12,6 +12,7 @@ from astrotool_core.testing import (
     SimulatedIndiFilterWheel,
     make_simulated_filter_wheel_adapter,
 )
+from astrotool_core.testing.sim_indi_filter_wheel import SimulatedIndiClient
 from astrotool_core.timing import FakeClock
 
 _NAME = "ToupTek EFW 2"
@@ -123,26 +124,93 @@ class TestInvalidSlot:
         assert wheel.commanded_slots == []
 
     def test_a_slot_beyond_the_wheel_is_answered_with_alert_and_never_moves(self) -> None:
-        """libindi answers an out-of-range FILTER_SLOT with Alert. Characterizes
-        a gap (recorded as a #51 finding): FilterWheelState has no notion of
-        the rejection -- it reads "not moving, still at slot 2", so a caller
-        only learns of it from its own confirmation timeout."""
+        """libindi answers an out-of-range FILTER_SLOT with Alert. S6.3 (S4 finding (b)):
+        the rejection reaches `FilterWheelState.reason` (before: "not moving, still at slot
+        2, reason None" -- a caller only learnt of it from its own confirmation timeout) --
+        once no Busy followed for the 1 s grace (see the refresh-race test below)."""
         clock = FakeClock()
         adapter, wheel = _wheel(clock)
         adapter.connect()
         adapter.set_slot(9)
         assert wheel.commanded_slots == [9]
         assert wheel.state == "Alert"
+        assert adapter.status().reason is None  # within the grace: maybe a stale Alert
+        clock.advance(0.99)
+        assert adapter.status().reason is None
+        clock.advance(0.01)
         status = adapter.status()
-        assert (status.moving, status.current_slot, status.reason) == (False, 2, None)
+        assert (status.moving, status.current_slot, status.available) == (False, 2, True)
+        assert status.reason is not None and "rejected" in status.reason
+        assert "9" in status.reason
+
+    def test_a_stale_alert_is_not_reported_for_the_next_command(self) -> None:
+        """Right after a new command the cached vector is still the OLD Alert -- it must
+        not be read as a rejection of the new command."""
+        clock = FakeClock()
+        adapter, _ = _wheel(clock, reply_latency_s=0.25)
+        adapter.connect()
+        adapter.set_slot(9)
+        clock.advance(1.0)
+        assert adapter.status().reason is not None  # the Alert for slot 9
+        adapter.set_slot(3)
+        assert adapter.status().reason is None  # the old Alert, not an answer to slot 3
+        clock.advance(0.25)
+        assert adapter.status().moving is True
+        clock.advance(0.5)
+        status = adapter.status()
+        assert (status.moving, status.current_slot, status.reason) == (False, 3, None)
+
+    def test_a_refresh_re_announcing_the_old_alert_before_busy_is_not_a_rejection(
+        self,
+    ) -> None:
+        """S6.3 review: a getProperties refresh in flight re-sends defNumberVector with the
+        OLD Alert state -- a NEW vector object -- between the command and the driver's Busy.
+        The wheel is about to move; that must not read as "rejected"."""
+        clock = FakeClock()
+        adapter, _ = _wheel(clock, reply_latency_s=0.25)
+        adapter.connect()
+        adapter.set_slot(9)
+        clock.advance(1.0)
+        assert adapter.status().reason is not None
+        adapter.set_slot(3)
+        client = adapter._client
+        assert isinstance(client, SimulatedIndiClient)
+        client.deliver(  # the refresh's answer, sent by the driver before it saw slot 3
+            f'<defNumberVector device="{_NAME}" name="FILTER_SLOT" state="Alert">'
+            '<defNumber name="FILTER_SLOT_VALUE">2</defNumber></defNumberVector>'
+        )
+        clock.advance(0.1)
+        status = adapter.status()
+        assert (status.moving, status.reason) == (False, None)
+        clock.advance(0.15)  # the driver's Busy for slot 3 arrives
+        assert adapter.status().moving is True
+        clock.advance(0.5)
+        status = adapter.status()
+        assert (status.moving, status.current_slot, status.reason) == (False, 3, None)
+
+    def test_an_alert_after_busy_is_reported_at_once(self) -> None:
+        """A move that fails after the driver reported Busy needs no grace."""
+        clock = FakeClock()
+        adapter, wheel = _wheel(clock, busy_forever=True)
+        adapter.connect()
+        adapter.set_slot(4)
+        assert adapter.status().moving is True
+        client = adapter._client
+        assert isinstance(client, SimulatedIndiClient)
+        client.deliver(
+            f'<setNumberVector device="{_NAME}" name="FILTER_SLOT" state="Alert">'
+            '<oneNumber name="FILTER_SLOT_VALUE">2</oneNumber></setNumberVector>'
+        )
+        status = adapter.status()
+        assert status.reason is not None and "slot 4" in status.reason
+        assert wheel.commanded_slots == [4]
 
 
 class TestDisconnectWhileMoving:
-    def test_the_connection_dropping_mid_move_leaves_a_stale_busy_cache(self) -> None:
-        """Characterization (recorded as a #51 finding, not fixed here):
-        status() trusts the adapter's own `_connected` flag, not the client's,
-        so after indiserver goes away mid-move it keeps reporting the last
-        cached Busy forever instead of "not connected"."""
+    def test_the_connection_dropping_mid_move_reports_not_connected(self) -> None:
+        """S6.3 (S4 finding (a)): after indiserver goes away mid-move, status() follows the
+        client's own connection state -- "connection lost", not moving -- instead of the
+        last cached Busy forever (it trusted only the adapter's `_connected` flag)."""
         clock = FakeClock()
         adapter, wheel = _wheel(clock)
         adapter.connect()
@@ -151,7 +219,9 @@ class TestDisconnectWhileMoving:
         clock.advance(10.0)
         assert adapter._client.is_connected is False
         status = adapter.status()
-        assert status.moving is True and status.available is True
+        assert (status.available, status.moving, status.current_slot) == (False, False, None)
+        assert status.reason == "connection lost"
+        assert adapter.is_available is False
         assert wheel.slot == 5  # the wheel itself arrived; the app never heard
 
     def test_a_command_after_the_drop_raises_connection_error(self) -> None:
@@ -207,3 +277,57 @@ class TestExternalChange:
         adapter.connect()
         wheel.external_move(5)
         assert adapter.status().current_slot == 5
+
+
+class TestConnectCleanup:
+    def test_a_raising_post_connect_probe_closes_the_client(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """S6.2 finding: a probe that raises after CONNECTION was confirmed used to leave the
+        client (reader thread, socket) open and `_connected` True."""
+        clock = FakeClock()
+        adapter, _ = _wheel(clock)
+        client = adapter._client
+        real_wait = client.wait_for_vector
+
+        def probe_raises(device: str, name: str, *args: object, **kwargs: object) -> object:
+            if name == "FILTER_SLOT":
+                raise OSError("connection reset during the probe")
+            return real_wait(device, name, *args, **kwargs)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(client, "wait_for_vector", probe_raises)
+        with pytest.raises(OSError, match="during the probe"):
+            adapter.connect()
+        assert client.is_connected is False
+        assert adapter.is_available is False
+        assert adapter.status().reason == "not connected"
+
+
+class TestPropertyRefreshThrottle:
+    """S4 finding (c): the 2 s getProperties throttle runs on the injected clock."""
+
+    def test_one_refresh_per_interval_on_fake_time(self) -> None:
+        clock = FakeClock()
+        wheel = SimulatedIndiFilterWheel(
+            FilterWheelScenario(_NAME, slot_names=_SLOTS, initial_slot=2), clock=clock
+        )
+        client = SimulatedIndiClient(wheel, clock=clock)
+        adapter = IndiFilterWheelAdapter(
+            "simulated-indiserver", device_name=_NAME, clock=clock,
+            client_factory=lambda _host, _port: client,
+        )
+        assert adapter._client is client
+        adapter.connect()
+
+        def refreshes() -> int:
+            return sum(1 for fragment in client.sent if fragment.startswith("<getProperties"))
+
+        after_connect = refreshes()
+        adapter.status()
+        assert refreshes() == after_connect + 1  # the first status() refreshes
+        clock.advance(1.99)
+        adapter.status()
+        assert refreshes() == after_connect + 1  # throttled
+        clock.advance(0.01)
+        adapter.status()
+        assert refreshes() == after_connect + 2  # exactly 2 s later: refreshed again

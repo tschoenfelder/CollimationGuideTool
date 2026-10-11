@@ -29,13 +29,9 @@ in tests) -- no socket, no reader thread, no real sleeps:
   `FakeIndiServer` does) -- unverified for the rig's ToupTek EFW driver.
 
 `make_simulated_filter_wheel_adapter` wires a production
-`IndiFilterWheelAdapter` to the simulated client. The adapter builds its own
-`IndiClient` and has no injection seam, so the helper swaps the private
-`_client` after construction (a test-side seam; recorded as a #51 dependency:
-give the adapter a `client_factory`, as `OnStepConnection` has). The adapter's
-own 2 s property-refresh throttle still reads the real `time.monotonic()`; the
-simulator answers every refresh with the current state, so how many refreshes
-happen never changes what a test observes.
+`IndiFilterWheelAdapter` to the simulated client through the adapter's own
+`client_factory=` and `clock=` seams (S6.3), so its 2 s property-refresh throttle
+and its stale-Alert grace run on the same clock as the simulated wheel.
 """
 
 from __future__ import annotations
@@ -326,9 +322,9 @@ def make_simulated_filter_wheel_adapter(
         connect_timeout_s=connect_timeout_s,
         filter_names=filter_names,
         names_override=names_override,
-    )
-    # Test-side seam: the adapter has no client injection (see module docstring).
-    adapter._client = SimulatedIndiClient(
-        wheel, clock=clock, server_reachable=scenario.server_reachable
+        clock=clock,
+        client_factory=lambda _host, _port: SimulatedIndiClient(
+            wheel, clock=clock, server_reachable=scenario.server_reachable
+        ),
     )
     return adapter, wheel

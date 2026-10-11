@@ -166,3 +166,38 @@ class TestSettlePollOnFakeTime:
         # re-read ends at t=1.0 -> deadline 2.0 -> polls at 1.0 and 1.75.
         # (A deadline taken before the re-read, at 0.5, would allow only one.)
         assert clock.sleeps == [0.25, 0.25]
+
+
+class TestSettlePollIsInterruptible:
+    """S6.3 (S6.4 finding): Stop ends the tracking settle poll at the Stop instant. The
+    repair is then not confirmed -> REPAIR_FAILED (fail closed), never a hang."""
+
+    def test_cancel_during_the_settle_poll_ends_it_at_once(self) -> None:
+        import threading
+
+        clock = FakeClock()
+        cancel = threading.Event()
+        mount_park = _SlowDriverMountPark(clock, delay_s=2.5)
+        clock.call_at(0.3, cancel.set)
+        result = ensure_tracking_mode(
+            mount_park, TrackingMode.ON,
+            settle_timeout_s=3.0, poll_interval_s=0.25, clock=clock, cancel=cancel,
+        )
+        assert result.status is TrackingVerificationStatus.REPAIR_FAILED
+        assert result.observed_mode is TrackingMode.OFF
+        assert clock.monotonic() == 0.3
+
+    def test_a_cancel_already_set_sends_the_repair_but_does_not_wait(self) -> None:
+        import threading
+
+        clock = FakeClock()
+        cancel = threading.Event()
+        cancel.set()
+        mount_park = _SlowDriverMountPark(clock, delay_s=0.5)
+        result = ensure_tracking_mode(
+            mount_park, TrackingMode.ON,
+            settle_timeout_s=3.0, poll_interval_s=0.25, clock=clock, cancel=cancel,
+        )
+        assert result.status is TrackingVerificationStatus.REPAIR_FAILED
+        assert mount_park.start_tracking_count == 1
+        assert clock.monotonic() == 0.0

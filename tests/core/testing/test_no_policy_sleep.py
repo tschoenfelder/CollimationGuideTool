@@ -81,14 +81,9 @@ POLICY_ROOTS = (
 POLICY_WALL_CLOCK_ALLOWLIST: dict[str, str] = {
     "packages/astrotool_core/acquisition/stream_controller.py": (
         "FrameMailbox.wait_latest/wait_next_after block on a Condition until a real-time "
-        "deadline, and the capture loop's cadence wait is a stop-event wait used as a sleep; "
-        "frames are stamped on the same real clock the camera delivers in. A clock seam here "
-        "is the optional S4/#51 injection, not yet taken (recorded as an S3b dependency)"
-    ),
-    "packages/astrotool_core/filter_wheel/indi_filter_wheel_adapter.py": (
-        "_maybe_refresh_properties throttles getProperties re-requests to one per 2 s on the "
-        "real clock (S4 finding (c): the adapter has no clock/client injection yet) -> S6.3; "
-        "a rate limit on INDI traffic, not a confirmation timeout"
+        "deadline: a producer/consumer hand-off between the capture thread and its readers, "
+        "not a policy wait (frames are stamped on the clock the camera delivers in). S6.3 took "
+        "the capture loop's cadence wait and stamps onto the injected Clock"
     ),
 }
 
@@ -457,5 +452,4 @@ def test_the_allowlists_are_pinned() -> None:
     }
     assert set(POLICY_WALL_CLOCK_ALLOWLIST) == {
         "packages/astrotool_core/acquisition/stream_controller.py",
-        "packages/astrotool_core/filter_wheel/indi_filter_wheel_adapter.py",
     }

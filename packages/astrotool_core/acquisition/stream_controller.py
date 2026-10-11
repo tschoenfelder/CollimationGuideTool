@@ -5,6 +5,12 @@ Ported from smart_telescope's ``services.managed_camera`` (``ManagedCamera``,
 ``FrameMailbox``), renamed and generalized: the "role" concept (main/guide/
 oag, tied to smart_telescope's multi-camera setup) is dropped in favor of a
 plain thread-naming ``name`` — neither app needs more than one camera role.
+
+S6.3 (#53, S3b finding (d)): the capture loop's cycle stamps and its cadence wait go through
+an injectable ``Clock`` (default: the real one); the cadence wait takes the stop event as its
+cancel, so ``stop_stream`` ends it at once and tests drive the cadence on fake time.
+``FrameMailbox``'s waits stay on the real clock: they are a producer/consumer hand-off
+between threads, not a policy wait.
 """
 
 from __future__ import annotations
@@ -18,6 +24,7 @@ from dataclasses import dataclass
 from astrotool_core.acquisition.acquisition_state import AcquisitionState
 from astrotool_core.camera.port import CameraPort, CaptureAbortedError
 from astrotool_core.frames.frame import Frame
+from astrotool_core.timing import SYSTEM_CLOCK, Clock
 
 _log = logging.getLogger(__name__)
 
@@ -104,9 +111,12 @@ class FrameMailbox:
 class StreamController:
     """Wraps a CameraPort with a background capture thread and latest-frame mailbox."""
 
-    def __init__(self, camera: CameraPort, *, name: str = "camera") -> None:
+    def __init__(
+        self, camera: CameraPort, *, name: str = "camera", clock: Clock | None = None
+    ) -> None:
         self.camera = camera
         self.name = name
+        self._clock: Clock = clock if clock is not None else SYSTEM_CLOCK
         self.mailbox = FrameMailbox()
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
@@ -153,9 +163,9 @@ class StreamController:
     def _run(self, exposure_s: float, cadence_s: float) -> None:
         while not self._stop_event.is_set():
             try:
-                cycle_start = time.monotonic()
+                cycle_start = self._clock.monotonic()
                 frame = self.camera.capture(exposure_s)
-                captured_at = time.monotonic()  # after capture, to reflect true frame age
+                captured_at = self._clock.monotonic()  # after capture: true frame age
                 started = frame.exposure_started_at
                 if started is not None:
                     # S6.7: the end of the exposure itself (trigger + exposure), not the end
@@ -166,10 +176,10 @@ class StreamController:
                     captured_at = min(captured_at, started + frame.exposure_seconds)
                 self._seq += 1
                 self.mailbox.put(frame, sequence=self._seq, captured_at=captured_at)
-                elapsed = time.monotonic() - cycle_start
+                elapsed = self._clock.monotonic() - cycle_start
                 sleep_s = max(0.0, cadence_s - elapsed)
                 if sleep_s > 0:
-                    self._stop_event.wait(timeout=sleep_s)
+                    self._clock.sleep(sleep_s, self._stop_event)
             except CaptureAbortedError:
                 break
             except Exception as exc:

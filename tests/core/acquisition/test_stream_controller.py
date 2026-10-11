@@ -218,3 +218,30 @@ def test_without_a_known_start_the_after_capture_stamp_is_kept() -> None:
     assert mailbox_frame is not None
     assert mailbox_frame.frame.exposure_started_at is None
     assert mailbox_frame.captured_at_monotonic >= before
+
+
+def test_the_capture_cadence_waits_on_the_injected_clock_and_stop_ends_it() -> None:
+    """S6.3 (#53, S3b finding (d)): the cadence wait goes through the injected `Clock` with
+    the stop event as its cancel -- driven on fake time, and Stop wakes it at once."""
+    from astrotool_core.timing import FakeClock
+
+    clock = FakeClock(start=50.0, auto_advance=False)
+    camera = FakeCamera()
+    camera.connect()
+    controller = StreamController(camera, name="clocked", clock=clock)
+    controller.start_stream(exposure_s=0.01, cadence_s=1.0)
+    try:
+        assert clock.wait_for_sleepers(1)
+        assert clock.sleeps == [1.0]  # no fake time passed during the capture
+        first = controller.mailbox.wait_latest(timeout_s=1.0)
+        assert first is not None and first.sequence == 1
+        assert first.captured_at_monotonic <= 50.0
+        clock.advance(1.0)  # the cadence elapses -> the next capture
+        second = controller.mailbox.wait_latest(after_sequence=1, timeout_s=2.0)
+        assert second is not None and second.sequence == 2
+        assert clock.wait_for_sleepers(1)
+    finally:
+        started = time.monotonic()
+        controller.stop_stream()
+    assert time.monotonic() - started < 2.0  # the wait was cancelled, not slept out
+    assert controller.state is AcquisitionState.IDLE

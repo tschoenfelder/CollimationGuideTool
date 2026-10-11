@@ -30,17 +30,25 @@ or when no filter wheel hardware was found behind the connected INDI
 device -- returns safe defaults, never raises, matching `NoFilterWheel`/
 `FakeFilterWheel`'s tolerance and the shared `FilterWheelPort` contract
 test's expectations.
+
+S6.3 (S4/S6.2 findings): `status()` follows the client's own connection state -- after
+indiserver drops (even mid-move) it reports "connection lost" instead of the last cached
+Busy forever; a slot change the driver answers with `Alert` (e.g. a slot the wheel does not
+have) is reported in `reason` (a stale Alert cached from before the latest command is not);
+a post-connect probe that raises closes the client again; the getProperties refresh throttle
+and the client are injectable (`clock=`, `client_factory=`).
 """
 
 from __future__ import annotations
 
 import contextlib
 import logging
-import time
+from collections.abc import Callable
 
 from astrotool_core.config.device_defaults import EFW_DEVICE_NAME, INDI_HOST, INDI_PORT
 from astrotool_core.filter_wheel.port import FilterWheelPort, FilterWheelState
 from astrotool_core.indi.client import IndiClient, VectorState
+from astrotool_core.timing import SYSTEM_CLOCK, Clock
 
 _log = logging.getLogger(__name__)
 
@@ -58,6 +66,11 @@ _FILTER_WHEEL_PROBE_TIMEOUT_S = 3.0
 #: accordingly once the application receives/refetches the new device
 #: state") can't be cached forever with no way to notice.
 _PROPERTY_REFRESH_INTERVAL_S = 2.0
+#: S6.3 review: how long after a slot command an Alert without any Busy in between is
+#: still treated as possibly stale (see `_alert_reason`). A driver's Busy, or its Alert for
+#: a slot the wheel does not have, arrives within tens of ms; the panel's own safety net
+#: is 10 s.
+_ALERT_GRACE_S = 1.0
 
 
 class IndiFilterWheelAdapter(FilterWheelPort):
@@ -70,13 +83,26 @@ class IndiFilterWheelAdapter(FilterWheelPort):
         connect_timeout_s: float = _CONNECT_TIMEOUT_S,
         filter_names: dict[int, str] | None = None,
         names_override: bool = False,
+        clock: Clock | None = None,
+        client_factory: Callable[[str, int], IndiClient] | None = None,
     ) -> None:
         self._device_name = device_name
         self._connect_timeout_s = connect_timeout_s
-        self._client = IndiClient(host, port)
+        #: S6.3: the refresh throttle's time (default: the real clock).
+        self._clock: Clock = clock if clock is not None else SYSTEM_CLOCK
+        self._client = (client_factory or IndiClient)(host, port)
         self._connected = False
         self._available = False
-        self._last_property_refresh: float = 0.0
+        #: None until the first refresh (the first status() always refreshes).
+        self._last_property_refresh: float | None = None
+        #: S6.3 review: when the last slot change was sent (clock time) and whether the
+        #: driver has reported Busy since. Until either has happened, an Alert is not taken
+        #: as the answer to that command: a cached one predates it, and a getProperties
+        #: refresh in flight re-announces the OLD Alert as a fresh vector (reply latency).
+        self._command_sent_at: float | None = None
+        self._busy_seen_since_command = False
+        #: The slot of the last slot change sent (for the Alert reason).
+        self._requested_slot: int | None = None
         #: Issue #47: config-supplied slot -> name fallback, used only when
         #: the device itself reports no name for that slot -- see
         #: _lookup_filter_name/slot_names. Device-reported state always wins.
@@ -101,14 +127,22 @@ class IndiFilterWheelAdapter(FilterWheelPort):
                 f"IndiFilterWheelAdapter: {self._device_name!r} did not confirm CONNECTION "
                 f"within {self._connect_timeout_s}s — is indiserver running with this driver?"
             )
-        self._connected = True
         # The driver only defines the filter-wheel vectors once it has
         # probed for real hardware post-connect (mirrors
         # IndiFocuserAdapter's own FOCUS_MAX probe) -- a short wait, and
         # *not* available is a graceful outcome, not a connection failure.
-        slot_vector = self._client.wait_for_vector(
-            self._device_name, "FILTER_SLOT", timeout_s=_FILTER_WHEEL_PROBE_TIMEOUT_S
-        )
+        try:
+            slot_vector = self._client.wait_for_vector(
+                self._device_name, "FILTER_SLOT", timeout_s=_FILTER_WHEEL_PROBE_TIMEOUT_S
+            )
+        except BaseException:
+            # S6.3 (S6.2 finding): a probe that raises must not leave the client open.
+            self._client.close()
+            raise
+        self._connected = True
+        self._command_sent_at = None
+        self._busy_seen_since_command = False
+        self._requested_slot = None
         self._available = slot_vector is not None
         if not self._available:
             _log.warning(
@@ -133,7 +167,7 @@ class IndiFilterWheelAdapter(FilterWheelPort):
 
     @property
     def is_available(self) -> bool:
-        return self._connected and self._available
+        return self._connected and self._available and self._client.is_connected
 
     def status(self) -> FilterWheelState:
         self._maybe_refresh_properties()
@@ -144,6 +178,16 @@ class IndiFilterWheelAdapter(FilterWheelPort):
                 filter_name=None,
                 moving=False,
                 reason="not connected",
+            )
+        if not self._client.is_connected:
+            # S6.3 (S4 finding (a)): the indiserver connection dropped -- the cached vectors
+            # (e.g. a Busy from mid-move) say nothing about the wheel any more.
+            return FilterWheelState(
+                available=False,
+                current_slot=None,
+                filter_name=None,
+                moving=False,
+                reason="connection lost",
             )
         if not self._available:
             return FilterWheelState(
@@ -163,13 +207,35 @@ class IndiFilterWheelAdapter(FilterWheelPort):
                 moving=False,
                 reason="position unreadable",
             )
+        moving = vector is not None and vector.state == "Busy"
+        if moving:
+            self._busy_seen_since_command = True
         return FilterWheelState(
             available=True,
             current_slot=slot,
             filter_name=self._lookup_filter_name(slot),
-            moving=vector is not None and vector.state == "Busy",
-            reason=None,
+            moving=moving,
+            reason=self._alert_reason(vector),
         )
+
+    def _alert_reason(self, vector: VectorState | None) -> str | None:
+        """S6.3 (S4 finding (b)): the driver's Alert on FILTER_SLOT -- e.g. libindi's answer
+        to a slot the wheel does not have -- as the state's reason. After a slot command it
+        counts only once the driver reported Busy since, or `_ALERT_GRACE_S` (injected
+        clock) has passed: before that it may be the old Alert (cached, or re-announced by a
+        getProperties refresh still in flight) while the wheel is about to move."""
+        if vector is None or vector.state != "Alert":
+            return None
+        sent_at = self._command_sent_at
+        if (
+            sent_at is not None
+            and not self._busy_seen_since_command
+            and self._clock.monotonic() - sent_at < _ALERT_GRACE_S
+        ):
+            return None
+        if self._requested_slot is None:
+            return "the driver reports an Alert on the filter slot"
+        return f"the driver rejected slot {self._requested_slot} (Alert)"
 
     @staticmethod
     def _parse_slot(vector: VectorState | None) -> int | None:
@@ -221,6 +287,9 @@ class IndiFilterWheelAdapter(FilterWheelPort):
             return
         if self.status().moving:
             raise RuntimeError("IndiFilterWheelAdapter: a filter move is already in progress")
+        self._command_sent_at = self._clock.monotonic()
+        self._busy_seen_since_command = False
+        self._requested_slot = slot
         self._client.send_new_number_vector(
             self._device_name, "FILTER_SLOT", {"FILTER_SLOT_VALUE": float(slot)}
         )
@@ -228,8 +297,9 @@ class IndiFilterWheelAdapter(FilterWheelPort):
     def _maybe_refresh_properties(self) -> None:
         if not self._connected:
             return
-        now = time.monotonic()
-        if now - self._last_property_refresh < _PROPERTY_REFRESH_INTERVAL_S:
+        now = self._clock.monotonic()
+        last = self._last_property_refresh
+        if last is not None and now - last < _PROPERTY_REFRESH_INTERVAL_S:
             return
         self._last_property_refresh = now
         with contextlib.suppress(ConnectionError, OSError):

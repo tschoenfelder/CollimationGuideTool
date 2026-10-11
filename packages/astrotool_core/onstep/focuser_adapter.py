@@ -8,11 +8,16 @@ thread's operation on the shared connection (e.g. a mount axis GOTO holding
 reading; before any reading exists, "unavailable". `FocuserStatus` cannot
 say a reading is held over (S6.5 capability item). Moves, stop and the
 `blockers()` diagnostic still block on the lock.
+
+S6.3 (#52 K02): every device-side failure OnStepAdapter can raise
+(`ONSTEP_OPERATION_ERRORS`, one owner) becomes a result here -- a rejected move, a
+logged no-op relative move/stop, an "unavailable" status -- instead of escaping into the
+autofocus worker or a Qt slot (before, only ValueError was converted; an INDI TimeoutError
+from a move left the autofocus runner busy forever, audit L02).
 """
 
 from __future__ import annotations
 
-import contextlib
 import logging
 from dataclasses import replace
 
@@ -20,6 +25,7 @@ from onstep_adapter import IndiFocuser
 
 from astrotool_core.focus.port import FocuserMoveResult, FocuserPort, FocuserStatus
 from astrotool_core.onstep.connection import OnStepConnection
+from astrotool_core.onstep.mount_pulse_adapter import ONSTEP_OPERATION_ERRORS
 
 _log = logging.getLogger(__name__)
 
@@ -72,7 +78,12 @@ class OnStepFocuserAdapter(FocuserPort):
                 if last is None:
                     return _UNAVAILABLE
                 return replace(last, moving=last.moving or self._moving)
-            s = focuser.get_status()
+            try:
+                s = focuser.get_status()
+            except ONSTEP_OPERATION_ERRORS as exc:
+                _log.warning("OnStepFocuserAdapter: status read failed: %s", exc)
+                self._last_status = None
+                return _UNAVAILABLE
             available = "indi_device_disconnected" not in s.blockers and s.position is not None
             maximum = s.driver_maximum or s.configured_maximum or 0
             self._last_status = FocuserStatus(available, s.position or 0, maximum, bool(s.moving))
@@ -101,11 +112,15 @@ class OnStepFocuserAdapter(FocuserPort):
             focuser = self._focuser()
             if focuser is None:
                 return FocuserMoveResult(accepted=False, target_position=steps, start_position=0)
-            start = focuser.get_status().position or 0
+            try:
+                start = focuser.get_status().position or 0
+            except ONSTEP_OPERATION_ERRORS as exc:
+                _log.warning("OnStepFocuserAdapter: move to %s rejected: %s", steps, exc)
+                return FocuserMoveResult(accepted=False, target_position=steps, start_position=0)
             self._moving = True
             try:
                 r = focuser.move_absolute(steps)
-            except ValueError as exc:
+            except ONSTEP_OPERATION_ERRORS as exc:
                 # `FocuserMoveResult` is deliberately hardware-neutral (see
                 # its own docstring) and carries no reason field -- log it
                 # here instead, so a rejected move is at least diagnosable
@@ -128,17 +143,18 @@ class OnStepFocuserAdapter(FocuserPort):
             focuser = self._focuser()
             if focuser is None:
                 return
-            current = focuser.get_status().position or 0
-            maximum = (
-                focuser.get_status().driver_maximum or focuser.get_status().configured_maximum
-            )
-            target = current + steps
-            if maximum is not None:
-                target = max(0, min(maximum, target))
             self._moving = True
             try:
-                with contextlib.suppress(ValueError):
-                    focuser.move_absolute(target)
+                status = focuser.get_status()
+                current = status.position or 0
+                maximum = status.driver_maximum or status.configured_maximum
+                target = current + steps
+                if maximum is not None:
+                    target = max(0, min(maximum, target))
+                focuser.move_absolute(target)
+            except ONSTEP_OPERATION_ERRORS as exc:
+                # Fire-and-forget (FocuserPanel's jog, on the GUI thread): never raises.
+                _log.warning("OnStepFocuserAdapter: relative move by %s failed: %s", steps, exc)
             finally:
                 self._moving = False
 
@@ -162,4 +178,8 @@ class OnStepFocuserAdapter(FocuserPort):
         with self._connection.operation_lock:
             focuser = self._focuser()
             if focuser is not None:
-                focuser.stop()
+                try:
+                    focuser.stop()
+                except ONSTEP_OPERATION_ERRORS as exc:
+                    # FocuserPanel's Stop runs on the GUI thread: logged, never raised.
+                    _log.warning("OnStepFocuserAdapter: stop failed: %s", exc)

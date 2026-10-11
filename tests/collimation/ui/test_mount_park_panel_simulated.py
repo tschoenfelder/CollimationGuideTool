@@ -10,6 +10,8 @@ raised; the shared OnStep connection is given back and the next Connect works.
 
 from __future__ import annotations
 
+import threading
+
 import pytest
 from astrotool_core.mount.operating_mode import OperatingMode, TrackingEnforcer, TrackingGate
 from astrotool_core.onstep import OnStepConnection, OnStepMountParkAdapter
@@ -105,10 +107,16 @@ class _RaisingEnforcer(TrackingEnforcer):
     """A tracking enforcement that raises on connect (S6.4 made `enforce` fail closed for
     device errors; this is the defensive case of anything else escaping it)."""
 
-    def enforce(self, context: str, *, fresh_wait_s: float = 0.0) -> TrackingGate:
+    def enforce(
+        self,
+        context: str,
+        *,
+        fresh_wait_s: float = 0.0,
+        cancel: threading.Event | None = None,
+    ) -> TrackingGate:
         if context == "connect":
             raise RuntimeError("tracking enforcement crashed")
-        return super().enforce(context, fresh_wait_s=fresh_wait_s)
+        return super().enforce(context, fresh_wait_s=fresh_wait_s, cancel=cancel)
 
 
 class TestStartAndWaitPhases:

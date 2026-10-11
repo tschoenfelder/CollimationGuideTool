@@ -6,8 +6,10 @@ deterministic consistent-direction final approach."""
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable
 
+import pytest
 from astrotool_core.focus.fake_focuser import FakeFocuser
 from astrotool_core.focus.port import FocuserMoveResult
 from astrotool_core.timing import FakeClock
@@ -616,3 +618,120 @@ class TestMoveSettleDeadlineOnFakeTime:
         # for a later step (see the S3a report).
         assert moves_before_cancel  # the cancel landed inside a settle wait
         assert result.status is AutofocusStatus.CANCELLED
+
+
+class _LaggingFocuser(FakeFocuser):
+    """A non-blocking focuser port whose driver reports Busy only after a lag (the
+    FocuserPanel module docstring: Busy lags a move by tens of ms). `move_absolute`
+    returns at once; for `lag_polls` polls the driver still says "not moving" at the OLD
+    position, then Busy for `busy_polls` polls, then the new position, not moving."""
+
+    def __init__(self, *, lag_polls: int = 2, busy_polls: int = 2) -> None:
+        super().__init__()
+        self._lag_polls = lag_polls
+        self._busy_polls = busy_polls
+        self._target: int | None = None
+        self._polls = 0
+
+    def move_absolute(self, steps: int) -> FocuserMoveResult:
+        start = self.get_position()
+        self._target = steps
+        self._polls = 0
+        return FocuserMoveResult(accepted=True, target_position=steps, start_position=start)
+
+    def is_moving(self) -> bool:
+        if self._target is None:
+            return False
+        self._polls += 1
+        if self._polls <= self._lag_polls:
+            return False
+        if self._polls <= self._lag_polls + self._busy_polls:
+            return True
+        super().move_absolute(self._target)
+        self._target = None
+        return False
+
+
+class _StuckBusyFocuser(FakeFocuser):
+    def is_moving(self) -> bool:
+        return True
+
+
+class TestMoveSettle:
+    """S6.3 (audit T01b): "settled" means the move was seen to finish, not merely
+    "`is_moving()` is False right now"."""
+
+    def test_a_not_yet_busy_focuser_is_not_treated_as_settled(self) -> None:
+        focuser = _LaggingFocuser()
+        super(_LaggingFocuser, focuser).move_absolute(2500)
+        measured_at: list[int] = []
+
+        def measure() -> FocusSample:
+            measured_at.append(focuser.get_position())
+            value = 1.0 + 0.01 * abs(focuser.get_position() - 2000)
+            return FocusSample(value=value, confidence=1.0)
+
+        searcher = BoundedFocusSearcher(
+            focuser, higher_is_better=False, coarse_step=250, fine_step=25, clock=FakeClock()
+        )
+        result = searcher.search(measure)
+
+        assert result.status is AutofocusStatus.SUCCESS
+        assert result.best_position == 2000
+        # every sample after the start was taken at the position the searcher commanded
+        commanded = [p.position for p in result.samples]
+        assert measured_at == commanded
+
+    def test_a_blocking_port_that_already_arrived_costs_no_wait(self) -> None:
+        clock = FakeClock()
+        focuser = FakeFocuser()  # move_absolute returns once there; never reports Busy
+        focuser.move_absolute(2500)
+        searcher = BoundedFocusSearcher(
+            focuser, higher_is_better=False, coarse_step=250, fine_step=25, clock=clock
+        )
+        searcher.search(_v_curve(focuser, best_position=2000))
+        assert clock.sleeps == []
+
+    def test_cancel_ends_a_stuck_busy_settle_wait_at_once(self) -> None:
+        clock = FakeClock()
+        focuser = _StuckBusyFocuser()
+        focuser.move_absolute(2500)
+        cancelled = {"now": False}
+
+        def measure() -> FocusSample:
+            clock.call_later(0.2, lambda: cancelled.update(now=True))
+            return FocusSample(value=1.0, confidence=1.0)
+
+        searcher = BoundedFocusSearcher(
+            focuser, higher_is_better=False, coarse_step=250, fine_step=25, clock=clock
+        )
+        result = searcher.search(measure, cancel_check=lambda: cancelled["now"])
+
+        assert result.status is AutofocusStatus.CANCELLED
+        assert clock.monotonic() < 1.0  # not the 10 s move-settle timeout (twice)
+
+
+class TestMoveSettleTimeoutIsLoggedOnce:
+    def test_a_move_never_confirmed_is_logged_once_per_search(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """S6.3 review: a focuser that never reports Busy and whose position does not change
+        (the case the stricter settle waits out) must be diagnosable from application.log."""
+        clock = FakeClock()
+
+        class _SilentFocuser(FakeFocuser):
+            def move_absolute(self, steps: int) -> FocuserMoveResult:
+                return FocuserMoveResult(
+                    accepted=True, target_position=steps, start_position=self.get_position()
+                )
+
+        focuser = _SilentFocuser()
+        FakeFocuser.move_absolute(focuser, 2500)  # mid-travel: the probe moves both ways
+        searcher = BoundedFocusSearcher(
+            focuser, higher_is_better=False, coarse_step=250, fine_step=25, clock=clock
+        )
+        with caplog.at_level(logging.WARNING):
+            searcher.search(lambda: FocusSample(value=1.0, confidence=1.0))
+        warnings = [r for r in caplog.records if "not confirmed within" in r.getMessage()]
+        assert len(warnings) == 1
+        assert clock.monotonic() >= 20.0  # at least two moves each waited out the 10 s

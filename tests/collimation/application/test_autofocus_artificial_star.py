@@ -312,6 +312,43 @@ class TestExposureSettleOnFakeTime:
         assert (rig.exposure_ms, rig.gain) == (100.0, 100)
 
 
+    def test_a_stop_event_ends_the_settle_wait_at_the_stop_instant(self) -> None:
+        """S6.3: with the runner's stop event, the 0.5 s exposure settle itself is
+        interrupted -- the run ends CANCELLED at the Stop, no frame is requested after it,
+        and the original exposure is restored."""
+        import threading
+
+        focuser = FakeFocuser()
+        focuser.move_absolute(700)
+        rig = _Rig(focuser, peak_at_focus=90000.0)
+        served: list[float] = []
+        real_wait = rig.wait_for_frame
+
+        def counting_wait(reference_monotonic: float, timeout_s: float) -> FrameAcquisitionResult:
+            served.append(clock.monotonic())
+            return real_wait(reference_monotonic, timeout_s)
+
+        rig.wait_for_frame = counting_wait  # type: ignore[method-assign]
+        clock = FakeClock()
+        stop = threading.Event()
+        settle_started: list[float] = []
+        real_sleep = clock.sleep
+
+        def sleep(seconds: float, cancel: threading.Event | None = None) -> bool:
+            if seconds == 0.5 and not settle_started:
+                settle_started.append(clock.monotonic())
+                clock.call_later(0.25, stop.set)
+            return real_sleep(seconds, cancel)
+
+        clock.sleep = sleep  # type: ignore[method-assign]
+        controller = _controller(focuser, rig, exposure=True, clock=clock, settle_s=0.5)
+        result = controller.run(AutofocusMode.ARTIFICIAL_STAR, cancel_event=stop)
+
+        assert result.status is AutofocusStatus.CANCELLED
+        assert settle_started and clock.monotonic() == settle_started[0] + 0.25
+        assert max(served) <= settle_started[0]  # no frame requested after the Stop
+        assert (rig.exposure_ms, rig.gain) == (100.0, 100)
+
 def test_artificial_star_autofocus_needs_no_plate_solver() -> None:
     import collimation_tool.application.autofocus_controller as module
 

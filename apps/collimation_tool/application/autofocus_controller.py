@@ -32,6 +32,7 @@ control). No widget is read for it (the run is on a worker thread, #49).
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from enum import Enum
@@ -177,8 +178,17 @@ class AutofocusController:
         self._envelope_steps = envelope_steps
 
     def run(
-        self, mode: AutofocusMode, cancel_check: Callable[[], bool] | None = None
+        self,
+        mode: AutofocusMode,
+        cancel_check: Callable[[], bool] | None = None,
+        *,
+        cancel_event: threading.Event | None = None,
     ) -> AutofocusResult:
+        """`cancel_event` (S6.3): the caller's Stop event -- also ends the exposure settle
+        wait in progress (the run then ends CANCELLED). Without `cancel_check`, the event
+        is the cancel check too."""
+        if cancel_check is None and cancel_event is not None:
+            cancel_check = cancel_event.is_set
         # S6.7 review: a Stop also ends a long fresh-frame wait (within one wait slice).
         self._cancel_check = cancel_check
         self._set_auto_exposure_paused(True)
@@ -187,7 +197,7 @@ class AutofocusController:
         original = control.get() if control is not None else None
         attempts: list[tuple[float, int]] = [original] if original is not None else []
         tracker = StarTargetTracker(max_shift_px=self._tracker_max_shift_px)
-        override: tuple[AutofocusStatus, str] | None = None
+        override: tuple[AutofocusStatus, str | None] | None = None
         try:
             for attempt in range(self._max_exposure_attempts if control is not None else 1):
                 tracker = StarTargetTracker(max_shift_px=self._tracker_max_shift_px)
@@ -219,7 +229,10 @@ class AutofocusController:
                 # and search again with the star's peak back below full scale.
                 exposure_ms, gain = control.get()
                 control.set(exposure_ms * control.factor, gain)
-                self._clock.sleep(control.settle_s)
+                if not self._clock.sleep(control.settle_s, cancel_event):
+                    # S6.3: Stop during the settle -- nothing further is searched.
+                    override = (AutofocusStatus.CANCELLED, None)
+                    break
                 new_ms, new_gain = control.get()
                 if new_ms >= exposure_ms * 0.999:
                     override = (AutofocusStatus.NO_USABLE_EVIDENCE, "saturated_at_min_exposure")

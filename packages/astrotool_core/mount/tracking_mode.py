@@ -12,6 +12,7 @@ all three cooperate during a calibration sequence.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from enum import Enum
 
@@ -79,6 +80,7 @@ def ensure_tracking_mode(
     poll_interval_s: float = 0.05,
     clock: Clock | None = None,
     fresh_wait_s: float = 0.0,
+    cancel: threading.Event | None = None,
 ) -> TrackingVerificationResult:
     """Verifies `mount_park`'s current tracking state matches `required`,
     issuing `start_tracking()`/`stop_tracking()` and re-checking if not —
@@ -102,6 +104,10 @@ def ensure_tracking_mode(
 
     `fresh_wait_s` (S6.0c re-review R1): 0 on the GUI thread (never wait); off it, how long
     each reading may wait for a fresh one (`MountParkPort.decision_status`) before BUSY.
+
+    `cancel` (S6.3): the caller's Stop event ends the settle poll at once; the repair is then
+    judged on the last reading (unconfirmed -> REPAIR_FAILED: fail closed, never a hang). The
+    correction itself is still sent -- it is the safe state, not further motion.
     """
 
     def read() -> MountParkStatus:
@@ -134,7 +140,8 @@ def ensure_tracking_mode(
     reread = read()
     deadline = Deadline.after(settle_timeout_s, clock=source)
     while not (reread.fresh and _mode_of(reread.tracking) is required) and not deadline.expired():
-        source.sleep(poll_interval_s)
+        if not source.sleep(poll_interval_s, cancel):
+            break  # S6.3: Stop -- judge the last reading
         reread = read()
     if not reread.fresh:
         return TrackingVerificationResult(TrackingVerificationStatus.BUSY, None)

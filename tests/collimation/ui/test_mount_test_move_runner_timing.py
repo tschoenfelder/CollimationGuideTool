@@ -470,19 +470,23 @@ class TestRepark:
 
 
 class TestStopInEachWaitState:
-    """Stop (`abort()`) pressed while the worker is inside each wait. Pinned behaviour: a
-    wait already in progress runs to its end (no wait takes the stop event -- S3b is
-    behaviour-neutral; interruptible waits are S6.3's); the next step is never sent."""
+    """Stop (`abort()`) pressed while the worker is inside each wait. S6.3: every wait takes
+    the Stop event, so it ends AT the Stop instant (fake time) instead of running to its end;
+    nothing further is sent to the mount after Stop -- no unpark/stop_tracking, no further
+    pulse or retry, no re-park command (a re-park already commanded is no longer awaited).
+    Before S6.3 (S3b pins) each wait ran to its end and only the next step was skipped."""
 
     def test_stop_during_the_fresh_park_wait(self, exact_polling: None) -> None:
         clock = FakeClock()
         runner = MountTestMoveRunner(clock=clock)
         clock.call_at(0.3, runner.abort)
         mount = _StampedMount(clock)
-        outcome = _run(clock, _TimedPark(clock, fresh_from=0.5), mount, runner=runner)
+        park = _TimedPark(clock, fresh_from=0.5)
+        outcome = _run(clock, park, mount, runner=runner)
         assert outcome.error is not None and "stopped by the user" in outcome.error
         assert mount.attempted_at == []
-        assert clock.monotonic() == 0.5  # the wait ran on until the fresh reading
+        assert park.commands == []  # not even unpark
+        assert clock.monotonic() == 0.3  # the wait ended at the Stop
 
     def test_stop_during_the_unpark_confirmation_wait(self, exact_polling: None) -> None:
         clock = FakeClock()
@@ -493,6 +497,7 @@ class TestStopInEachWaitState:
         assert outcome.pulsed is False
         assert outcome.error is not None and "stopped by the user" in outcome.error
         assert mount.attempted_at == []
+        assert clock.monotonic() == 0.3
 
     def test_stop_during_the_stop_tracking_gate_delay(self) -> None:
         clock = FakeClock()
@@ -502,42 +507,55 @@ class TestStopInEachWaitState:
         outcome = _run(clock, _TimedPark(clock, parked=False), mount, runner=runner)
         assert outcome.error is not None and "stopped by the user" in outcome.error
         assert mount.attempted_at == []
-        assert clock.sleeps == [0.3]  # the gate delay itself ran to its end
+        assert clock.sleeps == [0.3]
+        assert clock.monotonic() == 0.1  # the gate delay was cut short
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=AssertionError,
-        reason="discovered (S3b): _pulse_with_retry never checks Stop, so a rejected timed "
-        "pulse is re-sent after the user pressed Stop -> S6.3/S6.6",
-    )
     def test_stop_during_a_rejection_retry_delay_sends_no_further_attempt(self) -> None:
         clock = FakeClock()
         runner = MountTestMoveRunner(clock=clock)
         clock.call_at(0.1, runner.abort)
         mount = _StampedMount(clock, reject_first_n_pulses=1)
-        _run(clock, _TimedPark(clock), mount, runner=runner)
+        outcome = _run(clock, _TimedPark(clock), mount, runner=runner)
         assert mount.attempted_at == [0.0]
+        assert outcome.pulsed is False
+        assert outcome.error is not None and "stopped by the user" in outcome.error
+        assert clock.monotonic() == 0.1
 
-    def test_stop_during_the_settle_lets_the_settle_finish(self) -> None:
+    def test_stop_during_the_settle_ends_the_settle(self) -> None:
         clock = FakeClock(auto_advance=False)
         runner = MountTestMoveRunner(clock=clock)
         runner.submit(
             _TimedPark(clock), _StampedMount(clock), *_A1P, 100, park_after=False, settle_ms=750
         )
         assert clock.wait_for_sleepers(1)
+        clock.advance(0.25)
         runner.abort()
         clock.advance(0.0)
-        assert runner.is_busy and clock.blocked_sleepers == 1  # not cut short
-        clock.advance(0.75)
         outcome = _drain(runner)
+        # Same shape as a Stop during the last move (TestCharacterizationBeforeS3b): the
+        # move itself was accepted, the settle is skipped from the Stop on.
         assert outcome.pulsed is True and outcome.error is None
-        assert outcome.settled_at == 0.75
+        assert outcome.settled_at == 0.25
 
-    def test_stop_during_the_repark_wait_still_waits_for_parked(self, exact_polling: None) -> None:
+    def test_stop_during_the_repark_wait_ends_the_wait(self, exact_polling: None) -> None:
         clock = FakeClock()
         runner = MountTestMoveRunner(clock=clock)
         clock.call_at(0.25, runner.abort)
         park = _TimedPark(clock, park_delay_s=0.5)
         outcome = _run(clock, park, _StampedMount(clock), park_after=True, runner=runner)
-        assert outcome.pulsed is True and outcome.error is None
-        assert clock.monotonic() == 0.5  # the safe state was still confirmed
+        assert outcome.pulsed is True
+        assert outcome.error is not None and "stopped by the user" in outcome.error
+        assert "re-park" in outcome.error
+        assert [name for name, _t in park.commands] == ["unpark", "park"]
+        assert clock.monotonic() == 0.25  # no longer waits for the park confirmation
+
+    def test_stop_before_the_repark_sends_no_park_command(self) -> None:
+        clock = FakeClock()
+        runner = MountTestMoveRunner(clock=clock)
+        mount = _StopDuringMove(runner)
+        mount.connect()
+        park = _TimedPark(clock)
+        outcome = _run(clock, park, mount, park_after=True, runner=runner)
+        assert outcome.pulsed is True
+        assert [name for name, _t in park.commands] == ["unpark"]
+        assert outcome.error is not None and "re-park" in outcome.error

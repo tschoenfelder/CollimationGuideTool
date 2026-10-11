@@ -7,17 +7,25 @@ AutofocusRunner, FrameAnalyzer); this mirrors their exact submit()/
 take_latest()/is_busy shape, "run at most one at a time" semantics, and
 daemon background thread -- the fifth instance of this established
 convention.
+
+S6.3 (#52 L02): the lifecycle (one run at a time, guaranteed terminal state) is
+`OperationLifecycle`'s -- an exception escaping the run used to leave `is_busy` True for
+good. A crashed run now ends as a failed outcome, reason `run_failed`, the exception in
+`detail`.
 """
 
 from __future__ import annotations
 
-import threading
 from dataclasses import dataclass
 
 from collimation_tool.application.fine_collimation_controller import (
     FineCollimationController,
     FineCollimationOutcome,
 )
+from collimation_tool.application.operation_lifecycle import OperationLifecycle
+
+#: `FineCollimationOutcome.reason` of a run that ended on an unexpected exception.
+RUN_FAILED_REASON = "run_failed"
 
 
 @dataclass(frozen=True)
@@ -25,43 +33,44 @@ class FineCollimationRunOutcome:
     outcome: FineCollimationOutcome
 
 
+def _crashed(exc: Exception) -> FineCollimationRunOutcome:
+    return FineCollimationRunOutcome(
+        outcome=FineCollimationOutcome(
+            status="failed", result=None, reason=RUN_FAILED_REASON,
+            detail=f"{type(exc).__name__}: {exc}",
+        )
+    )
+
+
 class FineCollimationRunner:
     def __init__(self) -> None:
-        self._lock = threading.Lock()
-        self._busy = False
+        self._lifecycle: OperationLifecycle[FineCollimationRunOutcome] = OperationLifecycle(
+            "fine-collimation-runner"
+        )
+        self._lock = self._lifecycle.lock
         self._latest_outcome: FineCollimationRunOutcome | None = None
-        self._cancel_requested = False
 
     def submit(self, controller: FineCollimationController) -> bool:
         """Start a fine-collimation run in the background. Returns
         False (a no-op) if one is already running -- same "explicitly
         triggered, drop rather than queue" behavior as every prior
         runner in this project."""
-        with self._lock:
-            if self._busy:
-                return False
-            self._busy = True
-            self._cancel_requested = False
-        threading.Thread(
-            target=self._run, args=(controller,), daemon=True, name="fine-collimation-runner",
-        ).start()
-        return True
+        lifecycle = self._lifecycle
+        return lifecycle.start(
+            lambda: FineCollimationRunOutcome(
+                outcome=controller.run(cancel_check=lifecycle.is_cancel_requested)
+            ),
+            on_error=_crashed,
+            publish=self._publish,
+        )
+
+    def _publish(self, outcome: FineCollimationRunOutcome) -> None:
+        self._latest_outcome = outcome  # called under self._lock
 
     def cancel(self) -> None:
         """Request cancellation of the in-flight run, if any -- a
         no-op if nothing is running."""
-        with self._lock:
-            self._cancel_requested = True
-
-    def _is_cancel_requested(self) -> bool:
-        with self._lock:
-            return self._cancel_requested
-
-    def _run(self, controller: FineCollimationController) -> None:
-        outcome = controller.run(cancel_check=self._is_cancel_requested)
-        with self._lock:
-            self._latest_outcome = FineCollimationRunOutcome(outcome=outcome)
-            self._busy = False
+        self._lifecycle.cancel()
 
     def take_latest(self) -> FineCollimationRunOutcome | None:
         """Return and clear the latest completed outcome, if any --
@@ -72,5 +81,4 @@ class FineCollimationRunner:
 
     @property
     def is_busy(self) -> bool:
-        with self._lock:
-            return self._busy
+        return self._lifecycle.is_busy

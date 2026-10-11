@@ -64,6 +64,11 @@ from collimation_tool.application.autofocus_controller import (
     ExposureControl,
 )
 from collimation_tool.application.autofocus_search import AutofocusStatus
+from collimation_tool.application.operation_lifecycle import (
+    CompletionVerdict,
+    StatusPollGuard,
+    completion_verdict,
+)
 from collimation_tool.ui.autofocus_runner import AutofocusRunner
 from collimation_tool.ui.flow_layout import FlowLayout
 
@@ -150,6 +155,8 @@ class FocuserPanel(QWidget):
         self._connection = DeviceConnectionService(
             title, focuser, wait=lambda: focuser.status(), cancel=lambda: focuser.stop()
         )
+        #: S6.3 (#52 L04): the periodic status poll never raises into Qt.
+        self._poll_guard = StatusPollGuard(title)
         # Issue #35: this panel is wired to exactly one optical train
         # today (see module docstring) -- carried through into Auto
         # Focus's own status text and diagnostic evidence so that fact
@@ -442,8 +449,22 @@ class FocuserPanel(QWidget):
         self._af_artificial_button.setChecked(selected)
 
     def _poll_status(self) -> None:
+        """One QTimer tick. S6.3 (#52 L04): never raises into Qt -- a failing status read is
+        shown, logged once per failure streak, and the move safety net keeps running."""
         if not self._connected:
             return
+        failure = self._poll_guard.run(self._poll_once)
+        if failure is not None:
+            self._status_label.setText(failure)
+            self._observe_move(busy=None)
+            self._in_button.setEnabled(False)
+            self._out_button.setEnabled(False)
+            self._auto_focus_button.setEnabled(False)
+            # Stop stays the escape hatch (real incident a4ffe048).
+            self._stop_button.setEnabled(True)
+            self._auto_focus_cancel_button.setEnabled(self._autofocus_running)
+
+    def _poll_once(self) -> None:
         status = self._focuser.status()
         if not status.available:
             self._status_label.setText("Connected — no focuser hardware detected.")
@@ -452,23 +473,26 @@ class FocuserPanel(QWidget):
             self._status_label.setText(
                 f"Position {status.position} / {status.max_position}{moving}"
             )
-        if self._move_in_flight:
-            # Same fix as FilterWheelPanel's identical gap (real-field
-            # report there): the timeout used to live in an `elif`
-            # reachable only while NOT moving, so a driver stuck reporting
-            # Busy forever could never hit it. Stop stays enabled
-            # regardless either way (see _update_move_buttons_enabled's own
-            # comment), but In/Out re-enabling now doesn't depend on the
-            # stuck state ever clearing on its own.
-            timed_out = (
-                self._move_issued_at is not None
-                and self._clock.monotonic() - self._move_issued_at > _MOVE_CONFIRMATION_TIMEOUT_S
-            )
-            if status.moving:
-                self._seen_busy_since_move = True
-            if timed_out or (not status.moving and self._seen_busy_since_move):
-                self._set_move_in_flight(False)
+        self._observe_move(busy=status.moving)
         self._update_move_buttons_enabled()
+
+    def _observe_move(self, *, busy: bool | None) -> None:
+        """The in-flight window of the last jog (S6.3: `completion_verdict`, the one rule of
+        the one-action-at-a-time panels). The safety-net timeout fires even while the driver
+        still reports Busy (3fc09ae) -- that ends THIS window (camera updates resume), but
+        In/Out stay disabled for as long as the driver itself reports Busy (see
+        `_update_move_buttons_enabled` and `_on_stop`); Stop is always the way out."""
+        if not self._move_in_flight:
+            return
+        self._seen_busy_since_move, verdict = completion_verdict(
+            busy=busy,
+            seen_busy=self._seen_busy_since_move,
+            issued_at=self._move_issued_at,
+            now=self._clock.monotonic(),
+            timeout_s=_MOVE_CONFIRMATION_TIMEOUT_S,
+        )
+        if verdict is not CompletionVerdict.PENDING:
+            self._set_move_in_flight(False)
 
     def _update_move_buttons_enabled(self) -> None:
         available = (

@@ -3,6 +3,7 @@ from collections.abc import Callable
 from pathlib import Path
 
 import numpy as np
+import pytest
 from astropy.wcs import WCS
 from astrotool_core.registration.astap_adapter import (
     AstapSolveHint,
@@ -77,7 +78,7 @@ class TestFovCalibrator:
         main = guide[15:45, 10:50].copy()
         calibrator = FovCalibrator()
         prior_a, prior_b = _priors()
-        calibrator._busy = True  # simulate an in-flight calibration
+        assert calibrator._lifecycle.try_begin()  # simulate an in-flight calibration
 
         started = calibrator.submit(main, guide, prior_a=prior_a, prior_b=prior_b)
         assert started is False
@@ -232,7 +233,7 @@ class TestSubmitStarField:
             "guide.fits": AstapSolveResult(AstapSolveStatus.SOLVED, wcs=wcs_b),
         })
         calibrator = FovCalibrator()
-        calibrator._busy = True  # simulate an in-flight calibration
+        assert calibrator._lifecycle.try_begin()  # simulate an in-flight calibration
 
         started = calibrator.submit_star_field(
             main, guide, prior_a=prior_a, prior_b=prior_b, solver=solver
@@ -326,7 +327,7 @@ class TestSubmitArtificialStar:
         main = single_star_image((120, 120), x=60.0, y=60.0, peak=5000.0, sigma=2.0)
         guide = single_star_image((400, 400), x=220.0, y=190.0, peak=5000.0, sigma=2.0)
         calibrator = FovCalibrator()
-        calibrator._busy = True  # simulate an in-flight calibration
+        assert calibrator._lifecycle.try_begin()  # simulate an in-flight calibration
 
         started = calibrator.submit_artificial_star(main, guide, prior_a=prior_a, prior_b=prior_b)
         assert started is False
@@ -380,3 +381,77 @@ class TestAutoSearchDownsample:
         outcome = calibrator.take_latest()
         assert outcome is not None
         assert outcome.result.ok
+
+
+class TestAWorkerExceptionLeavesTheCalibratorRetryable:
+    """S6.3 (#52 L02): an exception in any of the three entry points used to leave `is_busy`
+    True for good (no try/finally): "Calibrate FOV" stayed disabled until restart."""
+
+    @staticmethod
+    def _boom(*_args: object, **_kwargs: object) -> object:
+        raise RuntimeError("registrar exploded")
+
+    def _assert_failed_then_retryable(
+        self, calibrator: FovCalibrator, method: RegistrationMethod
+    ) -> None:
+        assert _wait_for(lambda: not calibrator.is_busy, timeout_s=3.0)
+        assert calibrator.latest_progress() is None
+        outcome = calibrator.take_latest()
+        assert outcome is not None
+        assert not outcome.result.ok
+        assert outcome.result.method is method
+        assert "registrar exploded" in str(outcome.result.diagnostics.get("error"))
+        main = single_star_image((120, 120), x=60.0, y=60.0, peak=5000.0, sigma=2.0)
+        guide = single_star_image((400, 400), x=220.0, y=190.0, peak=5000.0, sigma=2.0)
+        prior_a, prior_b = _priors()
+        assert calibrator.submit_artificial_star(main, guide, prior_a=prior_a, prior_b=prior_b)
+        assert _wait_for(lambda: not calibrator.is_busy)
+
+    def test_terrestrial(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        calibrator = FovCalibrator()
+        monkeypatch.setattr(calibrator._registrar, "register", self._boom)
+        prior_a, prior_b = _priors()
+        main = np.zeros((30, 40), dtype=np.float32)
+        guide = np.zeros((300, 400), dtype=np.float32)
+        assert calibrator.submit(main, guide, prior_a=prior_a, prior_b=prior_b)
+        self._assert_failed_then_retryable(calibrator, RegistrationMethod.TERRESTRIAL)
+
+    def test_star_field(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from astrotool_core.registration.star_field_registrar import StarFieldRegistrar
+
+        monkeypatch.setattr(StarFieldRegistrar, "register", self._boom)
+        calibrator = FovCalibrator()
+        prior_a, prior_b = _priors()
+        main = np.zeros((30, 40), dtype=np.float32)
+        guide = np.zeros((300, 400), dtype=np.float32)
+        assert calibrator.submit_star_field(
+            main, guide, prior_a=prior_a, prior_b=prior_b, solver=object()  # type: ignore[arg-type]
+        )
+        self._assert_failed_then_retryable(calibrator, RegistrationMethod.STAR_FIELD)
+
+    def test_artificial_star(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from astrotool_core.registration.artificial_star_registrar import (
+            ArtificialStarRegistrar,
+        )
+
+        original = ArtificialStarRegistrar.register
+        monkeypatch.setattr(ArtificialStarRegistrar, "register", self._boom)
+        calibrator = FovCalibrator()
+        prior_a, prior_b = _priors()
+        main = single_star_image((120, 120), x=60.0, y=60.0, peak=5000.0, sigma=2.0)
+        guide = single_star_image((400, 400), x=220.0, y=190.0, peak=5000.0, sigma=2.0)
+        assert calibrator.submit_artificial_star(main, guide, prior_a=prior_a, prior_b=prior_b)
+        assert _wait_for(lambda: not calibrator.is_busy, timeout_s=3.0)
+        outcome = calibrator.take_latest()
+        assert outcome is not None and not outcome.result.ok
+        assert outcome.result.method is RegistrationMethod.ARTIFICIAL_STAR
+        monkeypatch.setattr(ArtificialStarRegistrar, "register", original)
+        self._assert_failed_then_retryable_after_restore(calibrator)
+
+    @staticmethod
+    def _assert_failed_then_retryable_after_restore(calibrator: FovCalibrator) -> None:
+        main = single_star_image((120, 120), x=60.0, y=60.0, peak=5000.0, sigma=2.0)
+        guide = single_star_image((400, 400), x=220.0, y=190.0, peak=5000.0, sigma=2.0)
+        prior_a, prior_b = _priors()
+        assert calibrator.submit_artificial_star(main, guide, prior_a=prior_a, prior_b=prior_b)
+        assert _wait_for(lambda: not calibrator.is_busy)

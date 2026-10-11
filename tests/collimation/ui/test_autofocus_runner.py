@@ -71,7 +71,7 @@ class TestAutofocusRunner:
     def test_a_submit_while_busy_is_a_no_op(self) -> None:
         runner = AutofocusRunner()
         controller = _make_controller()
-        runner._busy = True  # simulate an in-flight run
+        assert runner._lifecycle.try_begin()  # simulate an in-flight run
 
         started = runner.submit(controller, AutofocusMode.STAR)
         assert started is False
@@ -105,3 +105,54 @@ class TestAutofocusRunner:
         # otherwise finish in well under a second anyway; the real
         # assertion here is just that the run actually completed cleanly.
         assert outcome.result.status in (AutofocusStatus.SUCCESS, AutofocusStatus.CANCELLED)
+
+
+class TestAWorkerExceptionLeavesTheRunnerRetryable:
+    """S6.3 (#52 L02): an exception escaping `AutofocusController.run` -- e.g. an INDI
+    TimeoutError from the focuser or a camera error -- used to leave `is_busy` True for good
+    (no try/finally in `_run`): Auto Focus and In/Out stayed disabled until restart."""
+
+    def test_the_run_ends_failed_with_the_reason_and_a_new_run_can_start(self) -> None:
+        def broken_wait(reference_monotonic: float, timeout_s: float) -> FrameAcquisitionResult:
+            raise RuntimeError("camera disconnected mid-exposure")
+
+        controller = AutofocusController(
+            FakeFocuser(),
+            get_frame=lambda: None,
+            wait_for_frame=broken_wait,
+            set_auto_exposure_paused=lambda paused: None,
+            coarse_step=100, fine_step=10,
+        )
+        runner = AutofocusRunner()
+        assert runner.submit(controller, AutofocusMode.STAR)
+        assert _wait_for(lambda: not runner.is_busy, timeout_s=3.0)
+
+        outcome = runner.take_latest()
+        assert outcome is not None
+        assert outcome.result.status.value == "error"
+        assert outcome.result.mode is AutofocusMode.STAR
+        assert outcome.result.failure_reason is not None
+        assert "camera disconnected mid-exposure" in outcome.result.failure_reason
+
+        assert runner.submit(_make_controller(), AutofocusMode.STAR)  # retryable
+        assert _wait_for(lambda: not runner.is_busy)
+        retried = runner.take_latest()
+        assert retried is not None and retried.result.status.value != "error"
+
+    def test_a_cancel_before_the_crash_does_not_hide_the_failure(self) -> None:
+        def broken_wait(reference_monotonic: float, timeout_s: float) -> FrameAcquisitionResult:
+            runner.cancel()
+            raise TimeoutError("INDI focuser did not answer")
+
+        controller = AutofocusController(
+            FakeFocuser(),
+            get_frame=lambda: None,
+            wait_for_frame=broken_wait,
+            set_auto_exposure_paused=lambda paused: None,
+            coarse_step=100, fine_step=10,
+        )
+        runner = AutofocusRunner()
+        runner.submit(controller, AutofocusMode.STAR)
+        assert _wait_for(lambda: not runner.is_busy, timeout_s=3.0)
+        outcome = runner.take_latest()
+        assert outcome is not None and outcome.result.status.value == "error"

@@ -74,7 +74,7 @@ class TestFineCollimationRunner:
 
     def test_a_submit_while_busy_is_a_no_op(self) -> None:
         runner = FineCollimationRunner()
-        runner._busy = True  # simulate an in-flight run
+        assert runner._lifecycle.try_begin()  # simulate an in-flight run
 
         started = runner.submit(_make_controller())
         assert started is False
@@ -92,3 +92,34 @@ class TestFineCollimationRunner:
         assert outcome is not None
         assert outcome.outcome.status == "failed"
         assert outcome.outcome.reason == "cancelled"
+
+
+class TestAWorkerExceptionLeavesTheRunnerRetryable:
+    """S6.3 (#52 L02): an exception escaping `FineCollimationController.run` used to leave
+    `is_busy` True for good (no try/finally in `_run`)."""
+
+    def test_the_run_ends_failed_with_the_reason_and_a_new_run_can_start(self) -> None:
+        def broken_frame() -> np.ndarray:
+            raise RuntimeError("camera disconnected mid-exposure")
+
+        controller = FineCollimationController(
+            FocusedStarAcquisition(roi_size=_ROI_SIZE),
+            get_frame=broken_frame,
+            optical_config=OpticalConfig(),
+            sample_count=4,
+        )
+        runner = FineCollimationRunner()
+        assert runner.submit(controller)
+        assert _wait_for(lambda: not runner.is_busy, timeout_s=3.0)
+
+        outcome = runner.take_latest()
+        assert outcome is not None
+        assert outcome.outcome.status == "failed"
+        assert outcome.outcome.result is None
+        assert outcome.outcome.reason == "run_failed"
+        assert outcome.outcome.detail is not None
+        assert "camera disconnected mid-exposure" in outcome.outcome.detail
+
+        assert runner.submit(_make_controller())  # retryable
+        assert _wait_for(lambda: not runner.is_busy)
+        assert runner.take_latest() is not None

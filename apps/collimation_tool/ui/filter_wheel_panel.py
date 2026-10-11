@@ -35,6 +35,12 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from collimation_tool.application.operation_lifecycle import (
+    CompletionVerdict,
+    StatusPollGuard,
+    completion_verdict,
+)
+
 _POLL_INTERVAL_MS = 250
 #: Safety net for _slot_change_in_flight -- see FocuserPanel's own
 #: _MOVE_CONFIRMATION_TIMEOUT_S docstring for the identical reasoning: never
@@ -88,6 +94,8 @@ class FilterWheelPanel(QWidget):
         self._connection = DeviceConnectionService(
             title, filter_wheel, wait=lambda: filter_wheel.status()
         )
+        #: S6.3 (#52 L04): the periodic status poll never raises into Qt.
+        self._poll_guard = StatusPollGuard(title)
         #: Issue #47: whether THIS panel commands the wheel -- decided by
         #: main_window.py from the shared config's active train, not by this
         #: panel itself. False keeps this panel exactly as #34 shipped it.
@@ -240,32 +248,56 @@ class FilterWheelPanel(QWidget):
             self._update_selector_enabled()
 
     def _poll_status(self) -> None:
+        """One QTimer tick. S6.3 (#52 L04): never raises into Qt -- a failing status read is
+        shown, logged once per failure streak, and the slot-change safety net keeps running."""
         if not self._connected:
             return
+        failure = self._poll_guard.run(self._poll_once)
+        if failure is not None:
+            self._status_label.setText(f"Filter: {failure}")
+            self._observe_slot_change(busy=None)
+            self._slot_combo.setEnabled(False)
+            self._set_button.setEnabled(False)
+
+    def _poll_once(self) -> None:
         self._refresh_combo()
         status = self._filter_wheel.status()
         if self._last_failure is None:
             self._status_label.setText(_status_text(status, self._requested_slot))
-        if self._slot_change_in_flight:
-            # Real-field report: a wheel that gets stuck reporting Busy
-            # forever (never transitions back to Ok) left the selector
-            # disabled with no way to retry -- the timeout below used to
-            # live in an `elif` reachable only while NOT moving, so it
-            # could never fire during exactly the stuck state it exists to
-            # recover from. Checked unconditionally now, same fix already
-            # shipped for FocuserPanel's identical gap (real incident
-            # a4ffe048).
-            timed_out = (
-                self._slot_change_issued_at is not None
-                and self._clock.monotonic() - self._slot_change_issued_at
-                > _SLOT_CHANGE_CONFIRMATION_TIMEOUT_S
-            )
-            if status.moving:
-                self._seen_busy_since_request = True
-            if timed_out or (not status.moving and self._seen_busy_since_request):
-                self._set_slot_change_in_flight(False)
-                self._requested_slot = None
+        rejected = (
+            self._slot_change_in_flight
+            and status.available
+            and not status.moving
+            and status.current_slot is not None
+            and status.reason is not None
+        )
+        if rejected:
+            # S6.3 (S4 finding (b)): the driver answered the request with Alert (e.g. a slot
+            # the wheel does not have) -- shown now, not after the 10 s safety net.
+            self._last_failure = status.reason
+            self._status_label.setText(_filter_text(status.reason or ""))
+            self._set_slot_change_in_flight(False)
+            self._requested_slot = None
+        self._observe_slot_change(busy=status.moving)
         self._update_selector_enabled()
+
+    def _observe_slot_change(self, *, busy: bool | None) -> None:
+        """S6.3: `completion_verdict`, the one rule of the one-action-at-a-time panels. Real-
+        field report: a wheel stuck reporting Busy forever left the selector disabled with no
+        way to retry while the timeout sat in an `elif` reachable only while NOT moving; the
+        timeout fires whatever the wheel reports (same fix as FocuserPanel, a4ffe048)."""
+        if not self._slot_change_in_flight:
+            return
+        self._seen_busy_since_request, verdict = completion_verdict(
+            busy=busy,
+            seen_busy=self._seen_busy_since_request,
+            issued_at=self._slot_change_issued_at,
+            now=self._clock.monotonic(),
+            timeout_s=_SLOT_CHANGE_CONFIRMATION_TIMEOUT_S,
+        )
+        if verdict is not CompletionVerdict.PENDING:
+            self._set_slot_change_in_flight(False)
+            self._requested_slot = None
 
     def _update_selector_enabled(self) -> None:
         available = (
