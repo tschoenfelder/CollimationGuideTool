@@ -436,6 +436,42 @@ not change · dependencies · non-goals · proof required.
 - **Proof:** every listed issue has a manifest; `prove.py --validate-all` green; an AC→test table per
   issue in the report.
 
+### S6.6a — Mount Align orchestration out of the panel (behaviour-neutral)
+
+- **Allowed files:** `apps/collimation_tool/ui/mount_test_move_panel.py` (shrinks to UI binding),
+  new modules under `apps/collimation_tool/application/` (e.g. calibration state machine, capture
+  validity / measurement, failure classification, move sizing/planning, nudge/screen-move planning — split
+  by responsibility per `docs/quality/duplication-audit.md` "mount_test_move_panel.py responsibility map";
+  no mega-controller), their new tests; existing Mount Align tests only where an import path must change.
+- **Behaviour:** none. Characterization first: every behaviour moved must be pinned by an existing or new
+  test that passes before AND after (run the whole Mount Align suite + TestMountTestMovePanel unchanged).
+- **Frozen:** all S6.0–S6.7 behaviour, messages, diagnostics keys, the public panel API used by
+  MainWindow/tests.
+- **Proof:** panel size/function metrics before/after; application modules have direct component tests that
+  don't instantiate MainWindow or the panel; manifest (#52).
+
+### S6.6b — Mount Align behaviour follow-ups (after S6.6a)
+
+Collected from the tracker: user nudge decision (return immediately, #43 check in background); M02 (one
+tracking-verification path); M05 (one artificial-star owner; `_calibration_distance_m`); duck-typed
+capability callers → `MountCapabilities`; `TrackingEnforcer`/`ensure_tracking_mode` `cancel=` wired from
+Stop; GUI-thread exposure snapshot as `exposure_hint` (reacquisition + autofocus); K01 connect handler →
+S6.2 service (remove the contract-test pin); `ONSTEP_OPERATION_ERRORS` → neutral `onstep/errors.py`
+(+ `fake_onstep_indi_client` tuple); D04 pinned test doubles; stale rate-preset texts on angular-only
+mounts; Small up/down screen move always refused on the real main camera (disable/annotate); two-axis
+screen move non-floor refusal after the first axis moved (message); timed-mount nudge preset over-move
+(~2.4×, failing regression first); simulator workflow tests location. Contract written when S6.6a lands.
+
+### S6.8 — no competing movement path (analysis first)
+
+- **Allowed:** read-only analysis report `docs/quality/movement-paths.md` (new) while S6.6a runs; fixes
+  only after S6.6a lands (separate contract).
+- **Scope:** every code path that moves the mount (RA/Dec) or focuser — Mount Align calibration/nudge/
+  screen move/abort return, reacquisition (angular + guide pulse), runner pulse/timed fallback, GuideTool
+  correction policy (dormant), M03 (`MountTestMoveRunner` turns tracking off before every move regardless
+  of mode), any raw INDI access — mapped against AGENTS.md "Mount movement boundary"; flag duplicates,
+  bypasses, and #31/#46 competing paths; recommend fixes.
+
 ### S5 — #55 + #52 duplication inventory (analysis only)
 
 - **Allowed files:** new `docs/quality/duplication-audit.md` only.
