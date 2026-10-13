@@ -313,3 +313,73 @@ class TestLegacyBehaviour:
         assert {d for _a, _dr, d in rig.mount.pulse_log} == {_SETTINGS.pulse_ms}
         assert set(rig.mount.rate_log) == {_SETTINGS.rate_preset}
         panel.stop()
+
+
+class _RateAwareRig(_PhysicsRig):
+    """Like `_PhysicsRig`, but a pulse moves the image in proportion to the rate preset it ran
+    at (`RATE_PRESET_X`; the sizing optics assume preset 6 = 20x sidereal)."""
+
+    def offset(self, key: str) -> tuple[int, int]:
+        from astrotool_core.mount.movement_sizing import RATE_PRESET_X
+
+        dx = dy = 0.0
+        for (axis, direction, duration_ms), preset in zip(
+            self.mount.pulse_log, self.mount.rate_log, strict=True
+        ):
+            scale = RATE_PRESET_X[preset or "6"] / RATE_PRESET_X["6"]
+            px_per_ms = _ARCSEC_PER_MS * scale / self.true_scale[key]
+            signed = duration_ms * px_per_ms * (1 if direction is AxisDirection.POSITIVE else -1)
+            if axis is MountAxis.AXIS1:
+                dx += signed
+            else:
+                dy += signed
+        return round(dy), round(dx)
+
+
+class TestCalibratedMovesRunAtTheCalibrationRate:
+    """S6.0 finding (6), candidate explanation for diagnostic de295656: on a timed-capable mount
+    the calibrated moves were SOLVED from a matrix measured at the calibration preset ("6",
+    20x) but EXECUTED at the nudge `rate_preset` ("7", 48x) -- a 2.4x over-move."""
+
+    def _calibrated(self) -> tuple[_RateAwareRig, MountTestMovePanel]:
+        rig = _RateAwareRig(FakeMountAdapter(), {"left": 3.0, "right": 12.0})
+        panel = _panel(rig)
+        _run(panel)
+        assert panel.calibration_for("left") is not None
+        return rig, panel
+
+    def test_a_calibrated_nudge_moves_the_requested_fraction_of_the_frame(
+        self, qapp: object
+    ) -> None:
+        rig, panel = self._calibrated()
+        before = rig.offset("left")[1]
+        logged = len(rig.mount.pulse_log)
+
+        panel._on_nudge_clicked("left", MountAxis.AXIS1, AxisDirection.POSITIVE)
+        deadline = time.monotonic() + 30.0
+        while len(rig.mount.pulse_log) == logged or panel._runner.is_busy or panel._pending:
+            assert time.monotonic() < deadline, "the nudge never ran"
+            time.sleep(0.005)
+            panel._poll()
+
+        moved = rig.offset("left")[1] - before
+        target = _SETTINGS.nudge_target_fraction * _LEFT.width_px  # 100 px
+        assert abs(moved - target) <= 0.1 * target, (moved, rig.mount.rate_log[-1])
+        assert rig.mount.rate_log[-1] == "6"  # the rate the matrix was measured at
+        panel.stop()
+
+    def test_a_screen_move_runs_at_the_calibration_rate(self, qapp: object) -> None:
+        rig, panel = self._calibrated()
+        logged = len(rig.mount.pulse_log)
+        from collimation_tool.ui.mount_test_move_panel import ScreenDirection
+
+        panel._on_screen_move_clicked("left", ScreenDirection.RIGHT)
+        deadline = time.monotonic() + 30.0
+        while panel._runner.is_busy or panel._pending is not None:
+            assert time.monotonic() < deadline, "the screen move never ran"
+            time.sleep(0.005)
+            panel._poll()
+
+        assert len(rig.mount.pulse_log) > logged
+        assert set(rig.mount.rate_log[logged:]) == {"6"}
+        panel.stop()

@@ -149,6 +149,7 @@ class AutofocusController:
         max_exposure_attempts: int = 3,
         tracker_max_shift_px: float = 40.0,
         clock: Clock | None = None,
+        exposure_hint: Callable[[], float | None] | None = None,
     ) -> None:
         #: Issue #53: every settle wait, move-completion poll and frame
         #: reference time goes through this clock (default: the real one).
@@ -163,8 +164,13 @@ class AutofocusController:
         self._focuser_label = focuser_label
         #: S6.7: one fresh-frame source per controller (a run), learning the exposure.
         self._cancel_check: Callable[[], bool] | None = None
+        #: S6.6b: `exposure_hint` = the camera exposure (s) the GUI thread snapshotted when the
+        #: run started, so even the first frame wait is scaled for a long exposure.
         self._frames = FreshFrameSource(
-            wait_for_frame, budget=fresh_frame_budget, clock=self._clock
+            wait_for_frame,
+            budget=fresh_frame_budget,
+            exposure_hint=exposure_hint,
+            clock=self._clock,
         )
         self._terrestrial_sample_count = max(1, terrestrial_sample_count)
         self._star_edge_margin_px = star_edge_margin_px

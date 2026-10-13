@@ -228,7 +228,14 @@ class TestTimedPathCharacterization:
     offers angular moves."""
 
     class _TimedAndAngularMount(MovingMount):
-        min_angular_arcsec = 30.0
+        def capabilities(self) -> MountCapabilities:
+            return MountCapabilities(
+                supports_pulse_guiding=True,
+                min_pulse_ms=1,
+                max_pulse_ms=9999,
+                supports_angular_moves=True,
+                min_angular_arcsec=30.0,
+            )
 
         def __init__(self, *args: object, **kwargs: object) -> None:
             super().__init__(*args, **kwargs)  # type: ignore[arg-type]
@@ -333,6 +340,46 @@ class _NoTimedPulseMount(MovingMount):
         return MountCapabilities(supports_pulse_guiding=False, min_pulse_ms=0, max_pulse_ms=0)
 
 
+#: S6.6b: an angular-only mount declares its moves and its 30" floor in `capabilities()` (the
+#: doubles used to set a duck-typed `min_angular_arcsec = 30.0` while reporting 0.0 there).
+_ANGULAR_ONLY_30 = MountCapabilities(
+    supports_pulse_guiding=False,
+    min_pulse_ms=0,
+    max_pulse_ms=0,
+    supports_angular_moves=True,
+    min_angular_arcsec=30.0,
+)
+
+
+class TestTheFloorIsTheReportedCapability:
+    def test_a_correction_below_the_reported_floor_is_never_sent(self) -> None:
+        """S6.6b (#55 C02): the floor reaches the policy only through `capabilities()`. Before,
+        it read a duck-typed `min_angular_arcsec` attribute (absent here -> 0") and sent a
+        2.4" move the mount would refuse."""
+        calibration = make_calibration()
+        sent: list[float] = []
+
+        class _CapabilityOnlyMount(_NoTimedPulseMount):
+            def capabilities(self) -> MountCapabilities:
+                return _ANGULAR_ONLY_30
+
+            def move_angular(
+                self, axis: MountAxis, direction: AxisDirection, arcsec: float
+            ) -> CommandResult:
+                sent.append(arcsec)
+                return CommandResult(accepted=True)
+
+        mount = _CapabilityOnlyMount(calibration, start=(2.0, 0.0))
+        policy = CollimationRecenterPolicy(
+            mount, calibration, RecenterConfig(settle_ms=0, fine_tolerance_px=0.5)
+        )
+
+        result = policy.center(lambda: _locked(mount), reference=(0.0, 0.0))
+
+        assert sent == []
+        assert result.reason == "below_mount_minimum_move", result
+
+
 class TestAngularPathWithoutAUsableMotion:
     def test_a_mount_with_neither_timed_nor_angular_moves_is_refused_unsent(self) -> None:
         calibration = make_calibration()
@@ -360,7 +407,8 @@ class TestAngularPathWithoutAUsableMotion:
         sent: list[float] = []
 
         class _AngularMount(_NoTimedPulseMount):
-            min_angular_arcsec = 30.0
+            def capabilities(self) -> MountCapabilities:
+                return _ANGULAR_ONLY_30
 
             def move_angular(
                 self, axis: MountAxis, direction: AxisDirection, arcsec: float
@@ -401,7 +449,8 @@ class TestBelowTheFloorOnSkewedAxes:
         sent: list[float] = []
 
         class _AngularMount(_NoTimedPulseMount):
-            min_angular_arcsec = 30.0
+            def capabilities(self) -> MountCapabilities:
+                return _ANGULAR_ONLY_30
 
             def move_angular(
                 self, axis: MountAxis, direction: AxisDirection, arcsec: float

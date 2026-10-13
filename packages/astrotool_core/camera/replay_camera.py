@@ -20,6 +20,7 @@ from astrotool_core.camera.capabilities import (
     ConversionGain,
 )
 from astrotool_core.camera.port import CameraPort, CaptureAbortedError
+from astrotool_core.config import camera_settings
 from astrotool_core.frames.frame import Frame
 from astrotool_core.testing.replay_dataset import discover_fits_paths
 
@@ -64,7 +65,7 @@ class ReplayCamera(CameraPort):
         self._black_level = 0
         self._conversion_gain = ConversionGain.LCG
         self._cooling_enabled = False
-        self._target_temperature_c = -10.0
+        self._target_temperature_c = camera_settings.DEFAULT_TARGET_TEMPERATURE_C
         # Defaults to the module-level replay capabilities unless a test
         # needs to simulate a specific real camera's sensor size (e.g. for
         # FOV-overlay geometry tests) — see collimation_tool's

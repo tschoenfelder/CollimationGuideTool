@@ -237,6 +237,11 @@ issue's own "DISPLAY FRAME may be motion-contaminated, MEASUREMENT FRAME
 must not be" distinction asks for. The existing RA+/RA-/Dec+/Dec- nudge
 buttons keep their current measure-and-report behavior unchanged -- this
 is a new, additional control, not a replacement.
+
+S6.6b (USER DECISION 2026-10-10): the RA/Dec nudge is a positioning action too -- it is sent
+at once (no BEFORE capture) and returns as soon as the move completes; issue #43's no-motion
+check runs afterwards in the background (`_start_nudge_check`) against the last verified
+at-rest reference and only adds a warning when nothing moved.
 """
 
 from __future__ import annotations
@@ -246,6 +251,7 @@ import threading
 import traceback
 from collections import deque
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 import numpy as np
@@ -256,7 +262,6 @@ from astrotool_core.acquisition import (
 )
 from astrotool_core.config import MountAlignmentSettings
 from astrotool_core.mount import (
-    MOUNT_BUSY_REASON,
     WORKER_DECISION_FRESH_WAIT_S,
     AxisDirection,
     AxisResponse,
@@ -265,14 +270,13 @@ from astrotool_core.mount import (
     MountParkPort,
     MountPort,
     TrackingMode,
-    TrackingVerificationStatus,
-    ensure_tracking_mode,
 )
 from astrotool_core.mount.movement_sizing import (
     CameraGeometry,
 )
 from astrotool_core.mount.operating_mode import OperatingMode, TrackingEnforcer
-from astrotool_core.timing import SYSTEM_CLOCK, Clock
+from astrotool_core.session import DeviceConnectionService
+from astrotool_core.timing import SYSTEM_CLOCK, Clock, Deadline
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import (
     QButtonGroup,
@@ -293,6 +297,7 @@ from collimation_tool.application.mount_align_capture import (
     evaluate_capture,
     frame_acquisition_result,
     fresh_frame_timeout_s,
+    observed_tracking_failure,
     reusable_reference,
     verified_capture_timeout_s,
 )
@@ -317,6 +322,7 @@ from collimation_tool.application.mount_align_messages import (
     describe_capture_failures,
     missing_label,
     no_motion_text,
+    partial_move_text,
     response_dict,
 )
 from collimation_tool.application.mount_align_motion import (
@@ -328,30 +334,30 @@ from collimation_tool.application.mount_align_plan import (
     CalibrationStep,
     CalibrationStepRole,
     MovementSize,
-    NudgeMove,
     PendingAction,
     ScreenDirection,
     step_label,
 )
 from collimation_tool.application.mount_align_positioning import (
     cap_text,
-    evaluate_nudge,
+    check_nudge_motion,
+    execution_rate_preset,
     nudge_cap_arcsec,
+    nudge_tracking_warning,
     plan_nudge,
     plan_screen_move,
+    screen_move_floor_refusals,
     uncalibrated_nudge_arcsec,
 )
 from collimation_tool.application.mount_align_sizing import (
     CalibrationSizing,
     angular_unit_rate,
     min_angular_arcsec,
+    mount_is_angular_only,
     mount_supports_angular,
 )
 from collimation_tool.ui.flow_layout import FlowLayout
-from collimation_tool.ui.mount_test_move_runner import (
-    MountTestMoveRunner,
-    supports_timed_pulse,
-)
+from collimation_tool.ui.mount_test_move_runner import MountTestMoveRunner
 
 #: S6.6a: these value types moved to `collimation_tool.application.mount_align_*`; they stay
 #: importable from here (the panel's public API used by MainWindow and the tests).
@@ -477,7 +483,16 @@ class MountTestMovePanel(QWidget):
         self._calibration_distance_m = calibration_distance_m
         #: Issue #44/#48: the app-wide tracking policy AND the single owner of the operating
         #: mode -- Mount Align's measurement strategy and tracking need derive from its mode.
-        self._tracking_enforcer = tracking_enforcer
+        #: S6.6b (M02): every tracking check goes through an enforcer -- a standalone panel (no
+        #: app-wide policy wired) gets its own, fixed to the legacy default (astronomical, star
+        #: measurement) with no settle wait, exactly the direct check it used to make.
+        self._tracking_enforcer: TrackingEnforcer = (
+            tracking_enforcer
+            if tracking_enforcer is not None
+            else TrackingEnforcer(
+                mount_park, OperatingMode.ASTRONOMICAL, settle_timeout_s=0.0, clock=self._clock
+            )
+        )
         self._mount_park = mount_park
         self._get_left_frame = get_left_frame
         self._get_right_frame = get_right_frame
@@ -525,11 +540,10 @@ class MountTestMovePanel(QWidget):
         self._set_right_auto_exposure_paused = set_right_auto_exposure_paused or (lambda _: None)
         self._settings = settings if settings is not None else MountAlignmentSettings()
         self._runner = runner if runner is not None else MountTestMoveRunner()
-        self._connected = False
-        #: See FocuserPanel's identical field for the reasoning -- a caught
-        #: connect() failure otherwise only ever lived in the status
-        #: label's transient text, invisible to a manual diagnostic capture.
-        self._last_connect_error: str | None = None
+        #: #52 K01 (S6.6b): the connect/disconnect lifecycle and its failure reporting (wording,
+        #: the one log record, `last_connect_error` for diagnostics) have one owner, the S6.2
+        #: `DeviceConnectionService` -- this panel no longer keeps its own copy.
+        self._connection = DeviceConnectionService(title, mount)
         self._pending: PendingAction | None = None
         self._calibration_queue: list[CalibrationStep] = []
         #: Issue #42: the exact availability message currently owned by the
@@ -545,6 +559,10 @@ class MountTestMovePanel(QWidget):
         #: Issue #49: the capture currently running on a worker thread (threaded mode), the
         #: generation counter that lets Stop discard a stale result, and the recovery evidence.
         self._capture_job: CaptureJob | None = None
+        #: S6.6b: the background #43 no-motion check after a nudge (never holds the panel
+        #: busy; a new move, Stop or a mode change abandons it).
+        self._nudge_check_job: CaptureJob | None = None
+        self._nudge_rate_preset: str | None = None
         self._capture_generation = 0
         self._last_internal_error: str | None = None
         self._last_cleanup_ok: bool | None = None
@@ -558,6 +576,9 @@ class MountTestMovePanel(QWidget):
         #: `mount_align_calibration.CalibrationResults`.
         self._results = CalibrationResults()
         self._calibration: dict[str, CalibrationMatrix] = {}
+        #: S6.6b: the rate preset the stored matrices were measured at -- calibrated manual
+        #: moves run at it (`mount_align_positioning.execution_rate_preset`).
+        self._calibration_rate_preset_used: str | None = self._settings.rate_preset
         self._last_responses: dict[str, AxisResponse] | None = None
         self._last_error: str | None = None
         #: True between _abort_calibration() submitting a stranded return
@@ -695,6 +716,13 @@ class MountTestMovePanel(QWidget):
             self._size_buttons[size] = button
             size_row.addWidget(button)
         self._size_buttons[MovementSize.SMALL].setChecked(True)  # conservative default
+        #: S6.6b: per camera, the screen directions the mount's smallest angular move forbids at
+        #: the selected size -> the reason (button disabled, reason as its tooltip).
+        self._screen_move_refusals: dict[str, dict[ScreenDirection, str]] = {}
+        self._screen_frame_shapes: dict[str, tuple[int, int]] = {}
+        self._size_group.buttonToggled.connect(
+            lambda _button, checked: self._on_move_size_changed() if checked else None
+        )
 
         self._screen_move_buttons: dict[str, dict[ScreenDirection, QPushButton]] = {}
         main_screen_row = self._build_screen_move_pad("left")
@@ -774,38 +802,41 @@ class MountTestMovePanel(QWidget):
         self._screen_move_buttons[camera_key] = buttons
         return row
 
+    @property
+    def _connected(self) -> bool:
+        return self._connection.connected
+
+    @property
+    def _last_connect_error(self) -> str | None:
+        return self._connection.last_connect_error
+
     def _on_toggle_connect(self, checked: bool) -> None:
         if checked:
-            try:
-                self._mount.connect()
-            except Exception as exc:  # noqa: BLE001 -- any failure must be shown, never swallowed
-                self._last_connect_error = str(exc)
-                _log.warning("MountTestMovePanel: connect failed: %s", exc)
-                self._status_label.setText(f"Connect failed — {exc}")
+            failure = self._connection.connect()
+            if failure is not None:
+                self._status_label.setText(failure.status_text)
+                # blockSignals: resetting the button must not re-enter this handler with
+                # checked=False, which would overwrite the reason with "Not connected.".
                 self._connect_button.blockSignals(True)
                 self._connect_button.setChecked(False)
                 self._connect_button.blockSignals(False)
                 self._update_buttons_enabled()
                 return
-            self._last_connect_error = None
-            self._connected = True
             self._connect_button.setText("Disconnect")
             self._status_label.setText("Connected.")
             self._timer.start()
         else:
             self._timer.stop()
-            self._mount.disconnect()
-            self._connected = False
+            failures = self._connection.disconnect()
             self._connect_button.setText("Connect")
-            self._status_label.setText("Not connected.")
+            self._status_label.setText(failures[-1].status_text if failures else "Not connected.")
         self._update_buttons_enabled()
 
     def _operating_mode(self) -> OperatingMode:
         """Issue #48: the global mode's single owner (the TrackingEnforcer), read live -- no
         copy that could go stale. Without one (a standalone panel: no app-wide policy wired)
         the fixed legacy default, star measurement; never a user-selectable local state."""
-        enforcer = self._tracking_enforcer
-        return enforcer.mode if enforcer is not None else OperatingMode.ASTRONOMICAL
+        return self._tracking_enforcer.mode
 
     def _target_mode(self) -> TargetMode:
         """The measurement strategy the global mode selects: whole-frame cross-correlation
@@ -824,6 +855,9 @@ class MountTestMovePanel(QWidget):
         move still running was measured under the previous mode (strategy and tracking) and is
         stopped rather than finished with mixed evidence."""
         self._show_measurement_mode()
+        self._cancel_nudge_check()  # measured under the previous mode's strategy
+        self._refresh_screen_move_limits()  # the planner's measurement mode changed
+        self._update_buttons_enabled()
         running = (
             bool(self._calibration_queue)
             or self._pending is not None
@@ -849,43 +883,39 @@ class MountTestMovePanel(QWidget):
         otherwise add deliberate continuous image motion on top of
         whatever the calibration pulse itself produces). Issue #48: the
         tracking policy decides it from the global mode alone."""
-        enforcer = self._tracking_enforcer
-        if enforcer is not None:
-            return enforcer.measurement_tracking()
-        return TrackingMode.OFF if self._target_mode() == "terrestrial" else TrackingMode.ON
+        return self._tracking_enforcer.measurement_tracking()
 
     def _tracking_failure_message(
-        self, required: TrackingMode, mode: TargetMode, *, fresh_wait_s: float = 0.0
+        self,
+        required: TrackingMode,
+        mode: TargetMode,
+        *,
+        fresh_wait_s: float = 0.0,
+        cancel: threading.Event | None = None,
     ) -> str | None:
         """Verifies (and, if needed, repairs) the mount's tracking state against `required` --
         None if OK, else a human-readable failure message. Side-effect free with respect to the
         panel (issue #49: it runs on the capture worker thread); callers that record failure
         classes do so themselves (`_verify_tracking_mode`, `_apply_capture`). `fresh_wait_s`:
         0 on the GUI thread; the capture worker passes `WORKER_DECISION_FRESH_WAIT_S` (S6.0c
-        re-review R1: a momentary GUI poll on the shared connection is not "mount busy")."""
-        enforcer = self._tracking_enforcer
+        re-review R1: a momentary GUI poll on the shared connection is not "mount busy").
+
+        S6.6b (M02): ONE verification path, the enforcer (`cancel`: the capture job's Stop
+        event, which ends a repair's settle poll at once). A park mount that freshly reads
+        unavailable is a failed precondition here -- Mount Align moves the mount, so "no
+        tracking to enforce" (the enforcer's answer for other workflows) is not a pass."""
         status = self._mount_park.status()
-        # S6.0c: a busy mount (no fresh reading) is not "no mount" -- the enforcer denies it.
-        if enforcer is not None and (status.available or not status.fresh):
-            gate = enforcer.verify(required, "mount_align", fresh_wait_s=fresh_wait_s)
-            if gate.allowed:
-                return None
+        if not status.available and status.fresh:
             return (
-                f"mount tracking must be {required.value} for {mode} "
-                f"calibration -- {gate.reason}"
+                f"mount tracking must be {required.value} for {mode} calibration "
+                "(currently unavailable, unavailable)"
             )
-        result = ensure_tracking_mode(self._mount_park, required, fresh_wait_s=fresh_wait_s)
-        if result.ok:
-            return None
-        if result.status is TrackingVerificationStatus.BUSY:
-            return f"mount tracking must be {required.value} for {mode} calibration -- " + (
-                MOUNT_BUSY_REASON
-            )
-        observed = result.observed_mode.value if result.observed_mode is not None else "unavailable"
-        return (
-            f"mount tracking must be {required.value} for {mode} calibration "
-            f"(currently {observed}, {result.status.value})"
+        gate = self._tracking_enforcer.verify(
+            required, "mount_align", fresh_wait_s=fresh_wait_s, cancel=cancel
         )
+        if gate.allowed:
+            return None
+        return f"mount tracking must be {required.value} for {mode} calibration -- {gate.reason}"
 
     def _verify_tracking_mode(self) -> str | None:
         """Verifies (and, if needed, repairs) the mount's tracking state against
@@ -1027,15 +1057,21 @@ class MountTestMovePanel(QWidget):
         cancelled: Callable[[], bool] | None = None,
         *,
         fresh_wait_s: float = 0.0,
+        cancel: threading.Event | None = None,
     ) -> CaptureResult:
         """The slow part -- `mount_align_capture.capture_blocking` over this panel's current
         ports. Touches no widget and mutates no panel state, so it is safe on a worker thread
         (which passes a `fresh_wait_s`, see `_tracking_failure_message`)."""
+        def tracking_failure(required: TrackingMode, mode: TargetMode) -> str | None:
+            if not request.repair_tracking:  # S6.6b (C1): the nudge check never commands
+                return self._observed_tracking_failure(required, mode, fresh_wait_s, cancel)
+            return self._tracking_failure_message(
+                required, mode, fresh_wait_s=fresh_wait_s, cancel=cancel
+            )
+
         return capture_blocking(
             request,
-            tracking_failure=lambda required, mode: self._tracking_failure_message(
-                required, mode, fresh_wait_s=fresh_wait_s
-            ),
+            tracking_failure=tracking_failure,
             get_left_frame=self._get_left_frame,
             get_right_frame=self._get_right_frame,
             wait_for_left_frame=self._wait_for_left_frame,
@@ -1044,6 +1080,24 @@ class MountTestMovePanel(QWidget):
             clock=self._clock,
             cancelled=cancelled,
         )
+
+    def _observed_tracking_failure(
+        self,
+        required: TrackingMode,
+        mode: TargetMode,
+        fresh_wait_s: float,
+        cancel: threading.Event | None,
+    ) -> str | None:
+        """S6.6b (review C1): READ-ONLY tracking check for the background nudge check (see
+        `mount_align_capture.observed_tracking_failure`): it waits at most `fresh_wait_s` for a
+        fresh reading (injected clock, Stop-cancellable) and never sends start/stop_tracking."""
+        deadline = Deadline.after(fresh_wait_s, clock=self._clock)
+        while True:
+            status = self._mount_park.status()
+            if status.fresh or deadline.expired():
+                return observed_tracking_failure(status, required, mode)
+            if not self._clock.sleep(0.05, cancel):
+                return observed_tracking_failure(status, required, mode)
 
     def _apply_capture(self, result: CaptureResult) -> dict[str, Measurement] | None:
         """GUI thread: store the bookkeeping the capture leaves behind (failure classes,
@@ -1109,7 +1163,10 @@ class MountTestMovePanel(QWidget):
     def _run_capture_job(self, job: CaptureJob) -> None:
         try:
             job.result = self._capture_blocking(
-                job.request, job.cancel.is_set, fresh_wait_s=WORKER_DECISION_FRESH_WAIT_S
+                job.request,
+                job.cancel.is_set,
+                fresh_wait_s=WORKER_DECISION_FRESH_WAIT_S,
+                cancel=job.cancel,  # S6.6b: Stop also ends a tracking repair's settle poll
             )
         except BaseException as exc:  # noqa: BLE001 -- reported on the GUI thread by _poll
             job.error = exc
@@ -1151,6 +1208,7 @@ class MountTestMovePanel(QWidget):
     def _cancel_activity(self) -> None:
         """Drop whatever this panel has in flight (queue, pending step, capture job) and let go
         of the cameras' auto-exposure -- the shared reset behind Stop and `_fail_safe`."""
+        self._cancel_nudge_check()
         self._calibration_queue = []
         self._pending = None
         self._awaiting_stranded_return = False
@@ -1194,6 +1252,7 @@ class MountTestMovePanel(QWidget):
             "threaded_captures": self._threaded_captures,
             "capture_in_flight": job is not None,
             "capture_label": job.label if job is not None else None,
+            "nudge_check_in_flight": self._nudge_check_job is not None,
             "capture_elapsed_s": (
                 (self._clock.monotonic() - job.started_at) if job is not None else 0.0
             ),
@@ -1279,6 +1338,7 @@ class MountTestMovePanel(QWidget):
             raise
 
     def _begin_calibration(self) -> None:
+        self._cancel_nudge_check()  # S6.6b: a move follows -- an open check would span it
         self._calibration_queue = list(CALIBRATION_STEPS)
         self._results.reset()
         self._sizing.reset_net()
@@ -1613,7 +1673,9 @@ class MountTestMovePanel(QWidget):
         return is_no_motion(response, measurement)
 
     def _no_motion_text(self, duration_ms: int) -> str:
-        return no_motion_text(duration_ms, self._sizing.rate_preset)
+        # S6.6b: an angular-only run commands angles -- no rate preset to name.
+        angular = self._sizing.format_size(duration_ms) if self._sizing.angular_only else None
+        return no_motion_text(duration_ms, self._sizing.rate_preset, angular_size=angular)
 
     def _exclude_camera_no_motion(self, key: str, duration_ms: int) -> None:
         self._calibration_failed_cameras.add(key)
@@ -1656,9 +1718,9 @@ class MountTestMovePanel(QWidget):
         return mount_supports_angular(self._mount)
 
     def _mount_is_angular_only(self) -> bool:
-        """S6.0: angular moves exist but timed pulses do not (the adapter's own reported
-        capability -- see `supports_timed_pulse`, the single authoritative reader)."""
-        return self._mount_supports_angular() and not supports_timed_pulse(self._mount)
+        """S6.0: angular moves exist but timed pulses do not (S6.6b: both from the adapter's own
+        reported `MountCapabilities` -- `mount_align_sizing.mount_is_angular_only`)."""
+        return mount_is_angular_only(self._mount)
 
     def _angular_unit_rate(self) -> float:
         """Angular-only mounts: arcsec per second of 'equivalent duration' (see
@@ -1695,10 +1757,17 @@ class MountTestMovePanel(QWidget):
     ) -> None:
         self._calibration_failed_cameras.add(key)
         self._last_failure_classes[key] = failure
+        policy = self._sizing.policy
         self._sizing.bounded[key] = bounded_text(
             failure,
             max_pulse_ms=self._settings.max_calibration_pulse_ms,
             rate_preset=self._sizing.rate_preset,
+            # S6.6b: an angular-only run names its largest move as an angle, not a preset.
+            angular_max=(
+                self._sizing.format_size(policy.max_duration_ms)
+                if self._sizing.angular_only and policy is not None
+                else None
+            ),
         )
         self._sizing.log.append({"event": "bounded", "camera": key, "reason": reason})
 
@@ -1707,6 +1776,9 @@ class MountTestMovePanel(QWidget):
         degenerate/no-motion cameras explained -- real report 0270868c)."""
         verdict = self._results.verdict(self._sizing.bounded)
         self._calibration = verdict.matrices
+        self._calibration_rate_preset_used = self._sizing.rate_preset
+        self._screen_frame_shapes = {}  # re-read: the camera may have changed since
+        self._refresh_screen_move_limits()
         self._last_failure_classes.update(verdict.failure_classes)
         # None (no error banner) as long as *some* camera ended up with a
         # usable matrix -- a fully independent per-camera outcome now,
@@ -1739,6 +1811,14 @@ class MountTestMovePanel(QWidget):
             raise
 
     def _begin_nudge(self, camera_key: str, axis: MountAxis, direction: AxisDirection) -> None:
+        """USER DECISION (2026-10-10, S6.6b) + AGENTS.md "Manual movement versus measurement": a
+        RA/Dec nudge is a positioning action. It is sized up front and sent AT ONCE -- no
+        BEFORE capture -- and returns as soon as the mount move completes (`_finish_nudge`).
+        Issue #43's no-motion check then runs in the background on fresh, stability-verified
+        frames and only ADDS a warning when nothing moved (`_finish_nudge_check`). Its BEFORE
+        is the last verified at-rest reference when one is still valid (the runner accepted
+        no move since it was taken); without one the move is not checked (said so), and its
+        AFTER capture becomes the reference for the next nudge."""
         # Sized completely before anything is sent -- `mount_align_positioning.plan_nudge`
         # (uncalibrated: the fixed calibration step size; calibrated: the clicked direction's
         # own measured rate, half a frame, clamped to the safety cap; S6.0 angular-only).
@@ -1764,55 +1844,35 @@ class MountTestMovePanel(QWidget):
             return
         move = plan.move
         mode = self._target_mode()
-        self._last_failure_classes = {}
-        # Paused across the whole before-pulse-after bracket, resumed
-        # immediately after the "after" capture in _finish_nudge (or on
-        # any early-exit path below) -- see the constructor's own
-        # docstring and real incident ca728d27.
-        self._pause_auto_exposure()
-        # Issue #43: DISPLAY frame != MEASUREMENT frame. The nudge's BEFORE is either (a) the
-        # last stability-VERIFIED at-rest reference, provably still valid because the runner
-        # has accepted no sequence since (so repeated nudges stay instant), or (b) a fresh
-        # verified capture (a single wait after any other movement / on the first nudge).
-        # Never the latest displayed frame.
+        # Issue #43: DISPLAY frame != MEASUREMENT frame -- the check's BEFORE is only ever the
+        # last stability-VERIFIED at-rest reference (taken before this move is submitted).
         reference = self._reusable_reference(mode)
-        if reference is not None:
-            self._after_nudge_before_capture(move, mode, reference)
-            return
-        self._request_capture(
-            mode,
-            label="nudge_before",
-            after_monotonic=self._last_pulse_completed_at,
-            then=lambda before: self._after_nudge_before_capture(move, mode, before),
-        )
-
-    def _after_nudge_before_capture(
-        self, move: NudgeMove, mode: TargetMode, before: dict[str, Measurement] | None
-    ) -> None:
-        if not before:
-            self._resume_auto_exposure()
-            self._last_error = self._capture_failure_message(
-                f"{self._missing_label(mode)} before pulsing"
-            )
-            self._result_label.setText(f"Move failed: {self._last_error}")
-            return
+        self._cancel_nudge_check()  # a new move: an older check's AFTER would be mid-motion
+        rate_preset = self._move_rate_preset(calibrated=move.camera_key in self._calibration)
         started = submit_axis_move(
             self._runner, self._mount_park, self._mount,
             move.axis, move.direction, move.duration_ms, move.arcsec,
-            rate_preset=self._settings.rate_preset, settle_ms=self._settings.settle_ms,
+            rate_preset=rate_preset,
+            settle_ms=self._settings.settle_ms,
         )
         if not started:
-            self._resume_auto_exposure()
             return  # a move is already running
+        self._last_failure_classes = {}
+        # Paused from the move through the background check's AFTER capture (real incident
+        # ca728d27: a gain change between BEFORE and AFTER broke the comparison); resumed when
+        # the check ends, is abandoned, or the move fails.
+        self._pause_auto_exposure()
         self._pending = PendingAction(
             kind="nudge",
-            before=before,
+            before=reference or {},
             mode=mode,
             duration_ms=move.duration_ms,
             clamped=move.clamped,
             axis=move.axis,
             direction=move.direction,
+            label=CAMERA_LABELS[move.camera_key],
         )
+        self._nudge_rate_preset = rate_preset
         suffix = (
             f" (safety-capped at {self._cap_text(move.arcsec is not None)} -- "
             "click again to continue)"
@@ -1834,6 +1894,8 @@ class MountTestMovePanel(QWidget):
         pulse_error: str | None,
         completed_at: float,
     ) -> None:
+        """The move completed: the nudge returns NOW (controls are free again); the #43
+        no-motion check is started in the background (`_start_nudge_check`)."""
         if not pulsed:
             self._resume_auto_exposure()
             self._last_error = pulse_error or "pulse failed"
@@ -1845,45 +1907,129 @@ class MountTestMovePanel(QWidget):
         self._last_movement_context = CommandedMovementContext(
             movement_type=pending.kind,
             duration_ms=pending.duration_ms,
-            rate_preset=self._settings.rate_preset,
+            rate_preset=self._nudge_rate_preset,
             axis=pending.axis.name,
             direction=pending.direction.name,
             minimum_settle_ms=self._settings.frame_settle_ms,
         )
-        self._request_capture(
-            pending.mode,
-            label="nudge_after",
-            after_monotonic=completed_at,
-            then=lambda after: self._after_nudge_after_capture(pending, after),
+        axis_label = AXIS_LABELS[pending.axis]
+        direction_label = "+" if pending.direction is AxisDirection.POSITIVE else "-"
+        suffix = (
+            f" (safety-capped at {self._cap_text(self._mount_is_angular_only())} -- "
+            "click again to continue toward the target)"
+            if pending.clamped
+            else ""
+        )
+        done = f"{pending.label} {axis_label} {direction_label} — done.{suffix}"
+        self._last_error = None  # a completed move must not keep an earlier move's error
+        self._result_label.setText(done)
+        self._start_nudge_check(pending, completed_at, done)
+
+    # ---- S6.6b: issue #43's no-motion check, after the nudge has returned -----------------
+    def _start_nudge_check(self, pending: PendingAction, completed_at: float, done: str) -> None:
+        """Capture fresh, stability-verified AFTER frames (the shared fresh-frame-after-motion
+        rule) and compare them with the nudge's verified BEFORE. Inline (default) it runs here;
+        threaded it runs on a worker and `_poll` applies it -- either way it never holds the
+        panel busy: it is not `_capture_job`, and a new move abandons it."""
+        request = replace(
+            self._snapshot_capture_request(pending.mode, "nudge_after", completed_at, True),
+            repair_tracking=False,  # S6.6b (C1): verify only -- a newer move may overtake it
         )
 
-    def _after_nudge_after_capture(
-        self, pending: PendingAction, after: dict[str, Measurement] | None
+        def then(after: dict[str, Measurement] | None) -> None:
+            self._finish_nudge_check(pending, done, after)
+
+        if not self._threaded_captures:
+            then(self._apply_capture(self._capture_blocking(request)))
+            return
+        self._capture_generation += 1
+        job = CaptureJob(
+            self._capture_generation, "nudge_after", request, then, self._clock.monotonic()
+        )
+        self._nudge_check_job = job
+        threading.Thread(
+            target=self._run_capture_job, args=(job,), daemon=True, name="mount-align-nudge-check"
+        ).start()
+
+    def _poll_nudge_check(self) -> None:
+        job = self._nudge_check_job
+        if job is None or not job.done.is_set():
+            return
+        self._nudge_check_job = None
+        if job.error is not None:
+            _log.error("Mount Align nudge check worker failed", exc_info=job.error)
+            self._resume_auto_exposure()
+            return  # a check only ever adds a warning; the move itself already completed
+        assert job.result is not None
+        job.then(self._apply_capture(job.result))
+
+    def _cancel_nudge_check(self) -> None:
+        """A newer move / Stop / mode change: the running check would measure across it."""
+        job = self._nudge_check_job
+        if job is not None:
+            job.cancel.set()  # the abandoned worker only READS frames; its result is discarded
+            self._nudge_check_job = None
+            self._resume_auto_exposure()
+
+    def _finish_nudge_check(
+        self, pending: PendingAction, done: str, after: dict[str, Measurement] | None
     ) -> None:
         self._resume_auto_exposure()
         assert pending.axis is not None and pending.direction is not None
         axis, direction = pending.axis, pending.direction
-        if not after:
-            self._last_error = self._capture_failure_message(
-                f"{self._missing_label(pending.mode)} after the move"
-            )
-            self._result_label.setText(f"Move failed: {self._last_error}")
-            return
-        # Per-camera confirmation -- `mount_align_positioning.evaluate_nudge`: the move itself
-        # already happened; an unconfirmed camera never withholds another camera's reading.
-        outcome = evaluate_nudge(
+        check = check_nudge_motion(
             pending.before,
             after,
             lambda before, after_: self._build_response(
                 pending.mode, axis, direction, pending.duration_ms, before, after_
             ),
-            clamped=pending.clamped,
-            cap_text=lambda: self._cap_text(self._mount_is_angular_only()),
+            missing=lambda: self._capture_failure_message(
+                f"{self._missing_label(pending.mode)} after the move"
+            ),
         )
-        self._last_failure_classes.update(outcome.failure_classes)
-        self._last_responses = outcome.responses or self._last_responses
-        self._last_error = outcome.error
-        self._result_label.setText(outcome.text)
+        self._last_failure_classes.update(check.failure_classes)
+        self._last_responses = check.responses or self._last_responses
+        if self._last_tracking_error is not None:
+            # S6.6b (review C2): the check could not measure because of the mount's tracking
+            # state (#44) -- a warning the operator and the diagnostics must see.
+            warning = nudge_tracking_warning(self._last_tracking_error)
+            self._last_error = warning
+            self._result_label.setText(f"{done} {warning}")
+            return
+        if check.warning is not None:
+            self._last_error = check.warning
+        self._result_label.setText(f"{done}{check.note}")
+
+    def _move_rate_preset(self, *, calibrated: bool) -> str | None:
+        return execution_rate_preset(
+            self._settings, self._calibration_rate_preset_used, calibrated=calibrated
+        )
+
+    def _on_move_size_changed(self) -> None:
+        self._refresh_screen_move_limits()
+        self._update_buttons_enabled()
+
+    def _refresh_screen_move_limits(self) -> None:
+        """S6.6b (S6.0 re-review b): which screen moves the mount's smallest angular move can
+        never make at the selected size -- decided by `mount_align_positioning.
+        screen_move_floor_refusals` (the same planner the click uses); the panel only binds the
+        result (disabled button, reason as tooltip). The frame size comes from the verified
+        frames the calibration measured on, never from the display getter (issue #43)."""
+        for label, frame in self._last_diagnostic_frames.items():
+            key = label.rsplit("_", 1)[-1]
+            if key in self._calibration and key not in self._screen_frame_shapes:
+                self._screen_frame_shapes[key] = (int(frame.shape[0]), int(frame.shape[1]))
+        self._screen_move_refusals = screen_move_floor_refusals(
+            settings=self._settings,
+            matrices=self._calibration,
+            frame_shapes=self._screen_frame_shapes,
+            directions=[direction for _label, direction in _SCREEN_MOVE_BUTTONS],
+            fraction=self._screen_move_fraction(),
+            size_label=self._screen_move_size().value.capitalize(),
+            mode=self._target_mode(),
+            angular_only=self._mount_is_angular_only(),
+            floor_arcsec=self._min_angular_arcsec(),
+        )
 
     def _screen_move_size(self) -> MovementSize:
         for size, button in self._size_buttons.items():
@@ -1936,9 +2082,11 @@ class MountTestMovePanel(QWidget):
             if plan.skipped
             else ""
         )
+        self._cancel_nudge_check()  # S6.6b: an open nudge check would span this move
         started = submit_motion_sequence(
             self._runner, self._mount_park, self._mount, plan.motion,
-            rate_preset=self._settings.rate_preset, settle_ms=self._settings.settle_ms,
+            rate_preset=self._move_rate_preset(calibrated=True),
+            settle_ms=self._settings.settle_ms,
         )
         if not started:
             return  # a move is already running
@@ -1947,6 +2095,7 @@ class MountTestMovePanel(QWidget):
         label = f"{CAMERA_LABELS[camera_key]} {screen_direction.name.lower()} ({size_label})"
         self._pending = PendingAction(
             kind="screen_move", before={}, mode=self._target_mode(), label=label, clamped=clamped,
+            motion_axes=tuple(step[0] for step in plan.motion),
         )
         suffix = f" (safety-capped at {self._cap_text(angular)}/step)" if clamped else ""
         self._result_label.setText(f"Moving {label}…{suffix}{skipped_note}")
@@ -1959,13 +2108,18 @@ class MountTestMovePanel(QWidget):
         pulsed: bool,
         pulse_error: str | None,
         completed_at: float,
+        attempted: int = 0,
     ) -> None:
         """Issue #31 Phase E: no "after" capture here -- see
         `_on_screen_move_clicked`'s own docstring. The pulse itself
         already ran regardless of anything below; there is no
-        measurement to confirm or fail."""
+        measurement to confirm or fail. S6.6b: `attempted` = how many of the sequence's
+        steps were sent -- a refusal after an earlier axis moved says so."""
         if not pulsed:
-            self._last_error = pulse_error or "pulse failed"
+            error = pulse_error or "pulse failed"
+            self._last_error = (
+                partial_move_text(pending.motion_axes, attempted, error) or error
+            )
             self._result_label.setText(f"Move failed: {self._last_error}")
             return
         self._last_pulse_completed_at = completed_at
@@ -2029,6 +2183,7 @@ class MountTestMovePanel(QWidget):
             raise
 
     def _poll_inner(self) -> None:
+        self._poll_nudge_check()
         job = self._capture_job
         if job is not None:
             self._poll_capture_job(job)
@@ -2071,7 +2226,7 @@ class MountTestMovePanel(QWidget):
                 else:
                     self._finish_screen_move(
                         pending, pulsed=outcome.pulsed, pulse_error=outcome.error,
-                        completed_at=completed_at,
+                        completed_at=completed_at, attempted=len(outcome.motion_paths),
                     )
             elif self._awaiting_stranded_return:
                 # The fire-and-forget return pulse _abort_calibration()
@@ -2139,8 +2294,11 @@ class MountTestMovePanel(QWidget):
         # the RA/Dec pad's own docstring, just with a real prerequisite
         # this time instead of none.
         for camera_key, screen_buttons in self._screen_move_buttons.items():
-            for button in screen_buttons.values():
-                button.setEnabled(ready and camera_key in self._calibration)
+            refusals = self._screen_move_refusals.get(camera_key, {})
+            for direction, button in screen_buttons.items():
+                refusal = refusals.get(direction)
+                button.setEnabled(ready and camera_key in self._calibration and refusal is None)
+                button.setToolTip(refusal or "")
 
         # Explain *why* the calibration/nudge buttons are disabled, rather
         # than leaving them silently unresponsive -- see module docstring's
@@ -2254,13 +2412,12 @@ class MountTestMovePanel(QWidget):
     def stop(self) -> None:
         """Stop polling and disconnect. Safe to call whether or not connected."""
         self._timer.stop()
+        self._cancel_nudge_check()
         job = self._capture_job
         if job is not None:
             job.cancel.set()
             self._capture_job = None
-        if self._connected:
-            self._mount.disconnect()
-            self._connected = False
+        self._connection.disconnect()  # a no-op when not connected; never raises (K03)
         # Defensive -- if the window closes mid-calibration/nudge, don't
         # leave the (independently-lived) CameraPanels' auto-exposure
         # paused forever for whatever streaming happens after this panel

@@ -20,6 +20,7 @@ import threading
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from typing import Any
 
 import numpy as np
 import pytest
@@ -891,3 +892,70 @@ class TestBusyIsShownAsBusy:
         with TestTrackingDecisionsWhileTheMountIsBusy()._connection_held(rig):
             park_panel._enforce_tracking("unpark")
         assert MOUNT_BUSY_REASON in park_panel._policy_suffix(False)
+
+
+class TestManualMoveTextsOnAnAngularOnlyMount:
+    """S6.6b: what Mount Align says about manual moves on the production (angular-only)
+    adapter -- the S6.0 re-review leftovers (b) and (c)."""
+
+    def test_a_screen_move_the_floor_forbids_is_disabled_and_says_why(self, qapp: object) -> None:
+        """5% of a 195" frame (10") is below the mount's 30" floor: the Small RIGHT button is
+        disabled up front with the reason as its tooltip -- not a click that always fails."""
+        rig = _Rig((_main(195.0), _GUIDE), rot_deg=10.0)
+        panel = _calibrated(rig)
+
+        panel._size_buttons[MovementSize.SMALL].setChecked(True)
+        button = panel._screen_move_buttons["left"][ScreenDirection.RIGHT]
+        assert not button.isEnabled()
+        assert "smallest" in button.toolTip()
+
+        panel._size_buttons[MovementSize.LARGE].setChecked(True)  # 59": possible
+        assert button.isEnabled()
+        assert button.toolTip() == ""
+        panel.stop()
+
+    def test_a_two_axis_move_whose_second_axis_is_refused_says_the_first_one_moved(
+        self, qapp: object, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        rig = _Rig((_main(283.0), _GUIDE), rot_deg=45.0)
+        panel = _calibrated(rig)
+        real = rig.mount.move_angular
+        calls: list[MountAxis] = []
+
+        def second_refused(axis: MountAxis, direction: AxisDirection, arcsec: float) -> Any:  # noqa: ANN401
+            calls.append(axis)
+            if len(calls) == 2:
+                from astrotool_core.mount import CommandResult
+
+                return CommandResult(False, "hard limit reached")
+            return real(axis, direction, arcsec)
+
+        monkeypatch.setattr(rig.mount, "move_angular", second_refused)
+        panel._size_buttons[MovementSize.LARGE].setChecked(True)
+        panel._on_screen_move_clicked("left", ScreenDirection.RIGHT)
+        _drain(panel)
+
+        assert len(calls) == 2, calls
+        text = panel._result_label.text()
+        moved, refused = (
+            ("RA", "Dec") if calls[0] is MountAxis.AXIS1 else ("Dec", "RA")
+        )
+        assert f"{moved} moved; {refused} refused: " in text, text
+        assert "hard limit reached" in text
+        panel.stop()
+
+    def test_a_camera_that_saw_no_motion_is_explained_without_a_rate_preset(
+        self, qapp: object
+    ) -> None:
+        """S6.0 finding (5): the exclusion texts named 'preset None' on a mount that only moves
+        by angle -- there is no rate preset there; the commanded angle is named instead."""
+        rig = _Rig()
+        rig.scale["right"] = 1e6  # the Guide image does not move at all
+        panel = rig.panel()
+        panel._run_calibration_button.click()
+        _drain(panel)
+
+        text = panel._result_label.text()
+        assert "did not move" in text or "envelope" in text, text
+        assert "preset" not in text.lower(), text
+        panel.stop()

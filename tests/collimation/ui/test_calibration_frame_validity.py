@@ -465,15 +465,26 @@ class TestNoMotionIsExplicit:
     def test_a_nudge_that_moved_nothing_is_not_a_confirmed_displacement(
         self, qapp: object, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """USER DECISION (2026-10-10, S6.6b): the nudge returns as soon as the move completes and
+        #43's check runs afterwards on fresh, verified frames -- a move that produced no image
+        motion is still detected and reported, now as a WARNING added to the completed move
+        (never a confirmed displacement). The check's BEFORE is the verified at-rest
+        reference, so the first nudge establishes it and the second is checked."""
         rig = _Rig(FakeMountAdapter(), px_per_ms={"left": 0.0, "right": 0.0})
         _Spy(monkeypatch)
         panel = _panel(rig)
+        panel._on_nudge_clicked("left", MountAxis.AXIS1, AxisDirection.POSITIVE)
+        _drive(panel)  # no verified at-rest view before it: not checked, says so
+        assert "no-motion check skipped" in panel._result_label.text()
 
         panel._on_nudge_clicked("left", MountAxis.AXIS1, AxisDirection.POSITIVE)
         _drive(panel)
 
         assert panel._last_failure_classes["left"] is MeasurementFailureClass.NO_MOTION_DETECTED
-        assert "not confirmed" in panel._result_label.text().lower()
+        text = panel._result_label.text()
+        assert "done" in text  # the move itself completed
+        assert "no image motion measured on Main" in text
+        assert panel._last_responses is None  # never a confirmed displacement
         panel.stop()
 
     def test_sized_calibration_grows_the_move_before_declaring_no_motion(

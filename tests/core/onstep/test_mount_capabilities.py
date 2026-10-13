@@ -6,7 +6,7 @@ floor reached callers only through a duck-typed `min_angular_arcsec` property
 (`getattr(mount, "min_angular_arcsec", 0.0)` in the Mount Align panel and the
 reacquisition policy) and the ceiling not at all; "can this mount move by angle"
 was inferred from three `hasattr` probes. `MountCapabilities` now carries all three;
-`min_angular_arcsec` stays as a deprecated alias of the capability.
+the deprecated `min_angular_arcsec` alias was removed in S6.6b (no caller left).
 
 (The S6.0c held-over `MountStatus.fresh` flag is tested with the threaded adapter tests,
 `test_onstep_adapters.py::TestHeldOverMountStatusIsMarked`.)
@@ -46,9 +46,10 @@ class TestOnStepReportsItsAngularBounds:
             float(MIN_AXIS_MOVE_ARCSEC),
         )
 
-    def test_the_deprecated_alias_returns_the_capability(self) -> None:
-        mount = _connected_onstep()
-        assert mount.min_angular_arcsec == mount.capabilities().min_angular_arcsec
+    def test_the_deprecated_alias_is_gone(self) -> None:
+        """S6.6b: no duck-typed caller is left, so the S6.5 alias was removed -- the floor is
+        read from `capabilities()` only."""
+        assert not hasattr(_connected_onstep(), "min_angular_arcsec")
 
     @pytest.mark.parametrize("axis", [MountAxis.AXIS1, MountAxis.AXIS2])
     def test_move_angular_accepts_exactly_the_reported_range(self, axis: MountAxis) -> None:

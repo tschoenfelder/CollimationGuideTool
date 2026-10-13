@@ -1,4 +1,5 @@
 import json
+import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
@@ -3295,6 +3296,7 @@ class _FakeTimeMountTestMovePanel(MountTestMovePanel):
         cancelled: Callable[[], bool] | None = None,
         *,
         fresh_wait_s: float = 0.0,
+        cancel: threading.Event | None = None,
     ) -> _CaptureResult:
         waiters = (self._wait_for_left_frame, self._wait_for_right_frame)
 
@@ -4716,6 +4718,8 @@ class TestMountTestMovePanel:
         # duration fallback) even with no matrix for "right" at all.
         assert panel._nudge_buttons["right"]["RA +"].isEnabled()
 
+        # S6.6b: the nudge's no-motion check compares against the verified at-rest reference.
+        panel._capture_both("terrestrial", diagnostic_label="reference")
         panel._nudge_buttons["left"]["RA +"].click()
         # Real incident ca728d27 -- paused across the before/after bracket
         # of a nudge too, same as calibration (see the dedicated
@@ -4784,14 +4788,13 @@ class TestMountTestMovePanel:
         assert "Move failed" not in panel._result_label.text()
         window.close()
 
-    def test_nudge_before_is_a_verified_capture_never_the_latest_displayed_frame(
+    def test_nudge_check_is_a_verified_capture_never_the_latest_displayed_frame(
         self, qapp: object
     ) -> None:
-        """Issue #43 (supersedes the earlier "decouple the pulse from the frame wait" shortcut):
-        DISPLAY frame != MEASUREMENT frame. A nudge's BEFORE used to be the instant latest cached
-        frame -- unverified, possibly stale or mid-motion, yet it became measurement evidence.
-        It must go through the stability-verified, exposure-start-aware wait (referenced to the
-        last pulse's completion) before the pulse fires."""
+        """Issue #43: DISPLAY frame != MEASUREMENT frame. USER DECISION (2026-10-10, S6.6b): the
+        nudge is sent at once (no BEFORE wait); the no-motion check afterwards goes through the
+        stability-verified, exposure-start-aware wait referenced to THIS move's completion,
+        and the displayed frame is never consulted as evidence."""
         wait_calls: list[float] = []
         displayed_calls = 0
 
@@ -4815,24 +4818,26 @@ class TestMountTestMovePanel:
             wait_for_left_frame=wait,
             wait_for_right_frame=wait,
         )
-        panel._connected = True  # _poll() itself is a no-op otherwise
+        panel._connection.connect()  # _poll() itself is a no-op otherwise
         completed = time.monotonic()
         panel._last_pulse_completed_at = completed
 
         panel._on_nudge_clicked("left", MountAxis.AXIS1, AxisDirection.POSITIVE)
 
-        # BEFORE went through the verified wait (3-sample window, both cameras), referenced to
-        # the previous pulse's completion (+ the frame-settle allowance), and the displayed
-        # frame was never consulted as measurement evidence.
-        assert len(wait_calls) >= 6
-        assert wait_calls[0] >= completed
-        assert displayed_calls == 0
+        assert wait_calls == []  # the move is sent at once -- no BEFORE wait
         deadline = time.monotonic() + 5.0
         while panel._runner.is_busy:
             assert time.monotonic() < deadline, "nudge never completed"
             time.sleep(0.01)
+        moved_at = time.monotonic()
         panel._poll()
-        assert pulse_mount.pulse_log  # ... and then the pulse fired
+        assert pulse_mount.pulse_log
+        # The check's AFTER went through the verified wait (3-sample window, both cameras),
+        # referenced to this move's completion; the displayed frame was never consulted.
+        assert len(wait_calls) >= 6
+        assert min(wait_calls) >= completed
+        assert max(wait_calls) <= moved_at + 60.0
+        assert displayed_calls == 0
 
     def test_nudge_target_scales_with_this_cameras_own_frame_size(self, qapp: object) -> None:
         """Real request: nudges should move "half a window" for rough
@@ -5036,6 +5041,9 @@ class TestMountTestMovePanel:
             base, [((0, 0), (0, 6))]
         )
 
+        # S6.6b: the nudge's check compares against the verified at-rest reference -- take it
+        # (Main's flat frames never stabilize, so only Guide's is verified).
+        panel._capture_both("terrestrial", diagnostic_label="reference")
         panel._nudge_buttons["left"]["RA +"].click()
         deadline = time.monotonic() + 5.0
         while panel._runner.is_busy:
@@ -5046,9 +5054,8 @@ class TestMountTestMovePanel:
         # The pulse ran regardless -- not refused, not rolled back.
         assert pulse_mount.pulse_log != []
         assert "Move failed" not in panel._result_label.text()
-        lines = {
-            line.split(":", 1)[0]: line for line in panel._result_label.text().split(" | ")
-        }
+        checked = panel._result_label.text().split("done.", 1)[1]  # the S6.6b check's note
+        lines = {line.strip().split(":", 1)[0]: line for line in checked.split(" | ")}
         assert "displacement not confirmed" in lines["Main"]
         assert "dx=" in lines["Guide"] and "dy=" in lines["Guide"]
         assert panel.diagnostic_context()["last_failure_classes"] == {"left": "image_not_stable"}
@@ -5300,9 +5307,13 @@ class TestTrackingMode:
         assert pulse_mount.pulse_log == []  # never actually pulsed
         panel.stop()
 
-    def test_nudge_refuses_before_any_pulse_when_tracking_cannot_be_established(
+    def test_a_nudge_moves_and_its_check_reports_tracking_that_cannot_be_established(
         self, qapp: object
     ) -> None:
+        """USER DECISION (2026-10-10, S6.6b): a nudge is a positioning action like a screen move
+        -- no measurement precondition gates it any more (it used to be refused here by its
+        BEFORE capture's tracking check). The tracking problem is still reported: the
+        background #43 check cannot measure and says why."""
         pulse_mount = FakeMountAdapter()
         mount_park = _StubbornMountPark(start_parked=False)
         panel = _static_frame_panel(mount_park, pulse_mount=pulse_mount)
@@ -5322,10 +5333,22 @@ class TestTrackingMode:
         )
         panel._update_buttons_enabled()
 
+        panel._connection.connect()  # _poll() is a no-op otherwise
         panel._on_nudge_clicked("left", MountAxis.AXIS1, AxisDirection.POSITIVE)
+        deadline = time.monotonic() + 10.0
+        while panel._runner.is_busy or panel._pending is not None:
+            assert time.monotonic() < deadline, "nudge never completed"
+            time.sleep(0.01)
+            panel._poll()
 
-        assert "tracking" in panel._result_label.text().lower()
-        assert pulse_mount.pulse_log == []
+        assert pulse_mount.pulse_log  # the move itself ran
+        text = panel._result_label.text()
+        assert "done" in text
+        # Review C2: a warning in nudge wording, recorded for diagnostics too
+        assert panel._last_error is not None
+        assert panel._last_error.startswith("WARNING: the no-motion check after this nudge")
+        assert "tracking" in panel._last_error and "calibration" not in panel._last_error
+        assert panel._last_error in text
         panel.stop()
 
     def test_tracking_is_reverified_after_a_commanded_pulse(self, qapp: object) -> None:
@@ -5358,7 +5381,7 @@ class TestTrackingMode:
             return real_submit(*args, **kwargs)  # type: ignore[arg-type]
 
         panel._runner.submit = submit_and_flip_tracking  # type: ignore[method-assign]
-        panel._connected = True  # _poll() itself is a no-op otherwise
+        panel._connection.connect()  # _poll() itself is a no-op otherwise
 
         panel._on_run_calibration_clicked()
         deadline = time.monotonic() + 5.0

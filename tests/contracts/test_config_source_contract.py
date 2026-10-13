@@ -41,13 +41,8 @@ _OWNERS = frozenset(
 
 #: (module, literal) -> why it may stay. Keep this short.
 _ALLOWED: dict[tuple[str, object], str] = {
-    # D09 (audit: superficial): a test double mirroring a full OnStepAdapter
-    # IndiRuntimeConfig. S6.0d was changing this file while S6.1 ran, so it was
-    # left alone; tracker item "S6.1 follow-up: fake_onstep_indi_client.py adopts
-    # device_defaults after S6.0d lands" (docs/restructuring-tasks.md). Delete
-    # both entries then -- test_every_exception_is_still_needed enforces it.
-    ("packages/astrotool_core/testing/fake_onstep_indi_client.py", "127.0.0.1"): "D09 test double",
-    ("packages/astrotool_core/testing/fake_onstep_indi_client.py", 7624): "D09 test double",
+    # Empty since S6.6b: D09's two pins (fake_onstep_indi_client.py's host/port) are gone --
+    # the test double reads config.device_defaults like every other consumer.
 }
 
 _PORT = 7624
@@ -237,13 +232,9 @@ def f():
 
 _COOLING_OWNER = "packages/astrotool_core/config/camera_settings.py"
 
-#: module -> why it may still re-state the default. Each is a CameraPort test double /
-#: demo camera outside S6.5's allowed files; migrate them to the owner, then delete.
-_COOLING_ALLOWED: dict[str, str] = {
-    "packages/astrotool_core/camera/fake_camera.py": "demo camera; follow-up (S6.5 record)",
-    "packages/astrotool_core/camera/replay_camera.py": "replay camera; follow-up (S6.5 record)",
-    "packages/astrotool_core/testing/fake_touptek.py": "test double; follow-up (S6.5 record)",
-}
+#: module -> why it may still re-state the default. Empty since S6.6b: the three CameraPort
+#: test doubles / demo cameras pinned here by S6.5 now read the owner.
+_COOLING_ALLOWED: dict[str, str] = {}
 
 
 def cooling_default_lines(source: str, owned: float) -> list[int]:

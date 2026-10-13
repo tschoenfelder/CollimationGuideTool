@@ -48,7 +48,8 @@ nothing (`connected=False`). That is for display only, and marked so
 Angular bounds (S6.5, #55 C02): `capabilities()` reports `supports_angular_moves` and
 OnStepAdapter's own `IndiAxisMover` bound as `min_angular_arcsec`/`max_angular_arcsec`
 (single source: `onstep_adapter.indi_axis_motion`); `move_angular` refuses outside exactly
-that range. The `min_angular_arcsec` property is a deprecated alias for duck-typed callers.
+that range (S6.6b: the former duck-typed `min_angular_arcsec` alias is gone -- every caller
+reads the capability).
 
 Guide pulses while tracking (S6.0d, #39). OnStepAdapter 0.5.0 (published 2026-10-06, pinned
 since S6.0e; line numbers below are the published wheel's) adds
@@ -95,6 +96,7 @@ from astrotool_core.mount.port import (
     MountStatus,
 )
 from astrotool_core.onstep.connection import OnStepConnection
+from astrotool_core.onstep.errors import ONSTEP_OPERATION_ERRORS
 
 #: OnStepAdapter's own `IndiAxisMover` bound (30"..10 degrees), taken from OnStepAdapter
 #: itself (single source). Reported to callers as `MountCapabilities.min_angular_arcsec` /
@@ -103,19 +105,6 @@ MIN_AXIS_ARCSEC = float(MIN_AXIS_MOVE_ARCSEC)
 _MAX_AXIS_ARCSEC = float(MAX_AXIS_MOVE_DEG) * 3600.0
 
 _log = logging.getLogger(__name__)
-
-#: #52 K02 (S6.3): THE set of exceptions an OnStep operation through OnStepAdapter may raise
-#: for a device-side reason -- every OnStep shim (`OnStepFocuserAdapter` too) turns exactly
-#: these into a result/refusal; anything else (a TypeError, AttributeError...) is a bug and
-#: propagates. OSError covers ConnectionError/TimeoutError and a raw socket error;
-#: KeyError is OnStepAdapter's reply missing a field (e.g. 'UTC'). The connect path is
-#: deliberately broader (`OnStepConnection.acquire` closes on ANY failure, S6.2).
-ONSTEP_OPERATION_ERRORS: tuple[type[Exception], ...] = (
-    OSError,
-    RuntimeError,
-    ValueError,
-    KeyError,
-)
 
 #: Every refusal caused by Stop starts with this (the runner and panel report it as-is).
 _STOPPED = "stopped by the user"
@@ -335,13 +324,6 @@ class OnStepMountPulseAdapter:
             self._cancel.clear()
 
     # ---- AngularMotionPort ------------------------------------------------
-    @property
-    def min_angular_arcsec(self) -> float:
-        """Deprecated alias (S6.5) of `capabilities().min_angular_arcsec`: the smallest
-        `move_angular` size OnStepAdapter accepts. Kept for the duck-typed callers
-        (`getattr(mount, "min_angular_arcsec", 0.0)`) until they read the capability."""
-        return self.capabilities().min_angular_arcsec
-
     def installed_rate(self, axis: MountAxis, direction: AxisDirection) -> float | None:
         return self._rates.get((axis, direction))
 

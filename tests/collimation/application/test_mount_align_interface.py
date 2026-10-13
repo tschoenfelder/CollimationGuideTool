@@ -14,7 +14,7 @@ from collimation_tool.application.mount_align_failures import MeasurementFailure
 from collimation_tool.application.mount_align_interface import mount_interface_state
 from collimation_tool.application.mount_align_messages import calibration_progress_text
 from collimation_tool.application.mount_align_plan import CALIBRATION_STEPS, step_label
-from collimation_tool.application.mount_align_positioning import evaluate_nudge
+from collimation_tool.application.mount_align_positioning import check_nudge_motion
 from collimation_tool.application.mount_align_sizing import CalibrationSizing
 
 pytestmark = pytest.mark.unit
@@ -70,40 +70,47 @@ def _response(dx: float) -> AxisResponse:
     return AxisResponse(A1, POS, 500, dx, 0.0, dx / 500)
 
 
-def test_a_nudge_confirms_each_camera_independently() -> None:
+def test_a_nudge_check_confirms_each_camera_independently() -> None:
     before = {"left": (0.0, 0.0), "right": (0.0, 0.0)}
     results = {"left": _response(10.0), "right": None}
-    outcome = evaluate_nudge(
+    check = check_nudge_motion(
         before,
         {"left": (10.0, 0.0), "right": (0.0, 0.0)},
         lambda b, a: results["left" if a == (10.0, 0.0) else "right"],
-        clamped=False,
-        cap_text=lambda: pytest.fail("no cap text without a clamp"),
+        missing=lambda: pytest.fail("frames were there"),
     )
-    assert set(outcome.responses) == {"left"}
-    assert outcome.failure_classes == {"right": MeasurementFailureClass.MATCH_FAILED}
-    assert outcome.error == (
-        "could not confirm the displacement for: right -- the move itself still happened"
-    )
-    assert outcome.text == (
-        "Main: dx=+10.0px dy=+0.0px (10.0px @ 0°) | Guide: moved, displacement not confirmed"
+    assert set(check.responses) == {"left"}
+    assert check.failure_classes == {"right": MeasurementFailureClass.MATCH_FAILED}
+    assert check.warning is None  # an unconfirmed camera is not "nothing moved"
+    assert check.note == (
+        " Main: dx=+10.0px dy=+0.0px (10.0px @ 0°) | Guide: displacement not confirmed"
     )
 
 
-def test_a_nudge_without_motion_or_frame_is_unconfirmed_and_a_clamp_is_noted() -> None:
-    outcome = evaluate_nudge(
+def test_a_nudge_check_warns_only_when_nothing_moved() -> None:
+    """Issue #43 after the user decision: no motion is still detected and reported -- as a
+    warning added after the move, never as a confirmed displacement."""
+    check = check_nudge_motion(
         {"left": (0.0, 0.0)},
         {"left": (0.2, 0.0), "right": (1.0, 1.0)},
         lambda b, a: _response(0.2),
-        clamped=True,
-        cap_text=lambda: "2000ms",
+        missing=lambda: pytest.fail("frames were there"),
     )
-    assert outcome.responses == {}
-    assert outcome.failure_classes == {"left": MeasurementFailureClass.NO_MOTION_DETECTED}
-    assert outcome.text == (
-        "Main: moved, displacement not confirmed | Guide: moved, displacement not confirmed"
-        " (safety-capped at 2000ms -- click again to continue toward the target)"
+    assert check.responses == {}
+    assert check.failure_classes == {"left": MeasurementFailureClass.NO_MOTION_DETECTED}
+    assert check.warning is not None and "no image motion measured on Main" in check.warning
+    assert check.note == f" {check.warning} | Guide: displacement not confirmed"
+
+
+def test_a_nudge_check_without_a_reference_or_frames_says_so() -> None:
+    skipped = check_nudge_motion({}, {"left": (0.0, 0.0)}, lambda b, a: None, missing=str)
+    assert (skipped.warning, skipped.failure_classes) == (None, {})
+    assert "no verified at-rest view" in skipped.note
+    failed = check_nudge_motion(
+        {"left": (0.0, 0.0)}, None, lambda b, a: None, missing=lambda: "no frame after the move"
     )
+    assert failed.warning is None
+    assert failed.note == " (no-motion check not possible: no frame after the move)"
 
 
 def test_an_aborted_run_is_returned_in_capped_chunks() -> None:

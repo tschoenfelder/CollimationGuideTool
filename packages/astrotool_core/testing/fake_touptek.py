@@ -19,6 +19,7 @@ from astrotool_core.camera.capabilities import (
     ConversionGain,
 )
 from astrotool_core.camera.port import CameraPort, CaptureAbortedError
+from astrotool_core.config import camera_settings
 from astrotool_core.frames.frame import Frame
 
 _FAKE_TOUPTEK_CAPABILITIES = CameraCapabilities(
@@ -80,7 +81,7 @@ class FakeTouptekCamera(CameraPort):
         self._black_level = 0
         self._conversion_gain = ConversionGain.LCG
         self._cooling_enabled = False
-        self._target_temperature_c = -10.0
+        self._target_temperature_c = camera_settings.DEFAULT_TARGET_TEMPERATURE_C
         self._capture_delay_s = capture_delay_s
         self._abort = threading.Event()
 

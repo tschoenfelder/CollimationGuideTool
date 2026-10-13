@@ -201,6 +201,9 @@ _CALIBRATION_POLL_INTERVAL_MS = 200
 #: S6.0c review P-a: how often a pending Terrestrial re-enforce looks for the end of a busy
 #: period (a non-blocking check; same cadence class as the mount park status poll).
 _TRACKING_REENFORCE_POLL_MS = 500
+#: S6.6b: how often the GUI thread refreshes the Guide exposure snapshot for reacquisition.
+_EXPOSURE_SNAPSHOT_POLL_MS = 500
+
 #: User decision A (2026-10-06): shown when an artificial-star choice switched the mode.
 _ARTIFICIAL_STAR_SWITCHED_NOTE = "Artificial star is a fixed target — switched to Terrestrial mode"
 #: ... and when Astronomical mode returned the target to a natural star.
@@ -454,10 +457,10 @@ class MainWindow(QMainWindow):
         self._artificial_star_mode_button = QPushButton("Artificial Star")
         self._artificial_star_mode_button.setCheckable(True)
         self._registration_mode_group.addButton(self._artificial_star_mode_button)
-        # User decision A: an artificial star implies Terrestrial mode.
-        self._artificial_star_mode_button.toggled.connect(
-            lambda checked: self._require_terrestrial_for_artificial_star() if checked else None
-        )
+        # S6.6b (M05): choosing this matcher means the target IS an artificial star -- recorded
+        # in the one owner (`CollimationTargetMode`), which then applies user decision A
+        # (Terrestrial) in `_on_target_mode_changed`.
+        self._artificial_star_mode_button.toggled.connect(self._on_artificial_star_registration)
         self._calibrate_fov_button = QPushButton("Calibrate FOV")
         self._calibrate_fov_button.clicked.connect(self._on_calibrate_fov)
         # Off by default — the base action is still the one-shot
@@ -537,6 +540,14 @@ class MainWindow(QMainWindow):
         # measurement gate, connect/unpark check) is owed until a fresh reading exists. Each
         # tick is a no-op unless one is pending (no mount read), never waits, and the
         # re-enforce itself runs once.
+        #: S6.6b: the Guide exposure as last read on the GUI thread (see
+        #: `_snapshot_guide_exposure`), refreshed by its own timer.
+        self._guide_exposure_snapshot_s: float | None = None
+        self._snapshot_guide_exposure()
+        self._exposure_snapshot_timer = QTimer(self)
+        self._exposure_snapshot_timer.setInterval(_EXPOSURE_SNAPSHOT_POLL_MS)
+        self._exposure_snapshot_timer.timeout.connect(self._snapshot_guide_exposure)
+        self._exposure_snapshot_timer.start()
         self._tracking_reenforce_timer = QTimer(self)
         self._tracking_reenforce_timer.setInterval(_TRACKING_REENFORCE_POLL_MS)
         self._tracking_reenforce_timer.timeout.connect(self._retry_pending_tracking_enforcement)
@@ -664,7 +675,7 @@ class MainWindow(QMainWindow):
         artificial star ~30 m."""
         if mode == "star":
             return None
-        return 30.0 if self._artificial_star_mode_button.isChecked() else 10_000.0
+        return 30.0 if self._artificial_star_selected() else 10_000.0
 
     def _panel_for_train(self, train: str) -> FilterWheelPanel | None:
         for panel in self._filter_wheel_panels:
@@ -726,10 +737,22 @@ class MainWindow(QMainWindow):
             self._on_operating_mode_changed(mode)
 
     def _artificial_star_selected(self) -> bool:
-        return (
-            self._fine_collimation_panel.target_mode is CollimationTargetMode.ARTIFICIAL_STAR
-            or self._artificial_star_mode_button.isChecked()
-        )
+        """S6.6b (M05): the ONE owner of "is the target an artificial star" is the target mode;
+        the registration button only follows it (see `_on_target_mode_changed`)."""
+        return self._fine_collimation_panel.target_mode is CollimationTargetMode.ARTIFICIAL_STAR
+
+    def _on_artificial_star_registration(self, checked: bool) -> None:
+        """S6.6b (M05, review C4): the registration choice writes the ONE owner in both
+        directions -- choosing the artificial-star matcher makes the target an artificial star,
+        choosing another matcher makes it a natural star again (an artificial-star target with
+        an NCC/ASTAP matcher must not exist)."""
+        if checked:
+            if self._artificial_star_selected():
+                self._require_terrestrial_for_artificial_star()  # user decision A
+            else:
+                self._fine_collimation_panel.set_target_mode(CollimationTargetMode.ARTIFICIAL_STAR)
+        elif self._artificial_star_selected():
+            self._fine_collimation_panel.set_target_mode(CollimationTargetMode.NATURAL_STAR)
 
     def _require_terrestrial_for_artificial_star(self) -> None:
         """User decision A (2026-10-06): an artificial star is a fixed target, so choosing it
@@ -804,8 +827,16 @@ class MainWindow(QMainWindow):
         self._focuser_panel.select_artificial_star_mode(
             mode is CollimationTargetMode.ARTIFICIAL_STAR
         )
+        # S6.6b (M05): the registration matcher follows the target owner -- an artificial-star
+        # target selects the single-point matcher; leaving it returns to the mode's default.
         if mode is CollimationTargetMode.ARTIFICIAL_STAR:
+            self._artificial_star_mode_button.setChecked(True)
             self._require_terrestrial_for_artificial_star()  # user decision A
+        elif self._artificial_star_mode_button.isChecked():
+            if self._tracking_enforcer.mode is OperatingMode.ASTRONOMICAL:
+                self._star_field_mode_button.setChecked(True)
+            else:
+                self._terrestrial_mode_button.setChecked(True)
 
     def _reacquire_via_guide(
         self, acquisition: FocusedStarAcquisition, cancel_check: Callable[[], bool] | None
@@ -836,7 +867,14 @@ class MainWindow(QMainWindow):
             current_operating_mode=lambda: self._tracking_enforcer.mode,
             tracking_state=partial(read_tracking_for_decision, self._mount_park_port),
             wait_guide_frame_after=self._right_panel.wait_for_frame_after,
+            # S6.6b: the GUI-thread snapshot of the Guide exposure (this runs on a worker).
+            exposure_hint=lambda: self._guide_exposure_snapshot_s,
         )
+
+    def _snapshot_guide_exposure(self) -> None:
+        """S6.6b: GUI thread only -- the Guide camera's current exposure (s), read from its
+        panel for the worker-side reacquisition waits (a float the worker may read)."""
+        self._guide_exposure_snapshot_s = self._right_panel.current_exposure_gain()[0] / 1000.0
 
     def _on_left_camera_changed(self, device: object) -> None:
         excluded = device.camera_id if isinstance(device, TouptekDeviceInfo) else None
@@ -1140,6 +1178,9 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 — Qt override
         self._calibrate_fov_poll_timer.stop()
+        # S6.6b: the GUI-side timers stop too (exposure snapshot, P-a re-enforce).
+        self._exposure_snapshot_timer.stop()
+        self._tracking_reenforce_timer.stop()
         # #52 K03 (S6.2): each panel's stop is isolated -- one raising stop (e.g. a mount whose
         # tracking-off is not confirmed) used to skip every panel after it.
         stops: list[tuple[str, Callable[[], object]]] = [

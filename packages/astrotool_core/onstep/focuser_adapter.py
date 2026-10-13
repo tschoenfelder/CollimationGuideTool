@@ -25,7 +25,7 @@ from onstep_adapter import IndiFocuser
 
 from astrotool_core.focus.port import FocuserMoveResult, FocuserPort, FocuserStatus
 from astrotool_core.onstep.connection import OnStepConnection
-from astrotool_core.onstep.mount_pulse_adapter import ONSTEP_OPERATION_ERRORS
+from astrotool_core.onstep.errors import ONSTEP_OPERATION_ERRORS
 
 _log = logging.getLogger(__name__)
 

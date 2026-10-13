@@ -174,9 +174,12 @@ class TestEveryMoveEndIsTheNextReference:
 
         assert rig.panel._last_pulse_completed_at == pytest.approx(stopped_move_end)
 
-    def test_the_next_nudge_before_waits_for_frames_after_the_stopped_move(
+    def test_the_next_nudge_measures_no_frame_from_before_its_own_move(
         self, qapp: object, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        """USER DECISION (2026-10-10, S6.6b): a nudge takes no BEFORE capture at all (it used to
+        wait for frames after the stopped move here); its #43 check captures only AFTER its OWN
+        move completed, so no frame exposed during the stopped move can be evidence."""
         rig = _Rig(exposure_s=0.2)
         stopped_move_end = self._outcome_after_stop(rig)
         requested: list[float | None] = []
@@ -187,4 +190,6 @@ class TestEveryMoveEndIsTheNextReference:
 
         rig.panel._on_nudge_clicked("left", MountAxis.AXIS1, AxisDirection.POSITIVE)
 
-        assert requested == [pytest.approx(stopped_move_end)]
+        assert requested == []  # sent at once -- no BEFORE capture
+        assert rig.panel._reusable_reference("terrestrial") is None  # nothing verified to reuse
+        assert rig.panel._last_pulse_completed_at == pytest.approx(stopped_move_end)

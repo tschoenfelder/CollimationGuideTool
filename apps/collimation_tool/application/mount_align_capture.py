@@ -26,7 +26,7 @@ from astrotool_core.acquisition import (
     measurement_reference,
 )
 from astrotool_core.config import MountAlignmentSettings
-from astrotool_core.mount import TrackingMode
+from astrotool_core.mount import MountParkStatus, TrackingMode
 from astrotool_core.timing import Clock
 
 from collimation_tool.application.mount_align_failures import (
@@ -51,10 +51,6 @@ def frame_acquisition_result(frame: np.ndarray | None) -> FrameAcquisitionResult
         FrameAcquisitionStatus.OK,
         DeliveredFrame(pixels=frame, captured_at_monotonic=0.0, exposure_seconds=0.0),
     )
-
-
-def pixels_if_ok(result: FrameAcquisitionResult) -> np.ndarray | None:
-    return result.frame.pixels if result.ok and result.frame is not None else None
 
 
 def capture_invalid_result(status: FrameAcquisitionStatus) -> MotionAwareFrameResult:
@@ -117,6 +113,9 @@ class CaptureRequest:
     movement_context: CommandedMovementContext | None
     left_state: tuple[float, int] | None
     right_state: tuple[float, int] | None
+    #: S6.6b (review C1): False = only VERIFY the mount's tracking state (no start/stop
+    #: command) -- the background nudge check, which a newer move may overtake at any time.
+    repair_tracking: bool = True
 
 
 @dataclass
@@ -313,3 +312,22 @@ def reusable_reference(
     if now - reference.taken_at > REFERENCE_MAX_AGE_S:
         return None
     return dict(reference.measurements)
+
+
+def observed_tracking_failure(
+    status: MountParkStatus, required: TrackingMode, mode: TargetMode
+) -> str | None:
+    """S6.6b (review C1): a READ-ONLY tracking check for the background nudge check -- None when
+    a fresh reading shows `required`, else why not. Never sends a command: repairing tracking is
+    the enforcer's job on the move paths, and an abandoned check must not race the next move."""
+    if not status.fresh:
+        return f"the mount was busy, so its tracking could not be read for the {mode} check"
+    if not status.available:
+        return f"the mount is unavailable, so its tracking could not be read for the {mode} check"
+    observed = TrackingMode.ON if status.tracking else TrackingMode.OFF
+    if observed is required:
+        return None
+    return (
+        f"mount tracking is {observed.value}, but the {mode} no-motion check needs it "
+        f"{required.value}"
+    )

@@ -17,6 +17,7 @@ from astrotool_core.camera.capabilities import (
     ConversionGain,
 )
 from astrotool_core.camera.port import CameraPort
+from astrotool_core.config import camera_settings
 from astrotool_core.frames.frame import Frame
 
 _FAKE_CAPABILITIES = CameraCapabilities(
@@ -54,7 +55,7 @@ class FakeCamera(CameraPort):
         self._black_level = 0
         self._conversion_gain = ConversionGain.LCG
         self._cooling_enabled = False
-        self._target_temperature_c = -10.0
+        self._target_temperature_c = camera_settings.DEFAULT_TARGET_TEMPERATURE_C
 
     def connect(self) -> None:
         if self._fail_connect:

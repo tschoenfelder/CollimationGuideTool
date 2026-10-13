@@ -3,9 +3,17 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 from astrotool_core.config import MountAlignmentSettings
-from astrotool_core.mount import AxisDirection, AxisResponse, MountAxis
+from astrotool_core.mount import (
+    AxisDirection,
+    AxisResponse,
+    MountAxis,
+    MountCapabilities,
+    MountPort,
+)
 from astrotool_core.mount.movement_sizing import CameraGeometry
 from collimation_tool.application.equivalent_duration import angular_unit_rate_arcsec_per_s
 from collimation_tool.application.mount_align_failures import MeasurementFailureClass
@@ -18,6 +26,7 @@ from collimation_tool.application.mount_align_sizing import (
     CalibrationSizing,
     angular_unit_rate,
     min_angular_arcsec,
+    mount_is_angular_only,
     mount_supports_angular,
 )
 
@@ -30,9 +39,21 @@ A1, A2 = MountAxis.AXIS1, MountAxis.AXIS2
 class _TimedMount:
     """No angular capability: the legacy timed calibration."""
 
+    def capabilities(self) -> MountCapabilities:
+        return MountCapabilities(supports_pulse_guiding=True, min_pulse_ms=1, max_pulse_ms=9999)
+
 
 class _AngularMount:
-    min_angular_arcsec = 30.0
+    """S6.6b: declares its angular moves and floor in `capabilities()` (no duck-typed property)."""
+
+    def capabilities(self) -> MountCapabilities:
+        return MountCapabilities(
+            supports_pulse_guiding=True,
+            min_pulse_ms=1,
+            max_pulse_ms=9999,
+            supports_angular_moves=True,
+            min_angular_arcsec=30.0,
+        )
 
     def __init__(self) -> None:
         self.rates: dict[tuple[MountAxis, AxisDirection], float] = {}
@@ -45,6 +66,10 @@ class _AngularMount:
 
     def move_angular(self, *_args: object) -> None:
         raise AssertionError("sizing never moves the mount")
+
+
+def _port(mount: object) -> MountPort:
+    return cast(MountPort, mount)
 
 
 def _sizing(mount: object, settings: MountAlignmentSettings | None = None) -> CalibrationSizing:
@@ -64,10 +89,44 @@ def _response(dx: float, axis: MountAxis = A1, direction: AxisDirection = POS) -
 
 
 def test_mount_capability_helpers() -> None:
-    assert not mount_supports_angular(_TimedMount())
-    assert mount_supports_angular(_AngularMount())
-    assert min_angular_arcsec(_TimedMount()) == 0.0
-    assert min_angular_arcsec(_AngularMount()) == 30.0
+    assert not mount_supports_angular(_port(_TimedMount()))
+    assert mount_supports_angular(_port(_AngularMount()))
+    assert min_angular_arcsec(_port(_TimedMount())) == 0.0
+    assert min_angular_arcsec(_port(_AngularMount())) == 30.0
+    assert not mount_is_angular_only(_port(_AngularMount()))  # it also reports timed pulses
+
+
+class _DuckTypedOnlyMount(_AngularMount):
+    """Has every angular method and a `min_angular_arcsec` attribute, but its capabilities say
+    it moves only by timed pulses (e.g. an adapter whose angular API is present but disabled)."""
+
+    min_angular_arcsec = 30.0
+
+    def capabilities(self) -> MountCapabilities:
+        return MountCapabilities(supports_pulse_guiding=True, min_pulse_ms=1, max_pulse_ms=9999)
+
+
+class _CapabilityOnlyAngularMount(_AngularMount):
+    """Reports angular-only moves with a 45" floor through `capabilities()` and nothing else."""
+
+    def capabilities(self) -> MountCapabilities:
+        return MountCapabilities(
+            supports_pulse_guiding=False,
+            min_pulse_ms=0,
+            max_pulse_ms=0,
+            supports_angular_moves=True,
+            min_angular_arcsec=45.0,
+        )
+
+
+def test_the_reported_capabilities_decide_not_the_attributes() -> None:
+    """S6.6b (#55 C02): the angular capability and its floor are read from `MountCapabilities`
+    -- before, a `hasattr`/`getattr` probe answered 'angular' for the first double and 0" for
+    the second."""
+    assert not mount_supports_angular(_port(_DuckTypedOnlyMount()))
+    assert min_angular_arcsec(_port(_DuckTypedOnlyMount())) == 0.0
+    assert min_angular_arcsec(_port(_CapabilityOnlyAngularMount())) == 45.0
+    assert mount_is_angular_only(_port(_CapabilityOnlyAngularMount()))
     settings = MountAlignmentSettings()
     assert angular_unit_rate(settings) == angular_unit_rate_arcsec_per_s(
         settings.calibration_center_rate_x

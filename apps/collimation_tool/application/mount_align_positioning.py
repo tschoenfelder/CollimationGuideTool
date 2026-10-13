@@ -76,6 +76,18 @@ def uncalibrated_nudge_arcsec(
     return settings.pulse_ms * nudge_rate_arcsec_per_s(settings) / 1000.0
 
 
+def execution_rate_preset(
+    settings: MountAlignmentSettings, calibration_rate_preset: str | None, *, calibrated: bool
+) -> str | None:
+    """The rate preset a manual move runs at (S6.6b). A move SOLVED from a calibration matrix
+    must run at the rate that matrix was measured at (`calibration_rate_preset`: the
+    calibration preset of a sized run, None = OnStep's centering rate on an angular-capable
+    mount) -- running it at the nudge `rate_preset` ("7", 48x) instead of a sized calibration's
+    "6" (20x) over-moved 2.4x (S6.0 finding 6, candidate for diagnostic de295656). An
+    uncalibrated nudge is sized from `pulse_ms` at `rate_preset`, so it runs there."""
+    return calibration_rate_preset if calibrated else settings.rate_preset
+
+
 @dataclass(frozen=True)
 class NudgePlan:
     """A sized nudge (`move`), or why none is sent: `error` (a refusal) / `notice`."""
@@ -171,6 +183,8 @@ class ScreenMovePlan:
     angular: bool = False
     error: str | None = None
     notice: str | None = None
+    #: S6.6b: `error` is the mount's smallest angular move (it can never be made at this size).
+    below_floor: bool = False
 
 
 def plan_angular_screen_move(
@@ -242,7 +256,7 @@ def plan_screen_move(
         )
         if isinstance(planned, str):
             # Refused BEFORE anything is sent -- never a partially executed sequence.
-            return ScreenMovePlan(error=planned)
+            return ScreenMovePlan(error=planned, below_floor=True)
         motion, clamped, skipped = planned
         return ScreenMovePlan(motion=motion, clamped=clamped, skipped=skipped, angular=True)
     clamped = any(duration_ms > settings.max_nudge_pulse_ms for _, _, duration_ms in steps)
@@ -253,62 +267,115 @@ def plan_screen_move(
     return ScreenMovePlan(motion=timed, clamped=clamped)
 
 
+def screen_move_floor_refusals(
+    *,
+    settings: MountAlignmentSettings,
+    matrices: Mapping[str, CalibrationMatrix],
+    frame_shapes: Mapping[str, tuple[int, int]],
+    directions: list[ScreenDirection],
+    fraction: float,
+    size_label: str,
+    mode: TargetMode,
+    angular_only: bool,
+    floor_arcsec: float,
+) -> dict[str, dict[ScreenDirection, str]]:
+    """S6.6b (S6.0 re-review b): per camera, the screen directions the mount's smallest angular
+    move (`MountCapabilities.min_angular_arcsec`) forbids at this size -> the reason. Decided by
+    `plan_screen_move` itself (`below_floor`), so a disabled button and a refused click always
+    agree; e.g. Small up/down on the real main camera (5% of 440" = 22" < 30")."""
+    refusals: dict[str, dict[ScreenDirection, str]] = {}
+    if not angular_only or floor_arcsec <= 0:
+        return refusals
+    for key, matrix in matrices.items():
+        shape = frame_shapes.get(key)
+        if shape is None:
+            continue
+        frame = np.zeros(shape, dtype=np.float32)
+        refused: dict[ScreenDirection, str] = {}
+        for direction in directions:
+            plan = plan_screen_move(
+                settings=settings,
+                camera_key=key,
+                matrix=matrix,
+                screen_direction=direction,
+                fraction=fraction,
+                frame=frame,
+                mode=mode,
+                angular_only=lambda: True,
+                floor_arcsec=lambda: floor_arcsec,
+            )
+            if plan.below_floor and plan.error is not None:
+                refused[direction] = f"{size_label} is too small for this mount: {plan.error}"
+        refusals[key] = refused
+    return refusals
+
+
+def nudge_tracking_warning(reason: str) -> str:
+    """S6.6b (review C2): the nudge moved, but its no-motion check could not run because of the
+    mount's tracking state (#44) -- shown and recorded as a warning, in nudge wording."""
+    return f"WARNING: the no-motion check after this nudge could not run -- {reason}"
+
+
+#: S6.6b: why a nudge's background no-motion check could not run.
+NO_REFERENCE_NOTE = (
+    " (no-motion check skipped: no verified at-rest view before this move -- the next nudge "
+    "is checked)"
+)
+
+
 @dataclass(frozen=True)
-class NudgeOutcome:
-    """What a nudge's AFTER capture confirmed, per camera, and the text to show."""
+class NudgeCheck:
+    """What the background #43 check after a nudge found (S6.6b): the confirmed responses, the
+    per-camera failure classes, a `warning` ONLY when a camera measured no image motion, and
+    the `note` appended to the nudge's "done" text."""
 
     responses: dict[str, AxisResponse]
     failure_classes: dict[str, MeasurementFailureClass]
-    error: str | None
-    text: str
+    warning: str | None
+    note: str
 
 
-def evaluate_nudge(
+def check_nudge_motion(
     before: Mapping[str, Measurement],
-    after: Mapping[str, Measurement],
+    after: Mapping[str, Measurement] | None,
     build: Callable[[Measurement, Measurement], AxisResponse | None],
     *,
-    clamped: bool,
-    cap_text: Callable[[], str],
-) -> NudgeOutcome:
-    """Real request: the pulse already ran -- the mount is wherever it physically ended up,
-    whether or not each camera could confirm *how far*. A camera that cannot confirm the move
-    (no frame, no match, or -- issue #43 -- no measurable motion) never blocks another camera's
-    confirmed reading and is not a move failure (mirrors calibration's per-camera handling,
-    real report d14c3a9b)."""
+    missing: Callable[[], str],
+) -> NudgeCheck:
+    """USER DECISION (2026-10-10): the nudge itself has already returned -- the mount is
+    wherever it physically ended up. This check compares the verified at-rest BEFORE with fresh,
+    stability-verified AFTER frames and only ADDS a warning when a camera with a confident
+    match saw NO image motion (issue #43: never a confirmed displacement). A camera that cannot
+    confirm the move (no frame, no match) never blocks another camera's reading and is not a
+    warning. `before` empty = no valid reference existed -> nothing to compare (said so)."""
+    if not after:  # first: it also tells why the next nudge will have no reference
+        return NudgeCheck({}, {}, None, f" (no-motion check not possible: {missing()})")
+    if not before:
+        return NudgeCheck({}, {}, None, NO_REFERENCE_NOTE)
     responses: dict[str, AxisResponse] = {}
     failure_classes: dict[str, MeasurementFailureClass] = {}
-    unconfirmed: list[str] = []
+    still: list[str] = []
+    parts: list[str] = []
     for key in ("left", "right"):
         if key not in before or key not in after:
-            # Issue #30: no usable frame at all (already classified by the capture).
-            unconfirmed.append(key)
+            # Issue #30: no usable frame (already classified by the capture) -- not a warning.
+            parts.append(f"{CAMERA_LABELS[key]}: displacement not confirmed")
             continue
         response = build(before[key], after[key])
         if response is None:
-            unconfirmed.append(key)
             failure_classes[key] = MeasurementFailureClass.MATCH_FAILED
+            parts.append(f"{CAMERA_LABELS[key]}: displacement not confirmed")
         elif is_no_motion(response, before[key]):
-            unconfirmed.append(key)  # Issue #43: not a confirmed displacement
             failure_classes[key] = MeasurementFailureClass.NO_MOTION_DETECTED
+            still.append(CAMERA_LABELS[key])
         else:
             responses[key] = response
-    error = (
-        f"could not confirm the displacement for: {', '.join(unconfirmed)} "
-        "-- the move itself still happened"
-        if unconfirmed
+            parts.append(f"{CAMERA_LABELS[key]}: {format_response(response)}")
+    warning = (
+        f"WARNING: no image motion measured on {', '.join(still)} after the move -- check that "
+        "the mount really moves (unparked, motion enabled, clutch engaged)"
+        if still
         else None
     )
-    parts = [
-        f"{CAMERA_LABELS[key]}: {format_response(responses[key])}"
-        if key in responses
-        else f"{CAMERA_LABELS[key]}: moved, displacement not confirmed"
-        for key in ("left", "right")
-        if key in responses or key in unconfirmed
-    ]
-    suffix = (
-        f" (safety-capped at {cap_text()} -- click again to continue toward the target)"
-        if clamped
-        else ""
-    )
-    return NudgeOutcome(responses, failure_classes, error, " | ".join(parts) + suffix)
+    shown = ([warning] if warning else []) + parts
+    return NudgeCheck(responses, failure_classes, warning, f" {' | '.join(shown)}" if shown else "")

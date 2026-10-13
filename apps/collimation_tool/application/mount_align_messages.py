@@ -197,8 +197,18 @@ def describe_capture_failures(
     return " (" + "; ".join(parts) + ")"
 
 
-def no_motion_text(duration_ms: int, rate_preset: str | None) -> str:
-    """Issue #43: why a camera was excluded when its image did not move."""
+def no_motion_text(
+    duration_ms: int, rate_preset: str | None, *, angular_size: str | None = None
+) -> str:
+    """Issue #43: why a camera was excluded when its image did not move. `angular_size` (S6.6b):
+    on an angular-only mount the commanded move is an angle -- no rate preset is involved, so
+    none is named."""
+    if angular_size is not None:
+        return (
+            f"stable frames and a confident match, but the image did not move for a commanded "
+            f"{angular_size} angular move -- check that the mount really moves (unparked, "
+            "motion enabled, tracking off)"
+        )
     return (
         f"stable frames and a confident match, but the image did not move for a commanded "
         f"{duration_ms} ms move at preset {rate_preset} -- check that the "
@@ -207,9 +217,26 @@ def no_motion_text(duration_ms: int, rate_preset: str | None) -> str:
 
 
 def bounded_text(
-    failure: MeasurementFailureClass, *, max_pulse_ms: int, rate_preset: str | None
+    failure: MeasurementFailureClass,
+    *,
+    max_pulse_ms: int,
+    rate_preset: str | None,
+    angular_max: str | None = None,
 ) -> str:
-    """Issue #46: why a camera was excluded when sizing could not bring its move into band."""
+    """Issue #46: why a camera was excluded when sizing could not bring its move into band.
+    `angular_max` (S6.6b): on an angular-only mount the largest calibration move as an angle;
+    the advice then names the optics, not a rate preset (there is none)."""
+    if angular_max is not None:
+        if failure is MeasurementFailureClass.MOVE_EXCEEDS_ENVELOPE:
+            return (
+                f"even the largest normal calibration move ({angular_max}) shifts this camera "
+                "by less than a measurable part of its frame (exceeds the calibration "
+                "envelope) -- check this camera's configured optics (plate scale)"
+            )
+        return (
+            "the smallest calibration move the mount accepts already overshoots this "
+            "camera's frame -- check this camera's configured optics (plate scale)"
+        )
     cap_s = max_pulse_ms / 1000.0
     if failure is MeasurementFailureClass.MOVE_EXCEEDS_ENVELOPE:
         return (
@@ -234,3 +261,16 @@ def calibration_progress_text(
         + (f"{arcsec:.0f} arcsec angular" if arcsec is not None else f"{duration_ms} ms")
         + ")…"
     )
+
+
+def partial_move_text(
+    motion_axes: tuple[MountAxis, ...], attempted: int, error: str
+) -> str | None:
+    """S6.6b: a multi-axis move that stopped after an earlier axis had already moved -- say
+    which axis moved and which was refused ("RA moved; Dec refused: ..."), so "Move failed" is
+    not read as "nothing moved". None when no earlier axis moved."""
+    if attempted < 2 or attempted > len(motion_axes):
+        return None
+    short = {MountAxis.AXIS1: "RA", MountAxis.AXIS2: "Dec"}
+    moved = ", ".join(short[axis] for axis in motion_axes[: attempted - 1])
+    return f"{moved} moved; {short[motion_axes[attempted - 1]]} refused: {error}"

@@ -375,8 +375,15 @@ class FocuserPanel(QWidget):
             if blocked:
                 self._auto_focus_status_label.setText(f"Auto focus blocked — {blocked}")
                 return
+        # S6.6b: the camera exposure snapshotted HERE, on the GUI thread, scales the run's first
+        # fresh-frame wait (a long exposure is waited for, not timed out); the worker never
+        # reads a widget.
+        exposure_s = (
+            self._exposure_control.get()[0] / 1000.0 if self._exposure_control is not None else None
+        )
         controller = AutofocusController(
             self._focuser,
+            exposure_hint=lambda: exposure_s,
             get_frame=self._get_frame,
             wait_for_frame=self._wait_for_frame,
             set_auto_exposure_paused=self._set_auto_exposure_paused,

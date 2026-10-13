@@ -16,7 +16,7 @@ from dataclasses import replace
 from typing import Any
 
 from astrotool_core.config import MountAlignmentSettings
-from astrotool_core.mount import AxisDirection, AxisResponse, MountAxis
+from astrotool_core.mount import AxisDirection, AxisResponse, MountAxis, MountPort
 from astrotool_core.mount.movement_sizing import (
     CameraGeometry,
     SizingPolicy,
@@ -43,9 +43,18 @@ ExcludeNoMotion = Callable[[str, int], None]
 ExcludeBounded = Callable[[str, MeasurementFailureClass, str], None]
 
 
-def mount_supports_angular(mount: object) -> bool:
-    """The mount can install a measured rate and move by angle (OnStepAdapter >= 0.3.5)."""
-    return all(hasattr(mount, name) for name in ("installed_rate", "install_rate", "move_angular"))
+def mount_supports_angular(mount: MountPort) -> bool:
+    """The mount can install a measured rate and move by angle (OnStepAdapter >= 0.3.5) -- as
+    REPORTED by the adapter (`MountCapabilities.supports_angular_moves`, S6.6b; was a duck-typed
+    `hasattr` probe, #55 audit C02)."""
+    return mount.capabilities().supports_angular_moves
+
+
+def mount_is_angular_only(mount: MountPort) -> bool:
+    """S6.0: angular moves exist but timed pulses do not -- both read from the adapter's one
+    reported `MountCapabilities` (S6.6b)."""
+    capabilities = mount.capabilities()
+    return capabilities.supports_angular_moves and not capabilities.supports_pulse_guiding
 
 
 def angular_unit_rate(settings: MountAlignmentSettings) -> float:
@@ -59,11 +68,11 @@ def angular_unit_rate(settings: MountAlignmentSettings) -> float:
     return angular_unit_rate_arcsec_per_s(settings.calibration_center_rate_x)
 
 
-def min_angular_arcsec(mount: object) -> float:
+def min_angular_arcsec(mount: MountPort) -> float:
     """The smallest angular move the mount accepts, as REPORTED by the adapter
-    (`OnStepMountPulseAdapter.min_angular_arcsec` <- OnStepAdapter's own bound); 0 for a mount
-    that reports none."""
-    return float(getattr(mount, "min_angular_arcsec", 0.0) or 0.0)
+    (`MountCapabilities.min_angular_arcsec` <- OnStepAdapter's own bound, S6.6b; was a
+    duck-typed `getattr` of an adapter property); 0 for a mount that reports none."""
+    return mount.capabilities().min_angular_arcsec
 
 
 class CalibrationSizing:

@@ -13,7 +13,7 @@ from __future__ import annotations
 import pytest
 from astrotool_core.mount.port import AxisDirection, MountAxis
 from astrotool_core.onstep import OnStepFocuserAdapter, OnStepMountPulseAdapter
-from astrotool_core.onstep.mount_pulse_adapter import ONSTEP_OPERATION_ERRORS
+from astrotool_core.onstep.errors import ONSTEP_OPERATION_ERRORS
 from astrotool_core.testing import OnStepScenario, make_simulated_onstep_connection
 from astrotool_core.timing import FakeClock
 
@@ -39,6 +39,30 @@ def test_the_one_error_set_covers_every_device_failure_shape() -> None:
     assert not isinstance(TypeError("x"), ONSTEP_OPERATION_ERRORS)
     assert not isinstance(AttributeError("x"), ONSTEP_OPERATION_ERRORS)
 
+
+
+def test_the_error_set_has_one_neutral_owner() -> None:
+    """S6.6b: `onstep/errors.py` owns the set (no OnStepAdapter import, so any caller may read
+    it); the shims use that very object instead of restating it."""
+    import ast
+    from pathlib import Path
+
+    from astrotool_core.onstep import errors, focuser_adapter, mount_pulse_adapter
+
+    tree = ast.parse(Path(errors.__file__).read_text(encoding="utf-8"))
+    imported = {
+        alias.name.split(".")[0]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Import)
+        for alias in node.names
+    } | {
+        (node.module or "").split(".")[0]
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom)
+    }
+    assert "onstep_adapter" not in imported
+    assert vars(mount_pulse_adapter)["ONSTEP_OPERATION_ERRORS"] is errors.ONSTEP_OPERATION_ERRORS
+    assert vars(focuser_adapter)["ONSTEP_OPERATION_ERRORS"] is errors.ONSTEP_OPERATION_ERRORS
 
 def _focuser() -> tuple[OnStepFocuserAdapter, object]:
     connection, made = make_simulated_onstep_connection(OnStepScenario(), clock=FakeClock())

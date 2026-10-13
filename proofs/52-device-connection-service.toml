@@ -56,7 +56,7 @@ field_only_assumptions = [
     "A real OnStepAdapter#17 unconfirmed emergency stop on quit is only simulated (stop_confirms=False); the real driver path ends in the same RuntimeError per mount_park_adapter.py:143.",
 ]
 gaps = [
-    "MountTestMovePanel's connect handler still has its own copy of the K01 pattern (mount_test_move_panel.py, outside the S6.2 contract; pinned in tests/contracts/test_connection_failure_contract.py::_ALLOWED_WORDING until S6.6 binds it to DeviceConnectionService).",
+    "MountTestMovePanel's connect handler still has its own copy of the K01 pattern (mount_test_move_panel.py, outside the S6.2 contract; pinned in tests/contracts/test_connection_failure_contract.py::_ALLOWED_WORDING until S6.6 binds it to DeviceConnectionService). RESOLVED in S6.6b: the panel uses DeviceConnectionService and the pin is gone (proofs/52-mount-align-owners.toml).",
     "mount_pulse_adapter.py:138 still restates the OnStep operation exception tuple (K02 adapter side, not in the S6.2 contract) and focuser_adapter.py converts only ValueError (L02 reachability) -- S6.3/S6.6.",
     "Panel status polls after connect (periodic status() raising) stay unguarded -- operation/poll lifecycle is S6.3.",
     "The S6.4 P-a 500 ms re-enforce timer stays in MainWindow (coordinator decision): mode/tracking policy that must tick whether or not any panel's connection is open (S6.4 tests unchanged).",

@@ -319,6 +319,7 @@ class FocusedStarAcquisition:
         wait_guide_frame_after: StableFrameWaiter | None = None,
         guide_pulse_calibration: GuidePulseCalibrationConfig | None = None,
         current_operating_mode: Callable[[], OperatingMode] | None = None,
+        exposure_hint: Callable[[], float | None] | None = None,
     ) -> AcquisitionResult:
         """AC 1.4: only meant to be called once `process_main_frame` has
         reported `target_not_found_main` (i.e. exhausted its own bounded
@@ -427,10 +428,13 @@ class FocusedStarAcquisition:
             )
         # S6.7: the policy's settle becomes part of the fresh-frame rule (the exposure must
         # start after the move ended + settle) instead of a blind sleep before a latest frame.
+        # S6.6b: `exposure_hint` = the guide camera's exposure (s) as the GUI thread last
+        # snapshotted it, so even the FIRST wait is scaled for a long exposure.
         frames = FreshFrameSource(
             wait_guide_frame_after,
             settle_s=RecenterConfig().settle_ms / 1000.0,
             budget=_GUIDE_FRESH_FRAME_BUDGET,
+            exposure_hint=exposure_hint,
             clock=clock or SYSTEM_CLOCK,
         )
 

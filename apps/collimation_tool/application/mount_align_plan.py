@@ -160,6 +160,9 @@ class PendingAction:
     #: module docstring's own Phase E paragraph) never has a measured
     #: response to report instead.
     label: str | None = None
+    #: S6.6b: a screen move's axes in submit order -- so a sequence that stopped after its
+    #: first axis moved can say so (`mount_align_messages.partial_move_text`).
+    motion_axes: tuple[MountAxis, ...] = ()
 
 
 def step_label(step: CalibrationStep, phase: Literal["before", "after"]) -> str:

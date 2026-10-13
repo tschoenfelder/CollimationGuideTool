@@ -63,12 +63,15 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
+from typing import cast
 
 from astrotool_core.config import MountAlignmentSettings
 from astrotool_core.mount.axis_calibration import CalibrationMatrix, solve_screen_move
 from astrotool_core.mount.port import (
+    AngularMotionPort,
     AxisDirection,
     CommandResult,
+    GuidePulsePort,
     GuidePulseResult,
     MountAxis,
     MountPort,
@@ -305,9 +308,12 @@ class CollimationRecenterPolicy:
 
     def _guide_correction(self, dx: float, dy: float) -> list[_CorrectionStep] | _NotSent:
         """S6.0d: at most one guide pulse per axis, solved in 2-D (see the module docstring)."""
-        guide_pulse = getattr(self._mount, "guide_pulse", None)
-        bounds = getattr(self._mount, "guide_pulse_range_ms", None)
-        if guide_pulse is None or bounds is None:
+        # S6.6b (#55 C02): the capability is the adapter's reported one, never a getattr probe.
+        if not self._mount.capabilities().supports_guide_pulses_while_tracking:
+            return _NotSent("pulse_rejected", _NO_GUIDE_PULSES)
+        guiding = cast(GuidePulsePort, self._mount)
+        guide_pulse, bounds = guiding.guide_pulse, guiding.guide_pulse_range_ms
+        if bounds is None:
             return _NotSent("pulse_rejected", _NO_GUIDE_PULSES)
         shortest, longest = bounds
         try:
@@ -347,10 +353,13 @@ class CollimationRecenterPolicy:
     def _angular_correction(self, dx: float, dy: float) -> list[_CorrectionStep] | _NotSent:
         """The angular moves (at most one per axis) that bring the star from (dx, dy) toward
         the reference, decided as a whole before anything is sent -- or why nothing can be."""
-        move_angular = getattr(self._mount, "move_angular", None)
-        if move_angular is None:
+        # S6.6b (#55 C02): angular moves and their floor as the adapter REPORTS them
+        # (`MountCapabilities`), not duck-typed attributes.
+        capabilities = self._mount.capabilities()
+        if not capabilities.supports_angular_moves:
             return _NotSent("pulse_rejected", _NO_MOTION_PRIMITIVE)
-        floor = float(getattr(self._mount, "min_angular_arcsec", 0.0) or 0.0)
+        move_angular = cast(AngularMotionPort, self._mount).move_angular
+        floor = capabilities.min_angular_arcsec
         rate = self._center_rate_x
         axis_caps = self._axis_caps_arcsec(floor)
         cap = equivalent_ms_to_arcsec(self._config.max_pulse_ms, center_rate_x=rate)
@@ -399,10 +408,10 @@ class CollimationRecenterPolicy:
         shift of a floor-sized move on the faster axis: one sub-floor remainder per axis), which
         at fine plate scales (30" > 20 px at ~1"/px) is as close as this mount can get."""
         if self._guide_pulses:
-            bounds = getattr(self._mount, "guide_pulse_range_ms", None)
+            bounds = cast(GuidePulsePort, self._mount).guide_pulse_range_ms
             floor_ms = float(bounds[0]) if bounds else 0.0
         else:
-            floor = float(getattr(self._mount, "min_angular_arcsec", 0.0) or 0.0)
+            floor = self._mount.capabilities().min_angular_arcsec
             floor_ms = arcsec_to_equivalent_ms(floor, center_rate_x=self._center_rate_x)
         floor_px = floor_ms * max(r.px_per_ms for r in self._calibration.responses.values())
         reachable_px = math.sqrt(2.0) * floor_px

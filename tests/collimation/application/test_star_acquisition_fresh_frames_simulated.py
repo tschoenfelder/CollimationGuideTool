@@ -238,7 +238,11 @@ class _StreamingSky:
         return math.hypot(x - _TARGET[0], y - _TARGET[1])
 
     def reacquire(
-        self, mode: OperatingMode, *, fresh_frames: bool = True
+        self,
+        mode: OperatingMode,
+        *,
+        fresh_frames: bool = True,
+        exposure_hint: Callable[[], float | None] | None = None,
     ) -> AcquisitionResult:
         prior_main, registration = _registration()
         acquisition = FocusedStarAcquisition(roi_size=(16, 12))
@@ -256,6 +260,7 @@ class _StreamingSky:
             tracking_state=lambda: read_tracking_for_decision(self.park),
             wait_guide_frame_after=self.wait_for_frame_after if fresh_frames else None,
             current_operating_mode=lambda: mode,
+            exposure_hint=exposure_hint,
         )
 
 
@@ -305,6 +310,40 @@ class TestLongExposures:
 
         result = sky.reacquire(mode)
 
+        assert result.failure_reason is None, result
+        assert sky.stale_measurements() == []
+        assert sky.distance_to_target() <= 6.0
+
+
+class TestTheGuiExposureSnapshot:
+    """S6.6b (S6.7 follow-up): the guide frame waits are scaled from the exposure the GUI
+    thread snapshotted (`exposure_hint`) from the very first wait -- without it the first wait
+    assumes 2.5 s and a first frame > ~5 s with no older frame to learn from ends in an explicit
+    fresh_frame_timeout. (This harness always has an older frame the shared rule learns from,
+    so it cannot show that timeout; the budget-from-the-start rule is
+    tests/core/acquisition/test_fresh_frame_after_motion.py::TestLongExposures; here: wiring.)"""
+
+    @pytest.mark.parametrize(("mode", "tracking"), _PATHS)
+    def test_the_snapshot_reaches_the_fresh_frame_source(
+        self, monkeypatch: pytest.MonkeyPatch, mode: OperatingMode, tracking: bool
+    ) -> None:
+        from astrotool_core.acquisition.fresh_frame_after_motion import FreshFrameSource
+        from collimation_tool.application import star_acquisition
+
+        hints: list[float | None] = []
+        real = FreshFrameSource
+
+        def spy(*args: object, **kwargs: object) -> object:
+            source = real(*args, **kwargs)  # type: ignore[arg-type]
+            hints.append(source._exposure())
+            return source
+
+        monkeypatch.setattr(star_acquisition, "FreshFrameSource", spy)
+        sky = _StreamingSky(monkeypatch, start=(250.0, 170.0), exposure_s=8.0, tracking=tracking)
+
+        result = sky.reacquire(mode, exposure_hint=lambda: 8.0)
+
+        assert hints and all(hint == 8.0 for hint in hints)
         assert result.failure_reason is None, result
         assert sky.stale_measurements() == []
         assert sky.distance_to_target() <= 6.0

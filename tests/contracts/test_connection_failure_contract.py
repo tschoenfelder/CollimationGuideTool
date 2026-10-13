@@ -40,12 +40,8 @@ _WORDING = re.compile(
 _COVERING = {"Exception", "BaseException"}
 
 #: module -> why it may still restate the wording. Keep this short.
-_ALLOWED_WORDING: dict[str, str] = {
-    "apps/collimation_tool/ui/mount_test_move_panel.py": (
-        "S6.2 contract excludes this panel (S6.6/S6.7 own it): its connect handler still has its "
-        "own copy; it moves to DeviceConnectionService with the Mount Align orchestration (S6.6)"
-    ),
-}
+#: Empty since S6.6b: Mount Align's connect handler (the last copy) now uses the owner.
+_ALLOWED_WORDING: dict[str, str] = {}
 
 #: (module, line of the `try`) -> why a connect() there may catch less than Exception.
 _ALLOWED_NARROW: dict[tuple[str, int], str] = {}

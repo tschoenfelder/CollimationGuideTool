@@ -58,6 +58,7 @@ from onstep_adapter import (
     IndiUnparkResult,
 )
 
+from astrotool_core.config import device_defaults
 from astrotool_core.onstep.connection import OnStepConnection
 
 #: Public names, including the OnStepAdapter result/snapshot types re-exported
@@ -757,8 +758,8 @@ def fake_indi_runtime_config(**overrides: object) -> IndiRuntimeConfig:
     every park/unpark/go_home contract test raise for a reason unrelated to
     what they're actually checking."""
     defaults: dict[str, object] = dict(
-        host="127.0.0.1",
-        port=7624,
+        host=device_defaults.INDI_HOST,
+        port=device_defaults.INDI_PORT,
         device="LX200 OnStep",
         observer_lat=50.336,
         observer_lon=8.533,
