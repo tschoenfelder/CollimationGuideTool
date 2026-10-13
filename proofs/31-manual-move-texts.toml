@@ -1,0 +1,37 @@
+# Proof manifest -- schema in proofs/README.md. Run: python scripts/prove.py 31-manual-move-texts
+issues = [31, 55]
+summary = """S6.0 leftovers on the angular-only production mount: (a) calibration exclusion texts named \
+'preset None' (no rate preset exists there) -- now the commanded angle and optics advice; \
+(b) a screen move the mount's smallest angular move forbids (e.g. Small up/down on the real \
+main camera, 5% of 440" = 22" < 30") was a button that always failed -- it is now disabled with \
+the reason as tooltip, decided once per calibration/size from MountCapabilities by the same \
+planner the click uses; (c) a two-axis screen move whose second axis was refused for a \
+non-floor reason said only 'Move failed' -- it now says 'RA moved; Dec refused: <reason>'. Review: the floor decision lives in mount_align_positioning.screen_move_floor_refusals (plan_screen_move's structured below_floor flag, no message matching); the panel only binds it and refreshes it on calibration, size and operating-mode changes."""
+modules = [
+    "apps/collimation_tool/ui/mount_test_move_panel.py",
+    "apps/collimation_tool/application/mount_align_messages.py",
+    "apps/collimation_tool/application/mount_align_plan.py",
+    "apps/collimation_tool/application/mount_align_positioning.py",
+]
+fix_commits = ["1a89844"]
+dataset_uuids = []
+focused_command = "pytest -q tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestManualMoveTextsOnAnAngularOnlyMount"
+broader_tier = "component"
+field_only_assumptions = [
+    "Which sizes get disabled on the Pi depends on the real cameras' frame size and plate scale (taken from the verified calibration frames).",
+]
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestManualMoveTextsOnAnAngularOnlyMount::test_a_camera_that_saw_no_motion_is_explained_without_a_rate_preset"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-13, worktree wt-s66b-impl, angular_size/angular_max not passed: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:960: AssertionError: ... 'commanded 1247 ms move at preset None'"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestManualMoveTextsOnAnAngularOnlyMount::test_a_screen_move_the_floor_forbids_is_disabled_and_says_why"
+failed_before_fix = true
+evidence = "Same worktree, _refresh_screen_move_limits made a no-op: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:909: assert not True (button.isEnabled())"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestManualMoveTextsOnAnAngularOnlyMount::test_a_two_axis_move_whose_second_axis_is_refused_says_the_first_one_moved"
+failed_before_fix = true
+evidence = "Same worktree, partial_move_text not used: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:943: AssertionError: Move failed: pulse rejected for AXIS2 NEGATIVE (angular): hard limit reached"

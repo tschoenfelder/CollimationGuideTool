@@ -1,0 +1,41 @@
+# Proof manifest -- schema in proofs/README.md. Run: python scripts/prove.py 52-exposure-snapshot
+issues = [52]
+summary = """S6.7 follow-up: guide-assisted reacquisition (worker thread) and autofocus scaled their \
+FIRST fresh-frame wait from an assumed 2-2.5 s exposure, so a first frame > ~5 s with no older \
+frame to learn from ended in an explicit fresh_frame_timeout. Now the GUI thread snapshots the \
+camera exposure (MainWindow: the Guide exposure, refreshed by a 500 ms GUI timer; FocuserPanel: \
+the Main exposure when Auto Focus starts) and hands it as exposure_hint to FreshFrameSource; \
+the worker never reads a widget. Review C5: MainWindow.closeEvent stops the snapshot timer and the P-a re-enforce timer."""
+modules = [
+    "apps/collimation_tool/ui/main_window.py",
+    "apps/collimation_tool/ui/focuser_panel.py",
+    "apps/collimation_tool/application/star_acquisition.py",
+    "apps/collimation_tool/application/autofocus_controller.py",
+]
+fix_commits = ["1a89844"]
+dataset_uuids = []
+focused_command = """pytest -q \
+tests/collimation/ui/test_exposure_snapshot_wiring.py \
+tests/collimation/application/test_star_acquisition_fresh_frames_simulated.py::TestTheGuiExposureSnapshot"""
+broader_tier = "component"
+field_only_assumptions = [
+    "A real first Guide/Main frame > 5 s right after a stream start is waited for (the simulator harness always has an older frame the shared rule learns from).",
+]
+gaps = [
+    "No end-to-end test shows the original timeout disappearing: the reacquisition harness always serves older frames whose exposure the shared rule learns from, so the proof is the wiring (the hint reaches FreshFrameSource) plus tests/core/acquisition/test_fresh_frame_after_motion.py::TestLongExposures for the budget rule.",
+]
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_exposure_snapshot_wiring.py::test_autofocus_gets_the_exposure_snapshotted_when_it_starts"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-13, worktree wt-s66b-impl, the three exposure_hint wirings removed: tests/collimation/ui/test_exposure_snapshot_wiring.py:48: KeyError: 'exposure_hint'"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_exposure_snapshot_wiring.py::test_reacquisition_gets_the_guide_exposure_snapshot"
+failed_before_fix = true
+evidence = "Same revert: tests/collimation/ui/test_exposure_snapshot_wiring.py:73: KeyError: 'exposure_hint'. Review C5 (timers stopped on close), separate revert of the two stop() calls: tests/collimation/ui/test_exposure_snapshot_wiring.py:78: assert not True (_exposure_snapshot_timer.isActive())"
+
+[[regression_tests]]
+node = "tests/collimation/application/test_star_acquisition_fresh_frames_simulated.py::TestTheGuiExposureSnapshot::test_the_snapshot_reaches_the_fresh_frame_source"
+failed_before_fix = true
+evidence = "Same revert: tests/collimation/application/test_star_acquisition_fresh_frames_simulated.py:346: assert ([None] and False) (the source got no hint)"

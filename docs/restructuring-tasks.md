@@ -60,9 +60,13 @@ Status: `todo` · `in-progress` · `done` · `field-only` (only real hardware ca
 | S6.5 | #55 | ToupTek capability table (unsupported features contract-driven) | issue agent | APPROVE-WITH-FIXES (cooler-left-on safety, range retry) → APPROVE | done | 5f38a4c | `python scripts/prove.py 55-capability-tables` |
 | S6.5a | production defect (found by S4 review) | `touptek_adapter.py:54` `_FLAG_MONO = 0x40` is the SDK's `TOUPCAM_FLAG_USB30`; real `TOUPCAM_FLAG_MONO` is `0x10` (resources/touptek/toupcam.py:24/26). `is_color_sensor()` (line 639) therefore answers "not USB3": a colour USB3 camera would be treated as mono (no debayer). Option fallbacks also wrong (RGB 0x16→0x0c, FLUSH 0x36→0x3d, NOFRAME_TIMEOUT 0x3F→0x01, AUTOEXPO_TRIGGER 0x5A→0x51) — only used when the SDK lacks the name. Failing regression first (S4 leaves a strict xfail), then fix; check which rig cameras are affected | issue agent | APPROVE-WITH-FIXES → pairing gap closed structurally | done | 4864cc8 | `python scripts/prove.py 51-touptek` |
 | S6.5b | production defect (found by S6.5a) | `touptek_adapter._prepare_capture_mode` puts `TOUPCAM_OPTION_NOFRAME_TIMEOUT = 1` (1 ms); the SDK requires ≥ `TOUPCAM_NOFRAME_TIMEOUT_MIN` = 500 ms (`resources/touptek/toupcam.py:109`, `:682`) → either rejected (log warning) or a 1 ms no-frame timeout on the rig. Characterize on the simulator, decide the intended value from the SDK docs, fix; add a connect-time log of `model.flag` so the S6.5a camera-flag inferences become known on the next Pi run | issue agent | APPROVE-WITH-FIXES → fixed | done | 973d0ab | `python scripts/prove.py 51-touptek-noframe` |
-| S6.6 | #52 | Mount Align orchestration out of `mount_test_move_panel.py` into application layer (S6.6a done `6b6d899`; S6.6b behaviour follow-ups open) | | | todo | | |
+| S6.6 | #52, #43, #31, #55 | Mount Align orchestration out of `mount_test_move_panel.py` into application layer: S6.6a neutral extraction (10 Qt-free modules); S6.6b behaviour follow-ups (nudge returns immediately with background #43 check, one artificial-star owner, `MountCapabilities` instead of probes, `onstep/errors.py`, GUI-thread exposure snapshot, screen-move floor decision) | issue agent | S6.6a APPROVE (byte-identical differential, 13 scenarios); S6.6b APPROVE-WITH-FIXES (C1 abandoned check sent tracking commands, C2, C4, C5) → fixed, revert-proven | done | 6b6d899, 1a89844 | `python scripts/prove.py 52-nudge-returns` · `52-mount-align-owners` · `52-exposure-snapshot` · `55-capabilities-errors-defaults` · `31-calibrated-move-rate` · `31-manual-move-texts` |
 | S6.7 | #52 | Fresh-frame-after-motion service shared by Mount Align + autofocus | issue agent | APPROVE-WITH-FIXES (Stop/cap, stale nudge reference, trigger-time stamp) → fixed | done | 9fc3fa2 | `python scripts/prove.py 52-fresh-frame-after-motion` |
-| S6.8 | #55, #31, #46 | Verify no competing movement path remains | | | todo | | |
+| S6.8 | #55, #31, #46 | Movement-path analysis (`docs/quality/movement-paths.md`, 25 paths, 13 findings) | analysis agent | coordinator spot-check | done | 1534d6d | docs only |
+| S6.8a | #55, #31, #46, #44, #49 | One mount-motion executor (R3): single in-flight motion app-wide, park check, interruptible settle, Stop latch; runner + recenter become callers; M03 removed (no per-move emergency stop); Astronomical Mount Align refuses angular motion while tracking until S6.8b; fine-collimation Cancel stops the mount (R4); quit aborts motion first (R8); runner auto-unpark enforces #44 (F12) | | | todo | | |
+| S6.8b | #31, #46, #39, user decision | Astronomical Mount Align moves with 0.5.0 guide pulses while tracking (calibration/nudge/screen move sized in guide-ms, chunked) through the S6.8a executor | | | todo | | |
+| S6.8c | #49, #55 | Focuser: S6.0c pattern (lock-free Stop, jog off the GUI thread) (R7); global mount Stop incl. park slew (R5) | | | todo | | |
+| S6.8d | #55 (P04/P05) | Delete dead timed-motion path + settings (R9, with config-migration note), explicit nudge cap (F11), stale texts + boundary token/import contract (R11) | | | todo | | |
 | S7 | #15 #21 #29–#33 #35 #37 #39 #43 #44 #46 #49 | Proof manifests + missing low-tier tests; field-only assumptions listed | issue agent | coordinator verification (worktree, all proofs PASS) | done | 5f7c689 | `python scripts/prove.py <issue>` |
 | S8 | all | Release gate green, issue evidence comments, ask user before Pi sync | coordinator | — | todo | | |
 
@@ -478,6 +482,52 @@ screen move non-floor refusal after the first axis moved (message); timed-mount 
   of mode), any raw INDI access — mapped against AGENTS.md "Mount movement boundary"; flag duplicates,
   bypasses, and #31/#46 competing paths; recommend fixes.
 
+### S6.8a — one mount-motion executor (after S6.6b)
+
+**Contract (2026-10-13).**
+- **Allowed:** new `apps/collimation_tool/application/mount_motion.py`; `ui/mount_test_move_runner.py`,
+  `application/recenter_policy.py`, `application/star_acquisition.py`, `application/guide_pulse_reacquisition.py`
+  (caller side only), `application/mount_align_*.py`, `ui/mount_test_move_panel.py`, `ui/main_window.py`
+  (wiring + closeEvent order), `ui/fine_collimation_panel.py` (Cancel wiring), `ui/mount_park_panel.py`
+  (park/unpark register with the executor's in-flight tracking — no new Stop button, that is S6.8c),
+  `astrotool_core/mount/operating_mode.py` / `tracking_mode.py` (only if the "may a move stop tracking"
+  rule needs an enforcer method), `testing/` doubles and simulators, their tests, new manifest(s).
+- **Behaviour changed:** (1) every RA/Dec motion (Mount Align runner, reacquisition angular + guide pulse,
+  park/unpark) goes through one executor that allows **one in-flight mount motion app-wide** (a second
+  request is refused with a clear busy reason, never queued silently); (2) the runner no longer calls
+  `stop_tracking()` before a move (M03/F1): Terrestrial relies on the enforcer (OFF), a tracking mount is
+  reported, not emergency-stopped; **Astronomical + tracking ON: Mount Align angular motion is refused
+  with an explicit message until S6.8b** (no silent tracking loss); (3) settle and the steps of a 2-axis plan
+  are cancellable; fine-collimation Cancel calls the lock-free abort (R4); (4) `closeEvent` aborts mount
+  motion lock-free before any panel disconnect (R8); (5) runner auto-unpark runs the #44 unpark enforcement (F12);
+  (6) the remaining getattr probes on these paths (`move_angular`, `guide_pulse`, `guide_pulse_range_ms`,
+  `abort`) use `MountCapabilities`.
+- **Tests:** failing regression first for each of (1)–(5): Astronomical screen move no longer leaves tracking
+  off / is refused explicitly; no emergency stop before a Terrestrial move; second concurrent motion refused;
+  Cancel during reacquisition GOTO aborts and the settle ends early; quit during GOTO aborts before the
+  disconnect lock; unpark → enforcement trail entry. Simulator + FakeClock, component tier.
+- **Frozen:** `OnStepMountPulseAdapter`/`OnStepMountParkAdapter` public API, `MountCapabilities` fields,
+  `TrackingEnforcer` existing methods, diagnostics keys, #43/#44/#46/#49 manifest assertions.
+- **Dependencies:** S6.6b (done). Blocks S6.8b/S6.8c(R5)/S6.8d. External: OnStepAdapter bare
+  `disable_tracking()` (R2) — recorded, not implemented.
+- **Non-goals:** guide-pulse Mount Align (S6.8b), focuser Stop and a global Stop button (S6.8c), deleting
+  the timed path (S6.8d), GuideTool (R10).
+- **Proof:** manifest(s) with revert-proof evidence; `prove.py` for 46/49/39 manifests still PASS.
+
+### S6.8b — Astronomical Mount Align with guide pulses (after S6.8a)
+
+User decision 2026-10-11. Contract written when S6.8a lands (calibration in guide-ms like S6.0d, 20..5000 ms
+per pulse chunked, 25%-of-frame steps may need several pulses, nudge/screen move in guide-ms, Stop latch).
+
+### S6.8c — focuser Stop + global mount Stop (R7 parallel-safe; R5 after S6.8a)
+
+R7 allowed files: `astrotool_core/onstep/focuser_adapter.py`, `ui/focuser_panel.py`, focuser simulator/tests.
+Contract written before start.
+
+### S6.8d — dead timed path, nudge cap, stale texts (after S6.8b)
+
+R9/F11/R11. Contract written before start.
+
 ### S5 — #55 + #52 duplication inventory (analysis only)
 
 - **Allowed files:** new `docs/quality/duplication-audit.md` only.
@@ -495,6 +545,7 @@ screen move non-floor refusal after the first axis moved (message); timed-mount 
 
 | Date | Task | Commit | What was proven |
 |------|------|--------|-----------------|
+| 2026-10-13 | S6.6b | 1a89844 | Nudge returns immediately, #43 check in background and read-only (abandoned check never sends tracking commands); one target/registration owner both ways; capabilities instead of getattr probes; exposure snapshot owned by MainWindow; 6 new manifests (all revert-proven where a pre-fix repro exists) |
 | 2026-10-12 | S6.6a | 6b6d899 | Mount Align orchestration → 10 Qt-free application modules; panel 194 kB→113 kB; reviewer's differential harness byte-identical across 13 scenarios |
 | 2026-10-11 | S6.8 analysis | 1534d6d | 25 movement paths inventoried, 13 findings (docs/quality/movement-paths.md) |
 | 2026-10-11 | S6.3 | b22b871 | OperationLifecycle for runners; Stop interrupts every wait (S3b xfail flipped); stuck-Busy rules unified; panel polls guarded; filter-wheel connection-loss/Alert/probe fixes; one OnStep error set |
@@ -675,6 +726,8 @@ screen move non-floor refusal after the first axis moved (message); timed-mount 
   runner's unconditional `stop_tracking()` before moves removed. Other S6.8 HIGH/MEDIUM items (F3 park
   without Stop, F5 fine-collimation Cancel, F6 focuser Stop behind move lock, F7 one in-flight motion
   app-wide, F8 quit during move) are folded into the S6.8 fix contract.
+- **External request (S6.8 R2):** OnStepAdapter has no bare tracking-off; `stop()` = `ABORT`+`TRACK_OFF`.
+  A `disable_tracking()` request is to be filed on OnStepAdapter (ask the user at S8); never patched locally.
 - **Pre-existing flake (S8):** `test_calibration_failure_recovery.py::TestEveryFailureReturnsToIdle::
   test_failure_then_a_second_run_without_restarting[unstable_image]` (proof 49) fails ~1 in 6–8 local runs
   on HEAD and on S6.6a alike (panel stuck capturing at ~4 s) — real-time residue in that test; investigate

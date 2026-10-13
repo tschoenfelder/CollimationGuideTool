@@ -1,0 +1,65 @@
+# Proof manifest -- schema in proofs/README.md. Run: python scripts/prove.py 52-mount-align-owners
+issues = [52, 48, 55]
+summary = """Mount Align still had second owners for four decisions: (M02) a standalone panel or an \
+unavailable park mount verified tracking with a direct ensure_tracking_mode call beside the \
+TrackingEnforcer; (Stop) the capture worker never handed its cancel event to the enforcer, so a \
+tracking repair's settle poll outlived Stop; (M05) 'is the target an artificial star' was read \
+from the FOV-registration button, so an artificial-star TARGET still sized Mount Align for 10 km; \
+(K01) its connect handler restated the connect-failure handling. Now: one enforcer path (a \
+standalone panel gets its own), cancel=job.cancel, CollimationTargetMode is the one owner (the \
+registration button follows it both ways -- review C4: choosing another matcher resets the target to a natural star; S6.4 decision A still holds), and the panel binds DeviceConnectionService."""
+modules = [
+    "apps/collimation_tool/ui/mount_test_move_panel.py",
+    "apps/collimation_tool/ui/main_window.py",
+]
+fix_commits = ["1a89844"]
+dataset_uuids = []
+focused_command = """pytest -q \
+tests/collimation/ui/test_mount_align_tracking_path.py \
+tests/collimation/ui/test_main_window_target_owner.py \
+tests/contracts/test_connection_failure_contract.py::test_no_app_module_restates_the_failure_wording"""
+broader_tier = "component"
+field_only_assumptions = []
+gaps = [
+    "The cancel wiring is proven with a recording enforcer (the event reaches verify); that a real tracking repair's settle poll then ends at once is the S6.3 enforcer tests' claim, not re-proven here.",
+]
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_tracking_path.py::test_a_standalone_panel_verifies_tracking_through_the_enforcer"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-13, worktree wt-s66b-impl, the panel's enforcer init/_operating_mode/_required_tracking_mode/_tracking_failure_message restored to c6479e7: tests/collimation/ui/test_mount_align_tracking_path.py:53 -> :48: AssertionError: Mount Align must not verify tracking outside the enforcer"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_tracking_path.py::test_the_capture_worker_passes_its_stop_event_to_the_enforcer"
+failed_before_fix = true
+evidence = "Same worktree, only the cancel=job.cancel line removed: tests/collimation/ui/test_mount_align_tracking_path.py:105: assert [None] == [<threading.Event ...: unset>]"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_tracking_path.py::test_an_unavailable_mount_still_fails_the_precondition"
+failed_before_fix = false
+reason_no_prefix_repro = "Characterization: pins the pre-existing 'unavailable' refusal so moving to one path did not relax it (the enforcer itself answers 'no tracking to enforce')."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_main_window_target_owner.py::test_an_artificial_star_target_sizes_mount_align_for_a_near_target"
+failed_before_fix = true
+evidence = "Same worktree, _calibration_distance_m / registration toggle / target-mode sync reverted: tests/collimation/ui/test_main_window_target_owner.py:37: AssertionError: assert 10000.0 == 30.0"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_main_window_target_owner.py::test_the_registration_choice_follows_the_target_owner_both_ways"
+failed_before_fix = true
+evidence = "Same revert: tests/collimation/ui/test_main_window_target_owner.py:47: AssertionError: assert <CollimationTargetMode.NATURAL_STAR> is <CollimationTargetMode.ARTIFICIAL_STAR>"
+
+[[regression_tests]]
+node = "tests/contracts/test_connection_failure_contract.py::test_no_app_module_restates_the_failure_wording"
+failed_before_fix = true
+evidence = "Same worktree, the panel's own 'Connect failed' wording put back with the _ALLOWED_WORDING pin removed: tests/contracts/test_connection_failure_contract.py:130: AssertionError: ... ['apps/collimation_tool/ui/mount_test_move_panel.py:808']"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_main_window_target_owner.py::test_choosing_another_matcher_makes_the_target_a_natural_star_again"
+failed_before_fix = true
+evidence = "Review C4 revert-proof 2026-10-13, worktree wt-s66b-impl, toggled(False) ignored again: tests/collimation/ui/test_main_window_target_owner.py:68: AssertionError: assert <CollimationTargetMode.ARTIFICIAL_STAR> is <CollimationTargetMode.NATURAL_STAR>"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_main_window_target_owner.py::test_user_decision_a_still_holds"
+failed_before_fix = false
+reason_no_prefix_repro = "Characterization of S6.4 user decision A under the new single owner (passes before and after)."

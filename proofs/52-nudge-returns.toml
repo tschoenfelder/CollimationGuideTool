@@ -1,0 +1,62 @@
+# Proof manifest -- schema in proofs/README.md. Run: python scripts/prove.py 52-nudge-returns
+issues = [52, 43]
+summary = """USER DECISION (2026-10-10) + AGENTS.md manual-move rule: a RA/Dec nudge was gated on a \
+stability-verified BEFORE capture and held the panel busy through a verified AFTER capture, so \
+the controls stayed disabled long after the mount had stopped. Now the nudge is sized and sent \
+at once, returns when the move completes, and #43's no-motion check runs afterwards in the \
+background on fresh verified frames (BEFORE = the last verified at-rest reference, else the \
+move is reported unchecked); it only adds a WARNING when a camera saw no image motion. A new \
+move / Stop / mode change abandons a running check. Review C1: the check only READS the mount's tracking (no start/stop_tracking -- an abandoned check used to be able to send one while the next move ran); review C2: a tracking problem that stops the check is a WARNING in _last_error with nudge wording."""
+modules = [
+    "apps/collimation_tool/ui/mount_test_move_panel.py",
+    "apps/collimation_tool/application/mount_align_positioning.py",
+    "apps/collimation_tool/application/mount_align_plan.py",
+]
+fix_commits = ["1a89844"]
+dataset_uuids = []
+focused_command = """pytest -q \
+tests/collimation/ui/test_mount_align_nudge_returns.py \
+tests/collimation/ui/test_calibration_frame_validity.py::TestNoMotionIsExplicit::test_a_nudge_that_moved_nothing_is_not_a_confirmed_displacement \
+tests/collimation/application/test_mount_align_interface.py tests/collimation/ui/test_collimation_main_window.py::TestTrackingMode::test_a_nudge_moves_and_its_check_reports_tracking_that_cannot_be_established"""
+broader_tier = "component"
+field_only_assumptions = [
+    "With real long exposures the check's AFTER wait runs on the capture worker while the operator keeps clicking; that a newer move always abandons it cleanly (and auto-exposure resumes) is proven on fakes only.",
+]
+gaps = [
+    "The first nudge after connect / a screen move / a Stop has no valid verified at-rest reference, so it is reported 'no-motion check skipped' -- every later nudge is checked (each check's AFTER becomes the next reference).",
+]
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_nudge_returns.py::test_the_move_is_sent_at_once_without_waiting_for_a_before_capture"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-13, worktree wt-s66b-impl (full S6.6b diff), panel + mount_align_* modules restored to c6479e7: tests/collimation/ui/test_mount_align_nudge_returns.py:86 -> :76: AssertionError: condition never reached (no pulse sent while the BEFORE capture waited)"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_nudge_returns.py::test_the_nudge_returns_when_the_move_completes_while_the_check_still_runs"
+failed_before_fix = true
+evidence = "Same revert-proof: tests/collimation/ui/test_mount_align_nudge_returns.py:100 -> :76: AssertionError: condition never reached"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_nudge_returns.py::test_a_new_move_abandons_a_running_check"
+failed_before_fix = true
+evidence = "Same revert-proof: tests/collimation/ui/test_mount_align_nudge_returns.py:118 -> :76: AssertionError: condition never reached"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_calibration_frame_validity.py::TestNoMotionIsExplicit::test_a_nudge_that_moved_nothing_is_not_a_confirmed_displacement"
+failed_before_fix = true
+evidence = "Same revert-proof: tests/collimation/ui/test_calibration_frame_validity.py:478: AssertionError: assert 'no-motion check skipped' in 'Main: moved, displacement not confirmed | Guide: moved, displacement not confirmed'. #43's meaning is kept (NO_MOTION_DETECTED recorded, never a confirmed displacement), now as a post-move warning -- see proofs/43.toml."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_mount_align_interface.py::test_a_nudge_check_warns_only_when_nothing_moved"
+failed_before_fix = false
+reason_no_prefix_repro = "New application function check_nudge_motion (replaces evaluate_nudge); it did not exist before, so the test cannot run against the old code. The panel-level tests above carry the revert-proof."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_nudge_returns.py::test_an_abandoned_check_never_sends_a_tracking_command"
+failed_before_fix = true
+evidence = "Review C1 revert-proof 2026-10-13, worktree wt-s66b-impl, the nudge check back to repair_tracking=True: tests/collimation/ui/test_mount_align_nudge_returns.py:189: AssertionError: assert [('mount-align-nudge-check', 'stop_tracking')] == []"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_collimation_main_window.py::TestTrackingMode::test_a_nudge_moves_and_its_check_reports_tracking_that_cannot_be_established"
+failed_before_fix = true
+evidence = "Review C2 revert-proof, same worktree, the tracking warning branch disabled: tests/collimation/ui/test_collimation_main_window.py:5348: assert None is not None (_last_error). Replaces test_nudge_refuses_before_any_pulse_when_tracking_cannot_be_established: a nudge is no longer gated on a measurement precondition (user decision 2026-10-10)."

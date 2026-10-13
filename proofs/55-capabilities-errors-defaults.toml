@@ -1,0 +1,65 @@
+# Proof manifest -- schema in proofs/README.md. Run: python scripts/prove.py 55-capabilities-errors-defaults
+issues = [55, 52]
+summary = """Leftover second owners after S6.5/S6.3/S6.1: Mount Align sizing and the recenter policy \
+decided 'angular?' and the angular floor by hasattr/getattr probes instead of MountCapabilities \
+(a mount reporting a 30" floor only via capabilities() got 0" and refused 2.4" moves were \
+sent); ONSTEP_OPERATION_ERRORS lived inside the OnStepAdapter-importing pulse shim; three \
+CameraPort doubles restated the -10 C cooling default and the fake OnStep INDI client restated \
+INDI host/port, each pinned in the contract test. Now every capability is read from \
+MountCapabilities (the deprecated min_angular_arcsec alias is removed), the error set lives in \
+the neutral onstep/errors.py, the doubles read the owners, and the pins are gone."""
+modules = [
+    "apps/collimation_tool/application/mount_align_sizing.py",
+    "apps/collimation_tool/application/recenter_policy.py",
+    "packages/astrotool_core/onstep/errors.py",
+    "packages/astrotool_core/onstep/mount_pulse_adapter.py",
+    "packages/astrotool_core/onstep/focuser_adapter.py",
+    "packages/astrotool_core/camera/fake_camera.py",
+    "packages/astrotool_core/camera/replay_camera.py",
+    "packages/astrotool_core/testing/fake_touptek.py",
+    "packages/astrotool_core/testing/fake_onstep_indi_client.py",
+]
+fix_commits = ["1a89844"]
+dataset_uuids = []
+focused_command = """pytest -q \
+tests/collimation/application/test_mount_align_sizing.py::test_the_reported_capabilities_decide_not_the_attributes \
+tests/collimation/application/test_recenter_policy.py::TestTheFloorIsTheReportedCapability \
+tests/core/onstep/test_onstep_error_normalization.py::test_the_error_set_has_one_neutral_owner \
+tests/core/onstep/test_mount_capabilities.py \
+tests/contracts/test_config_source_contract.py"""
+broader_tier = "contract"
+field_only_assumptions = []
+gaps = [
+    "Duck typing left outside this contract: the runner's getattr(move_angular) (S6.8), guide_pulse_reacquisition's getattr(guide_pulse) (not in the S6.6b allowed files), Stop's getattr(abort) (no MountCapabilities field; global Stop is S6.8), mount_park_panel confirm_home/long_running_actions/home_confirmed, focuser_panel blockers, mount_align_interface status_pending.",
+    "fake_onstep_indi_client keeps its own (ConnectionError, RuntimeError, TimeoutError, ValueError) tuples on purpose: they mirror OnStepAdapter 0.5.0's own except clauses (indi_guiding.py:241, :250), not this app's ONSTEP_OPERATION_ERRORS.",
+]
+
+[[regression_tests]]
+node = "tests/collimation/application/test_mount_align_sizing.py::test_the_reported_capabilities_decide_not_the_attributes"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-13, worktree wt-s66b-impl, mount_supports_angular/min_angular_arcsec back to hasattr/getattr: tests/collimation/application/test_mount_align_sizing.py:126: assert not True (mount_supports_angular(_DuckTypedOnlyMount()))"
+
+[[regression_tests]]
+node = "tests/collimation/application/test_recenter_policy.py::TestTheFloorIsTheReportedCapability"
+failed_before_fix = true
+evidence = "Same worktree, the floor read back to getattr(mount, 'min_angular_arcsec', 0.0): tests/collimation/application/test_recenter_policy.py:379: assert [2.40656, 2.4..., ...] == [] (sub-floor moves sent)"
+
+[[regression_tests]]
+node = "tests/core/onstep/test_onstep_error_normalization.py::test_the_error_set_has_one_neutral_owner"
+failed_before_fix = true
+evidence = "Same worktree, focuser_adapter restating its own tuple: tests/core/onstep/test_onstep_error_normalization.py:65: AssertionError: assert (OSError, RuntimeError, ValueError, KeyError) is (OSError, RuntimeError, ValueError, KeyError)"
+
+[[regression_tests]]
+node = "tests/contracts/test_config_source_contract.py::test_the_cooling_default_has_one_owner"
+failed_before_fix = true
+evidence = "Same worktree, fake_camera.py at c6479e7 with the _COOLING_ALLOWED pins removed: tests/contracts/test_config_source_contract.py:285: AssertionError: re-stated cooling target default ... packages/astrotool_core/camera/fake_camera.py:57"
+
+[[regression_tests]]
+node = "tests/contracts/test_config_source_contract.py::test_no_owned_literal_is_restated_outside_its_owner"
+failed_before_fix = true
+evidence = "Same worktree, fake_onstep_indi_client.py at c6479e7 with the D09 pins removed: tests/contracts/test_config_source_contract.py:127: AssertionError: ... fake_onstep_indi_client.py:760: '127.0.0.1' / :761: 7624"
+
+[[regression_tests]]
+node = "tests/core/onstep/test_mount_capabilities.py::TestOnStepReportsItsAngularBounds::test_the_deprecated_alias_is_gone"
+failed_before_fix = false
+reason_no_prefix_repro = "Pins the removal of the S6.5 alias (an API removal, not a defect)."
