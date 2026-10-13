@@ -256,6 +256,10 @@ class FocuserScenario:
     #: The driver stopped republishing ABS_FOCUS_POSITION -> `focuser_position_stale`.
     position_stale: bool = False
     connected: bool = True
+    #: S6.8c: `stop()` waits this long (clock time) for its confirmation after setting the
+    #: cancel flag -- 0.5.0 `IndiFocuser.stop` sends ABORT, then waits up to 5 s for two
+    #: stable Ok position updates (indi_focuser.py:137-166).
+    stop_confirm_latency_s: float = 0.0
 
 
 @dataclass
@@ -428,6 +432,8 @@ class SimulatedIndiFocuser(FakeIndiFocuser):
     def stop(self, *, timeout: float = 5.0) -> bool:
         self.stop_calls += 1
         self._cancel.set()
+        if self.scenario.stop_confirm_latency_s > 0:
+            self._clock.sleep(self.scenario.stop_confirm_latency_s)
         if self.scenario.busy_forever:
             return False  # the abort is never confirmed: the driver stays Busy
         if self._travel is None:

@@ -17,6 +17,7 @@ the time those polls read is injectable.
 
 from __future__ import annotations
 
+import threading
 import time
 
 import pytest
@@ -30,6 +31,14 @@ from collimation_tool.ui import mount_park_panel as park_module
 from collimation_tool.ui.filter_wheel_panel import FilterWheelPanel
 from collimation_tool.ui.focuser_panel import FocuserPanel
 from collimation_tool.ui.mount_park_panel import MountParkPanel
+
+
+def _wait_for_jog(panel: FocuserPanel) -> None:
+    """S6.8c: the jog's move runs on a background worker -- wait (real time, bounded) for it."""
+    deadline = time.monotonic() + 5.0
+    while panel._jog.is_busy:
+        assert time.monotonic() < deadline, "the jog never ended"
+        threading.Event().wait(0.001)
 
 
 def _stuck_wheel_panel(**kwargs: object) -> tuple[FilterWheelPanel, FakeFilterWheel]:
@@ -50,6 +59,7 @@ def _moved_focuser_panel(**kwargs: object) -> FocuserPanel:
     panel = FocuserPanel(FakeFocuser(), **kwargs)  # type: ignore[arg-type]
     panel._connect_button.setChecked(True)
     panel._on_move_out()
+    _wait_for_jog(panel)
     panel._poll_status()
     assert panel._move_in_flight
     return panel

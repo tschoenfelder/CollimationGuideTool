@@ -288,6 +288,7 @@ class TestFocuser:
         f.move(-100)
         assert f.status().position == 400
         f.stop()
+        f.disconnect()  # S6.8c: a worker delivers the stop; disconnect waits for it
         assert made[0].focuser.stop_calls == 1
 
     def test_rejected_move_is_reported_not_claimed(self) -> None:

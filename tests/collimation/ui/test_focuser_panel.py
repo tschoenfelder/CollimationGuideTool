@@ -8,6 +8,7 @@ toggle, a full run's status/diagnostics, and cancellation."""
 
 from __future__ import annotations
 
+import threading
 import time
 
 import numpy as np
@@ -23,6 +24,14 @@ from astrotool_core.testing.frame_factory import single_star_image
 from collimation_tool.application.autofocus_controller import AutofocusMode
 from collimation_tool.application.autofocus_search import AutofocusStatus
 from collimation_tool.ui.focuser_panel import FocuserPanel
+
+
+def _wait_for_jog(panel: FocuserPanel) -> None:
+    """S6.8c: the jog's move runs on a background worker -- wait (real time, bounded) for it."""
+    deadline = time.monotonic() + 5.0
+    while panel._jog.is_busy:
+        assert time.monotonic() < deadline, "the jog never ended"
+        threading.Event().wait(0.001)
 
 
 def _star_frame(sigma: float = 2.0) -> np.ndarray:
@@ -116,6 +125,8 @@ class TestManualStepSizes:
 
         panel._on_move_in()
 
+        _wait_for_jog(panel)
+
         assert focuser.get_position() == -100
 
     def test_manual_outward_movement_uses_the_selected_increment(self, qapp: object) -> None:
@@ -125,6 +136,8 @@ class TestManualStepSizes:
         _select_step(panel, 200)
 
         panel._on_move_out()
+
+        _wait_for_jog(panel)
 
         assert focuser.get_position() == 200
 

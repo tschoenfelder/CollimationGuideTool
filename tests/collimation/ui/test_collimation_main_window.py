@@ -2444,6 +2444,14 @@ class TestCameraSettingsPersistence:
         assert not window._left_panel._auto_exposure_checkbox.isChecked()
 
 
+def _wait_for_jog(panel: FocuserPanel) -> None:
+    """S6.8c: the jog's move runs on a background worker -- wait (real time, bounded) for it."""
+    deadline = time.monotonic() + 5.0
+    while panel._jog.is_busy:
+        assert time.monotonic() < deadline, "the jog never ended"
+        threading.Event().wait(0.001)
+
+
 class _ScriptedMovingFocuser(FakeFocuser):
     """FakeFocuser reports is_moving()==False always (moves complete
     instantly), which can't exercise a genuine Busy->Ok transition. This
@@ -2531,6 +2539,7 @@ class TestFocuserPanel:
         panel._connect_button.setChecked(True)
         panel._step_group.button(100).setChecked(True)
         panel._out_button.click()
+        _wait_for_jog(panel)
         assert focuser.get_position() == 100
 
     def test_in_button_moves_inward_by_the_selected_step_size(self, qapp: object) -> None:
@@ -2542,6 +2551,7 @@ class TestFocuserPanel:
         panel._connect_button.setChecked(True)
         panel._step_group.button(10).setChecked(True)
         panel._in_button.click()
+        _wait_for_jog(panel)
         assert focuser.get_position() == -10
 
     def test_step_size_of_200_is_offered(self, qapp: object) -> None:
@@ -2553,6 +2563,7 @@ class TestFocuserPanel:
         panel._connect_button.setChecked(True)
         panel._step_group.button(200).setChecked(True)
         panel._out_button.click()
+        _wait_for_jog(panel)
         assert focuser.get_position() == 200
 
     def test_default_step_size_is_one(self, qapp: object) -> None:
@@ -2563,6 +2574,7 @@ class TestFocuserPanel:
         panel = window._focuser_panel
         panel._connect_button.setChecked(True)
         panel._out_button.click()
+        _wait_for_jog(panel)
         assert focuser.get_position() == 1
 
     def test_status_label_shows_position_after_connecting(self, qapp: object) -> None:
@@ -2667,6 +2679,7 @@ class TestFocuserOneMoveAtATime:
         panel = window._focuser_panel
         panel._connect_button.setChecked(True)
         panel._out_button.click()
+        _wait_for_jog(panel)
         assert not panel._in_button.isEnabled()
         assert not panel._out_button.isEnabled()
 
@@ -2678,6 +2691,7 @@ class TestFocuserOneMoveAtATime:
         panel = window._focuser_panel
         panel._connect_button.setChecked(True)
         panel._out_button.click()
+        _wait_for_jog(panel)
         assert focuser.get_position() == 1
         panel._out_button.click()  # disabled -- Qt refuses to fire clicked()
         assert focuser.get_position() == 1
@@ -2692,6 +2706,7 @@ class TestFocuserOneMoveAtATime:
         panel = window._focuser_panel
         panel._connect_button.setChecked(True)
         panel._out_button.click()
+        _wait_for_jog(panel)
         assert not panel._out_button.isEnabled()
 
         # Genuinely busy for a couple of poll cycles first (the whole
@@ -2720,6 +2735,7 @@ class TestFocuserOneMoveAtATime:
         panel = window._focuser_panel
         panel._connect_button.setChecked(True)
         panel._out_button.click()
+        _wait_for_jog(panel)
         assert not panel._out_button.isEnabled()
 
         panel._move_issued_at = time.monotonic() - 999.0  # simulate elapsed time
@@ -2785,6 +2801,7 @@ class TestFocuserStop:
         panel = window._focuser_panel
         panel._connect_button.setChecked(True)
         panel._out_button.click()
+        _wait_for_jog(panel)
 
         assert not panel._in_button.isEnabled()
         assert not panel._out_button.isEnabled()
@@ -2798,6 +2815,7 @@ class TestFocuserStop:
         panel = window._focuser_panel
         panel._connect_button.setChecked(True)
         panel._out_button.click()
+        _wait_for_jog(panel)
 
         panel._stop_button.click()
 
@@ -2811,6 +2829,7 @@ class TestFocuserStop:
         panel = window._focuser_panel
         panel._connect_button.setChecked(True)
         panel._out_button.click()
+        _wait_for_jog(panel)
         assert panel._move_in_flight is True
 
         panel._stop_button.click()
@@ -2854,6 +2873,7 @@ class TestQuittingStopsHardware:
         panel = FocuserPanel(focuser)
         panel._connect_button.setChecked(True)
         panel._out_button.click()
+        _wait_for_jog(panel)
         assert focuser.stop_log == []
 
         panel.stop()
@@ -2902,6 +2922,7 @@ class TestFocuserPausesMainCamera:
         window._focuser_panel._connect_button.setChecked(True)
         assert not window._left_panel._updates_paused
         window._focuser_panel._out_button.click()
+        _wait_for_jog(window._focuser_panel)
         assert window._left_panel._updates_paused
         assert not window._right_panel._updates_paused
 
@@ -2912,6 +2933,7 @@ class TestFocuserPausesMainCamera:
         )
         window._focuser_panel._connect_button.setChecked(True)
         window._focuser_panel._out_button.click()
+        _wait_for_jog(window._focuser_panel)
         assert window._left_panel._updates_paused
 
         focuser.tick()
@@ -2931,6 +2953,7 @@ class TestFocuserPausesMainCamera:
         window._left_panel._start_button.setChecked(True)
         try:
             window._focuser_panel._out_button.click()
+            _wait_for_jog(window._focuser_panel)
             assert not window._left_panel._timer.isActive()
             assert "focuser moving" in window._left_panel._recommendation_label.text().lower()
         finally:

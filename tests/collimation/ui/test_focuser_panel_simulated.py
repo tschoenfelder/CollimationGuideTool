@@ -11,6 +11,9 @@ issued-at timestamp the same way the existing panel tests do.
 from __future__ import annotations
 
 import sys
+import threading
+import time
+from collections.abc import Callable
 
 import pytest
 from astrotool_core.acquisition.stable_frame_acquisition import (
@@ -103,6 +106,7 @@ class TestStuckBusyRecovers:
         assert panel._auto_focus_button.isEnabled()
 
         panel._on_move_out()  # the simulated driver goes Busy and stays there
+        assert _until(lambda: not panel._jog.is_busy)  # S6.8c: the jog runs off the GUI thread
         assert clock.monotonic() == 35.0  # 0.4.1: 30 s move timeout + 5 s stop wait, fake time
         panel._poll_status()
         assert panel._move_in_flight and not panel._auto_focus_button.isEnabled()
@@ -239,3 +243,105 @@ class TestEveryConnectionPhaseLeavesThePanelRetryable:
 
         assert hook == [AttributeError]
         assert connection.client is None  # the release still ran
+
+
+def _until(condition: Callable[[], bool], timeout_s: float = 3.0) -> bool:
+    deadline = time.monotonic() + timeout_s
+    while not condition():
+        if time.monotonic() >= deadline:
+            return False
+        threading.Event().wait(0.001)
+    return True
+
+
+class _Watchdog:
+    """Before S6.8c the jog's blocking move ran on the GUI thread, which on a manual FakeClock
+    never returns. After a real-time bound this moves fake time on (the move then ends), so
+    such a run FAILS on the assertion after the click instead of hanging the test session."""
+
+    def __init__(self, clock: FakeClock, after_s: float = 2.0) -> None:
+        self._cancelled = threading.Event()
+
+        def fire() -> None:
+            if not self._cancelled.wait(after_s):
+                clock.advance(1000.0)
+
+        threading.Thread(target=fire, daemon=True).start()
+
+    def cancel(self) -> None:
+        self._cancelled.set()
+
+
+def _jog_in_flight() -> tuple[FocuserPanel, list[SimulatedOnStepIndiClient], FakeClock]:
+    """A 200-step Out jog at 1 step/s (200 s of fake time) clicked on the GUI thread."""
+    clock = FakeClock(auto_advance=False)
+    panel, made = _focuser_panel(
+        OnStepScenario(focuser=FocuserScenario(steps_per_s=1.0)), clock
+    )
+    panel._connect_button.setChecked(True)
+    button = panel._step_group.button(200)
+    assert button is not None
+    button.setChecked(True)
+    watchdog = _Watchdog(clock)
+    panel._on_move_out()
+    watchdog.cancel()
+    assert clock.monotonic() == 0.0, "the click returned only once the move had ended"
+    assert clock.wait_for_sleepers(1), "the jog's move never started"
+    return panel, made, clock
+
+
+class TestJogRunsOffTheGuiThread:
+    """S6.8c (R7, F6): OnStepAdapter's focuser move blocks until the target is confirmed (up
+    to 30 s). The jog ran it on the GUI thread -- the window froze for the travel time and
+    its own Stop could not be clicked."""
+
+    def test_the_blocking_move_never_runs_on_the_gui_thread(self, qapp: object) -> None:
+        panel, made = _focuser_panel(OnStepScenario(), FakeClock())
+        panel._connect_button.setChecked(True)
+        callers: list[int] = []
+        real_move = made[0].focuser.move_absolute
+
+        def spy(target: int, **kwargs: float) -> object:
+            callers.append(threading.get_ident())
+            return real_move(target, **kwargs)
+
+        made[0].focuser.move_absolute = spy  # type: ignore[method-assign]
+        panel._on_move_out()
+
+        assert _until(lambda: made[0].focuser.position == 5001)
+        assert callers and callers[0] != threading.get_ident(), (
+            "the jog's blocking move ran on the GUI thread"
+        )
+        panel.stop()
+
+    def test_the_panel_stays_responsive_during_the_jog(self, qapp: object) -> None:
+        panel, _made, clock = _jog_in_flight()
+        try:
+            panel._poll_status()  # a GUI-thread poll during the move returns at once
+            assert "(moving" in panel._status_label.text()
+            assert not panel._in_button.isEnabled() and not panel._out_button.isEnabled()
+            assert panel._stop_button.isEnabled()
+        finally:
+            panel.stop()
+            clock.advance(1000.0)
+
+    def test_stop_during_the_jog_ends_the_move_early(self, qapp: object) -> None:
+        panel, made, clock = _jog_in_flight()
+        panel._on_stop()  # on the GUI thread; must return while the move runs
+
+        assert _until(lambda: not panel._jog.is_busy), "the jog ran on despite the Stop"
+        assert made[0].focuser.stop_calls >= 1
+        assert made[0].focuser.position == 5000  # stopped short of 5200, no fake time passed
+        assert clock.monotonic() == 0.0
+        panel._poll_status()
+        assert panel._out_button.isEnabled()  # the next jog is offered again
+        panel.stop()
+
+    def test_quit_during_the_jog_stops_it(self, qapp: object) -> None:
+        panel, made, clock = _jog_in_flight()
+        panel.stop()  # app quit: abort, then release
+
+        assert _until(lambda: not panel._jog.is_busy), "the jog ran on after quit"
+        assert made[0].focuser.stop_calls >= 1
+        assert made[0].focuser.position == 5000
+        assert clock.monotonic() == 0.0

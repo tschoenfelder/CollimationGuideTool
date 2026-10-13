@@ -138,6 +138,7 @@ CORE_COMPONENT_MODULES = frozenset(
         "mount/test_axis_calibration.py",
         "mount/test_operating_mode.py",
         "mount/test_tracking_mode.py",
+        "onstep/test_focuser_stop_during_move.py",
         "onstep/test_onstep_adapters.py",
         "onstep/test_onstep_simulator.py",
         "registration/test_astap_adapter.py",

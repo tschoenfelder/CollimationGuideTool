@@ -34,6 +34,13 @@ click -- and keeps them disabled until a genuine Busy→Ok transition (or
 a generous timeout, in case a future driver settles too fast for this
 panel's poll to ever observe Busy at all) confirms the move is actually
 done.
+
+Jog off the GUI thread (S6.8c, R7): OnStepAdapter's focuser move blocks until the target is
+confirmed (up to 30 s), so the jog runs on a background `OperationLifecycle` ("focuser-jog",
+the S6.3 pattern: one at a time, guaranteed terminal state) and the click handler returns at
+once. In/Out (and Auto Focus) stay disabled while that worker still runs, also after a Stop
+dropped the in-flight window -- one move at a time, as above. Stop reaches the running move
+because `OnStepFocuserAdapter.stop()` no longer queues behind it.
 """
 
 from __future__ import annotations
@@ -66,6 +73,7 @@ from collimation_tool.application.autofocus_controller import (
 from collimation_tool.application.autofocus_search import AutofocusStatus
 from collimation_tool.application.operation_lifecycle import (
     CompletionVerdict,
+    OperationLifecycle,
     StatusPollGuard,
     completion_verdict,
 )
@@ -167,6 +175,8 @@ class FocuserPanel(QWidget):
         self._move_in_flight = False
         self._seen_busy_since_move = False
         self._move_issued_at: float | None = None
+        #: S6.8c: the jog's blocking move runs here, never on the GUI thread.
+        self._jog: OperationLifecycle[None] = OperationLifecycle("focuser-jog")
 
         # Issue #33: Auto Focus needs camera access this panel otherwise
         # has none of -- optional, injectable-default (None) so existing
@@ -313,6 +323,8 @@ class FocuserPanel(QWidget):
         self._update_move_buttons_enabled()
 
     def _begin_move(self, steps: int) -> None:
+        if self._jog.is_busy:
+            return  # the previous jog's move is still ending (one move at a time)
         # Disable synchronously, before issuing the move -- see module
         # docstring's "One move at a time". Qt delivers input on this one
         # thread, so a button already disabled here cannot receive a second
@@ -321,7 +333,12 @@ class FocuserPanel(QWidget):
         self._seen_busy_since_move = False
         self._move_issued_at = self._clock.monotonic()
         self._update_move_buttons_enabled()
-        self._focuser.move(steps)
+        focuser = self._focuser
+        # S6.8c: off the GUI thread; a failure is logged by the lifecycle, the poll and the
+        # confirmation safety net end the in-flight window as before.
+        self._jog.start(
+            lambda: focuser.move(steps), on_error=lambda _exc: None, publish=lambda _none: None
+        )
 
     def _on_move_in(self) -> None:
         self._begin_move(-self._selected_step())
@@ -358,6 +375,7 @@ class FocuserPanel(QWidget):
             self._connected
             and self._focuser.is_available
             and not self._move_in_flight
+            and not self._jog.is_busy
             and not self._autofocus_running
             and self._get_frame is not None
             and self._wait_for_frame is not None
@@ -507,6 +525,7 @@ class FocuserPanel(QWidget):
             and self._focuser.is_available
             and not self._focuser.is_moving()
             and not self._move_in_flight
+            and not self._jog.is_busy
             and not self._autofocus_running
         )
         self._in_button.setEnabled(available)

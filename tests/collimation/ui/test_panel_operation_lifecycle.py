@@ -19,6 +19,8 @@ Every poll is one `_poll_status()` call on a `FakeClock`; no Qt timer, no real w
 from __future__ import annotations
 
 import logging
+import threading
+import time
 
 import pytest
 from astrotool_core.filter_wheel.fake_filter_wheel import FakeFilterWheel
@@ -32,6 +34,14 @@ from astrotool_core.timing import FakeClock
 from collimation_tool.ui.filter_wheel_panel import FilterWheelPanel
 from collimation_tool.ui.focuser_panel import FocuserPanel
 from collimation_tool.ui.mount_park_panel import MountParkPanel
+
+
+def _wait_for_jog(panel: FocuserPanel) -> None:
+    """S6.8c: the jog's move runs on a background worker -- wait (real time, bounded) for it."""
+    deadline = time.monotonic() + 5.0
+    while panel._jog.is_busy:
+        assert time.monotonic() < deadline, "the jog never ended"
+        threading.Event().wait(0.001)
 
 
 class _BreakableFocuser(FakeFocuser):
@@ -138,6 +148,7 @@ class TestFocuserPanelStuckBusy:
         panel.move_in_flight_changed.connect(released.append)
         panel._connect_button.setChecked(True)
         panel._on_move_out()
+        _wait_for_jog(panel)
         focuser.moving = True  # the driver reports Busy -- and never clears it
         panel._poll_status()
         clock.advance(10.25)
@@ -160,6 +171,7 @@ class TestStatusPollsNeverRaise:
         panel = FocuserPanel(focuser, title="Main focuser", clock=clock)
         panel._connect_button.setChecked(True)
         panel._on_move_out()
+        _wait_for_jog(panel)
         focuser.broken = True
         with caplog.at_level(logging.WARNING):
             panel._poll_status()
