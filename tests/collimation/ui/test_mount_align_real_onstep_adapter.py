@@ -1034,3 +1034,43 @@ class TestAMoveNeverStopsTracking:
         assert "unpark" in contexts, contexts
         assert len(rig.client.axis_move_calls) > before, panel._result_label.text()
         panel.stop()
+
+    def test_terrestrial_tracking_switched_on_behind_the_policy_is_repaired_and_noted(
+        self, qapp: object
+    ) -> None:
+        """Review of S6.8a: tracking turned on after the last enforcement (OnStep's delayed
+        auto-track, the hand controller, a driver side effect) refused every Terrestrial move
+        with no way out. The #44 owner repairs it once -- its own trail entry, a visible note."""
+        rig = _Rig((_main(283.0), _GUIDE))
+        panel = _calibrated(rig)
+        rig.client.tracking = True  # the driver re-enabled tracking behind the policy
+        before = len(rig.client.axis_move_calls)
+
+        panel._size_buttons[MovementSize.MEDIUM].setChecked(True)
+        panel._on_screen_move_clicked("left", ScreenDirection.RIGHT)
+        _drain(panel)
+
+        assert len(rig.client.axis_move_calls) > before, panel._result_label.text()
+        assert rig.client.tracking is False
+        assert "NOTE" in panel._result_label.text(), panel._result_label.text()
+        trail = panel._tracking_enforcer.evidence()["transitions"]
+        repairs = [t for t in trail if t["context"] == "mount_align_move:repair"]
+        assert repairs and repairs[-1]["command"] == "stop_tracking", trail
+        panel.stop()
+
+    def test_a_terrestrial_repair_that_fails_refuses_with_a_recovery_hint(
+        self, qapp: object
+    ) -> None:
+        rig = _Rig((_main(283.0), _GUIDE))
+        panel = _calibrated(rig)
+        rig.client.tracking = True
+        rig.client.stop_confirms = False  # the mount does not confirm tracking off
+        before = len(rig.client.axis_move_calls)
+
+        panel._size_buttons[MovementSize.MEDIUM].setChecked(True)
+        panel._on_screen_move_clicked("left", ScreenDirection.RIGHT)
+        _drain(panel)
+
+        assert len(rig.client.axis_move_calls) == before
+        assert panel._last_error is not None and "To recover" in panel._last_error
+        panel.stop()

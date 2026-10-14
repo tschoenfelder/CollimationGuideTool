@@ -147,6 +147,9 @@ class MountPulseOutcome:
     #: How each step actually moved (`MOTION_*`), in step order.
     motion_paths: tuple[str, ...] = ()
     settled_at: float | None = None
+    #: S6.8a review: something the operator must be told even though the move ran (e.g. the
+    #: Terrestrial tracking policy had to turn tracking off first). None = nothing.
+    note: str | None = None
 
 
 #: `_wait_for_parked`'s answer when Stop ended the wait.
@@ -315,6 +318,8 @@ class MountTestMoveRunner:
         #: S6.0c/S6.8a: the running sequence's claim; Stop sets its cancel event, which ends
         #: the whole submitted sequence -- no further step is sent.
         self._claim: MotionClaim | None = None
+        #: The running sequence's operator note (worker thread only).
+        self._note: str | None = None
 
     @property
     def executor(self) -> MountMotionExecutor:
@@ -467,8 +472,20 @@ class MountTestMoveRunner:
             tracking = None if status is None else status.tracking
         if not any(len(step) > 3 for step in steps):
             return None  # timed pulses only: no axis GOTO, tracking is no precondition
-        gate = self._executor.axis_move_gate(tracking, "mount_align_move")
-        return None if gate.allowed else gate.reason
+
+        def reread() -> bool | None:
+            fresh = _fresh_park_status(
+                mount_park, timeout_s=_UNPARK_TIMEOUT_S, clock=self._clock, cancel=stop
+            )
+            return None if fresh is None else fresh.tracking
+
+        decision = self._executor.axis_move_decision(
+            tracking, "mount_align_move", reread=reread, cancel=stop
+        )
+        if decision.note is not None:
+            _log.warning("Mount Align: %s", decision.note)
+            self._note = decision.note
+        return None if decision.allowed else decision.reason
 
     def _run_sequence(
         self,
@@ -486,6 +503,7 @@ class MountTestMoveRunner:
         motion_started_at: float | None = None
         motion_ended_at: float | None = None
         settled_at: float | None = None
+        self._note = None
         # Only a mount that is parked right now (a FRESH reading) gets unpark(): resending
         # UNPARK on every submit re-triggered OnStep's delayed auto-tracking-on quirk (module
         # docstring). S6.8a: an unparked mount gets NO command here -- the former
@@ -574,6 +592,7 @@ class MountTestMoveRunner:
             motion_ended_at=motion_ended_at,
             settled_at=settled_at,
             motion_paths=tuple(paths),
+            note=self._note,
         )
 
     def abort(self) -> None:

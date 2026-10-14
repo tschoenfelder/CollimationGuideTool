@@ -63,6 +63,13 @@ TERRESTRIAL_TRACKING_AXIS_MOVE_REFUSED = (
     "terrestrial operating mode, but the mount reports tracking ON -- the tracking policy has "
     "not turned it off (see the Mount panel); nothing was sent and no emergency stop was issued"
 )
+#: S6.8a review: the Terrestrial repair (the enforcer's tracking-off) did not take.
+TERRESTRIAL_TRACKING_REPAIR_FAILED = (
+    "terrestrial operating mode, but the mount still reports tracking ON after the tracking "
+    "policy tried to turn it off -- nothing was sent. To recover: turn tracking off on the "
+    "hand controller (or switch the Operating mode to Astronomical and back to Terrestrial, "
+    "which turns it off again), then retry the move"
+)
 NO_POLICY_TRACKING_AXIS_MOVE_REFUSED = (
     "the mount is tracking and an axis move needs tracking off -- nothing was sent and tracking "
     "was not stopped"
@@ -268,10 +275,12 @@ class TrackingEnforcer:
     def axis_move_gate(self, context: str, *, tracking: bool | None) -> TrackingGate:
         """S6.8a (R1): the one answer to "may this axis move run, given the tracking reading
         `tracking` (fresh, None = unknown)?" -- `axis_move_gate_for` under the current mode.
-        Sends nothing and never changes tracking; recorded in the evidence trail, but it does
-        not change the measurement gate (`last_gate`)."""
+        Sends nothing and never changes tracking; a REFUSAL is recorded in the evidence trail
+        (allowed moves are not -- they would flood its bounded length); the measurement gate
+        (`last_gate`) is not changed."""
         gate = axis_move_gate_for(self._mode, tracking)
-        self._record(context, before=tracking, command=None, after=None, gate=gate)
+        if not gate.allowed:
+            self._record(context, before=tracking, command=None, after=None, gate=gate)
         return gate
 
     def evidence(self) -> dict[str, Any]:

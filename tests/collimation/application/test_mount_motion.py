@@ -12,10 +12,14 @@
 
 from __future__ import annotations
 
+import threading
+from collections.abc import Callable
+
 from astrotool_core.mount.axis_calibration import AxisResponse, CalibrationMatrix
 from astrotool_core.mount.operating_mode import (
     ASTRONOMICAL_TRACKING_AXIS_MOVE_REFUSED,
     TERRESTRIAL_TRACKING_AXIS_MOVE_REFUSED,
+    TERRESTRIAL_TRACKING_REPAIR_FAILED,
     OperatingMode,
     TrackingEnforcer,
 )
@@ -29,7 +33,11 @@ from astrotool_core.mount.port import (
 from astrotool_core.target.roi_tracker import TrackingResult, TrackingState
 from astrotool_core.testing.fake_mount_park import FakeMountPark
 from astrotool_core.timing import FakeClock
-from collimation_tool.application.mount_motion import MOTION_BUSY, MountMotionExecutor
+from collimation_tool.application.mount_motion import (
+    MOTION_BUSY,
+    MotionClaim,
+    MountMotionExecutor,
+)
 from collimation_tool.application.recenter_policy import CollimationRecenterPolicy, RecenterConfig
 from collimation_tool.application.star_acquisition import REACQUISITION_OWNER
 
@@ -266,3 +274,120 @@ class TestReacquisitionCancel:
 
         assert result.reason == "cancelled"
         assert len(mount.moves) == 1
+
+
+class _HookLock:
+    """A lock that runs a hook right after its next release -- places another thread's
+    claim/release exactly between two of the executor's critical sections."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self.on_release: Callable[[], None] | None = None
+
+    def __enter__(self) -> _HookLock:
+        self._lock.acquire()
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self._lock.release()
+        hook, self.on_release = self.on_release, None
+        if hook is not None:
+            hook()
+
+
+class _LatchMount(_AngularMount):
+    def __init__(self) -> None:
+        super().__init__()
+        self.latched = False
+
+    def abort(self) -> None:
+        super().abort()
+        self.latched = True
+
+    def clear_abort(self) -> None:
+        super().clear_abort()
+        self.latched = False
+
+
+class TestOwnerScopedAbortRace:
+    def test_a_stale_cancel_never_latches_into_another_owners_new_motion(self) -> None:
+        """Review (S6.8a): `abort(owner)` decided under the lock but sent the mount Stop after
+        releasing it -- a reacquisition ending and Mount Align claiming in that gap got the
+        stale Cancel's Stop latched into its fresh motion."""
+        mount = _LatchMount()
+        executor = MountMotionExecutor(mount)
+        lock = _HookLock()
+        executor._lock = lock  # type: ignore[assignment]
+        reacquisition = executor.claim(REACQUISITION_OWNER, mount)
+        assert not isinstance(reacquisition, str)
+        claimed: list[MotionClaim | str] = []
+
+        def reacquisition_ends_and_mount_align_starts() -> None:
+            executor.release(reacquisition)
+            claimed.append(executor.claim("Mount Align", mount))
+
+        lock.on_release = reacquisition_ends_and_mount_align_starts
+        executor.abort(REACQUISITION_OWNER)
+
+        mount_align = claimed[0]
+        assert not isinstance(mount_align, str)
+        assert not mount_align.cancelled
+        assert mount.latched is False, "the stale Cancel latched a Stop into Mount Align's move"
+
+
+class TestTerrestrialTrackingRepair:
+    """Review (S6.8a): Terrestrial + tracking ON refused every move with no way out. The #44
+    owner repairs it (its own trail entry), then ONE fresh re-check; never in Astronomical."""
+
+    def _setup(
+        self, mode: OperatingMode, *, refuse_stop: bool = False
+    ) -> tuple[MountMotionExecutor, TrackingEnforcer, FakeMountPark]:
+        park = FakeMountPark(start_parked=False, refuse_stop_tracking=refuse_stop)
+        park.make_available(tracking=True)
+        enforcer = TrackingEnforcer(park, mode, settle_timeout_s=0, clock=FakeClock())
+        return MountMotionExecutor(tracking_enforcer=enforcer), enforcer, park
+
+    def test_terrestrial_tracking_is_repaired_by_the_enforcer_and_noted(self) -> None:
+        executor, enforcer, park = self._setup(OperatingMode.TERRESTRIAL)
+
+        decision = executor.axis_move_decision(
+            True, "mount_align_move", reread=lambda: park.status().tracking
+        )
+
+        assert decision.allowed
+        assert decision.note is not None and "turned tracking off" in decision.note
+        assert park.status().tracking is False
+        trail = enforcer.evidence()["transitions"]
+        assert [t["context"] for t in trail] == ["mount_align_move", "mount_align_move:repair"]
+        assert trail[-1]["command"] == "stop_tracking"
+
+    def test_a_repair_that_does_not_take_says_how_to_recover(self) -> None:
+        executor, _enforcer, park = self._setup(OperatingMode.TERRESTRIAL, refuse_stop=True)
+
+        decision = executor.axis_move_decision(
+            True, "mount_align_move", reread=lambda: park.status().tracking
+        )
+
+        assert not decision.allowed
+        assert decision.reason == TERRESTRIAL_TRACKING_REPAIR_FAILED
+        assert "To recover" in decision.reason
+        assert park.stop_tracking_count == 1  # exactly one repair attempt
+
+    def test_astronomical_tracking_is_never_repaired(self) -> None:
+        executor, _enforcer, park = self._setup(OperatingMode.ASTRONOMICAL)
+
+        decision = executor.axis_move_decision(
+            True, "mount_align_move", reread=lambda: park.status().tracking
+        )
+
+        assert not decision.allowed
+        assert decision.reason == ASTRONOMICAL_TRACKING_AXIS_MOVE_REFUSED
+        assert park.stop_tracking_count == 0 and park.status().tracking is True
+
+    def test_an_allowed_move_leaves_no_trail_entry(self) -> None:
+        executor, enforcer, _park = self._setup(OperatingMode.TERRESTRIAL)
+        before = list(enforcer.evidence()["transitions"])
+
+        assert executor.axis_move_gate(False, "mount_align_move").allowed
+
+        assert enforcer.evidence()["transitions"] == before

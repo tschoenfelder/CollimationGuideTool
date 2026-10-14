@@ -2252,6 +2252,8 @@ class MountTestMovePanel(QWidget):
                         f"{outcome.error}"
                     )
                 self._result_label.setText(f"Calibration failed: {self._last_error} ({suffix})")
+            if outcome.note:  # S6.8a review: never silent (e.g. a Terrestrial tracking repair)
+                self._result_label.setText(f"{self._result_label.text()} -- NOTE: {outcome.note}")
         self._update_buttons_enabled()
 
     def _build_response(

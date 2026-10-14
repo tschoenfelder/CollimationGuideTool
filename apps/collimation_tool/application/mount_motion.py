@@ -30,9 +30,16 @@ No Qt; no `time.sleep` (the injected `Clock`, #53).
 from __future__ import annotations
 
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from astrotool_core.mount.operating_mode import TrackingEnforcer, TrackingGate, axis_move_gate_for
+from astrotool_core.mount.operating_mode import (
+    TERRESTRIAL_TRACKING_REPAIR_FAILED,
+    OperatingMode,
+    TrackingEnforcer,
+    TrackingGate,
+    axis_move_gate_for,
+)
 from astrotool_core.mount.tracking_mode import WORKER_DECISION_FRESH_WAIT_S
 from astrotool_core.timing import SYSTEM_CLOCK, Clock
 
@@ -40,6 +47,23 @@ from collimation_tool.application.mount_commands import rearm_after_stop
 
 #: Prefix of every busy refusal, so callers and tests can recognise it.
 MOTION_BUSY = "mount busy"
+
+
+#: The status note shown after a Terrestrial move whose tracking had to be turned off first.
+TERRESTRIAL_TRACKING_REPAIRED_NOTE = (
+    "the mount was tracking in Terrestrial mode -- the tracking policy turned tracking off "
+    "before this move"
+)
+
+
+@dataclass(frozen=True)
+class AxisMoveDecision:
+    """`axis_move_decision`'s answer: whether the axis move may run, why not, and a note to
+    show when it may only because the Terrestrial tracking policy repaired tracking first."""
+
+    allowed: bool
+    reason: str
+    note: str | None = None
 
 
 @dataclass
@@ -81,7 +105,9 @@ class MountMotionExecutor:
         self._mount = mount
         self._enforcer = tracking_enforcer
         self._clock: Clock = clock if clock is not None else SYSTEM_CLOCK
-        #: Guards `_claim` only; never held while talking to the mount.
+        #: Guards `_claim`. Held around the Stop latch's own calls (`abort()` / `clear_abort()`:
+        #: non-blocking flag + worker hand-off, no mount I/O) so a Stop and a new claim's re-arm
+        #: are ordered; never held around a move, a status read or any other mount I/O.
         self._lock = threading.Lock()
         self._claim: MotionClaim | None = None
 
@@ -109,9 +135,9 @@ class MountMotionExecutor:
                 )
             claim = MotionClaim(owner, target)
             self._claim = claim
-        rearm_after_stop(target)
-        if self._mount is not None and self._mount is not target:
-            rearm_after_stop(self._mount)
+            rearm_after_stop(target)
+            if self._mount is not None and self._mount is not target:
+                rearm_after_stop(self._mount)
         return claim
 
     def release(self, claim: MotionClaim) -> None:
@@ -124,20 +150,22 @@ class MountMotionExecutor:
         """Stop (any thread, returns at once): cancel the motion in flight and send the mount's
         lock-free Stop -- to the claim's mount and the executor's own (each once). With `owner`
         (a workflow's own Cancel, e.g. fine collimation's) only that owner's motion is stopped:
-        nothing happens while no motion or another workflow's motion is in flight."""
+        nothing happens while no motion or another workflow's motion is in flight. The
+        decision and the cancel are taken atomically with `claim()`/`release()` (review: a
+        stale Cancel must never latch into a motion another owner claimed meanwhile)."""
+        mounts: list[object] = []
         with self._lock:
             claim = self._claim
-        if owner is not None and (claim is None or claim.owner != owner):
-            return
-        mounts: list[object] = []
-        if claim is not None:
-            claim.cancel.set()
-            if claim.mount is not None:
-                mounts.append(claim.mount)
-        if self._mount is not None and all(m is not self._mount for m in mounts):
-            mounts.append(self._mount)
-        for mount in mounts:
-            mount_abort(mount)
+            if owner is not None and (claim is None or claim.owner != owner):
+                return
+            if claim is not None:
+                claim.cancel.set()
+                if claim.mount is not None:
+                    mounts.append(claim.mount)
+            if self._mount is not None and all(m is not self._mount for m in mounts):
+                mounts.append(self._mount)
+            for mount in mounts:
+                mount_abort(mount)
 
     def settle(self, claim: MotionClaim | None, seconds: float) -> bool:
         """Wait `seconds` on the executor's clock; False when Stop ended it early."""
@@ -151,6 +179,38 @@ class MountMotionExecutor:
         if self._enforcer is not None:
             return self._enforcer.axis_move_gate(context, tracking=tracking)
         return axis_move_gate_for(None, tracking)
+
+    def axis_move_decision(
+        self,
+        tracking: bool | None,
+        context: str,
+        *,
+        reread: Callable[[], bool | None],
+        cancel: threading.Event | None = None,
+    ) -> AxisMoveDecision:
+        """`axis_move_gate`, plus the one sanctioned repair (#44 user decision: Terrestrial =>
+        tracking OFF, owned by the enforcer): a Terrestrial move refused because the mount
+        tracks gets the enforcer's tracking-off (its own trail entry), then ONE fresh reading
+        (`reread`) and one more gate check. Never in Astronomical mode (S6.8b), never silent:
+        an allowed move carries a note; a refusal says how to recover."""
+        gate = self.axis_move_gate(tracking, context)
+        enforcer = self._enforcer
+        if (
+            gate.allowed
+            or tracking is not True
+            or enforcer is None
+            or enforcer.mode is not OperatingMode.TERRESTRIAL
+        ):
+            return AxisMoveDecision(gate.allowed, gate.reason)
+        enforcer.enforce(
+            f"{context}:repair", fresh_wait_s=WORKER_DECISION_FRESH_WAIT_S, cancel=cancel
+        )
+        if cancel is not None and cancel.is_set():
+            return AxisMoveDecision(False, "stopped by the user -- no move sent")
+        again = self.axis_move_gate(reread(), context)
+        if again.allowed:
+            return AxisMoveDecision(True, again.reason, TERRESTRIAL_TRACKING_REPAIRED_NOTE)
+        return AxisMoveDecision(False, TERRESTRIAL_TRACKING_REPAIR_FAILED)
 
     def enforce_after_unpark(self, cancel: threading.Event | None = None) -> TrackingGate | None:
         """F12: #44's unpark enforcement after an automatic unpark (worker thread: waits for a

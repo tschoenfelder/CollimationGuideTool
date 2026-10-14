@@ -17,10 +17,30 @@ import threading
 import time
 
 import numpy as np
+from astrotool_core.acquisition.stable_frame_acquisition import (
+    DeliveredFrame,
+    FrameAcquisitionResult,
+    FrameAcquisitionStatus,
+)
 from astrotool_core.camera.replay_camera import ReplayCamera
+from astrotool_core.mount import AxisResponse, CalibrationMatrix
+from astrotool_core.mount.movement_sizing import SIDEREAL_ARCSEC_PER_S
 from astrotool_core.mount.port import AxisDirection, CommandResult, MountAxis
+from astrotool_core.onstep import OnStepMountPulseAdapter
+from astrotool_core.registration.geometry import rect_polygon
+from astrotool_core.registration.optical_prior import OpticalPrior
+from astrotool_core.registration.result import (
+    CrossCameraRegistrationResult,
+    RegistrationMethod,
+    RegistrationStatus,
+)
+from astrotool_core.testing import OnStepScenario, make_simulated_onstep_connection
 from astrotool_core.testing.fake_mount import FakeAngularMountAdapter
 from astrotool_core.testing.fake_mount_park import FakeMountPark
+from astrotool_core.testing.frame_factory import single_star_image
+from astrotool_core.testing.sim_onstep import SimulatedOnStepIndiClient
+from astrotool_core.timing import FakeClock
+from collimation_tool.application.star_acquisition import FocusedStarAcquisition
 from collimation_tool.ui.fine_collimation_panel import FineCollimationPanel
 from collimation_tool.ui.main_window import MainWindow
 from PySide6.QtGui import QCloseEvent
@@ -125,3 +145,108 @@ def test_fine_collimation_cancel_calls_the_abort_hook(qapp: object) -> None:
     panel._on_cancel_clicked()
     assert aborts == [1]
     panel.stop()
+
+
+# ---- R4 end to end: fine-collimation Cancel during a reacquisition GOTO -----------------
+_MAIN_SHAPE = (80, 100)
+_GUIDE_SHAPE = (300, 400)
+_GUIDE_ARCSEC_PER_PX = 6.6
+
+
+def _registration() -> tuple[OpticalPrior, CrossCameraRegistrationResult]:
+    prior_main = OpticalPrior(
+        name="main",
+        sensor_width_px=_MAIN_SHAPE[1],
+        sensor_height_px=_MAIN_SHAPE[0],
+        pixel_scale_arcsec=1.0,
+    )
+    scale = 0.25
+    polygon = rect_polygon(
+        _MAIN_SHAPE[1] * scale, _MAIN_SHAPE[0] * scale, center=(200.0, 150.0), rotation_deg=0.0
+    )
+    registration = CrossCameraRegistrationResult(
+        method=RegistrationMethod.TERRESTRIAL,
+        status=RegistrationStatus.OK_OVERLAP,
+        rotation_deg=0.0,
+        scale=scale,
+        polygon_a_in_b=polygon,
+        confidence=0.9,
+    )
+    return prior_main, registration
+
+
+def _guide_calibration(center_rate_x: float) -> CalibrationMatrix:
+    probe_ms = 2000
+    px = probe_ms * center_rate_x * SIDEREAL_ARCSEC_PER_S / 1000.0 / _GUIDE_ARCSEC_PER_PX
+    responses = {}
+    for axis in MountAxis:
+        for direction in AxisDirection:
+            signed = px if direction is AxisDirection.POSITIVE else -px
+            dx, dy = (signed, 0.0) if axis is MountAxis.AXIS1 else (0.0, signed)
+            responses[(axis, direction)] = AxisResponse(
+                axis=axis,
+                direction=direction,
+                duration_ms=probe_ms,
+                dx_px=dx,
+                dy_px=dy,
+                px_per_ms=px / probe_ms,
+            )
+    return CalibrationMatrix(responses=responses)
+
+
+def test_fine_collimation_cancel_during_a_reacquisition_goto_stops_the_mount(
+    qapp: object,
+) -> None:
+    """Before S6.8a Cancel only set the run's cancel flag: the reacquisition's GOTO ran to its
+    end, the mount was never stopped, and the second axis of the plan could still be sent."""
+    clock = FakeClock()
+    connection, made = make_simulated_onstep_connection(
+        OnStepScenario(parked=False, tracking=False), clock=clock
+    )
+    mount = OnStepMountPulseAdapter(connection)
+    mount.connect()
+    client: SimulatedOnStepIndiClient = made[0]
+    ha0, dec0 = client.ha_deg, client.dec_deg
+    start = (250.0, 160.0)
+
+    def render() -> np.ndarray:
+        x = start[0] + (client.ha_deg - ha0) * 3600.0 / _GUIDE_ARCSEC_PER_PX
+        y = start[1] + (client.dec_deg - dec0) * 3600.0 / _GUIDE_ARCSEC_PER_PX
+        return single_star_image(_GUIDE_SHAPE, x=x, y=y, peak=3000.0, sigma=2.0, background=100.0)
+
+    def fresh(_reference: float, _timeout: float) -> FrameAcquisitionResult:
+        return FrameAcquisitionResult(
+            FrameAcquisitionStatus.OK, DeliveredFrame(render(), time.monotonic(), 0.01)
+        )
+
+    image = np.full((60, 80), 100.0, dtype=np.float32)
+    window = MainWindow(
+        ReplayCamera.from_arrays([image], cycle=True),
+        device_lister=lambda: [],
+        mount=FakeMountPark(start_parked=False),
+        pulse_mount=mount,
+    )
+    prior_main, registration = _registration()
+    window._last_calibration_result = registration
+    window._last_prior_a = prior_main
+    rate = window._mount_alignment_settings.calibration_center_rate_x
+    window._test_move_panel.calibration_for = lambda _key: _guide_calibration(rate)  # type: ignore[method-assign,assignment]
+    window._right_panel.latest_mono_frame = render  # type: ignore[method-assign]
+    window._right_panel.wait_for_frame_after = fresh  # type: ignore[method-assign,assignment]
+    acquisition = FocusedStarAcquisition(roi_size=(16, 12))
+    acquisition.select(
+        single_star_image(_MAIN_SHAPE, x=90.0, y=40.0, peak=3000.0, sigma=2.0, background=100.0)
+    )
+    # The operator presses Cancel while the first GOTO runs (simulated time 0.01 s into it).
+    clock.call_later(0.01, window._fine_collimation_panel._on_cancel_clicked)
+    try:
+        window._reacquire_via_guide(acquisition, None)
+    finally:
+        worker = mount._stop_worker
+        if worker is not None:
+            worker.join(timeout=_SAFETY_S)
+
+    assert client.axis_move_calls, "the reacquisition never started a GOTO"
+    assert client.emergency_stop_calls >= 1, "Cancel did not stop the mount"
+    assert len(client.axis_move_calls) == 1, client.axis_move_calls
+    window.closeEvent(QCloseEvent())
