@@ -516,13 +516,53 @@ screen move non-floor refusal after the first axis moved (message); timed-mount 
 
 ### S6.8b — Astronomical Mount Align with guide pulses (after S6.8a)
 
-User decision 2026-10-11. Contract written when S6.8a lands (calibration in guide-ms like S6.0d, 20..5000 ms
-per pulse chunked, 25%-of-frame steps may need several pulses, nudge/screen move in guide-ms, Stop latch).
+**Contract (2026-10-14).** User decision 2026-10-11: in Astronomical mode Mount Align moves with
+OnStepAdapter 0.5.0 `guide_pulse` while tracking; tracking is never turned off by Mount Align.
+- **Allowed:** `ui/mount_test_move_runner.py`, `ui/mount_test_move_panel.py` (binding only),
+  `application/mount_align_*.py`, `application/mount_motion.py` (primitive choice only),
+  `application/guide_pulse_reacquisition.py` / `equivalent_duration.py` (reuse, no behaviour change for
+  reacquisition), `astrotool_core/mount/axis_calibration.py` / `calibration_matrix` owners (unit tag only),
+  `testing/` simulators, their tests, new manifest(s). Not focuser, not park panel, not main_window beyond wiring.
+- **Behaviour changed:** Astronomical + tracking ON + `supports_guide_pulses_while_tracking`: calibration,
+  nudge, screen move and calibration returns use guide pulses through the S6.8a executor (claim, Stop,
+  settle). Sizes are guide-pulse milliseconds: a calibration is a **guide-pulse calibration** (matrix tagged
+  with its primitive/unit); a matrix from one primitive is never used to size moves of the other (refuse +
+  "recalibrate in this mode"). A move larger than the 5000 ms per-pulse cap is split into several pulses
+  (Stop checked between pulses; a pulse in flight runs to its end ≤ 5 s). The uncalibrated first move/nudge
+  needs a guide-rate seed (not exposed by OnStepAdapter): use an explicit, named, configurable seed
+  (single owner, templates/config.toml updated) labelled as an assumption in status/diagnostics and replaced
+  by the measured value; never shown as calibrated. 0.4.1-shaped mount (no guide capability) in
+  Astronomical + tracking keeps S6.8a's explicit refusal. Terrestrial unchanged (angular, tracking OFF).
+  Mode change mid-run stops the run (existing).
+- **Tests:** failing regression first (S6.8a refusal → guide-pulse move) against the real
+  `OnStepMountPulseAdapter` + 0.5.0 simulator: astro calibration completes with tracking ON throughout and
+  zero emergency stops/TRACK_OFF; nudge + screen move in astro sized in guide-ms; >5000 ms split; Stop between
+  pulses; unit-mismatch refusal both directions; seed labelled; 0.4.1 refusal kept. FakeClock.
+- **Frozen:** S6.8a executor API semantics, `MountCapabilities` fields, `OnStepMountPulseAdapter` API,
+  reacquisition behaviour (manifests 39-*), diagnostics keys (additive only), #43/#44/#46 assertions.
+- **Dependencies:** S6.8a (done). Blocks S6.8d.
+- **Non-goals:** global Stop UI (S6.8c-R5), deleting the timed path (S6.8d), GuideTool, real guide-rate readout.
+- **Proof:** manifest with revert-proof evidence; field-only: real guide rate vs seed, settle after guide pulses,
+  supervised first astro calibration on the rig.
 
-### S6.8c — focuser Stop + global mount Stop (R7 parallel-safe; R5 after S6.8a)
+### S6.8c — focuser Stop (R7, done) + global mount Stop (R5)
 
-R7 allowed files: `astrotool_core/onstep/focuser_adapter.py`, `ui/focuser_panel.py`, focuser simulator/tests.
-Contract written before start.
+**R5 contract (2026-10-14).**
+- **Allowed:** `ui/main_window.py`, `ui/mount_park_panel.py`, a new small UI widget module if needed,
+  `application/mount_motion.py` (**additive only**: e.g. an in-flight-changed notification / read-only
+  `in_flight_owner`; no change to claim/abort semantics), their tests, new manifest. Not the runner, not
+  Mount Align panel/application modules, not recenter (S6.8b owns those concurrently).
+- **Behaviour changed:** one always-visible mount **Stop** (main window level), enabled whenever the
+  executor has any mount motion in flight — park slew included — and calling the executor's lock-free
+  `abort()` (no owner → stops whatever moves). Park/unpark show "stopped by user" when interrupted. Mount
+  Align's own Stop keeps working. Stop never waits on `operation_lock` (GUI thread stays responsive).
+- **Tests:** failing regression first: Stop during a simulated park slew reaches the mount at once
+  (no in-app Stop before); button enabled exactly while a motion is in flight (park, Mount Align, reacquisition);
+  Stop while idle is harmless. FakeClock / simulator.
+- **Frozen:** executor claim/abort semantics, park adapter API, existing manifests.
+- **Dependencies:** S6.8a (done); parallel to S6.8b on disjoint files.
+- **Non-goals:** focuser (done), changing OnStepAdapter `park()` (if park cannot be interrupted, record it).
+- **Proof:** manifest; field-only: real park slew stops on ABORT.
 
 ### S6.8d — dead timed path, nudge cap, stale texts (after S6.8b)
 
