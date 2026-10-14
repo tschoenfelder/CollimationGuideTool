@@ -1,0 +1,103 @@
+# Proof manifest -- schema in proofs/README.md. Run: python scripts/prove.py 55-one-mount-motion-executor
+issues = [55, 31, 46, 44, 49]
+summary = """S6.8a (movement-paths F1/F2/F5/F7/F8/F12; R3/R1/R4/R8): two production movement \
+executors with different safety envelopes, and Mount Align sent OnStep's EMERGENCY stop \
+(stop_tracking = ABORT + TRACK_OFF) before every move whatever the mode -- an Astronomical screen \
+move silently left the mount not tracking. Now one MountMotionExecutor (application/mount_motion.py, \
+owned by MainWindow) serves Mount Align, guide-assisted reacquisition (angular + guide pulse) and \
+park/unpark: one in-flight motion app-wide (busy refusal with a reason), Stop-latch re-arm on an \
+accepted claim, a lock-free abort (fine-collimation Cancel scoped to reacquisition; quit aborts a \
+motion in flight before any panel disconnects), interruptible settle, and the tracking rule \
+(TrackingEnforcer.axis_move_gate): an axis move on a tracking mount is refused, never \
+emergency-stopped -- Astronomical with an explicit message until guide-pulse Mount Align (S6.8b). \
+The runner's automatic unpark now runs #44's unpark enforcement (F12)."""
+modules = [
+    "apps/collimation_tool/application/mount_motion.py",
+    "apps/collimation_tool/ui/mount_test_move_runner.py",
+    "apps/collimation_tool/application/recenter_policy.py",
+    "apps/collimation_tool/application/star_acquisition.py",
+    "apps/collimation_tool/ui/main_window.py",
+    "apps/collimation_tool/ui/mount_park_panel.py",
+    "apps/collimation_tool/ui/fine_collimation_panel.py",
+    "apps/collimation_tool/ui/mount_test_move_panel.py",
+    "packages/astrotool_core/mount/operating_mode.py",
+]
+fix_commits = ["62e2593"]
+dataset_uuids = []
+focused_command = """pytest -q \
+tests/collimation/application/test_mount_motion.py \
+tests/collimation/ui/test_main_window_motion_executor.py \
+tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestAMoveNeverStopsTracking \
+tests/collimation/ui/test_mount_test_move_runner.py::TestOneMotionInFlightAppWide \
+tests/collimation/ui/test_mount_test_move_runner.py::TestMountTestMoveRunner::test_a_second_submit_on_an_already_unparked_mount_does_not_re_unpark \
+tests/collimation/ui/test_mount_test_move_runner_timing.py::TestGateDelayAndRetries::test_an_unparked_mount_gets_no_command_and_no_gate_delay"""
+broader_tier = "component"
+field_only_assumptions = [
+    "Mount Align motion has not run on the rig since 0.4.0: that OnStepAdapter 0.5.0's unpark() leaves tracking off (so Terrestrial moves are not refused after an automatic unpark) is proven on the fake/simulated client only.",
+    "In Astronomical mode Mount Align calibration/nudge/screen moves are now refused while the mount tracks (user decision; S6.8b brings guide-pulse moves) -- operators will see the refusal on the rig.",
+]
+gaps = [
+    "Fine-collimation Cancel -> executor abort is proven at the policy level (claim + FakeClock) and by a panel binding test; no single test drives a full FineCollimationRunner reacquisition and presses Cancel mid-GOTO.",
+    "abort()/clear_abort() remain a duck-typed probe (one owner: mount_motion.mount_abort / mount_commands.rearm_after_stop): MountCapabilities is frozen and has no Stop-latch field.",
+    "Park via the Mount panel can now be stopped by Mount Align's Stop (executor abort reaches the shared pulse adapter), but there is still no Stop button that is enabled during a park (S6.8c R5).",
+]
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestAMoveNeverStopsTracking::test_an_astronomical_screen_move_is_refused_and_tracking_stays_on"
+failed_before_fix = true
+evidence = "revert-proof 2026-10-14, worktree at d85e46c (pre-fix) with the branch's tests: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:998: AssertionError: the screen move left the mount not tracking"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestAMoveNeverStopsTracking::test_a_terrestrial_screen_move_sends_no_emergency_stop_first"
+failed_before_fix = true
+evidence = "same revert-proof: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:1016: AssertionError: an emergency stop (ABORT + TRACK_OFF) was sent before the move"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestAMoveNeverStopsTracking::test_the_automatic_unpark_runs_the_unpark_enforcement"
+failed_before_fix = true
+evidence = "same revert-proof: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:1034: AssertionError: ['mount_align', 'mount_align', ...] (no 'unpark' trail entry)"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_main_window_motion_executor.py::test_a_park_during_a_mount_align_goto_is_refused_with_the_busy_reason"
+failed_before_fix = true
+evidence = "same revert-proof: tests/collimation/ui/test_main_window_motion_executor.py:92: AssertionError: a park slew was sent while Mount Align's GOTO ran"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_main_window_motion_executor.py::test_quit_during_a_goto_aborts_the_mount_before_any_panel_disconnects"
+failed_before_fix = true
+evidence = "same revert-proof: tests/collimation/ui/test_main_window_motion_executor.py:115: AssertionError: quit never stopped the running GOTO: ['goto', 'mount_panel_stop']"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_main_window_motion_executor.py::test_fine_collimation_cancel_calls_the_abort_hook"
+failed_before_fix = true
+evidence = "same revert-proof: tests/collimation/ui/test_main_window_motion_executor.py:124: TypeError: FineCollimationPanel.__init__() got an unexpected keyword argument 'abort_motion' (the Cancel hook did not exist)"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_test_move_runner_timing.py::TestGateDelayAndRetries::test_an_unparked_mount_gets_no_command_and_no_gate_delay"
+failed_before_fix = true
+evidence = "same revert-proof: tests/collimation/ui/test_mount_test_move_runner_timing.py:412: AssertionError: assert [('stop_tracking', 0.0)] == []"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_test_move_runner.py::TestMountTestMoveRunner::test_a_second_submit_on_an_already_unparked_mount_does_not_re_unpark"
+failed_before_fix = true
+evidence = "same revert-proof: tests/collimation/ui/test_mount_test_move_runner.py:218: assert 1 == 0 (stop_tracking_count)"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_test_move_runner.py::TestOneMotionInFlightAppWide::test_a_submit_while_another_workflow_moves_is_refused_with_the_reason"
+failed_before_fix = true
+evidence = "same revert-proof: tests/collimation/ui/test_mount_test_move_runner.py:592: ModuleNotFoundError: No module named 'collimation_tool.application.mount_motion' (no app-wide executor existed)"
+
+[[regression_tests]]
+node = "tests/collimation/application/test_mount_motion.py::TestReacquisitionCancel::test_cancel_during_the_settle_ends_it_and_sends_no_second_axis"
+failed_before_fix = true
+evidence = "same revert-proof: tests/collimation/application/test_mount_motion.py:16: ImportError: cannot import name 'ASTRONOMICAL_TRACKING_AXIS_MOVE_REFUSED' (module-level; the claim/settle cancellation did not exist -- characterised on the fix: without a claim the 0.75 s settle runs twice and both axes are sent)"
+
+[[regression_tests]]
+node = "tests/collimation/application/test_mount_motion.py::TestReacquisitionCancel::test_cancel_during_the_goto_stops_the_mount_and_skips_the_settle"
+failed_before_fix = true
+evidence = "same revert-proof: tests/collimation/application/test_mount_motion.py:16: ImportError (as above)"
+
+[[regression_tests]]
+node = "tests/collimation/application/test_mount_motion.py::TestOneMotionInFlight::test_a_second_claim_is_refused_with_the_busy_reason"
+failed_before_fix = true
+evidence = "same revert-proof: tests/collimation/application/test_mount_motion.py:16: ImportError (new module)"
