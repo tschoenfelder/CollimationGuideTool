@@ -65,7 +65,7 @@ Status: `todo` · `in-progress` · `done` · `field-only` (only real hardware ca
 | S6.8 | #55, #31, #46 | Movement-path analysis (`docs/quality/movement-paths.md`, 25 paths, 13 findings) | analysis agent | coordinator spot-check | done | 1534d6d | docs only |
 | S6.8a | #55, #31, #46, #44, #49 | One mount-motion executor (R3): single in-flight motion app-wide, park check, interruptible settle, Stop latch; runner + recenter become callers; M03 removed (no per-move emergency stop); Astronomical Mount Align refuses angular motion while tracking until S6.8b; fine-collimation Cancel stops the mount (R4); quit aborts motion first (R8); runner auto-unpark enforces #44 (F12) | | | todo | | |
 | S6.8b | #31, #46, #39, user decision | Astronomical Mount Align moves with 0.5.0 guide pulses while tracking (calibration/nudge/screen move sized in guide-ms, chunked) through the S6.8a executor | | | todo | | |
-| S6.8c | #49, #55 | Focuser: S6.0c pattern (lock-free Stop, jog off the GUI thread) (R7); global mount Stop incl. park slew (R5) | | | todo | | |
+| S6.8c | #49, #55 | Focuser: S6.0c pattern (lock-free Stop, jog off the GUI thread) (R7) — **done**; global mount Stop incl. park slew (R5) — todo after S6.8a | issue agent | R7: APPROVE-WITH-FIXES (autofocus Stop → CANCELLED, cancel window re-check + bounded re-stop, jog-busy gating test, quit waits for jog) → fixed | in-progress | e028cc5, 436b312 | `python scripts/prove.py 49-focuser-stop` |
 | S6.8d | #55 (P04/P05) | Delete dead timed-motion path + settings (R9, with config-migration note), explicit nudge cap (F11), stale texts + boundary token/import contract (R11) | | | todo | | |
 | S7 | #15 #21 #29–#33 #35 #37 #39 #43 #44 #46 #49 | Proof manifests + missing low-tier tests; field-only assumptions listed | issue agent | coordinator verification (worktree, all proofs PASS) | done | 5f7c689 | `python scripts/prove.py <issue>` |
 | S8 | all | Release gate green, issue evidence comments, ask user before Pi sync | coordinator | — | todo | | |
@@ -545,6 +545,7 @@ R9/F11/R11. Contract written before start.
 
 | Date | Task | Commit | What was proven |
 |------|------|--------|-----------------|
+| 2026-10-14 | S6.8c-R7 | e028cc5, 436b312 | Focuser Stop lock-free (no longer queues behind the move or a mount GOTO), jog on a worker, blockers() non-blocking; autofocus Stop ends CANCELLED and stays put; 12 revert-proven + mutation-proven gating tests |
 | 2026-10-13 | S6.6b | 1a89844 | Nudge returns immediately, #43 check in background and read-only (abandoned check never sends tracking commands); one target/registration owner both ways; capabilities instead of getattr probes; exposure snapshot owned by MainWindow; 6 new manifests (all revert-proven where a pre-fix repro exists) |
 | 2026-10-12 | S6.6a | 6b6d899 | Mount Align orchestration → 10 Qt-free application modules; panel 194 kB→113 kB; reviewer's differential harness byte-identical across 13 scenarios |
 | 2026-10-11 | S6.8 analysis | 1534d6d | 25 movement paths inventoried, 13 findings (docs/quality/movement-paths.md) |
