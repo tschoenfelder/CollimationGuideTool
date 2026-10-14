@@ -7,26 +7,28 @@ after the move it should stop had ended; the In/Out jog ran that blocking move o
 S6.0c pattern): stop() takes no operation_lock -- it refuses every move requested up to then that is not yet \
 in flight and hands OnStepAdapter's concurrent-safe IndiFocuser.stop() (sets _cancel_requested without the \
 motion lock, indi_focuser.py:137-139; the move polls it, :107-108) to a short-lived worker, re-stopping a \
-covered move still in flight; disconnect() waits (bounded) for that worker so quit never closes the client \
-under it; blockers() never queues behind a move. FocuserPanel runs the jog on an OperationLifecycle worker \
-and keeps In/Out/Auto Focus disabled while it runs."""
+covered move still in flight (re-checked just before sending; up to _MAX_STOP_PASSES stops); disconnect() \
+waits (bounded) for that worker so quit never closes the client under it; blockers() never queues behind a \
+move. FocuserPanel runs the jog on an OperationLifecycle worker, keeps In/Out/Auto Focus disabled while it \
+runs, and on quit stops it and joins it (bounded) before the release. A Stop that interrupts an autofocus \
+move ends the run CANCELLED with no return-to-best move (autofocus_search._move_to)."""
 modules = [
     "packages/astrotool_core/onstep/focuser_adapter.py",
     "apps/collimation_tool/ui/focuser_panel.py",
+    "apps/collimation_tool/application/autofocus_search.py",
 ]
-fix_commits = ["e028cc5"]
+fix_commits = ["e028cc5", "436b312"]
 dataset_uuids = []
-focused_command = "pytest -q tests/core/onstep/test_focuser_stop_during_move.py tests/collimation/ui/test_focuser_panel_simulated.py::TestJogRunsOffTheGuiThread tests/collimation/application/test_autofocus_stop_during_move.py"
+focused_command = "pytest -q tests/core/onstep/test_focuser_stop_during_move.py tests/collimation/ui/test_focuser_panel_simulated.py::TestJogRunsOffTheGuiThread tests/collimation/ui/test_focuser_panel.py::TestJogWorkerGating tests/collimation/ui/test_focuser_panel.py::TestQuitWaitsForTheJog tests/collimation/application/test_autofocus_stop_during_move.py"
 broader_tier = "component"
 field_only_assumptions = [
     "The real lx200_OnStep driver honours INDI FOCUS_ABORT_MOTION during a running focuser move (stops short at once) -- OnStepAdapter relies on it (indi_focuser.py:145); the simulator models it.",
     "The interrupted IndiFocuser.move_absolute notices the cancel within one 0.5 s poll and then spends up to 5 s in its own stop confirmation (indi_focuser.py:107-114, 130-135); In/Out stay disabled for that time.",
-    "Two passes of OnStepAdapter's 5 s stop confirmation (12 s bound in disconnect) cover a quit on the Pi.",
+    "Three passes of OnStepAdapter's 5 s stop confirmation (17 s bound in disconnect) and the 3 s jog join in FocuserPanel.stop cover a quit on the Pi.",
 ]
 gaps = [
-    "A Stop that interrupts an autofocus move ends the run as MOVE_REJECTED ('the focuser rejected the commanded move'), not CANCELLED: BoundedFocusSearcher._move_to checks the cancel flag only between moves (autofocus_search.py, outside this step's files). Before S6.8c the run ended CANCELLED, but only after the move had finished, followed by a return-to-best move after the Stop.",
-    "IndiFocuser.move_absolute clears _cancel_requested on entry (indi_focuser.py:84): a Stop landing between the adapter's in-flight mark and that clear is caught only by the worker's second pass (after the first stop's up-to-5 s confirmation). No deterministic test drives that window.",
-    "The simulator's interrupted move ends at once; OnStepAdapter's own exit-path stop wait (indi_focuser.py:130-135) is not modelled, so 'In/Out stay disabled while the jog worker is still ending' has no test.",
+    "Residual of the _cancel_requested window: a Stop landing after the adapter's last re-check but before IndiFocuser.move_absolute clears the flag (indi_focuser.py:84) is lost for that pass; the worker re-stops while the covered move is in flight, at most _MAX_STOP_PASSES (3) times, each after OnStepAdapter's up-to-5 s confirmation. Only the before-send part (TestStopBetweenEnteringAndSending) is tested deterministically; the multi-pass re-stop has no deterministic test (it needs a stop to land inside OnStepAdapter's own entry).",
+    "The simulator's interrupted move ends at once; OnStepAdapter's own exit-path stop wait (indi_focuser.py:130-135) is not modelled (the jog-busy gating is tested with a blocking FakeFocuser instead).",
     "get_position()/get_max_position() still take operation_lock; their only callers are the autofocus worker, not the GUI thread.",
     "A focuser jog still queues (on its worker) behind a running mount GOTO -- the panel stays responsive and Stop refuses the queued jog, but the shared-connection serialization itself is unchanged (9cea2e9).",
 ]
@@ -34,27 +36,27 @@ gaps = [
 [[regression_tests]]
 node = "tests/core/onstep/test_focuser_stop_during_move.py::TestFocuserStopDuringMove::test_stop_does_not_wait_behind_the_running_move"
 failed_before_fix = true
-evidence = "Revert-proof 2026-10-13, worktree at 98b870c with the new tests and the simulator's stop_confirm_latency_s copied in, production unchanged: tests/core/onstep/test_focuser_stop_during_move.py:85: AssertionError: assert 'blocked' == 'done'"
+evidence = "Revert-proof 2026-10-14, worktree at 98b870c with the new tests and the simulator's stop_confirm_latency_s copied in, production unchanged: tests/core/onstep/test_focuser_stop_during_move.py:84: AssertionError: assert 'blocked' == 'done'"
 
 [[regression_tests]]
 node = "tests/core/onstep/test_focuser_stop_during_move.py::TestFocuserStopDuringMove::test_stop_ends_the_running_move_early"
 failed_before_fix = true
-evidence = "Revert-proof 2026-10-13, worktree at 98b870c with the new tests and the simulator's stop_confirm_latency_s copied in, production unchanged: tests/core/onstep/test_focuser_stop_during_move.py:95: AssertionError: the move ran on despite the Stop"
+evidence = "Revert-proof 2026-10-14, worktree at 98b870c with the new tests and the simulator's stop_confirm_latency_s copied in, production unchanged: tests/core/onstep/test_focuser_stop_during_move.py:94: AssertionError: the move ran on despite the Stop"
 
 [[regression_tests]]
 node = "tests/core/onstep/test_focuser_stop_during_move.py::TestFocuserStopDuringMove::test_a_move_queued_behind_another_operation_is_cancelled_unsent"
 failed_before_fix = true
-evidence = "Revert-proof 2026-10-13, worktree at 98b870c with the new tests and the simulator's stop_confirm_latency_s copied in, production unchanged: tests/core/onstep/test_focuser_stop_during_move.py:118: AssertionError: a move queued before the Stop was still sent (assert [6000] == [])"
+evidence = "Revert-proof 2026-10-14, worktree at 98b870c with the new tests and the simulator's stop_confirm_latency_s copied in, production unchanged: tests/core/onstep/test_focuser_stop_during_move.py:117: AssertionError: a move queued before the Stop was still sent (assert [6000] == [])"
 
 [[regression_tests]]
 node = "tests/core/onstep/test_focuser_stop_during_move.py::TestFocuserStopDuringMove::test_a_relative_jog_is_stopped_too"
 failed_before_fix = true
-evidence = "Revert-proof 2026-10-13, worktree at 98b870c with the new tests and the simulator's stop_confirm_latency_s copied in, production unchanged: tests/core/onstep/test_focuser_stop_during_move.py:143: AssertionError: the jog ran on despite the Stop"
+evidence = "Revert-proof 2026-10-14, worktree at 98b870c with the new tests and the simulator's stop_confirm_latency_s copied in, production unchanged: tests/core/onstep/test_focuser_stop_during_move.py:142: AssertionError: the jog ran on despite the Stop"
 
 [[regression_tests]]
 node = "tests/core/onstep/test_focuser_stop_during_move.py::TestFocuserStopDuringMove::test_the_blockers_diagnostic_does_not_wait_behind_the_move"
 failed_before_fix = true
-evidence = "Revert-proof 2026-10-13, worktree at 98b870c with the new tests and the simulator's stop_confirm_latency_s copied in, production unchanged: tests/core/onstep/test_focuser_stop_during_move.py:184: AssertionError: assert 'blocked' == 'done'"
+evidence = "Revert-proof 2026-10-14, worktree at 98b870c with the new tests and the simulator's stop_confirm_latency_s copied in, production unchanged: tests/core/onstep/test_focuser_stop_during_move.py:184: AssertionError: assert 'blocked' == 'done'"
 
 [[regression_tests]]
 node = "tests/core/onstep/test_focuser_stop_during_move.py::TestFocuserStopDuringMove::test_a_move_requested_after_the_stop_runs_normally"
@@ -69,24 +71,44 @@ reason_no_prefix_repro = "Guard for the fix's own asynchronous stop: the old sto
 [[regression_tests]]
 node = "tests/collimation/ui/test_focuser_panel_simulated.py::TestJogRunsOffTheGuiThread::test_the_blocking_move_never_runs_on_the_gui_thread"
 failed_before_fix = true
-evidence = "Revert-proof 2026-10-13, worktree at 98b870c with the new tests and the simulator's stop_confirm_latency_s copied in, production unchanged: tests/collimation/ui/test_focuser_panel_simulated.py:312: AssertionError: the jog's blocking move ran on the GUI thread"
+evidence = "Revert-proof 2026-10-14, worktree at 98b870c with the new tests and the simulator's stop_confirm_latency_s copied in, production unchanged: tests/collimation/ui/test_focuser_panel_simulated.py:310: AssertionError: the jog's blocking move ran on the GUI thread"
 
 [[regression_tests]]
 node = "tests/collimation/ui/test_focuser_panel_simulated.py::TestJogRunsOffTheGuiThread::test_the_panel_stays_responsive_during_the_jog"
 failed_before_fix = true
-evidence = "Revert-proof 2026-10-13, worktree at 98b870c with the new tests and the simulator's stop_confirm_latency_s copied in, production unchanged (the click blocked until a real-time watchdog moved fake time on): tests/collimation/ui/test_focuser_panel_simulated.py:288: AssertionError: the click returned only once the move had ended"
+evidence = "Revert-proof 2026-10-14, worktree at 98b870c with the new tests and the simulator's stop_confirm_latency_s copied in, production unchanged (the click blocked until a real-time watchdog moved fake time on): tests/collimation/ui/test_focuser_panel_simulated.py:286: AssertionError: the click returned only once the move had ended"
 
 [[regression_tests]]
 node = "tests/collimation/ui/test_focuser_panel_simulated.py::TestJogRunsOffTheGuiThread::test_stop_during_the_jog_ends_the_move_early"
 failed_before_fix = true
-evidence = "Revert-proof 2026-10-13, worktree at 98b870c with the new tests and the simulator's stop_confirm_latency_s copied in, production unchanged (the click blocked until a real-time watchdog moved fake time on): tests/collimation/ui/test_focuser_panel_simulated.py:288: AssertionError: the click returned only once the move had ended"
+evidence = "Revert-proof 2026-10-14, worktree at 98b870c with the new tests and the simulator's stop_confirm_latency_s copied in, production unchanged (the click blocked until a real-time watchdog moved fake time on): tests/collimation/ui/test_focuser_panel_simulated.py:286: AssertionError: the click returned only once the move had ended"
 
 [[regression_tests]]
 node = "tests/collimation/ui/test_focuser_panel_simulated.py::TestJogRunsOffTheGuiThread::test_quit_during_the_jog_stops_it"
 failed_before_fix = true
-evidence = "Revert-proof 2026-10-13, worktree at 98b870c with the new tests and the simulator's stop_confirm_latency_s copied in, production unchanged (the click blocked until a real-time watchdog moved fake time on): tests/collimation/ui/test_focuser_panel_simulated.py:288: AssertionError: the click returned only once the move had ended"
+evidence = "Revert-proof 2026-10-14, worktree at 98b870c with the new tests and the simulator's stop_confirm_latency_s copied in, production unchanged (the click blocked until a real-time watchdog moved fake time on): tests/collimation/ui/test_focuser_panel_simulated.py:286: AssertionError: the click returned only once the move had ended"
 
 [[regression_tests]]
 node = "tests/collimation/application/test_autofocus_stop_during_move.py::test_a_stop_during_an_autofocus_move_ends_the_run_without_another_move"
 failed_before_fix = true
-evidence = "Revert-proof 2026-10-13, worktree at 98b870c with the new tests and the simulator's stop_confirm_latency_s copied in, production unchanged: tests/collimation/application/test_autofocus_stop_during_move.py:56: AssertionError: the autofocus move ran on despite the Stop"
+evidence = "Revert-proof 2026-10-14. Against 98b870c (new tests + simulator copied in, production unchanged): tests/collimation/application/test_autofocus_stop_during_move.py:55: AssertionError: the autofocus move ran on despite the Stop. Against e028cc5 (review fix F1 absent): tests/collimation/application/test_autofocus_stop_during_move.py:56: AssertionError: assert <AutofocusStatus.MOVE_REJECTED: 'move_rejected'> is <AutofocusStatus.CANCELLED: 'cancelled'>. Mutation stay=False (return-to-best after the Stop): :55 fails (the return move is sent)."
+
+[[regression_tests]]
+node = "tests/core/onstep/test_focuser_stop_during_move.py::TestStopBetweenEnteringAndSending::test_an_absolute_move_is_refused_unsent"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-14, production at e028cc5 (review fix F2 absent), today's tests: tests/core/onstep/test_focuser_stop_during_move.py:221: AssertionError: the move was sent although a Stop covered it (Left contains one more item: 6000)"
+
+[[regression_tests]]
+node = "tests/core/onstep/test_focuser_stop_during_move.py::TestStopBetweenEnteringAndSending::test_a_relative_jog_is_refused_unsent"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-14, production at e028cc5 (review fix F2 absent), today's tests: tests/core/onstep/test_focuser_stop_during_move.py:233: AssertionError: the jog was sent although a Stop covered it (Left contains one more item: 5200)"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_focuser_panel.py::TestJogWorkerGating"
+failed_before_fix = false
+reason_no_prefix_repro = "Guards the jog worker introduced by this fix (there was no worker before). Mutation evidence 2026-10-14: removing all three _jog.is_busy guards in focuser_panel.py fails tests/collimation/ui/test_focuser_panel.py:532 (In/Out/Auto Focus enabled after Stop while the worker runs) and :557 (same after the safety net); removing only the _begin_move guard fails :538 (assert panel._move_in_flight is False: the click opened an in-flight window although no move was sent -- OperationLifecycle itself refuses the second move)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_focuser_panel.py::TestQuitWaitsForTheJog::test_quit_stops_the_jog_and_lets_it_end_before_the_release"
+failed_before_fix = false
+reason_no_prefix_repro = "Guards the quit join added by review fix F4. Without it the release races the jog worker's end (no deterministic pre-fix failure: the order depends on thread scheduling)."

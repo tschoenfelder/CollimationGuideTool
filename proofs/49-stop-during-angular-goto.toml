@@ -41,7 +41,7 @@ gaps = [
     "The R1 fresh-reading wait is a lock wait on real time (a lock cannot run on a FakeClock).",
     "If the connection becomes busy between a fresh wrong-tracking reading and the repair command, the repair waits for that operation (bounded by it).",
     "No isolating test for the runner's own between-step stop flag (the adapter's latched cancel also refuses the next step); P-d (busy reason in _wait_for_parked) and the P-c pulse-only branch are untested.",
-    "FocuserPanel's Stop button and the blockers() diagnostic still wait behind a running mount GOTO on the GUI thread.",
+    "S6.8c (proofs/49-focuser-stop.toml): FocuserPanel's Stop and the blockers() diagnostic no longer wait behind a running mount GOTO; a focuser jog still queues behind it, but on its worker thread, and Stop refuses it unsent.",
     "P-a (one-shot Terrestrial re-enforce when the busy period ends) deferred to S6.4.",
     "Panel-level pre-fix failures of the Stop tests occur in setup (the nudge click froze at 1ea9ac0), not at the Stop click itself.",
 ]
