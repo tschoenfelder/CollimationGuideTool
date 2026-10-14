@@ -63,7 +63,7 @@ Status: `todo` · `in-progress` · `done` · `field-only` (only real hardware ca
 | S6.6 | #52, #43, #31, #55 | Mount Align orchestration out of `mount_test_move_panel.py` into application layer: S6.6a neutral extraction (10 Qt-free modules); S6.6b behaviour follow-ups (nudge returns immediately with background #43 check, one artificial-star owner, `MountCapabilities` instead of probes, `onstep/errors.py`, GUI-thread exposure snapshot, screen-move floor decision) | issue agent | S6.6a APPROVE (byte-identical differential, 13 scenarios); S6.6b APPROVE-WITH-FIXES (C1 abandoned check sent tracking commands, C2, C4, C5) → fixed, revert-proven | done | 6b6d899, 1a89844 | `python scripts/prove.py 52-nudge-returns` · `52-mount-align-owners` · `52-exposure-snapshot` · `55-capabilities-errors-defaults` · `31-calibrated-move-rate` · `31-manual-move-texts` |
 | S6.7 | #52 | Fresh-frame-after-motion service shared by Mount Align + autofocus | issue agent | APPROVE-WITH-FIXES (Stop/cap, stale nudge reference, trigger-time stamp) → fixed | done | 9fc3fa2 | `python scripts/prove.py 52-fresh-frame-after-motion` |
 | S6.8 | #55, #31, #46 | Movement-path analysis (`docs/quality/movement-paths.md`, 25 paths, 13 findings) | analysis agent | coordinator spot-check | done | 1534d6d | docs only |
-| S6.8a | #55, #31, #46, #44, #49 | One mount-motion executor (R3): single in-flight motion app-wide, park check, interruptible settle, Stop latch; runner + recenter become callers; M03 removed (no per-move emergency stop); Astronomical Mount Align refuses angular motion while tracking until S6.8b; fine-collimation Cancel stops the mount (R4); quit aborts motion first (R8); runner auto-unpark enforces #44 (F12) | | | todo | | |
+| S6.8a | #55, #31, #46, #44, #49 | One mount-motion executor (`application/mount_motion.py`): one motion in flight app-wide (runner, reacquisition, park/unpark), owner-scoped lock-free abort, interruptible settle; M03 removed (no per-move emergency stop); Terrestrial+tracking ON → enforcer repair (trail entry + operator note) then one re-check, else recovery text; Astronomical+tracking ON → explicit refusal until S6.8b; fine-collimation Cancel stops the mount; quit aborts first; auto-unpark enforces #44 | issue agent | APPROVE-WITH-FIXES (Terrestrial dead end, abort race, e2e Cancel test, trail flooding) → fixed, revert-proven | done | c577fd4, 85f6bca, 497459a | `python scripts/prove.py 55-one-mount-motion-executor` |
 | S6.8b | #31, #46, #39, user decision | Astronomical Mount Align moves with 0.5.0 guide pulses while tracking (calibration/nudge/screen move sized in guide-ms, chunked) through the S6.8a executor | | | todo | | |
 | S6.8c | #49, #55 | Focuser: S6.0c pattern (lock-free Stop, jog off the GUI thread) (R7) — **done**; global mount Stop incl. park slew (R5) — todo after S6.8a | issue agent | R7: APPROVE-WITH-FIXES (autofocus Stop → CANCELLED, cancel window re-check + bounded re-stop, jog-busy gating test, quit waits for jog) → fixed | in-progress | e028cc5, 436b312 | `python scripts/prove.py 49-focuser-stop` |
 | S6.8d | #55 (P04/P05) | Delete dead timed-motion path + settings (R9, with config-migration note), explicit nudge cap (F11), stale texts + boundary token/import contract (R11) | | | todo | | |
@@ -526,7 +526,7 @@ Contract written before start.
 
 ### S6.8d — dead timed path, nudge cap, stale texts (after S6.8b)
 
-R9/F11/R11. Contract written before start.
+R9/F11/R11. Contract written before start. Also (S6.8a review #4): the runner's tracking gate is keyed on the step tuple shape (`len(step) > 3`), not on the primitive actually used — legacy timed path only; remove with the timed path. Stale docs (F13): panel docstring "Stop / duck-typed", `park_adapter.stop_tracking` docstring, `mount_park_panel.py:186`; `mount_commands.rearm_after_stop` getattr `clear_abort` probe.
 
 ### S5 — #55 + #52 duplication inventory (analysis only)
 
@@ -545,6 +545,7 @@ R9/F11/R11. Contract written before start.
 
 | Date | Task | Commit | What was proven |
 |------|------|--------|-----------------|
+| 2026-10-14 | S6.8a | 85f6bca, 497459a | One mount-motion executor; no Mount Align move stops tracking on its own; Terrestrial repair via the #44 owner; Cancel/quit stop the mount; 3384 fast-tier + 1282 collimation tests green |
 | 2026-10-14 | S6.8c-R7 | e028cc5, 436b312 | Focuser Stop lock-free (no longer queues behind the move or a mount GOTO), jog on a worker, blockers() non-blocking; autofocus Stop ends CANCELLED and stays put; 12 revert-proven + mutation-proven gating tests |
 | 2026-10-13 | S6.6b | 1a89844 | Nudge returns immediately, #43 check in background and read-only (abandoned check never sends tracking commands); one target/registration owner both ways; capabilities instead of getattr probes; exposure snapshot owned by MainWindow; 6 new manifests (all revert-proven where a pre-fix repro exists) |
 | 2026-10-12 | S6.6a | 6b6d899 | Mount Align orchestration → 10 Qt-free application modules; panel 194 kB→113 kB; reviewer's differential harness byte-identical across 13 scenarios |
