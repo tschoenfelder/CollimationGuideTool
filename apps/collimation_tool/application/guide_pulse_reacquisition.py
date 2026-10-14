@@ -50,6 +50,7 @@ import math
 from collections.abc import Callable
 from dataclasses import dataclass
 from enum import Enum
+from typing import cast
 
 from astrotool_core.mount import (
     MOUNT_BUSY_REASON,
@@ -57,6 +58,7 @@ from astrotool_core.mount import (
     AxisDirection,
     AxisResponse,
     CalibrationMatrix,
+    GuidePulsePort,
     MountAxis,
     MountParkPort,
     MountPort,
@@ -178,12 +180,15 @@ def calibrate_guide_pulses(
     docstring). `measure` must return a position from a frame captured after the last pulse;
     `max_displacement_px` bounds each direction's cumulative excursion (None = unbounded)."""
     cfg = config or GuidePulseCalibrationConfig()
-    guide_pulse = getattr(mount, "guide_pulse", None)
-    bounds = getattr(mount, "guide_pulse_range_ms", None)
-    if guide_pulse is None or bounds is None:
+    # S6.8a (#55 C02): the capability as the adapter REPORTS it, never a getattr probe.
+    guiding = cast(GuidePulsePort, mount)
+    supported = mount.capabilities().supports_guide_pulses_while_tracking
+    bounds = guiding.guide_pulse_range_ms if supported else None
+    if bounds is None:
         return GuidePulseCalibrationOutcome(
             None, "mount_correction_rejected", ASTRONOMICAL_NEEDS_GUIDE_PULSES
         )
+    guide_pulse = guiding.guide_pulse
     shortest, longest = bounds
     if not cfg.probe_ms or any(not shortest <= ms <= longest for ms in cfg.probe_ms):
         return GuidePulseCalibrationOutcome(
