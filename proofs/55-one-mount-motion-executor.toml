@@ -10,7 +10,7 @@ accepted claim, a lock-free abort (fine-collimation Cancel scoped to reacquisiti
 motion in flight before any panel disconnects), interruptible settle, and the tracking rule \
 (TrackingEnforcer.axis_move_gate): an axis move on a tracking mount is refused, never \
 emergency-stopped -- Astronomical with an explicit message until guide-pulse Mount Align (S6.8b). \
-The runner's automatic unpark now runs #44's unpark enforcement (F12)."""
+The runner's automatic unpark now runs #44's unpark enforcement (F12). Review fixes: a Terrestrial move refused because tracking came back on gets the enforcer's tracking-off repair once (trail entry + operator note; a failed repair is refused with a recovery hint), an owner-scoped abort is atomic with claim/re-arm, and allowed axis-move gates no longer flood the evidence trail."""
 modules = [
     "apps/collimation_tool/application/mount_motion.py",
     "apps/collimation_tool/ui/mount_test_move_runner.py",
@@ -22,7 +22,7 @@ modules = [
     "apps/collimation_tool/ui/mount_test_move_panel.py",
     "packages/astrotool_core/mount/operating_mode.py",
 ]
-fix_commits = ["62e2593"]
+fix_commits = ["85f6bca", "497459a"]
 dataset_uuids = []
 focused_command = """pytest -q \
 tests/collimation/application/test_mount_motion.py \
@@ -37,7 +37,8 @@ field_only_assumptions = [
     "In Astronomical mode Mount Align calibration/nudge/screen moves are now refused while the mount tracks (user decision; S6.8b brings guide-pulse moves) -- operators will see the refusal on the rig.",
 ]
 gaps = [
-    "Fine-collimation Cancel -> executor abort is proven at the policy level (claim + FakeClock) and by a panel binding test; no single test drives a full FineCollimationRunner reacquisition and presses Cancel mid-GOTO.",
+    "The end-to-end Cancel test drives MainWindow's reacquirer synchronously and presses the panel's Cancel from inside the simulated GOTO; it does not run the FineCollimationRunner thread.",
+    "Revert-proof nodes that fail ONLY at import/construction before the fix: every test_mount_motion.py node except TestOwnerScopedAbortRace and the trail node (ImportError at module import vs c577fd4), test_mount_test_move_runner.py::TestOneMotionInFlightAppWide (ModuleNotFoundError, an ImportError: no mount_motion module) and test_main_window_motion_executor.py::test_fine_collimation_cancel_calls_the_abort_hook (TypeError: no abort_motion parameter). Each behaviour also has an assertion-level node here.",
     "abort()/clear_abort() remain a duck-typed probe (one owner: mount_motion.mount_abort / mount_commands.rearm_after_stop): MountCapabilities is frozen and has no Stop-latch field.",
     "Park via the Mount panel can now be stopped by Mount Align's Stop (executor abort reaches the shared pulse adapter), but there is still no Stop button that is enabled during a park (S6.8c R5).",
 ]
@@ -45,59 +46,84 @@ gaps = [
 [[regression_tests]]
 node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestAMoveNeverStopsTracking::test_an_astronomical_screen_move_is_refused_and_tracking_stays_on"
 failed_before_fix = true
-evidence = "revert-proof 2026-10-14, worktree at d85e46c (pre-fix) with the branch's tests: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:998: AssertionError: the screen move left the mount not tracking"
+evidence = "revert-proof 2026-10-14, worktree at c577fd4 (pre-fix, rebased on fb042ab) with the branch's tests: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:998: AssertionError: the screen move left the mount not tracking"
 
 [[regression_tests]]
 node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestAMoveNeverStopsTracking::test_a_terrestrial_screen_move_sends_no_emergency_stop_first"
 failed_before_fix = true
-evidence = "same revert-proof: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:1016: AssertionError: an emergency stop (ABORT + TRACK_OFF) was sent before the move"
+evidence = "revert-proof 2026-10-14, worktree at c577fd4 (pre-fix, rebased on fb042ab) with the branch's tests: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:1016: AssertionError: an emergency stop (ABORT + TRACK_OFF) was sent before the move"
 
 [[regression_tests]]
 node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestAMoveNeverStopsTracking::test_the_automatic_unpark_runs_the_unpark_enforcement"
 failed_before_fix = true
-evidence = "same revert-proof: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:1034: AssertionError: ['mount_align', 'mount_align', ...] (no 'unpark' trail entry)"
+evidence = "revert-proof 2026-10-14, worktree at c577fd4 (pre-fix, rebased on fb042ab) with the branch's tests: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:1034: AssertionError: ['mount_align', 'mount_align', ...] (no 'unpark' trail entry)"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestAMoveNeverStopsTracking::test_terrestrial_tracking_switched_on_behind_the_policy_is_repaired_and_noted"
+failed_before_fix = true
+evidence = "review revert-proof 2026-10-14, worktree at ab87694 (S6.8a before the review fixes) with the branch's tests: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:1053: AssertionError: Move failed: terrestrial operating mode, but the mount reports tracking ON -- ... nothing was sent and no emergency stop was issued"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestAMoveNeverStopsTracking::test_a_terrestrial_repair_that_fails_refuses_with_a_recovery_hint"
+failed_before_fix = true
+evidence = "review revert-proof 2026-10-14, worktree at ab87694 (S6.8a before the review fixes) with the branch's tests: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:1075: AssertionError: assert ('terrestrial operating mode, but the mount reports tracking ON ...' is not None and 'To recover' in ...)"
 
 [[regression_tests]]
 node = "tests/collimation/ui/test_main_window_motion_executor.py::test_a_park_during_a_mount_align_goto_is_refused_with_the_busy_reason"
 failed_before_fix = true
-evidence = "same revert-proof: tests/collimation/ui/test_main_window_motion_executor.py:92: AssertionError: a park slew was sent while Mount Align's GOTO ran"
+evidence = "revert-proof 2026-10-14, worktree at c577fd4 (pre-fix, rebased on fb042ab) with the branch's tests: tests/collimation/ui/test_main_window_motion_executor.py:112: AssertionError: a park slew was sent while Mount Align's GOTO ran"
 
 [[regression_tests]]
 node = "tests/collimation/ui/test_main_window_motion_executor.py::test_quit_during_a_goto_aborts_the_mount_before_any_panel_disconnects"
 failed_before_fix = true
-evidence = "same revert-proof: tests/collimation/ui/test_main_window_motion_executor.py:115: AssertionError: quit never stopped the running GOTO: ['goto', 'mount_panel_stop']"
+evidence = "revert-proof 2026-10-14, worktree at c577fd4 (pre-fix, rebased on fb042ab) with the branch's tests: tests/collimation/ui/test_main_window_motion_executor.py:135: AssertionError: quit never stopped the running GOTO: ['goto', 'mount_panel_stop']"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_main_window_motion_executor.py::test_fine_collimation_cancel_during_a_reacquisition_goto_stops_the_mount"
+failed_before_fix = true
+evidence = "revert-proof 2026-10-14, worktree at c577fd4 (pre-fix, rebased on fb042ab) with the branch's tests: tests/collimation/ui/test_main_window_motion_executor.py:250: AssertionError: Cancel did not stop the mount"
 
 [[regression_tests]]
 node = "tests/collimation/ui/test_main_window_motion_executor.py::test_fine_collimation_cancel_calls_the_abort_hook"
 failed_before_fix = true
-evidence = "same revert-proof: tests/collimation/ui/test_main_window_motion_executor.py:124: TypeError: FineCollimationPanel.__init__() got an unexpected keyword argument 'abort_motion' (the Cancel hook did not exist)"
+evidence = "revert-proof 2026-10-14, worktree at c577fd4 (pre-fix, rebased on fb042ab) with the branch's tests: tests/collimation/ui/test_main_window_motion_executor.py:144: TypeError: FineCollimationPanel.__init__() got an unexpected keyword argument 'abort_motion' (construction-only; the assertion-level node is the end-to-end Cancel test)"
 
 [[regression_tests]]
 node = "tests/collimation/ui/test_mount_test_move_runner_timing.py::TestGateDelayAndRetries::test_an_unparked_mount_gets_no_command_and_no_gate_delay"
 failed_before_fix = true
-evidence = "same revert-proof: tests/collimation/ui/test_mount_test_move_runner_timing.py:412: AssertionError: assert [('stop_tracking', 0.0)] == []"
+evidence = "revert-proof 2026-10-14, worktree at c577fd4 (pre-fix, rebased on fb042ab) with the branch's tests: tests/collimation/ui/test_mount_test_move_runner_timing.py:412: AssertionError: assert [('stop_tracking', 0.0)] == []"
 
 [[regression_tests]]
 node = "tests/collimation/ui/test_mount_test_move_runner.py::TestMountTestMoveRunner::test_a_second_submit_on_an_already_unparked_mount_does_not_re_unpark"
 failed_before_fix = true
-evidence = "same revert-proof: tests/collimation/ui/test_mount_test_move_runner.py:218: assert 1 == 0 (stop_tracking_count)"
+evidence = "revert-proof 2026-10-14, worktree at c577fd4 (pre-fix, rebased on fb042ab) with the branch's tests: tests/collimation/ui/test_mount_test_move_runner.py:218: assert 1 == 0 (stop_tracking_count)"
 
 [[regression_tests]]
 node = "tests/collimation/ui/test_mount_test_move_runner.py::TestOneMotionInFlightAppWide::test_a_submit_while_another_workflow_moves_is_refused_with_the_reason"
 failed_before_fix = true
-evidence = "same revert-proof: tests/collimation/ui/test_mount_test_move_runner.py:592: ModuleNotFoundError: No module named 'collimation_tool.application.mount_motion' (no app-wide executor existed)"
+evidence = "revert-proof 2026-10-14, worktree at c577fd4 (pre-fix, rebased on fb042ab) with the branch's tests: tests/collimation/ui/test_mount_test_move_runner.py:592: ModuleNotFoundError (an ImportError): No module named 'collimation_tool.application.mount_motion' -- import-only; the assertion-level node for (1) is the MainWindow park test"
+
+[[regression_tests]]
+node = "tests/collimation/application/test_mount_motion.py::TestOwnerScopedAbortRace::test_a_stale_cancel_never_latches_into_another_owners_new_motion"
+failed_before_fix = true
+evidence = "review revert-proof 2026-10-14, worktree at ab87694 (S6.8a before the review fixes) with the branch's tests: tests/collimation/application/test_mount_motion.py:335: AssertionError: the stale Cancel latched a Stop into Mount Align's move (run with a test-only stub for the then-missing TERRESTRIAL_TRACKING_REPAIR_FAILED import; reported as :336 there)"
+
+[[regression_tests]]
+node = "tests/collimation/application/test_mount_motion.py::TestTerrestrialTrackingRepair::test_an_allowed_move_leaves_no_trail_entry"
+failed_before_fix = true
+evidence = "review revert-proof 2026-10-14, worktree at ab87694 (S6.8a before the review fixes) with the branch's tests: tests/collimation/application/test_mount_motion.py:393: AssertionError: assert [allowed axis-move gate entry] == [] (same stub; reported as :394)"
 
 [[regression_tests]]
 node = "tests/collimation/application/test_mount_motion.py::TestReacquisitionCancel::test_cancel_during_the_settle_ends_it_and_sends_no_second_axis"
 failed_before_fix = true
-evidence = "same revert-proof: tests/collimation/application/test_mount_motion.py:16: ImportError: cannot import name 'ASTRONOMICAL_TRACKING_AXIS_MOVE_REFUSED' (module-level; the claim/settle cancellation did not exist -- characterised on the fix: without a claim the 0.75 s settle runs twice and both axes are sent)"
+evidence = "revert-proof 2026-10-14, worktree at c577fd4 (pre-fix, rebased on fb042ab) with the branch's tests: tests/collimation/application/test_mount_motion.py:19: ImportError: cannot import name 'ASTRONOMICAL_TRACKING_AXIS_MOVE_REFUSED' -- import-only (new module)"
 
 [[regression_tests]]
 node = "tests/collimation/application/test_mount_motion.py::TestReacquisitionCancel::test_cancel_during_the_goto_stops_the_mount_and_skips_the_settle"
 failed_before_fix = true
-evidence = "same revert-proof: tests/collimation/application/test_mount_motion.py:16: ImportError (as above)"
+evidence = "revert-proof 2026-10-14, worktree at c577fd4 (pre-fix, rebased on fb042ab) with the branch's tests: tests/collimation/application/test_mount_motion.py:19: ImportError -- import-only (new module)"
 
 [[regression_tests]]
 node = "tests/collimation/application/test_mount_motion.py::TestOneMotionInFlight::test_a_second_claim_is_refused_with_the_busy_reason"
 failed_before_fix = true
-evidence = "same revert-proof: tests/collimation/application/test_mount_motion.py:16: ImportError (new module)"
+evidence = "revert-proof 2026-10-14, worktree at c577fd4 (pre-fix, rebased on fb042ab) with the branch's tests: tests/collimation/application/test_mount_motion.py:19: ImportError -- import-only (new module)"
