@@ -21,8 +21,13 @@ of being silently ignored — the original never checked `guide()`'s
 returned bool.
 
 Time (issue #53, S3b): the settle after each accepted pulse waits on the injected
-`Clock` (`clock=`, default the real `SYSTEM_CLOCK`); `cancel_check` is still consulted
-between iterations only, never inside a settle (nor inside a blocking angular move).
+`Clock` (`clock=`, default the real `SYSTEM_CLOCK`).
+
+Cancel (S6.8a, R4): `cancel_check` is consulted before every step of a correction (also between
+the two axis moves of one 2-D plan), not only between corrections. The policy runs under a
+`MotionClaim` of the app-wide `MountMotionExecutor` when given (`motion_claim=`): the executor's
+`abort()` (fine-collimation Cancel) cancels the claim, which ends a settle at once and stops the
+loop, and stops a running GOTO through the mount's own lock-free Stop.
 
 Mounts without timed pulses (S6.0b, #39 / audit P01). OnStepAdapter >= 0.4 over INDI has no
 timed primitive: `OnStepMountPulseAdapter.capabilities().supports_pulse_guiding` is False and
@@ -84,6 +89,7 @@ from collimation_tool.application.equivalent_duration import (
     arcsec_to_equivalent_ms,
     equivalent_ms_to_arcsec,
 )
+from collimation_tool.application.mount_motion import MotionClaim
 
 _LOCKED_STATES = (TrackingState.LOCKED, TrackingState.REACQUIRED)
 _log = logging.getLogger(__name__)
@@ -177,8 +183,12 @@ class CollimationRecenterPolicy:
         center_rate_x: float | None = None,
         max_step_px: float | None = None,
         guide_pulses: bool = False,
+        motion_claim: MotionClaim | None = None,
     ) -> None:
-        """`center_rate_x`: the unit the matrix's equivalent ms are in on a mount without timed
+        """`motion_claim` (S6.8a): the executor claim this correction runs under -- its
+        cancel (Stop / Cancel) ends a settle at once and stops the loop. None = no claim.
+
+        `center_rate_x`: the unit the matrix's equivalent ms are in on a mount without timed
         pulses -- pass the loaded `MountAlignmentSettings.calibration_center_rate_x` (the
         matrix was stored with it); None = that setting's own default. Unused on timed mounts.
 
@@ -201,6 +211,7 @@ class CollimationRecenterPolicy:
         )
         self._max_step_px = max_step_px
         self._guide_pulses = guide_pulses
+        self._claim = motion_claim
 
     def center(
         self,
@@ -226,7 +237,7 @@ class CollimationRecenterPolicy:
             )
 
         for _ in range(cfg.max_iterations):
-            if cancel_check is not None and cancel_check():
+            if self._cancelled(cancel_check):
                 return finish(MountCorrectionResult(False, pulses, prev_dist or 0.0, "cancelled"))
 
             result = measure()
@@ -281,20 +292,31 @@ class CollimationRecenterPolicy:
         """Send one correction's steps (settling after each); returns how many were sent and,
         when the correction ended early, (reason, message, tracking_off)."""
         sent = 0
+        claim = self._claim
         for send in planned:
-            # S6.0d review (A2): with guide pulses, re-check between the pulses of one
-            # correction too (e.g. the operating mode left Astronomical).
-            if self._guide_pulses and cancel_check is not None and cancel_check():
+            # S6.0d review (A2) / S6.8a (R4): re-check between the steps of one correction too
+            # (a Cancel, or the operating mode left Astronomical) -- on every motion path.
+            if self._cancelled(cancel_check):
                 return sent, ("cancelled", "", False)
             pulse_result = send()
             sent += 1
             tracking_off = _note_guide_outcome(pulse_result, warnings)
+            if claim is not None and claim.cancelled:
+                # Stopped during the move (the adapter reports the Stop as a refusal).
+                return sent, ("cancelled", pulse_result.message, tracking_off)
             if not pulse_result.accepted:
                 _log.warning("recentering correction refused: %s", pulse_result.message)
                 return sent, ("pulse_rejected", pulse_result.message, tracking_off)
-            if self._config.settle_ms > 0:
-                self._clock.sleep(self._config.settle_ms / 1000.0)
+            if self._config.settle_ms > 0 and not self._clock.sleep(
+                self._config.settle_ms / 1000.0, claim.cancel if claim is not None else None
+            ):
+                return sent, ("cancelled", "", tracking_off)  # S6.8a: Stop ended the settle
         return sent, None
+
+    def _cancelled(self, cancel_check: Callable[[], bool] | None) -> bool:
+        if self._claim is not None and self._claim.cancelled:
+            return True
+        return cancel_check is not None and cancel_check()
 
     def _plan(self, dx: float, dy: float, timed: bool) -> list[_CorrectionStep] | _NotSent:
         if self._guide_pulses:

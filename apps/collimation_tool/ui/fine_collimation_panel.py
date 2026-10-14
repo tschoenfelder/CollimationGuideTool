@@ -230,9 +230,14 @@ class FineCollimationPanel(QWidget):
         title: str = "Fine Collimation",
         guide_reacquirer: GuideReacquirer | None = None,
         measurement_gate: Callable[[str], str | None] | None = None,
+        abort_motion: Callable[[], None] | None = None,
     ) -> None:
         super().__init__()
         self._get_frame = get_frame
+        #: S6.8a (R4): stops this run's mount motion lock-free (MainWindow: the motion
+        #: executor's abort scoped to guide-assisted reacquisition) -- Cancel stops a running
+        #: GOTO instead of letting it run to its end.
+        self._abort_motion = abort_motion
         self._guide_reacquirer = guide_reacquirer
         #: Issue #44: returns a reason when measurement is blocked, else None.
         self._measurement_gate = measurement_gate
@@ -324,6 +329,8 @@ class FineCollimationPanel(QWidget):
 
     def _on_cancel_clicked(self) -> None:
         self._runner.cancel()
+        if self._abort_motion is not None:
+            self._abort_motion()
 
     def _poll_run(self) -> None:
         outcome = self._runner.take_latest()
@@ -467,3 +474,5 @@ class FineCollimationPanel(QWidget):
         self._poll_timer.stop()
         if self._running:
             self._runner.cancel()
+            if self._abort_motion is not None:
+                self._abort_motion()

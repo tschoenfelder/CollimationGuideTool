@@ -27,21 +27,23 @@ Always ensures unparked first — a real-hardware check found OnStep refuses
 motion commands while parked ("Please unpark the mount before
 issuing any motion/sync commands"). That refusal is a deliberate safety
 interlock, not a defect — parked is supposed to mean "don't move" — so
-this runner works *with* it rather than around it: it still reports the
-switch command accepted at the INDI level even though nothing moved, so
-a caller can't tell from the ack alone, which is why this runner ensures
-unparked itself instead (reusing `IndiMountParkAdapter.unpark()`'s already-
-durable TRACK_OFF) before ever pulsing.
+this runner works *with* it rather than around it: it unparks
+(`MountParkPort.unpark()`, confirmed "unparked with tracking off") only when a FRESH reading
+says the mount is parked right now -- a real live-hardware report ("You seem to enable
+tracking... no wonder the frames look blury") traced back to unpark() being resent on every
+submit(), re-triggering OnStep's ~1.5 s delayed auto-tracking-on quirk -- and then runs #44's
+unpark enforcement through the app-wide executor (S6.8a, F12), exactly as the Mount panel does
+after its own unpark.
 
-Only calls the *full* `unpark()` when `status().parked` actually says so
-right now; an already-unparked mount instead gets the lighter
-`stop_tracking()`. A real live-hardware report ("You seem to enable
-tracking... no wonder the frames look blury") traced back to unpark()
-being called unconditionally on every submit() — including a run's later
-steps, where the mount was already unparked by an earlier one —
-resending the UNPARK switch command every time, which re-triggers
-OnStep's own ~1.5s delayed auto-tracking-on quirk on every single pulse.
-See `_run()`'s own comment for the full mechanism.
+S6.8a (movement-paths F1, M03 removed): the runner no longer sends `stop_tracking()` (OnStep's
+EMERGENCY stop over INDI) before every move. Whether an axis move may run on a tracking mount is
+the executor's tracking rule (`MountMotionExecutor.axis_move_gate`, owned by the
+`TrackingEnforcer`): a tracking mount is refused with the mode's reason and tracking is left as
+it is -- Terrestrial relies on the enforcer keeping tracking OFF; in Astronomical mode Mount
+Align's axis moves are refused while tracking (guide-pulse Mount Align is S6.8b). Every sequence
+runs under one `MotionClaim` of that executor: one in-flight mount motion app-wide (a refused
+claim is published at once as the outcome, with the busy reason, never queued), and the
+executor's `abort()` (Stop, quit) cancels this runner's waits too.
 
 Whether it *re-parks* afterward is the caller's choice (`park_after`,
 default `True`). The mount-alignment feature (`MountTestMovePanel`) always
@@ -56,14 +58,14 @@ in a `finally`, even if the pulse itself failed, so a mid-run error can't
 strand the mount unparked in that mode.
 
 Time (issue #53, S3b): every wait and timestamp here -- the fresh park reading,
-the unpark/re-park confirmation polls, the stop_tracking gate delay, rejection
+the unpark/re-park confirmation polls, rejection
 retries, the settle and the `MountPulseOutcome` stamps -- goes through the
 `Clock` given to the runner (`clock=`, default the real `SYSTEM_CLOCK`), so tests
 drive them on a `FakeClock`.
 
 Stop (`abort()`, S6.3): every one of those waits takes the Stop event, so a Stop ends the
 wait in progress at once -- not only the next step -- and nothing further is sent to the
-mount: no unpark/stop_tracking after the fresh park reading, no further pulse or rejection
+mount: no unpark after the fresh park reading, no further pulse or rejection
 retry, no re-park command (a re-park already commanded is no longer awaited). The settle is
 cut short like a Stop during the last move (the move itself counts as done).
 """
@@ -74,12 +76,22 @@ import logging
 import threading
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import cast
 
 from astrotool_core.mount.park_port import MountParkPort, MountParkStatus
-from astrotool_core.mount.port import AxisDirection, CommandResult, MountAxis, MountPort
+from astrotool_core.mount.port import (
+    AngularMotionPort,
+    AxisDirection,
+    CommandResult,
+    MountAxis,
+    MountPort,
+)
 from astrotool_core.timing import SYSTEM_CLOCK, Clock, Deadline
 
-from collimation_tool.application.mount_commands import rearm_after_stop
+from collimation_tool.application.mount_motion import MotionClaim, MountMotionExecutor
+
+#: The claim owner name shown in another workflow's busy refusal.
+MOUNT_ALIGN_OWNER = "Mount Align"
 
 _UNPARK_TIMEOUT_S = 5.0
 _REPARK_TIMEOUT_S = 5.0
@@ -258,10 +270,11 @@ def _move_with_retry(
     unsupported only replaced the real refusal reason)."""
     axis, direction, pulse_ms = step[0], step[1], step[2]
     arcsec = step[3] if len(step) > 3 else None
-    timed_supported = supports_timed_pulse(mount)
-    move_angular = getattr(mount, "move_angular", None)
-    if arcsec is not None and move_angular is not None:
-        result = move_angular(axis, direction, arcsec)
+    capabilities = mount.capabilities()
+    timed_supported = bool(capabilities.supports_pulse_guiding)
+    # S6.8a (#55 C02): angular moves as the adapter REPORTS them, not a getattr probe.
+    if arcsec is not None and capabilities.supports_angular_moves:
+        result = cast(AngularMotionPort, mount).move_angular(axis, direction, arcsec)
         if result.accepted:
             return result, MOTION_ANGULAR
         if not timed_supported or not any(
@@ -282,19 +295,38 @@ def _move_with_retry(
 
 
 class MountTestMoveRunner:
-    def __init__(self, *, clock: Clock | None = None) -> None:
+    def __init__(
+        self, *, clock: Clock | None = None, executor: MountMotionExecutor | None = None
+    ) -> None:
         """`clock` (#53): every wait and outcome timestamp of the worker; default the real
         clock. Tests pass a `FakeClock` -- auto-advance runs a sequence's waits instantly,
-        manual mode lets a test watch the worker inside a wait (`wait_for_sleepers`)."""
+        manual mode lets a test watch the worker inside a wait (`wait_for_sleepers`).
+
+        `executor` (S6.8a): the app-wide mount-motion executor every sequence claims; None = a
+        private one without a mode policy until the owner hands over its own (`use_executor`)."""
         self._clock: Clock = clock if clock is not None else SYSTEM_CLOCK
+        self._executor = executor if executor is not None else MountMotionExecutor()
         self._lock = threading.Lock()
         self._busy = False
         self._latest_outcome: MountPulseOutcome | None = None
         #: Issue #43: how many sequences were ever ACCEPTED -- lets a caller prove no
         #: pulse was commanded since it took a (verified, at-rest) reference frame.
         self.submit_count = 0
-        #: S6.0c: Stop ends the whole submitted sequence -- no further step is sent.
-        self._stop_requested = threading.Event()
+        #: S6.0c/S6.8a: the running sequence's claim; Stop sets its cancel event, which ends
+        #: the whole submitted sequence -- no further step is sent.
+        self._claim: MotionClaim | None = None
+
+    @property
+    def executor(self) -> MountMotionExecutor:
+        return self._executor
+
+    def use_executor(self, executor: MountMotionExecutor) -> None:
+        """S6.8a: claim every later sequence from `executor` (the panel hands over the one it
+        was wired with). Never while a sequence runs."""
+        with self._lock:
+            if self._busy:
+                raise RuntimeError("cannot change the motion executor while a move runs")
+            self._executor = executor
 
     def submit(
         self,
@@ -350,22 +382,31 @@ class MountTestMoveRunner:
         Skipped entirely if the sequence was rejected (no valid "after"
         state to settle into) or if `park_after=True` -- runs before
         park() either way, since re-parking is itself further motion
-        that would undo any settle."""
+        that would undo any settle.
+
+        S6.8a: the sequence claims the app-wide mount-motion executor. While another workflow
+        moves the mount the claim is refused: nothing is sent, and the refusal (its busy
+        reason) is published at once as this request's outcome (`pulsed=False`), so the
+        caller reports it like any other failed move -- never queued, never silently dropped.
+        A refused claim is not counted in `submit_count`."""
         if not steps:
             return False
         with self._lock:
             if self._busy:
                 return False
+            # S6.0c: a new operator command re-arms after an earlier Stop -- the executor does
+            # that only for an accepted claim, so a refused submit never re-arms the sequence
+            # that Stop interrupted.
+            claim = self._executor.claim(MOUNT_ALIGN_OWNER, mount)
+            if isinstance(claim, str):
+                self._latest_outcome = MountPulseOutcome(pulsed=False, error=claim)
+                return True
             self._busy = True
             self.submit_count += 1
-            # S6.0c: a new operator command re-arms after an earlier Stop. Only once the
-            # submission is accepted: a refused submit (busy) must not re-arm the sequence
-            # that Stop interrupted.
-            self._stop_requested.clear()
-            rearm_after_stop(mount)
+            self._claim = claim
         threading.Thread(
             target=self._run,
-            args=(mount_park, mount, steps, rate_preset, park_after, settle_ms),
+            args=(claim, mount_park, mount, steps, rate_preset, park_after, settle_ms),
             daemon=True,
             name="mount-test-move",
         ).start()
@@ -373,6 +414,7 @@ class MountTestMoveRunner:
 
     def _run(
         self,
+        claim: MotionClaim,
         mount_park: MountParkPort,
         mount: MountPort,
         steps: Sequence[PulseStep | AngularPulseStep],
@@ -381,22 +423,56 @@ class MountTestMoveRunner:
         settle_ms: int,
     ) -> None:
         """Worker entry point. Issue #49: whatever happens inside the sequence -- a driver or
-        network exception at ANY step -- an outcome is ALWAYS published and `_busy` ALWAYS
-        cleared. A worker that died without doing so left the runner busy forever (buttons
-        disabled, the Mount Align panel looking frozen)."""
+        network exception at ANY step -- an outcome is ALWAYS published, `_busy` ALWAYS
+        cleared and (S6.8a) the executor claim ALWAYS released. A worker that died without
+        doing so left the runner busy forever (buttons disabled, the Mount Align panel looking
+        frozen)."""
         try:
             outcome = self._run_sequence(
-                mount_park, mount, steps, rate_preset, park_after, settle_ms
+                claim, mount_park, mount, steps, rate_preset, park_after, settle_ms
             )
         except Exception as exc:  # noqa: BLE001 -- see the docstring: nothing may strand busy
             _log.exception("mount test-move worker crashed")
             outcome = MountPulseOutcome(pulsed=False, error=f"worker crashed: {exc!r}")
+        finally:
+            self._executor.release(claim)
         with self._lock:
             self._latest_outcome = outcome
             self._busy = False
+            self._claim = None
+
+    def _axis_move_refusal(
+        self,
+        claim: MotionClaim,
+        mount_park: MountParkPort,
+        steps: Sequence[PulseStep | AngularPulseStep],
+        initial: MountParkStatus,
+    ) -> str | None:
+        """S6.8a, after the mount is confirmed unparked: F12 -- an automatic unpark gets #44's
+        unpark enforcement, like the Mount panel's own; R1 -- an axis move on a tracking mount
+        is refused (tracking is never stopped here). None = the sequence may move."""
+        stop = claim.cancel
+        tracking: bool | None = initial.tracking
+        if initial.parked:
+            gate = self._executor.enforce_after_unpark(stop)
+            if stop.is_set():
+                return f"{_STOPPED_BY_USER} -- no move sent"
+            if gate is not None and not gate.allowed:
+                return f"after the automatic unpark: {gate.reason} -- no move sent"
+            status = _fresh_park_status(
+                mount_park, timeout_s=_UNPARK_TIMEOUT_S, clock=self._clock, cancel=stop
+            )
+            if stop.is_set():
+                return f"{_STOPPED_BY_USER} -- no move sent"
+            tracking = None if status is None else status.tracking
+        if not any(len(step) > 3 for step in steps):
+            return None  # timed pulses only: no axis GOTO, tracking is no precondition
+        gate = self._executor.axis_move_gate(tracking, "mount_align_move")
+        return None if gate.allowed else gate.reason
 
     def _run_sequence(
         self,
+        claim: MotionClaim,
         mount_park: MountParkPort,
         mount: MountPort,
         steps: Sequence[PulseStep | AngularPulseStep],
@@ -410,26 +486,12 @@ class MountTestMoveRunner:
         motion_started_at: float | None = None
         motion_ended_at: float | None = None
         settled_at: float | None = None
-        # Real live-hardware report: "You seem to enable tracking. That
-        # should not happen. No wonder, that the frames look blury" --
-        # unpark() used to be called unconditionally on *every* submit(),
-        # even across a run's later steps where the mount was already
-        # confirmed unparked by an earlier one (Run Calibration's several
-        # separate submit() calls, one per step -- unlike submit_sequence's
-        # single call for several *sub*-pulses, which already only unparks
-        # once). IndiMountParkAdapter.unpark() resends the UNPARK switch
-        # command every time it runs, which re-triggers OnStep's own
-        # ~1.5s delayed auto-tracking-on quirk (see that module's own
-        # docstring) all over again on every single pulse -- landing the
-        # driver's own tracking override right around when some step's
-        # "after" frame gets captured. Only a mount that's actually
-        # parked right now needs the full unpark() cycle; an
-        # already-unparked one instead gets the lighter stop_tracking()
-        # (a single TRACK_OFF, no UNPARK resend) -- still corrects any
-        # tracking that crept back in, without re-arming the driver's own
-        # UNPARK-linked quirk again.
+        # Only a mount that is parked right now (a FRESH reading) gets unpark(): resending
+        # UNPARK on every submit re-triggered OnStep's delayed auto-tracking-on quirk (module
+        # docstring). S6.8a: an unparked mount gets NO command here -- the former
+        # stop_tracking() was OnStep's emergency stop before every move (M03/F1).
         clock = self._clock
-        stop = self._stop_requested
+        stop = claim.cancel
         initial = _fresh_park_status(
             mount_park, timeout_s=_UNPARK_TIMEOUT_S, clock=clock, cancel=stop
         )
@@ -441,32 +503,22 @@ class MountTestMoveRunner:
             return MountPulseOutcome(pulsed=False, error=_PARK_STATE_UNKNOWN)
         if initial.parked:
             mount_park.unpark()
-        else:
-            mount_park.stop_tracking()
-            # Real diagnostic ba2b3259: `_wait_for_parked` just below is a
-            # same-poll, zero-delay no-op on this branch -- status().parked
-            # is already False (this mount was unparked by an earlier step
-            # in the same "Run Calibration" run), so nothing gives the
-            # driver's own separate motion-gate (see
-            # `_PULSE_REJECTION_RETRIES`'s own docstring) any time to catch
-            # up with the stop_tracking() just issued before the pulse loop
-            # below fires its first attempt. In that real run 3 of 4 steps
-            # hit exactly this and only succeeded on retry, each paying the
-            # round trip through a doomed first attempt before
-            # `_PULSE_REJECTION_RETRY_DELAY_S` even started counting.
-            # Reusing that same already-proven-sufficient delay here, up
-            # front, avoids that round trip in the common case; retry
-            # (below) still covers the rest. S6.3: Stop ends it at once.
-            clock.sleep(_PULSE_REJECTION_RETRY_DELAY_S, stop)
         try:
             why = _wait_for_parked(
                 mount_park, want_parked=False, timeout_s=_UNPARK_TIMEOUT_S, clock=clock,
                 cancel=stop,
             )
+            refusal = (
+                None
+                if why is not None
+                else self._axis_move_refusal(claim, mount_park, steps, initial)
+            )
             if why == _WAIT_STOPPED:
                 error = f"{_STOPPED_BY_USER} -- unpark not confirmed, no move sent"
             elif why is not None:
                 error = f"mount did not confirm unparked in time ({why}) -- aborting test move"
+            elif refusal is not None:
+                error = refusal
             else:
                 # All-or-nothing `pulsed` flag, same as the single-pulse
                 # contract this generalizes: if a later step in a multi-step
@@ -480,7 +532,7 @@ class MountTestMoveRunner:
                 motion_started_at = clock.monotonic()
                 for step in steps:
                     axis, direction = step[0], step[1]
-                    if self._stop_requested.is_set():
+                    if stop.is_set():
                         error = f"{_STOPPED_BY_USER} -- {axis.name} {direction.name} not sent"
                         break
                     result, path = _move_with_retry(mount, step, rate_preset, clock, stop)
@@ -527,9 +579,12 @@ class MountTestMoveRunner:
     def abort(self) -> None:
         """Stop (S6.0c, any thread, returns at once): no further step of the running sequence
         is sent, and (S6.3) a runner wait in progress ends at once. Stopping the mount itself
-        is the mount adapter's `abort()`; a step already inside the adapter ends there,
-        bounded by the adapter."""
-        self._stop_requested.set()
+        is the mount adapter's `abort()` (the executor's `abort()` sends both); a step already
+        inside the adapter ends there, bounded by the adapter."""
+        with self._lock:
+            claim = self._claim
+        if claim is not None:
+            claim.cancel.set()
 
     def take_latest(self) -> MountPulseOutcome | None:
         """Return and clear the latest completed outcome, if any — None

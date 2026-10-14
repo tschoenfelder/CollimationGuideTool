@@ -356,6 +356,7 @@ from collimation_tool.application.mount_align_sizing import (
     mount_is_angular_only,
     mount_supports_angular,
 )
+from collimation_tool.application.mount_motion import MountMotionExecutor
 from collimation_tool.ui.flow_layout import FlowLayout
 from collimation_tool.ui.mount_test_move_runner import MountTestMoveRunner
 
@@ -463,6 +464,7 @@ class MountTestMovePanel(QWidget):
         calibration_distance_m: Callable[[str], float | None] | None = None,
         threaded_captures: bool = False,
         clock: Clock | None = None,
+        motion_executor: MountMotionExecutor | None = None,
     ) -> None:
         super().__init__()
         self._mount = mount
@@ -540,6 +542,15 @@ class MountTestMovePanel(QWidget):
         self._set_right_auto_exposure_paused = set_right_auto_exposure_paused or (lambda _: None)
         self._settings = settings if settings is not None else MountAlignmentSettings()
         self._runner = runner if runner is not None else MountTestMoveRunner()
+        #: S6.8a (R3): every Mount Align motion claims the app-wide mount-motion executor
+        #: (MainWindow's); a standalone panel gets its own, bound to this panel's mount and its
+        #: tracking enforcer (the rule "may this move run while tracking" lives there).
+        self._motion_executor = (
+            motion_executor
+            if motion_executor is not None
+            else MountMotionExecutor(mount, tracking_enforcer=self._tracking_enforcer)
+        )
+        self._runner.use_executor(self._motion_executor)
         #: #52 K01 (S6.6b): the connect/disconnect lifecycle and its failure reporting (wording,
         #: the one log record, `last_connect_error` for diagnostics) have one owner, the S6.2
         #: `DeviceConnectionService` -- this panel no longer keeps its own copy.
@@ -2135,12 +2146,10 @@ class MountTestMovePanel(QWidget):
     def _on_stop(self) -> None:
         # S6.0c: every call here returns at once -- the runner sends no further step, and the
         # mount adapter's abort() hands OnStep's stop to a worker (it never queues behind the
-        # GOTO it stops). Duck-typed -- see module docstring's "Stop" section for why this
-        # isn't a MountPort Protocol method.
+        # GOTO it stops). S6.8a: both through the one motion executor (it owns the Stop-latch
+        # probe); a Stop also ends any other motion in flight on the shared mount.
         self._runner.abort()
-        abort = getattr(self._mount, "abort", None)
-        if callable(abort):
-            abort()
+        self._motion_executor.abort()
         # Issue #49: Stop ends the whole calibration/nudge, not just the current pulse: nothing
         # queued or in flight may carry on afterwards, and the panel is retryable at once.
         in_flight = self._capture_job is not None

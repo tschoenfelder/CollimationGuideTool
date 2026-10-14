@@ -66,6 +66,7 @@ from collimation_tool.application.guide_pulse_reacquisition import (
     choose_reacquisition_motion,
 )
 from collimation_tool.application.mount_commands import rearm_after_stop
+from collimation_tool.application.mount_motion import MotionClaim, MountMotionExecutor
 from collimation_tool.application.recenter_policy import (
     CollimationRecenterPolicy,
     MountCorrectionResult,
@@ -122,6 +123,11 @@ _CORRECTION_REASON_TO_FAILURE_REASON = {
 #: S6.0d: nothing was sent -- astronomical reacquisition is not possible right now
 #: (`AcquisitionResult.detail` says why, e.g. "needs OnStepAdapter >= 0.5.0").
 ASTRONOMICAL_REACQUISITION_UNAVAILABLE = "astronomical_reacquisition_unavailable"
+#: S6.8a: another workflow is moving the mount (one in-flight mount motion app-wide); nothing
+#: was sent, the busy reason is in `detail`.
+MOUNT_BUSY = "mount_busy"
+#: The claim owner name another workflow's busy refusal shows.
+REACQUISITION_OWNER = "guide-assisted reacquisition"
 #: S6.0d review (A2, #44 intent): the operating mode left Astronomical during a guide-pulse
 #: reacquisition -- no further guide pulse was sent.
 OPERATING_MODE_CHANGED = "operating_mode_changed"
@@ -320,6 +326,7 @@ class FocusedStarAcquisition:
         guide_pulse_calibration: GuidePulseCalibrationConfig | None = None,
         current_operating_mode: Callable[[], OperatingMode] | None = None,
         exposure_hint: Callable[[], float | None] | None = None,
+        motion_executor: MountMotionExecutor | None = None,
     ) -> AcquisitionResult:
         """AC 1.4: only meant to be called once `process_main_frame` has
         reported `target_not_found_main` (i.e. exhausted its own bounded
@@ -362,7 +369,15 @@ class FocusedStarAcquisition:
         only read once, for the identity check before anything moves. Without
         `wait_guide_frame_after` nothing moves (`no_fresh_frame_source`); a wait that ends
         without a fresh frame ends the run as `fresh_frame_timeout` (or
-        `guide_camera_unavailable`), the reason in `detail` -- never a stale measurement."""
+        `guide_camera_unavailable`), the reason in `detail` -- never a stale measurement.
+
+        S6.8a (R3/R4): with `motion_executor` (the app-wide one) the whole motion part --
+        guide-pulse calibration and the closed loop -- runs under ONE claim: while another
+        workflow moves the mount nothing is sent (`mount_busy`, the busy reason in `detail`),
+        and the executor's `abort()` (fine-collimation Cancel) cancels the run: the GOTO in
+        flight is stopped, a settle or fresh-frame wait ends at once, no further step is sent.
+        The claim re-arms the adapter's Stop latch; without an executor the latch is re-armed
+        directly (`rearm_after_stop`)."""
         decision = choose_reacquisition_motion(operating_mode, tracking_state, mount)
         if decision.motion is None:
             return AcquisitionResult(
@@ -426,6 +441,62 @@ class FocusedStarAcquisition:
                 AcquisitionStatus.LOST, None, None, NO_FRESH_FRAME_SOURCE,
                 _NO_FRESH_FRAME_SOURCE_DETAIL,
             )
+        # S6.8a: one in-flight mount motion app-wide -- claimed once every gate has passed.
+        claim: MotionClaim | None = None
+        if motion_executor is not None:
+            claimed = motion_executor.claim(REACQUISITION_OWNER, mount)
+            if isinstance(claimed, str):
+                return AcquisitionResult(AcquisitionStatus.LOST, None, None, MOUNT_BUSY, claimed)
+            claim = claimed
+        else:
+            # S6.0b: a new operator command -- an earlier Stop (e.g. Mount Align's) must not
+            # silently refuse it; a Stop pressed DURING this reacquisition still latches.
+            rearm_after_stop(mount)
+        try:
+            return self._move_toward_target(
+                mount, claim, guide_tracker, first_frame, target_center,
+                wait_guide_frame_after=wait_guide_frame_after,
+                guide_pulses=guide_pulses,
+                guide_calibration=guide_calibration,
+                cancel_check=cancel_check,
+                clock=clock,
+                center_rate_x=center_rate_x,
+                guide_pulse_calibration=guide_pulse_calibration,
+                current_operating_mode=current_operating_mode,
+                exposure_hint=exposure_hint,
+            )
+        finally:
+            if motion_executor is not None and claim is not None:
+                motion_executor.release(claim)
+
+    def _move_toward_target(
+        self,
+        mount: MountPort,
+        claim: MotionClaim | None,
+        guide_tracker: RoiTracker,
+        first_frame: np.ndarray,
+        target_center: tuple[float, float],
+        *,
+        wait_guide_frame_after: StableFrameWaiter,
+        guide_pulses: bool,
+        guide_calibration: CalibrationMatrix | None,
+        cancel_check: Callable[[], bool] | None,
+        clock: Clock | None,
+        center_rate_x: float | None,
+        guide_pulse_calibration: GuidePulseCalibrationConfig | None,
+        current_operating_mode: Callable[[], OperatingMode] | None,
+        exposure_hint: Callable[[], float | None] | None,
+    ) -> AcquisitionResult:
+        """The motion part of `attempt_guide_reacquisition` (S6.8a: under `claim`, whose
+        cancel counts as the caller's cancel everywhere)."""
+        caller_cancel = cancel_check
+
+        def motion_cancelled() -> bool:
+            if claim is not None and claim.cancelled:
+                return True
+            return caller_cancel is not None and caller_cancel()
+
+        cancel_check = motion_cancelled
         # S6.7: the policy's settle becomes part of the fresh-frame rule (the exposure must
         # start after the move ended + settle) instead of a blind sleep before a latest frame.
         # S6.6b: `exposure_hint` = the guide camera's exposure (s) as the GUI thread last
@@ -452,9 +523,6 @@ class FocusedStarAcquisition:
             _STEP_TRACKER_RADIUS_FRACTION * self._guide_max_position_error_px,
             _STEP_FRAME_FRACTION * min(first_frame.shape[:2]),
         )
-        # S6.0b: a new operator command -- an earlier Stop (e.g. Mount Align's) must not
-        # silently refuse it; a Stop pressed DURING this reacquisition still latches.
-        rearm_after_stop(mount)
         if guide_pulses:
             return self._recenter_with_guide_pulses(
                 mount,
@@ -466,6 +534,7 @@ class FocusedStarAcquisition:
                 max_step_px=max_step_px,
                 calibration_config=guide_pulse_calibration,
                 frames=frames,
+                claim=claim,
             )
         assert guide_calibration is not None  # checked above for the angular path
         policy = CollimationRecenterPolicy(
@@ -475,6 +544,7 @@ class FocusedStarAcquisition:
             clock=clock,
             center_rate_x=center_rate_x,
             max_step_px=max_step_px,
+            motion_claim=claim,
         )
         correction = policy.center(measure, reference=target_center, cancel_check=cancel_check)
         if correction.success:
@@ -493,6 +563,7 @@ class FocusedStarAcquisition:
         max_step_px: float,
         calibration_config: GuidePulseCalibrationConfig | None,
         frames: FreshFrameSource,
+        claim: MotionClaim | None = None,
     ) -> AcquisitionResult:
         """S6.0d: calibrate the guide pulses once per session, then the closed loop. Between
         pulses the operating mode is re-read (review A2): leaving Astronomical ends the run."""
@@ -516,6 +587,7 @@ class FocusedStarAcquisition:
             max_step_px=max_step_px,
             calibration_config=calibration_config,
             frames=frames,
+            claim=claim,
         )
         if mode_changed:
             return AcquisitionResult(
@@ -534,6 +606,7 @@ class FocusedStarAcquisition:
         max_step_px: float,
         calibration_config: GuidePulseCalibrationConfig | None,
         frames: FreshFrameSource,
+        claim: MotionClaim | None = None,
     ) -> AcquisitionResult:
         calibrated = self._guide_pulse_matrix
         calibration_warnings: tuple[str, ...] = ()
@@ -571,6 +644,7 @@ class FocusedStarAcquisition:
             clock=clock,
             max_step_px=max_step_px,
             guide_pulses=True,
+            motion_claim=claim,
         )
         correction = policy.center(measure, reference=target_center, cancel_check=cancel_check)
         warnings = tuple(sorted(set(calibration_warnings) | set(correction.warnings)))

@@ -191,10 +191,8 @@ class TestMountTestMoveRunner:
         override right around when some step's "after" frame gets
         captured. Only the first submit() of a run (mount actually
         parked) needs the full unpark() cycle; a later submit() on an
-        already-unparked mount uses the lighter stop_tracking() instead
-        (a single TRACK_OFF, no UNPARK resend) -- still corrects any
-        tracking that crept back in, without re-arming the driver's own
-        UNPARK-linked quirk again."""
+        already-unparked mount sends nothing before its move (S6.8a: the former
+        stop_tracking() was OnStep's emergency stop; tracking is the executor's rule)."""
         mount_park = FakeMountPark(start_parked=True)
         mount = FakeMountAdapter()
         mount.connect()
@@ -214,10 +212,10 @@ class TestMountTestMoveRunner:
         outcome = runner.take_latest()
         assert outcome is not None
         assert outcome.pulsed is True
-        # Still just the one unpark() from the first submit() -- the
-        # second used stop_tracking() instead.
+        # Still just the one unpark() from the first submit(); S6.8a: and the second sends
+        # no stop_tracking() (OnStep's emergency stop) either -- M03 removed.
         assert mount_park.unpark_count == 1
-        assert mount_park.stop_tracking_count == 1
+        assert mount_park.stop_tracking_count == 0
 
     def test_a_submit_after_the_mount_was_reparked_still_unparks_again(self) -> None:
         """The parked-check must be live, not "only ever the first submit()
@@ -365,54 +363,6 @@ class TestMountTestMoveRunner:
         assert outcome.pulsed is False
         assert elapsed_s < 2.0  # nowhere near the 5s settle -- correctly skipped
 
-    def test_settle_precedes_the_first_pulse_attempt_after_stop_tracking(self) -> None:
-        # Real diagnostic ba2b3259: `_wait_for_parked` is a same-poll,
-        # zero-delay no-op once the mount is already confirmed unparked --
-        # true for every step after the very first in a "Run Calibration"
-        # run -- so nothing gave the driver's own separate motion-gate (see
-        # `_PULSE_REJECTION_RETRIES`'s own docstring) any time to catch up
-        # with the `stop_tracking()` just issued before the first pulse
-        # attempt. In that real run, 3 of the 4 steps got rejected on their
-        # first attempt and only succeeded on retry. Confirms a settle
-        # delay is now inserted BEFORE the first pulse attempt of a
-        # `stop_tracking()`-only `submit()`, not left solely to
-        # retry-after-rejection to recover.
-        mount_park = FakeMountPark(start_parked=True)
-        mount = FakeMountAdapter()
-        mount.connect()
-        runner = MountTestMoveRunner()
-        import collimation_tool.ui.mount_test_move_runner as runner_module
-
-        original_delay = runner_module._PULSE_REJECTION_RETRY_DELAY_S
-        runner_module._PULSE_REJECTION_RETRY_DELAY_S = 0.05
-        try:
-            # First submit(): mount starts parked -> full unpark() cycle.
-            runner.submit(
-                mount_park, mount, MountAxis.AXIS1, AxisDirection.POSITIVE, 10, park_after=False
-            )
-            assert _wait_for(lambda: not runner.is_busy)
-
-            # Second submit(): already unparked -> the stop_tracking() branch.
-            started_at = time.monotonic()
-            runner.submit(
-                mount_park, mount, MountAxis.AXIS2, AxisDirection.POSITIVE, 10, park_after=False
-            )
-            assert _wait_for(lambda: not runner.is_busy)
-            elapsed_s = time.monotonic() - started_at
-        finally:
-            runner_module._PULSE_REJECTION_RETRY_DELAY_S = original_delay
-
-        outcome = runner.take_latest()
-        assert outcome is not None
-        assert outcome.pulsed is True
-        assert elapsed_s >= 0.05
-        # Accepted on the very first attempt -- the delay ran BEFORE
-        # pulsing, not because a rejection-triggered retry consumed it.
-        assert mount.pulse_log == [
-            (MountAxis.AXIS1, AxisDirection.POSITIVE, 10),
-            (MountAxis.AXIS2, AxisDirection.POSITIVE, 10),
-        ]
-
     def test_a_pulse_rejected_on_every_attempt_still_gives_up_eventually(self) -> None:
         mount = FakeMountAdapter(reject_first_n_pulses=999)  # never accepts
         mount.connect()
@@ -453,11 +403,6 @@ class _RaisingPark(FakeMountPark):
         if self._on == "unpark":
             raise ConnectionError("indiserver went away during unpark")
         super().unpark()
-
-    def stop_tracking(self) -> None:
-        if self._on == "stop_tracking":
-            raise OSError("socket closed during stop_tracking")
-        super().stop_tracking()
 
     def park(self) -> None:
         if self._on == "park":
@@ -502,21 +447,6 @@ class TestWorkerCrashesNeverStrandTheRunner:
         assert outcome.pulsed is False
         assert outcome.error is not None and "worker crashed" in outcome.error
         assert "unpark" in outcome.error
-
-    def test_an_exception_in_stop_tracking_is_reported_and_clears_busy(self) -> None:
-        runner = MountTestMoveRunner()
-        mount = FakeMountAdapter()
-        mount.connect()
-        park = _RaisingPark(on="stop_tracking")
-        park.unpark()  # already unparked -> the lighter stop_tracking() branch runs
-
-        assert runner.submit(
-            park, mount, MountAxis.AXIS1, AxisDirection.POSITIVE, 10, park_after=False
-        )
-        outcome = self._finished_outcome(runner)
-
-        assert outcome.pulsed is False
-        assert outcome.error is not None and "worker crashed" in outcome.error
 
     def test_an_exception_in_the_pulse_is_reported_and_clears_busy(self) -> None:
         runner = MountTestMoveRunner()
@@ -651,3 +581,32 @@ class TestAngularSteps:
         outcome = runner.take_latest()
         assert outcome is not None and outcome.motion_paths == (MOTION_TIMED,)
         assert mount.pulse_log == [(MountAxis.AXIS1, AxisDirection.POSITIVE, 700)]
+
+
+class TestOneMotionInFlightAppWide:
+    """S6.8a (R3): the runner claims the app-wide motion executor; while another workflow
+    moves the mount the request is answered at once with the busy reason -- nothing sent,
+    nothing queued, not counted as an accepted submit (#43 evidence)."""
+
+    def test_a_submit_while_another_workflow_moves_is_refused_with_the_reason(self) -> None:
+        from collimation_tool.application.mount_motion import MountMotionExecutor
+
+        mount = FakeAngularMountAdapter()
+        mount.connect()
+        executor = MountMotionExecutor(mount)
+        other = executor.claim("guide-assisted reacquisition")
+        assert not isinstance(other, str)
+        runner = MountTestMoveRunner(executor=executor)
+
+        assert runner.submit_sequence(
+            FakeMountPark(start_parked=False), mount,
+            [(MountAxis.AXIS1, AxisDirection.POSITIVE, 100, 60.0)], park_after=False,
+        )
+
+        assert runner.is_busy is False
+        outcome = runner.take_latest()
+        assert outcome is not None and outcome.pulsed is False
+        assert outcome.error is not None and "mount busy" in outcome.error
+        assert "guide-assisted reacquisition" in outcome.error
+        assert mount.angular_log == []
+        assert runner.submit_count == 0

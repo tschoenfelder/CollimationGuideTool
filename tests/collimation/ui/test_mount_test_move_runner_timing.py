@@ -401,15 +401,17 @@ class TestFreshParkReadingDeadline:
 
 
 class TestGateDelayAndRetries:
-    def test_an_unparked_mount_waits_the_gate_delay_before_the_first_attempt(self) -> None:
+    def test_an_unparked_mount_gets_no_command_and_no_gate_delay(self) -> None:
+        """S6.8a (M03/F1): before, an unparked mount got `stop_tracking()` -- OnStep's
+        emergency stop over INDI -- and a 0.3 s gate delay before every move."""
         clock = FakeClock()
         park = _TimedPark(clock, parked=False)
         mount = _StampedMount(clock)
         outcome = _run(clock, park, mount)
         assert outcome.pulsed is True
-        assert park.commands == [("stop_tracking", 0.0)]
-        assert clock.sleeps == [runner_module._PULSE_REJECTION_RETRY_DELAY_S]
-        assert mount.attempted_at == [0.3]
+        assert park.commands == []
+        assert clock.sleeps == []
+        assert mount.attempted_at == [0.0]
 
     @pytest.mark.parametrize(
         ("rejections", "pulsed"),
@@ -472,7 +474,7 @@ class TestRepark:
 class TestStopInEachWaitState:
     """Stop (`abort()`) pressed while the worker is inside each wait. S6.3: every wait takes
     the Stop event, so it ends AT the Stop instant (fake time) instead of running to its end;
-    nothing further is sent to the mount after Stop -- no unpark/stop_tracking, no further
+    nothing further is sent to the mount after Stop -- no unpark, no further
     pulse or retry, no re-park command (a re-park already commanded is no longer awaited).
     Before S6.3 (S3b pins) each wait ran to its end and only the next step was skipped."""
 
@@ -498,17 +500,6 @@ class TestStopInEachWaitState:
         assert outcome.error is not None and "stopped by the user" in outcome.error
         assert mount.attempted_at == []
         assert clock.monotonic() == 0.3
-
-    def test_stop_during_the_stop_tracking_gate_delay(self) -> None:
-        clock = FakeClock()
-        runner = MountTestMoveRunner(clock=clock)
-        clock.call_at(0.1, runner.abort)
-        mount = _StampedMount(clock)
-        outcome = _run(clock, _TimedPark(clock, parked=False), mount, runner=runner)
-        assert outcome.error is not None and "stopped by the user" in outcome.error
-        assert mount.attempted_at == []
-        assert clock.sleeps == [0.3]
-        assert clock.monotonic() == 0.1  # the gate delay was cut short
 
     def test_stop_during_a_rejection_retry_delay_sends_no_further_attempt(self) -> None:
         clock = FakeClock()

@@ -25,6 +25,7 @@ from astrotool_core.timing import SYSTEM_CLOCK, Clock
 from PySide6.QtCore import QTimer
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
+from collimation_tool.application.mount_motion import MotionClaim, MountMotionExecutor
 from collimation_tool.application.operation_lifecycle import (
     CompletionVerdict,
     StatusPollGuard,
@@ -46,8 +47,14 @@ class MountParkPanel(QWidget):
         title: str = "Mount",
         tracking_enforcer: TrackingEnforcer | None = None,
         clock: Clock | None = None,
+        motion_executor: MountMotionExecutor | None = None,
     ) -> None:
         super().__init__()
+        #: S6.8a (R3): a park/unpark is a mount motion like any other -- it claims the
+        #: app-wide executor for as long as the command runs (one in-flight motion app-wide;
+        #: while e.g. Mount Align moves, Park/Unpark are refused with the busy reason). None =
+        #: no cross-workflow exclusion (a standalone panel).
+        self._motion_executor = motion_executor
         #: Issue #53 (S3b): the time the confirmation-timeout safety net reads. The Qt
         #: poll timer stays the tick source; tests inject a `FakeClock`.
         self._clock: Clock = clock if clock is not None else SYSTEM_CLOCK
@@ -171,6 +178,13 @@ class MountParkPanel(QWidget):
         return " — tracking OFF (required, terrestrial)"
 
     def _begin_action(self, action: str) -> None:
+        claim: MotionClaim | None = None
+        if self._motion_executor is not None:
+            claimed = self._motion_executor.claim(f"the Mount panel's {action}")
+            if isinstance(claimed, str):  # S6.8a: refused, never queued
+                self._status_label.setText(f"{action.capitalize()} not started — {claimed}")
+                return
+            claim = claimed
         # Disable synchronously, before issuing the action — see module
         # docstring. Qt delivers input on this one thread, so a button
         # already disabled here cannot receive a second click before
@@ -186,17 +200,26 @@ class MountParkPanel(QWidget):
             # The mount slews for seconds to minutes (unpark also drives it home): never on
             # the GUI thread. The poll loop watches the worker.
             self._action_worker = threading.Thread(
-                target=self._run_action, args=(run,), daemon=True, name="mount-park-action"
+                target=self._run_action, args=(run, claim), daemon=True, name="mount-park-action"
             )
             self._action_worker.start()
         else:
-            run()
+            try:
+                run()
+            finally:
+                self._release(claim)
 
-    def _run_action(self, run: Callable[[], None]) -> None:
+    def _run_action(self, run: Callable[[], None], claim: MotionClaim | None = None) -> None:
         try:
             run()
         except Exception as exc:  # noqa: BLE001 -- surfaced in the status line by the poll loop
             self._action_error = str(exc)
+        finally:
+            self._release(claim)
+
+    def _release(self, claim: MotionClaim | None) -> None:
+        if self._motion_executor is not None and claim is not None:
+            self._motion_executor.release(claim)
 
     def _on_park(self) -> None:
         self._begin_action("park")

@@ -181,7 +181,9 @@ from PySide6.QtWidgets import (
 
 from collimation_tool.application.autofocus_controller import ExposureControl
 from collimation_tool.application.guide_pulse_reacquisition import read_tracking_for_decision
+from collimation_tool.application.mount_motion import MountMotionExecutor
 from collimation_tool.application.star_acquisition import (
+    REACQUISITION_OWNER,
     AcquisitionResult,
     AcquisitionStatus,
     FocusedStarAcquisition,
@@ -327,11 +329,19 @@ class MainWindow(QMainWindow):
         # guide-assisted reacquisition (issue #39) pulses the SAME mount
         # connection the test-move panel drives.
         self._pulse_mount: MountPort = pulse_mount if pulse_mount is not None else NoMountAdapter()
+        #: S6.8a (R3): THE mount-motion executor -- one in-flight RA/Dec motion app-wide
+        #: (Mount Align, guide-assisted reacquisition, park/unpark), the shared lock-free Stop,
+        #: and the "may this move run while tracking" rule of the #44 policy.
+        self._motion_executor = MountMotionExecutor(
+            self._pulse_mount, tracking_enforcer=self._tracking_enforcer
+        )
         self._fine_collimation_panel = FineCollimationPanel(
             get_frame=self._left_panel.latest_mono_frame,
             optical_config=optical_config,
             guide_reacquirer=self._reacquire_via_guide,
             measurement_gate=self._measurement_gate,
+            # S6.8a (R4): Cancel stops the reacquisition's mount motion, lock-free.
+            abort_motion=partial(self._motion_executor.abort, REACQUISITION_OWNER),
         )
         self._fine_collimation_panel.target_mode_changed.connect(self._on_target_mode_changed)
 
@@ -396,7 +406,9 @@ class MainWindow(QMainWindow):
         # rather than owning a second, independently-connected copy of
         # the same park/unpark state.
         self._mount_panel = MountParkPanel(
-            mount_park_port, tracking_enforcer=self._tracking_enforcer
+            mount_park_port,
+            tracking_enforcer=self._tracking_enforcer,
+            motion_executor=self._motion_executor,
         )
         #: Loaded once and kept (S6.0b): Mount Align stores its calibration in this
         #: configuration's unit, and guide-assisted reacquisition must read it in the same one.
@@ -420,6 +432,7 @@ class MainWindow(QMainWindow):
             # Issue #49: stability-verified frame waits run off the GUI thread when enabled
             # (the real app); False keeps the synchronous behaviour existing callers rely on.
             threaded_captures=threaded_captures,
+            motion_executor=self._motion_executor,
         )
 
         # Restore last session's connected camera + exposure/gain/
@@ -869,6 +882,7 @@ class MainWindow(QMainWindow):
             wait_guide_frame_after=self._right_panel.wait_for_frame_after,
             # S6.6b: the GUI-thread snapshot of the Guide exposure (this runs on a worker).
             exposure_hint=lambda: self._guide_exposure_snapshot_s,
+            motion_executor=self._motion_executor,
         )
 
     def _snapshot_guide_exposure(self) -> None:
@@ -1181,6 +1195,11 @@ class MainWindow(QMainWindow):
         # S6.6b: the GUI-side timers stop too (exposure snapshot, P-a re-enforce).
         self._exposure_snapshot_timer.stop()
         self._tracking_reenforce_timer.stop()
+        # S6.8a (R8): a mount motion still in flight is stopped FIRST, lock-free -- before any
+        # panel disconnects (the Mount panel's tracking-off takes the connection's operation
+        # lock and would otherwise wait behind a running GOTO, up to OnStepAdapter's 30 s).
+        if self._motion_executor.in_flight is not None:
+            self._motion_executor.abort()
         # #52 K03 (S6.2): each panel's stop is isolated -- one raising stop (e.g. a mount whose
         # tracking-off is not confirmed) used to skip every panel after it.
         stops: list[tuple[str, Callable[[], object]]] = [

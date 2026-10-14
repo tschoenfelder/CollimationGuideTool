@@ -3,7 +3,7 @@ MountTestMovePanel -> MountTestMoveRunner -> production OnStep park/pulse
 adapters -> OnStepConnection -> simulated OnStep controller.
 
 Since S3b (#53) the runner waits on the SAME FakeClock as the simulated
-controller: its stop_tracking gate delays, park polls and settles advance the
+controller: its park polls and settles advance the
 one simulated timeline instead of costing real seconds (~5.5 s per run before).
 The test still drains the worker thread with a bounded real-time poll (a thread
 barrier, not a policy wait). Frames are stamped with `time.monotonic()` because
@@ -137,7 +137,8 @@ class TestMountAlignWorkflow:
         assert client.parked is False  # the runner unparked the simulated mount
         moved = sum(abs(offset) for _axis, offset in client.axis_move_calls)
         # fake time = every simulated move + exactly the runner's own waits, nothing real
-        assert runner_clock.sleeps  # its gate delays ran on the shared fake timeline
+        # S6.8a (M03/F1 removed): no emergency stop before any move, so no gate delay either
+        assert client.emergency_stop_calls == 0
         assert clock.monotonic() == pytest.approx(
             moved / OnStepScenario().axis_rate_deg_per_s + sum(runner_clock.sleeps)
         )

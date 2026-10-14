@@ -959,3 +959,78 @@ class TestManualMoveTextsOnAnAngularOnlyMount:
         assert "did not move" in text or "envelope" in text, text
         assert "preset" not in text.lower(), text
         panel.stop()
+
+
+class TestAMoveNeverStopsTracking:
+    """S6.8a (movement-paths F1/M03, R1, F12; user decision 2026-10-11): Mount Align used to send
+    OnStep's EMERGENCY stop (`stop_tracking()` = ABORT + TRACK_OFF) before every move, whatever
+    the mode -- an Astronomical screen move silently left the mount not tracking. Now no move
+    stops tracking: Astronomical + tracking ON refuses the axis move explicitly (guide-pulse
+    Mount Align is S6.8b), Terrestrial relies on the #44 enforcer keeping tracking OFF."""
+
+    @staticmethod
+    def _count_emergency_stops(rig: _Rig) -> list[int]:
+        stops: list[int] = []
+        real = rig.client.emergency_stop
+
+        def counted(**kwargs: Any) -> Any:  # noqa: ANN401 -- the fake's own result type
+            stops.append(1)
+            return real(**kwargs)
+
+        rig.client.emergency_stop = counted  # type: ignore[method-assign]
+        return stops
+
+    def test_an_astronomical_screen_move_is_refused_and_tracking_stays_on(
+        self, qapp: object
+    ) -> None:
+        rig = _Rig((_main(283.0), _GUIDE))
+        panel = _calibrated(rig)  # calibrated in Terrestrial mode (tracking off)
+        panel._tracking_enforcer.set_mode(OperatingMode.ASTRONOMICAL)
+        panel.operating_mode_changed()
+        rig.client.tracking = True  # Astronomical: the mount tracks the sky
+        before = len(rig.client.axis_move_calls)
+        stops = self._count_emergency_stops(rig)
+
+        panel._size_buttons[MovementSize.LARGE].setChecked(True)
+        panel._on_screen_move_clicked("left", ScreenDirection.RIGHT)
+        _drain(panel)
+
+        assert rig.client.tracking is True, "the screen move left the mount not tracking"
+        assert stops == [], "an emergency stop was sent before the move"
+        assert len(rig.client.axis_move_calls) == before
+        assert panel._last_error is not None and "astronomical mode" in panel._last_error
+        assert "nothing was sent" in panel._last_error
+        panel.stop()
+
+    def test_a_terrestrial_screen_move_sends_no_emergency_stop_first(self, qapp: object) -> None:
+        rig = _Rig((_main(283.0), _GUIDE))
+        panel = _calibrated(rig)
+        before = len(rig.client.axis_move_calls)
+        stops = self._count_emergency_stops(rig)
+
+        panel._size_buttons[MovementSize.MEDIUM].setChecked(True)
+        panel._on_screen_move_clicked("left", ScreenDirection.RIGHT)
+        _drain(panel)
+
+        assert len(rig.client.axis_move_calls) > before, panel._result_label.text()
+        assert stops == [], "an emergency stop (ABORT + TRACK_OFF) was sent before the move"
+        panel.stop()
+
+    def test_the_automatic_unpark_runs_the_unpark_enforcement(self, qapp: object) -> None:
+        """F12: the Mount panel enforces #44 after its own unpark; Mount Align's automatic
+        unpark skipped it (no trail entry, OnStep's delayed auto-tracking unchecked)."""
+        rig = _Rig((_main(283.0), _GUIDE))
+        panel = _calibrated(rig)
+        rig.client.parked = True
+        rig.client.tracking = False
+        before = len(rig.client.axis_move_calls)
+
+        panel._size_buttons[MovementSize.MEDIUM].setChecked(True)
+        panel._on_screen_move_clicked("left", ScreenDirection.RIGHT)
+        _drain(panel)
+
+        assert rig.client.parked is False, panel._result_label.text()
+        contexts = [t["context"] for t in panel._tracking_enforcer.evidence()["transitions"]]
+        assert "unpark" in contexts, contexts
+        assert len(rig.client.axis_move_calls) > before, panel._result_label.text()
+        panel.stop()

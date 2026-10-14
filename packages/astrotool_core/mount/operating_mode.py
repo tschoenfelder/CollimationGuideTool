@@ -51,6 +51,27 @@ TERRESTRIAL_TRACKING_ON_REFUSED_REASON = (
 )
 
 
+#: S6.8a (R1, user decision 2026-10-11): why an axis GOTO is refused while the mount tracks.
+#: OnStepAdapter refuses an axis move on a tracking mount and ends every axis move with tracking
+#: off, so the move could only run by stopping tracking -- which a move never decides on its own.
+ASTRONOMICAL_TRACKING_AXIS_MOVE_REFUSED = (
+    "astronomical mode with the mount tracking: an axis move needs tracking off, and Mount "
+    "Align never turns tracking off on its own -- moving with guide pulses while tracking is "
+    "not available yet; nothing was sent, tracking stays on"
+)
+TERRESTRIAL_TRACKING_AXIS_MOVE_REFUSED = (
+    "terrestrial operating mode, but the mount reports tracking ON -- the tracking policy has "
+    "not turned it off (see the Mount panel); nothing was sent and no emergency stop was issued"
+)
+NO_POLICY_TRACKING_AXIS_MOVE_REFUSED = (
+    "the mount is tracking and an axis move needs tracking off -- nothing was sent and tracking "
+    "was not stopped"
+)
+TRACKING_UNKNOWN_AXIS_MOVE_REFUSED = (
+    "the mount's tracking state could not be read freshly -- nothing was sent"
+)
+
+
 class OperatingMode(Enum):
     TERRESTRIAL = "terrestrial"
     ASTRONOMICAL = "astronomical"
@@ -62,6 +83,21 @@ class TrackingGate:
 
     allowed: bool
     reason: str
+
+
+def axis_move_gate_for(mode: OperatingMode | None, tracking: bool | None) -> TrackingGate:
+    """S6.8a (R1): may an axis GOTO start now? It never stops tracking to make that possible:
+    a non-tracking mount may move in either mode; a tracking one is refused with the mode's
+    reason (`mode` None = no operating-mode policy wired); an unknown reading fails closed."""
+    if tracking is None:
+        return TrackingGate(False, TRACKING_UNKNOWN_AXIS_MOVE_REFUSED)
+    if not tracking:
+        return TrackingGate(True, "mount not tracking: axis move allowed")
+    if mode is OperatingMode.ASTRONOMICAL:
+        return TrackingGate(False, ASTRONOMICAL_TRACKING_AXIS_MOVE_REFUSED)
+    if mode is OperatingMode.TERRESTRIAL:
+        return TrackingGate(False, TERRESTRIAL_TRACKING_AXIS_MOVE_REFUSED)
+    return TrackingGate(False, NO_POLICY_TRACKING_AXIS_MOVE_REFUSED)
 
 
 class TrackingEnforcer:
@@ -227,6 +263,15 @@ class TrackingEnforcer:
         self._record(
             context, before=before, command=command, after=self._tracking_now(), gate=gate
         )
+        return gate
+
+    def axis_move_gate(self, context: str, *, tracking: bool | None) -> TrackingGate:
+        """S6.8a (R1): the one answer to "may this axis move run, given the tracking reading
+        `tracking` (fresh, None = unknown)?" -- `axis_move_gate_for` under the current mode.
+        Sends nothing and never changes tracking; recorded in the evidence trail, but it does
+        not change the measurement gate (`last_gate`)."""
+        gate = axis_move_gate_for(self._mode, tracking)
+        self._record(context, before=tracking, command=None, after=None, gate=gate)
         return gate
 
     def evidence(self) -> dict[str, Any]:
