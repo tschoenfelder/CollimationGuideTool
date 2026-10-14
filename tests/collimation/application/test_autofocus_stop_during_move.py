@@ -1,11 +1,9 @@
 """S6.8c (R7, F-b/F-c): FocuserPanel's Stop during an autofocus run cancels the runner and
 then calls `OnStepFocuserAdapter.stop()`. Before S6.8c that stop queued behind the running
 autofocus move (the move ran to its end, up to 30 s); now it interrupts it and the run ends
-without sending another move.
-
-Known wording gap (recorded in proofs/49-focuser-stop.toml): `BoundedFocusSearcher._move_to`
-checks the cancel flag only between moves, so a run whose move a Stop interrupted reports
-MOVE_REJECTED ("the focuser rejected the commanded move"), not CANCELLED.
+without sending another move. A move refused while the run is cancelled is a cancellation
+(CANCELLED, not MOVE_REJECTED), and the focuser stays where the Stop left it: no
+return-to-best move after a hardware Stop. A plain Cancel (no hardware stop) is unchanged.
 """
 
 from __future__ import annotations
@@ -46,6 +44,7 @@ def test_a_stop_during_an_autofocus_move_ends_the_run_without_another_move() -> 
     )
     run.start()
     assert focuser_clock.wait_for_sleepers(1), "the first probe move never started"
+    focuser_clock.advance(10.0)  # 100 of 250 steps done: the Stop leaves it away from best
 
     # FocuserPanel._on_stop: the runner's cancel, then the focuser stop (GUI thread).
     cancel.set()
@@ -54,9 +53,9 @@ def test_a_stop_during_an_autofocus_move_ends_the_run_without_another_move() -> 
     run.join(3.0)
     try:
         assert not run.is_alive(), "the autofocus move ran on despite the Stop"
-        assert made[0].focuser.move_log == [5250]  # no move after the Stop
-        assert made[0].focuser.position == 5000
-        assert results[0].status in (AutofocusStatus.CANCELLED, AutofocusStatus.MOVE_REJECTED)
+        assert results[0].status is AutofocusStatus.CANCELLED
+        assert made[0].focuser.move_log == [5250], "a move was sent after the Stop"
+        assert made[0].focuser.position == 5100  # where the Stop left it, not back at 5000
     finally:
         deadline = time.monotonic() + 5.0
         while (run.is_alive() or stopper.is_alive()) and time.monotonic() < deadline:

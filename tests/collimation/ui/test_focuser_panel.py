@@ -463,3 +463,115 @@ class TestDiagnosticContextBlockers:
     def test_blockers_are_omitted_for_a_port_without_the_concept(self, qapp: object) -> None:
         panel = FocuserPanel(FakeFocuser())
         assert "blockers" not in panel.diagnostic_context()
+
+
+class _BlockingMoveFocuser(FakeFocuser):
+    """A focuser whose `move()` blocks until `release` is set -- the jog worker stays busy for
+    exactly as long as the test wants (no timing). `stop()` releases it only when
+    `stop_releases` (a driver that confirms the abort at once)."""
+
+    def __init__(self, *, stop_releases: bool = False) -> None:
+        super().__init__()
+        self.release = threading.Event()
+        self.entered = threading.Event()
+        self.stop_releases = stop_releases
+        self.moves: list[int] = []
+        self.order: list[str] = []
+
+    def move(self, steps: int) -> None:
+        self.moves.append(steps)
+        self.entered.set()
+        assert self.release.wait(5.0), "the test never released the move"
+        super().move(steps)
+        self.order.append("move ended")
+
+    def stop(self) -> None:
+        self.order.append("stop")
+        if self.stop_releases:
+            self.release.set()
+        super().stop()
+
+    def disconnect(self) -> None:
+        self.order.append("disconnect")
+        super().disconnect()
+
+
+def _af_capable_panel(focuser: FakeFocuser) -> FocuserPanel:
+    panel = FocuserPanel(
+        focuser,
+        get_frame=lambda: _star_frame(),
+        wait_for_frame=_always_fresh_frame,
+        set_auto_exposure_paused=lambda paused: None,
+    )
+    panel._connect_button.setChecked(True)
+    return panel
+
+
+def _jog_controls_enabled(panel: FocuserPanel) -> tuple[bool, bool, bool]:
+    return (
+        panel._in_button.isEnabled(),
+        panel._out_button.isEnabled(),
+        panel._auto_focus_button.isEnabled(),
+    )
+
+
+class TestJogWorkerGating:
+    """S6.8c: the jog's move runs on a worker. While that worker still runs, In/Out and Auto
+    Focus stay disabled -- also after Stop or the confirmation safety net cleared the panel's
+    in-flight window -- and a click sends no second move (one move at a time, #87349fd3)."""
+
+    def test_stop_clears_the_window_but_not_the_busy_worker(self, qapp: object) -> None:
+        focuser = _BlockingMoveFocuser()
+        panel = _af_capable_panel(focuser)
+        assert _jog_controls_enabled(panel) == (True, True, True)
+        panel._on_move_out()
+        assert focuser.entered.wait(5.0)
+
+        panel._on_stop()  # the driver has not ended the move yet
+        assert panel._move_in_flight is False
+        assert _jog_controls_enabled(panel) == (False, False, False)
+        panel._poll_status()
+        assert _jog_controls_enabled(panel) == (False, False, False)
+
+        panel._on_move_out()  # a click reaching the handler anyway
+        assert focuser.moves == [1], "a second move was sent while the first still ran"
+        assert panel._move_in_flight is False
+
+        focuser.release.set()
+        _wait_for_jog(panel)
+        panel._poll_status()
+        assert _jog_controls_enabled(panel) == (True, True, True)
+        panel.stop()
+
+    def test_the_safety_net_clears_the_window_but_not_the_busy_worker(
+        self, qapp: object
+    ) -> None:
+        focuser = _BlockingMoveFocuser()
+        panel = _af_capable_panel(focuser)
+        panel._on_move_out()
+        assert focuser.entered.wait(5.0)
+        assert panel._move_issued_at is not None
+        panel._move_issued_at -= 999.0  # the confirmation safety net elapses
+        panel._poll_status()
+        assert panel._move_in_flight is False
+        assert _jog_controls_enabled(panel) == (False, False, False)
+        focuser.release.set()
+        _wait_for_jog(panel)
+        panel._poll_status()
+        assert _jog_controls_enabled(panel) == (True, True, True)
+        panel.stop()
+
+
+class TestQuitWaitsForTheJog:
+    def test_quit_stops_the_jog_and_lets_it_end_before_the_release(self, qapp: object) -> None:
+        focuser = _BlockingMoveFocuser(stop_releases=True)
+        panel = FocuserPanel(focuser)
+        panel._connect_button.setChecked(True)
+        panel._on_move_out()
+        assert focuser.entered.wait(5.0)
+
+        panel.stop()
+
+        assert not panel._jog.is_busy
+        assert focuser.order[:2] == ["stop", "move ended"]
+        assert focuser.order[-1] == "disconnect"

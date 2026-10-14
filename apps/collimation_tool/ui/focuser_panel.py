@@ -45,6 +45,8 @@ because `OnStepFocuserAdapter.stop()` no longer queues behind it.
 
 from __future__ import annotations
 
+import logging
+import threading
 from collections.abc import Callable
 from typing import Any
 
@@ -90,6 +92,11 @@ _DEFAULT_STEP_SIZE = _STEP_SIZES[0]
 #: panel's poll interval can ever catch a Busy state.
 _MOVE_CONFIRMATION_TIMEOUT_S = 10.0
 _AUTOFOCUS_POLL_INTERVAL_MS = 200
+#: S6.8c: on quit, how long (real time, a thread join) the jog worker may take to end after
+#: the focuser stop before the connection is released -- short; the release goes on anyway.
+_QUIT_JOG_WAIT_S = 3.0
+
+_log = logging.getLogger(__name__)
 
 
 def _format_autofocus_status(result: AutofocusResult) -> str:
@@ -177,6 +184,7 @@ class FocuserPanel(QWidget):
         self._move_issued_at: float | None = None
         #: S6.8c: the jog's blocking move runs here, never on the GUI thread.
         self._jog: OperationLifecycle[None] = OperationLifecycle("focuser-jog")
+        self._jog_thread: threading.Thread | None = None
 
         # Issue #33: Auto Focus needs camera access this panel otherwise
         # has none of -- optional, injectable-default (None) so existing
@@ -337,8 +345,16 @@ class FocuserPanel(QWidget):
         # S6.8c: off the GUI thread; a failure is logged by the lifecycle, the poll and the
         # confirmation safety net end the in-flight window as before.
         self._jog.start(
-            lambda: focuser.move(steps), on_error=lambda _exc: None, publish=lambda _none: None
+            lambda: focuser.move(steps),
+            on_error=lambda _exc: None,
+            publish=lambda _none: None,
+            spawn=self._spawn_jog,
         )
+
+    def _spawn_jog(self, target: Callable[[], None]) -> None:
+        thread = threading.Thread(target=target, daemon=True, name="focuser-jog")
+        self._jog_thread = thread  # quit joins it (bounded)
+        thread.start()
 
     def _on_move_in(self) -> None:
         self._begin_move(-self._selected_step())
@@ -618,5 +634,14 @@ class FocuserPanel(QWidget):
         self._autofocus_poll_timer.stop()
         if self._autofocus_running:
             self._autofocus_runner.cancel()
+        jog = self._jog_thread
+        if self._connected and self._jog.is_busy and jog is not None:
+            # S6.8c: stop the jog's move first and let its worker end (bounded) before the
+            # release, so the connection is not closed under a running move.
+            try:
+                self._focuser.stop()
+            except Exception:  # noqa: BLE001 -- #52 K03: nothing raises out of quit
+                _log.exception("FocuserPanel: stopping the jog on quit failed")
+            jog.join(_QUIT_JOG_WAIT_S)
         # #52 K03: a failing abort never skips the release, and nothing raises out of quit.
         self._connection.disconnect(cancel_motion=True)

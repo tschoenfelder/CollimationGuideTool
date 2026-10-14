@@ -23,6 +23,7 @@ from astrotool_core.onstep import OnStepFocuserAdapter
 from astrotool_core.testing import (
     FocuserScenario,
     OnStepScenario,
+    SimulatedOnStepIndiClient,
     make_simulated_onstep_connection,
 )
 from astrotool_core.testing.sim_onstep import ObservableRLock, install_observable_operation_lock
@@ -54,9 +55,7 @@ def _move_in_flight(
     clock = FakeClock(auto_advance=False)
     connection, made = make_simulated_onstep_connection(
         OnStepScenario(
-            focuser=FocuserScenario(
-                steps_per_s=10.0, stop_confirm_latency_s=stop_confirm_latency_s
-            )
+            focuser=FocuserScenario(steps_per_s=10.0, stop_confirm_latency_s=stop_confirm_latency_s)
         ),
         clock=clock,
     )
@@ -163,6 +162,7 @@ class TestFocuserStopDuringMove:
 
         client.focuser.stop = stop
         client.close = close
+
         def quit_app() -> None:
             focuser.stop()
             focuser.disconnect()
@@ -185,3 +185,50 @@ class TestFocuserStopDuringMove:
             assert out and out[0]  # says why it could not read, never an empty "all clear"
         finally:
             _finish(clock, mover, reader)
+
+
+class TestStopBetweenEnteringAndSending:
+    """S6.8c review F2: a Stop that lands after a move entered the connection (in flight for the
+    bookkeeping) but before it was sent to OnStepAdapter. OnStepAdapter clears its cancel flag
+    when the move starts (indi_focuser.py:84), so a stop set before that would be lost; the
+    move re-checks just before sending and is refused unsent. Here the Stop is pressed from
+    inside the adapter's own start-position read -- exactly that window, deterministically."""
+
+    @staticmethod
+    def _stop_during_the_start_read(
+        focuser: OnStepFocuserAdapter, client: SimulatedOnStepIndiClient
+    ) -> None:
+        real_get_status = client.focuser.get_status
+        armed = [True]
+
+        def get_status() -> object:
+            snapshot = real_get_status()
+            if armed[0]:
+                armed[0] = False
+                focuser.stop()
+            return snapshot
+
+        client.focuser.get_status = get_status  # type: ignore[method-assign]
+
+    def test_an_absolute_move_is_refused_unsent(self) -> None:
+        connection, made = make_simulated_onstep_connection(OnStepScenario(), clock=FakeClock())
+        focuser = OnStepFocuserAdapter(connection)
+        focuser.connect()
+        self._stop_during_the_start_read(focuser, made[0])
+
+        result = focuser.move_absolute(6000)
+
+        assert made[0].focuser.move_log == [], "the move was sent although a Stop covered it"
+        assert not result.accepted
+        focuser.disconnect()
+
+    def test_a_relative_jog_is_refused_unsent(self) -> None:
+        connection, made = make_simulated_onstep_connection(OnStepScenario(), clock=FakeClock())
+        focuser = OnStepFocuserAdapter(connection)
+        focuser.connect()
+        self._stop_during_the_start_read(focuser, made[0])
+
+        focuser.move(200)
+
+        assert made[0].focuser.move_log == [], "the jog was sent although a Stop covered it"
+        focuser.disconnect()

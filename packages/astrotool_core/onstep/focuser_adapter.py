@@ -18,12 +18,15 @@ deliberate exception to 9cea2e9's serialization: it takes no `operation_lock` (b
 it should stop it could only run once that move had ended). It refuses every move requested
 up to now that has not been sent yet (one queued behind a mount GOTO, say), and hands
 OnStepAdapter's stop -- ABORT plus a confirmation wait of up to 5 s (:141-166) -- to a
-short-lived worker, so the GUI thread that pressed Stop returns at once. If a move this Stop
-covers is still in flight once that stop has finished (it may have cleared the cancel flag on
-entry, :84, just after the first stop set it), one more stop is sent. A move requested after
-the Stop runs normally. `disconnect()` waits (bounded) for a stop still being delivered, so a
-quit never closes the client under it. `blockers()` (a GUI-thread diagnostic) never queues
-behind a move either: while the connection is busy it says it could not read.
+short-lived worker, so the GUI thread that pressed Stop returns at once. A move re-checks,
+just before it is sent, whether a Stop now covers it (refused unsent). Past that check a Stop
+can still land before OnStepAdapter clears the cancel flag on entry (:84) and be lost, so while
+a move this Stop covers is still in flight after a stop pass, the worker stops again -- at most
+`_MAX_STOP_PASSES` passes (each waits up to OnStepAdapter's 5 s confirmation, which gives the
+move time to get past :84). A move requested after the Stop runs normally. `disconnect()`
+waits (bounded) for a stop still being delivered, so a quit never closes the client under it.
+`blockers()` (a GUI-thread diagnostic) never queues behind a move either: while the
+connection is busy it says it could not read.
 
 S6.3 (#52 K02): every device-side failure OnStepAdapter can raise
 (`ONSTEP_OPERATION_ERRORS`, one owner) becomes a result here -- a rejected move, a
@@ -49,9 +52,11 @@ _log = logging.getLogger(__name__)
 _UNAVAILABLE = FocuserStatus(available=False, position=0, max_position=0, moving=False)
 #: `blockers()` while another operation holds the connection (S6.8c): not read, not "clear".
 BLOCKERS_NOT_READ = "not_read_connection_busy"
-#: `disconnect()` waits at most this long (real time) for a Stop still being delivered: two
-#: passes of OnStepAdapter's 5 s stop confirmation (indi_focuser.py:137) plus a margin.
-_STOP_DELIVERY_WAIT_S = 12.0
+#: The stop worker's passes for one Stop request, at most (see the module docstring).
+_MAX_STOP_PASSES = 3
+#: `disconnect()` waits at most this long (real time) for a Stop still being delivered: every
+#: pass's OnStepAdapter 5 s stop confirmation (indi_focuser.py:137) plus a margin.
+_STOP_DELIVERY_WAIT_S = 5.0 * _MAX_STOP_PASSES + 2.0
 
 
 class OnStepFocuserAdapter(FocuserPort):
@@ -157,6 +162,11 @@ class OnStepFocuserAdapter(FocuserPort):
             self._in_flight = generation
             return True
 
+    def _covered_by_stop(self, generation: int) -> bool:
+        """Re-check just before sending: a Stop since `_enter_move` covers this move."""
+        with self._state:
+            return generation <= self._stopped_through
+
     def _leave_move(self) -> None:
         with self._state:
             self._in_flight = None
@@ -177,6 +187,11 @@ class OnStepFocuserAdapter(FocuserPort):
                     _log.warning("OnStepFocuserAdapter: move to %s rejected: %s", steps, exc)
                     return FocuserMoveResult(
                         accepted=False, target_position=steps, start_position=0
+                    )
+                if self._covered_by_stop(generation):
+                    _log.info("OnStepFocuserAdapter: move to %s cancelled by Stop, not sent", steps)
+                    return FocuserMoveResult(
+                        accepted=False, target_position=steps, start_position=start
                     )
                 self._moving = True
                 try:
@@ -218,6 +233,9 @@ class OnStepFocuserAdapter(FocuserPort):
                 target = current + steps
                 if maximum is not None:
                     target = max(0, min(maximum, target))
+                if self._covered_by_stop(generation):
+                    _log.info("OnStepFocuserAdapter: relative move by %s cancelled by Stop", steps)
+                    return
                 focuser.move_absolute(target)
             except ONSTEP_OPERATION_ERRORS as exc:
                 # Fire-and-forget (FocuserPanel's jog worker, S6.8c): never raises.
@@ -274,13 +292,20 @@ class OnStepFocuserAdapter(FocuserPort):
                 if covered is None:
                     self._stop_worker = None
                     return
-            self._send_one_stop(focuser)
-            with self._state:
-                in_flight = self._in_flight
-            if in_flight is not None and in_flight <= covered:
-                # It may have cleared OnStepAdapter's cancel flag on entry (indi_focuser.py:84)
-                # just after the first stop set it -- by now it is past that point.
+            for _ in range(_MAX_STOP_PASSES):
                 self._send_one_stop(focuser)
+                with self._state:
+                    in_flight = self._in_flight
+                if in_flight is None or in_flight > covered:
+                    break
+                # A covered move is still in flight: it may have cleared OnStepAdapter's cancel
+                # flag on entry (indi_focuser.py:84) after this pass set it -- stop again. Not
+                # guaranteed to be past :84 yet; bounded by _MAX_STOP_PASSES.
+            else:
+                _log.warning(
+                    "OnStepFocuserAdapter: a stopped move was still in flight after %d stops",
+                    _MAX_STOP_PASSES,
+                )
 
     @staticmethod
     def _send_one_stop(focuser: IndiFocuser) -> None:

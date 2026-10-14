@@ -275,9 +275,7 @@ class _Watchdog:
 def _jog_in_flight() -> tuple[FocuserPanel, list[SimulatedOnStepIndiClient], FakeClock]:
     """A 200-step Out jog at 1 step/s (200 s of fake time) clicked on the GUI thread."""
     clock = FakeClock(auto_advance=False)
-    panel, made = _focuser_panel(
-        OnStepScenario(focuser=FocuserScenario(steps_per_s=1.0)), clock
-    )
+    panel, made = _focuser_panel(OnStepScenario(focuser=FocuserScenario(steps_per_s=1.0)), clock)
     panel._connect_button.setChecked(True)
     button = panel._step_group.button(200)
     assert button is not None

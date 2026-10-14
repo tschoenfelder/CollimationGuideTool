@@ -123,12 +123,19 @@ class _SearchAbort(Exception):
     call site by hand."""
 
     def __init__(
-        self, status: AutofocusStatus, best_position: int | None, reason: str | None = None
+        self,
+        status: AutofocusStatus,
+        best_position: int | None,
+        reason: str | None = None,
+        *,
+        stay: bool = False,
     ) -> None:
         super().__init__(status)
         self.status = status
         self.best_position = best_position
         self.reason = reason
+        #: S6.8c: a hardware Stop ended the move -- no recovery move afterwards.
+        self.stay = stay
 
 
 @dataclass
@@ -245,7 +252,7 @@ class BoundedFocusSearcher:
         try:
             return self._search_from_probe(run, measure, cancel_check)
         except _SearchAbort as abort:
-            if abort.status is not AutofocusStatus.MOVE_REJECTED:
+            if abort.status is not AutofocusStatus.MOVE_REJECTED and not abort.stay:
                 self._safe_return_to(run, run.best_position)
             return self._make_result(run, abort.status, None, failure_reason=abort.reason)
 
@@ -412,6 +419,11 @@ class BoundedFocusSearcher:
             # move to issue or wait for.
             return clamped
         result = self._focuser.move_absolute(clamped)
+        if not result.accepted and self._cancel_check is not None and self._cancel_check():
+            # S6.8c: FocuserPanel's Stop cancels the run, then stops the focuser, which ends
+            # (or refuses) this move -- a cancellation, and the focuser stays where the Stop
+            # left it (no return-to-best move after a hardware Stop).
+            raise _SearchAbort(AutofocusStatus.CANCELLED, run.best_position, stay=True)
         if not result.accepted:
             # FocuserMoveResult is deliberately hardware-neutral (no reason
             # field) -- the OnStep adapter logs the specific device-level
