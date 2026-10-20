@@ -19,6 +19,7 @@ here either.
 
 from __future__ import annotations
 
+import math
 import tomllib
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -45,6 +46,13 @@ _DEFAULT_CALIBRATION_TARGET_FRACTION = 0.25
 #: controller's centering rate as a multiple of sidereal. ONLY a seed -- the measured
 #: displacement decides the real rate (installed into OnStepAdapter at runtime).
 _DEFAULT_CALIBRATION_CENTER_RATE_X = 8.0
+#: S6.8b: the ASSUMED guide rate (x sidereal) that sizes the first, uncalibrated guide-pulse
+#: move of Astronomical Mount Align (calibration seed, uncalibrated nudge). OnStepAdapter 0.5.0
+#: does not expose the controller's guide rate, so this is an explicit assumption -- shown as
+#: such, never as calibrated, and replaced by the measured response. 1.0x: the supervised
+#: 2026-10-06 rig check (OnStepAdapter 0.5.0 README) measured ~1x sidereal; a seed that is too
+#: HIGH only makes the first move smaller (the probe then grows it), so the higher value is used.
+_DEFAULT_GUIDE_RATE_SEED_X = 1.0
 _DEFAULT_MAX_CALIBRATION_PULSE_MS = 3000
 _DEFAULT_MIN_CALIBRATION_PULSE_MS = 200
 #: Real request: nudges should move a large, decisive distance for rough
@@ -211,6 +219,7 @@ class MountAlignmentSettings:
     calibration_rate_preset: str = _DEFAULT_CALIBRATION_RATE_PRESET
     calibration_target_fraction: float = _DEFAULT_CALIBRATION_TARGET_FRACTION
     calibration_center_rate_x: float = _DEFAULT_CALIBRATION_CENTER_RATE_X
+    guide_rate_seed_x: float = _DEFAULT_GUIDE_RATE_SEED_X
     max_calibration_pulse_ms: int = _DEFAULT_MAX_CALIBRATION_PULSE_MS
     min_calibration_pulse_ms: int = _DEFAULT_MIN_CALIBRATION_PULSE_MS
 
@@ -225,6 +234,14 @@ def _read[T](table: dict[str, Any], key: str, default: T, convert: Callable[[Any
         return convert(value)
     except (TypeError, ValueError):
         return default
+
+
+def _positive_float(value: object) -> float:
+    """A finite, positive float (a rate); anything else is malformed (-> the default)."""
+    number = float(value)  # type: ignore[arg-type]  # malformed -> TypeError -> default
+    if not (math.isfinite(number) and number > 0.0):
+        raise ValueError(f"not a positive finite number: {value!r}")
+    return number
 
 
 def load_mount_alignment_settings(
@@ -346,6 +363,9 @@ def load_mount_alignment_settings(
         ),
         calibration_center_rate_x=_read(
             table, "calibration_center_rate_x", defaults.calibration_center_rate_x, float
+        ),
+        guide_rate_seed_x=_read(
+            table, "guide_rate_seed_x", defaults.guide_rate_seed_x, _positive_float
         ),
         max_calibration_pulse_ms=_read(
             table, "max_calibration_pulse_ms", defaults.max_calibration_pulse_ms, int

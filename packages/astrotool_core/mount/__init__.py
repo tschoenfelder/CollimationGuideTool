@@ -7,6 +7,7 @@ much to move it — that is app-specific policy.
 from astrotool_core.mount.axis_calibration import (
     AxisResponse,
     CalibrationMatrix,
+    CalibrationUnit,
     DirectionCharacterization,
     calibrate_axes,
     calibrate_axis,
@@ -46,6 +47,7 @@ __all__ = [
     "AxisDirection",
     "AxisResponse",
     "CalibrationMatrix",
+    "CalibrationUnit",
     "CommandResult",
     "DirectionCharacterization",
     "GuidePulsePort",

@@ -33,7 +33,9 @@ import logging
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from enum import Enum
 
+from astrotool_core.mount import MountCapabilities
 from astrotool_core.mount.operating_mode import (
     TERRESTRIAL_TRACKING_REPAIR_FAILED,
     OperatingMode,
@@ -57,6 +59,33 @@ TERRESTRIAL_TRACKING_REPAIRED_NOTE = (
     "the mount was tracking in Terrestrial mode -- the tracking policy turned tracking off "
     "before this move"
 )
+
+
+class MountAlignPrimitive(Enum):
+    """S6.8b: the motion primitive of one Mount Align move (`choose_mount_align_primitive`)."""
+
+    #: An axis move (angular GOTO, or a timed pulse on a mount that has one); needs tracking off.
+    AXIS = "axis"
+    #: OnStepAdapter >= 0.5.0 guide pulses, sent while the mount keeps tracking.
+    GUIDE_PULSE = "guide_pulse"
+
+
+def choose_mount_align_primitive(
+    mode: OperatingMode | None, tracking: bool | None, capabilities: MountCapabilities
+) -> MountAlignPrimitive:
+    """S6.8b (user decision 2026-10-11): Astronomical mode + the mount tracking + a mount that
+    reports `supports_guide_pulses_while_tracking` -> guide pulses (tracking is never turned off
+    by Mount Align). Everything else -> an axis move, so a 0.4.1-shaped mount that tracks in
+    Astronomical mode keeps the axis gate's explicit refusal, and Terrestrial is unchanged.
+    `tracking` None (unknown) -> an axis move, which the axis gate refuses (fail closed). The
+    worker re-checks the guide preconditions on a FRESH reading before anything is sent."""
+    if (
+        mode is OperatingMode.ASTRONOMICAL
+        and tracking is True
+        and capabilities.supports_guide_pulses_while_tracking
+    ):
+        return MountAlignPrimitive.GUIDE_PULSE
+    return MountAlignPrimitive.AXIS
 
 
 @dataclass(frozen=True)

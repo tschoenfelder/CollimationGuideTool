@@ -19,6 +19,7 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum
 
 from astrotool_core.mount.port import AxisDirection, MountAxis, MountPort
 
@@ -53,11 +54,24 @@ class AxisResponse:
         return math.degrees(math.atan2(self.dy_px, self.dx_px)) % 360.0
 
 
+class CalibrationUnit(Enum):
+    """S6.8b: what one `AxisResponse.duration_ms` of a matrix means -- which motion primitive
+    it was measured with. A matrix of one unit never sizes moves of the other (Mount Align
+    refuses and asks for a recalibration in the current mode)."""
+
+    #: An axis move: a timed `pulse_axis` duration, or (angular-only mounts, S6.0) the
+    #: equivalent ms of an angular GOTO at `calibration_center_rate_x`.
+    AXIS_MS = "axis_ms"
+    #: Milliseconds of an OnStepAdapter >= 0.5.0 guide pulse sent while tracking.
+    GUIDE_PULSE_MS = "guide_pulse_ms"
+
+
 @dataclass(frozen=True)
 class CalibrationMatrix:
-    """Full pulse-response calibration: one AxisResponse per (axis, direction)."""
+    """Full pulse-response calibration: one AxisResponse per (axis, direction), in `unit`."""
 
     responses: dict[tuple[MountAxis, AxisDirection], AxisResponse]
+    unit: CalibrationUnit = CalibrationUnit.AXIS_MS
 
     def response_for(self, axis: MountAxis, direction: AxisDirection) -> AxisResponse:
         return self.responses[(axis, direction)]

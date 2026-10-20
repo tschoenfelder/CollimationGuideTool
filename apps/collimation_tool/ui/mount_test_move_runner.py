@@ -88,7 +88,11 @@ from astrotool_core.mount.port import (
 )
 from astrotool_core.timing import SYSTEM_CLOCK, Clock, Deadline
 
-from collimation_tool.application.mount_motion import MotionClaim, MountMotionExecutor
+from collimation_tool.application.mount_motion import (
+    MotionClaim,
+    MountAlignPrimitive,
+    MountMotionExecutor,
+)
 
 #: The claim owner name shown in another workflow's busy refusal.
 MOUNT_ALIGN_OWNER = "Mount Align"
@@ -344,6 +348,7 @@ class MountTestMoveRunner:
         rate_preset: str | None = None,
         park_after: bool = True,
         settle_ms: int = 0,
+        primitive: MountAlignPrimitive = MountAlignPrimitive.AXIS,
     ) -> bool:
         """Start an unpark/pulse/(re-park unless `park_after=False`)
         sequence in the background. Returns False (a no-op) if one is
@@ -356,6 +361,7 @@ class MountTestMoveRunner:
             rate_preset=rate_preset,
             park_after=park_after,
             settle_ms=settle_ms,
+            primitive=primitive,
         )
 
     def submit_sequence(
@@ -367,6 +373,7 @@ class MountTestMoveRunner:
         rate_preset: str | None = None,
         park_after: bool = True,
         settle_ms: int = 0,
+        primitive: MountAlignPrimitive = MountAlignPrimitive.AXIS,
     ) -> bool:
         """Like `submit`, but for several pulses run back-to-back after a
         single unpark (e.g. a composed two-axis direction-pad nudge) —
@@ -393,7 +400,10 @@ class MountTestMoveRunner:
         moves the mount the claim is refused: nothing is sent, and the refusal (its busy
         reason) is published at once as this request's outcome (`pulsed=False`), so the
         caller reports it like any other failed move -- never queued, never silently dropped.
-        A refused claim is not counted in `submit_count`."""
+        A refused claim is not counted in `submit_count`.
+
+        S6.8b: `primitive` names the motion primitive of the steps; only AXIS (default, the
+        axis-move path above) is executed so far."""
         if not steps:
             return False
         with self._lock:
@@ -411,7 +421,7 @@ class MountTestMoveRunner:
             self._claim = claim
         threading.Thread(
             target=self._run,
-            args=(claim, mount_park, mount, steps, rate_preset, park_after, settle_ms),
+            args=(claim, mount_park, mount, steps, rate_preset, park_after, settle_ms, primitive),
             daemon=True,
             name="mount-test-move",
         ).start()
@@ -426,6 +436,7 @@ class MountTestMoveRunner:
         rate_preset: str | None,
         park_after: bool,
         settle_ms: int,
+        primitive: MountAlignPrimitive = MountAlignPrimitive.AXIS,
     ) -> None:
         """Worker entry point. Issue #49: whatever happens inside the sequence -- a driver or
         network exception at ANY step -- an outcome is ALWAYS published, `_busy` ALWAYS

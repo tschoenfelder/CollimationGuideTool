@@ -299,3 +299,24 @@ class TestCalibrationSizingSettings:
 
         assert settings.calibration_target_fraction == 0.25
         assert settings.max_calibration_pulse_ms == 3000
+
+
+class TestGuideRateSeed:
+    """S6.8b: the ASSUMED guide rate that sizes the first guide-pulse move -- one named,
+    configurable owner (OnStepAdapter 0.5.0 exposes no guide rate)."""
+
+    def test_default_is_one_x_sidereal(self) -> None:
+        assert MountAlignmentSettings().guide_rate_seed_x == 1.0
+
+    def test_configured_value_is_read(self, tmp_path: Path) -> None:
+        path = tmp_path / "config.toml"
+        path.write_text("[mount_alignment]\nguide_rate_seed_x = 0.5\n", encoding="utf-8")
+        assert load_mount_alignment_settings(path).guide_rate_seed_x == 0.5
+
+    def test_a_non_positive_or_malformed_seed_falls_back_to_the_default(
+        self, tmp_path: Path
+    ) -> None:
+        path = tmp_path / "config.toml"
+        for value in ("0", "-1.0", '"fast"', "nan"):
+            path.write_text(f"[mount_alignment]\nguide_rate_seed_x = {value}\n", encoding="utf-8")
+            assert load_mount_alignment_settings(path).guide_rate_seed_x == 1.0, value
