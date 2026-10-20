@@ -391,3 +391,27 @@ class TestTerrestrialTrackingRepair:
         assert executor.axis_move_gate(False, "mount_align_move").allowed
 
         assert enforcer.evidence()["transitions"] == before
+
+
+class TestInFlightListener:
+    """S6.8c-R5: the global mount Stop follows `in_flight` through this notification."""
+
+    def test_accepted_claims_and_their_releases_notify_refusals_and_stale_releases_do_not(
+        self,
+    ) -> None:
+        executor = MountMotionExecutor()
+        seen: list[str | None] = []
+
+        def broken(_owner: str | None) -> None:
+            raise RuntimeError("observer bug")
+
+        executor.add_in_flight_listener(broken)
+        executor.add_in_flight_listener(seen.append)
+        claim = executor.claim("Mount Align")
+        assert isinstance(claim, MotionClaim)
+        assert isinstance(executor.claim("the Mount panel's park"), str)
+        executor.release(claim)
+        executor.release(claim)  # stale: already released
+
+        assert seen == ["Mount Align", None]
+        assert executor.in_flight is None

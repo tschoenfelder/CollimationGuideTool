@@ -29,6 +29,7 @@ No Qt; no `time.sleep` (the injected `Clock`, #53).
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -44,6 +45,8 @@ from astrotool_core.mount.tracking_mode import WORKER_DECISION_FRESH_WAIT_S
 from astrotool_core.timing import SYSTEM_CLOCK, Clock
 
 from collimation_tool.application.mount_commands import rearm_after_stop
+
+_log = logging.getLogger(__name__)
 
 #: Prefix of every busy refusal, so callers and tests can recognise it.
 MOTION_BUSY = "mount busy"
@@ -110,6 +113,8 @@ class MountMotionExecutor:
         #: are ordered; never held around a move, a status read or any other mount I/O.
         self._lock = threading.Lock()
         self._claim: MotionClaim | None = None
+        #: S6.8c-R5: observers of `in_flight` (see `add_in_flight_listener`).
+        self._listeners: list[Callable[[str | None], None]] = []
 
     @property
     def tracking_enforcer(self) -> TrackingEnforcer | None:
@@ -120,6 +125,20 @@ class MountMotionExecutor:
         """The owner of the motion in flight, or None."""
         with self._lock:
             return None if self._claim is None else self._claim.owner
+
+    def add_in_flight_listener(self, listener: Callable[[str | None], None]) -> None:
+        """S6.8c-R5: call `listener(in_flight)` after every accepted claim and every release
+        that ended the motion in flight -- on the claiming/releasing thread, outside the lock
+        (a UI marshals it to its own thread and re-reads `in_flight`). A raising listener is
+        logged, never propagated into the motion."""
+        self._listeners.append(listener)
+
+    def _notify(self, in_flight: str | None) -> None:
+        for listener in list(self._listeners):
+            try:
+                listener(in_flight)
+            except Exception:  # noqa: BLE001 -- an observer must never break a motion
+                _log.exception("mount-motion in-flight listener failed")
 
     def claim(self, owner: str, mount: object | None = None) -> MotionClaim | str:
         """Start one motion for `owner` (a human-readable name, e.g. "Mount Align"): the claim,
@@ -138,13 +157,16 @@ class MountMotionExecutor:
             rearm_after_stop(target)
             if self._mount is not None and self._mount is not target:
                 rearm_after_stop(self._mount)
+        self._notify(owner)
         return claim
 
     def release(self, claim: MotionClaim) -> None:
         """End `claim` (idempotent; a stale claim never releases a newer one)."""
         with self._lock:
-            if self._claim is claim:
-                self._claim = None
+            if self._claim is not claim:
+                return
+            self._claim = None
+        self._notify(None)
 
     def abort(self, owner: str | None = None) -> None:
         """Stop (any thread, returns at once): cancel the motion in flight and send the mount's

@@ -161,7 +161,7 @@ from astrotool_core.registration.astap_adapter import AstapCliSolver, AstapSolve
 from astrotool_core.registration.optical_prior import OpticalPrior
 from astrotool_core.registration.result import CrossCameraRegistrationResult, RegistrationMethod
 from astrotool_core.session import stop_each
-from PySide6.QtCore import Qt, QTimer
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -217,6 +217,14 @@ _DEFAULT_MANUAL_REASON = "Manual capture from UI (no note given)"
 
 _log = logging.getLogger(__name__)
 
+
+def _holds_connection(mount: MountPort) -> bool:
+    """S6.8c-R5: whether `mount` holds its connection right now (non-blocking: a status read
+    that finds the connection busy serves the last reading, S6.0c). `status_pending` covers
+    the OnStep pulse adapter connected but not read yet behind a running operation."""
+    return bool(mount.status().connected or getattr(mount, "status_pending", False))
+
+
 #: Issue #47: the optical trains that actually have a real CameraPanel in
 #: this app -- a wheel assignment naming any other train (e.g. "oag", which
 #: this app has no panel for) never gets a selector, only ever a status
@@ -225,6 +233,10 @@ _REAL_TRAINS = {"main", "guide"}
 
 
 class MainWindow(QMainWindow):
+    #: S6.8c-R5: the executor's in-flight motion changed (emitted on any thread; the slot runs
+    #: on the GUI thread and re-reads `MountMotionExecutor.in_flight`).
+    _mount_motion_changed = Signal()
+
     def __init__(
         self,
         camera: CameraPort,
@@ -335,6 +347,20 @@ class MainWindow(QMainWindow):
         self._motion_executor = MountMotionExecutor(
             self._pulse_mount, tracking_enforcer=self._tracking_enforcer
         )
+        #: S6.8c-R5 (movement-paths F3/R5): ONE always-visible mount Stop, enabled exactly while
+        #: the executor has a motion in flight (park/unpark, Mount Align, reacquisition).
+        self._mount_stop_button = QPushButton("Stop mount")
+        self._mount_stop_button.setObjectName("globalMountStop")
+        self._mount_stop_button.setToolTip(
+            "Stop whatever moves the mount now (park, Mount Align, reacquisition) -- "
+            "OnStep's emergency stop, sent at once."
+        )
+        self._mount_stop_button.clicked.connect(self._on_mount_stop_clicked)
+        self._mount_motion_changed.connect(self._update_mount_stop_button)
+        self._motion_executor.add_in_flight_listener(
+            lambda _owner: self._mount_motion_changed.emit()
+        )
+        self._update_mount_stop_button()
         self._fine_collimation_panel = FineCollimationPanel(
             get_frame=self._left_panel.latest_mono_frame,
             optical_config=optical_config,
@@ -576,6 +602,7 @@ class MainWindow(QMainWindow):
         operating_row.addWidget(self._operating_terrestrial_button)
         operating_row.addWidget(self._operating_astronomical_button)
         operating_row.addWidget(self._operating_status_label, stretch=1)
+        operating_row.addWidget(self._mount_stop_button)
         self._apply_operating_mode_to_ui(OperatingMode.TERRESTRIAL)
 
         diagnostics_row = QHBoxLayout()
@@ -666,6 +693,35 @@ class MainWindow(QMainWindow):
         self.setCentralWidget(central)
         self.setMinimumSize(1000, 560)
         self.resize(1280, 680)
+
+    def _update_mount_stop_button(self) -> None:
+        self._mount_stop_button.setEnabled(self._motion_executor.in_flight is not None)
+
+    def _on_mount_stop_clicked(self) -> None:
+        """S6.8c-R5: the executor's lock-free `abort()` with no owner -- stops whatever moves;
+        returns at once, never waits on the connection's `operation_lock`. While nothing moves
+        it does nothing (an idle emergency stop would also turn tracking off).
+
+        The executor's mount (the shared pulse adapter) sends the stop only while it holds the
+        OnStep connection, i.e. while Mount Align is connected. A park started from the Mount
+        panel alone would otherwise get no stop at all, so the adapter is held just for this
+        call (shares the client the Mount panel already holds: no I/O, no lock wait) and given
+        back at once -- the stop worker keeps its own reference to the mount."""
+        if self._motion_executor.in_flight is None:
+            return
+        mount = self._pulse_mount
+        borrowed = not _holds_connection(mount)
+        if borrowed:
+            try:
+                mount.connect()
+            except Exception:  # noqa: BLE001 -- the Stop itself must still run
+                _log.exception("mount Stop: could not reach the shared OnStep connection")
+                borrowed = False
+        try:
+            self._motion_executor.abort()
+        finally:
+            if borrowed:
+                mount.disconnect()
 
     def _calibration_geometry(self) -> list[CameraGeometry]:
         """Issue #46: sensor size + plate scale per participating camera (the

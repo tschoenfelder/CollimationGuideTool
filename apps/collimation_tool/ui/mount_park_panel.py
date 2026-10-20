@@ -82,6 +82,11 @@ class MountParkPanel(QWidget):
         self._action_issued_at: float | None = None
         self._action_worker: threading.Thread | None = None
         self._action_error: str | None = None
+        #: S6.8c-R5: the executor claim of the park/unpark in flight -- the main window's
+        #: mount Stop cancels it (`MotionClaim.cancelled`), and the outcome then reads
+        #: "stopped by the user" instead of a failure (OnStepAdapter's `park()` has no cancel
+        #: hook: after the ABORT it returns unconfirmed only once its own status wait gives up).
+        self._action_claim: MotionClaim | None = None
 
         self._title_label = QLabel(f"<b>{title}</b>")
         self._connect_button = QPushButton("Connect")
@@ -185,6 +190,7 @@ class MountParkPanel(QWidget):
                 self._status_label.setText(f"{action.capitalize()} not started — {claimed}")
                 return
             claim = claimed
+        self._action_claim = claim
         # Disable synchronously, before issuing the action — see module
         # docstring. Qt delivers input on this one thread, so a button
         # already disabled here cannot receive a second click before
@@ -208,6 +214,8 @@ class MountParkPanel(QWidget):
                 run()
             finally:
                 self._release(claim)
+            if self._stopped_by_user():
+                self._status_label.setText(f"{action.capitalize()} stopped by the user.")
 
     def _run_action(self, run: Callable[[], None], claim: MotionClaim | None = None) -> None:
         try:
@@ -216,6 +224,10 @@ class MountParkPanel(QWidget):
             self._action_error = str(exc)
         finally:
             self._release(claim)
+
+    def _stopped_by_user(self) -> bool:
+        claim = self._action_claim
+        return claim is not None and claim.cancelled
 
     def _release(self, claim: MotionClaim | None) -> None:
         if self._motion_executor is not None and claim is not None:
@@ -270,15 +282,27 @@ class MountParkPanel(QWidget):
         worker = self._action_worker
         if worker is not None:
             if worker.is_alive():
-                self._status_label.setText(
-                    f"{self._pending_action or 'Action'} in progress — the mount is moving…"
-                )
+                if self._stopped_by_user():
+                    self._status_label.setText(
+                        f"{self._pending_action or 'Action'} stopped by the user — waiting for "
+                        "OnStepAdapter to end the command…"
+                    )
+                else:
+                    self._status_label.setText(
+                        f"{self._pending_action or 'Action'} in progress — the mount is moving…"
+                    )
                 self._update_buttons_enabled()
                 return
             self._action_worker = None
             settled_action = self._pending_action
             self._action_in_flight = False
             self._pending_action = None
+            if self._stopped_by_user():
+                self._status_label.setText(
+                    f"{(settled_action or 'action').capitalize()} stopped by the user."
+                )
+                self._update_buttons_enabled()
+                return
             if self._action_error is not None:
                 self._status_label.setText(f"{settled_action} failed — {self._action_error}")
                 self._update_buttons_enabled()
