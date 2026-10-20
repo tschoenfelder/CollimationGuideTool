@@ -364,6 +364,33 @@ class TestManualMovesMoveTheRealAdapter:
         assert arcsec == pytest.approx(-1800.0)
         panel.stop()
 
+    def test_a_nudge_moves_the_mount_with_no_camera_frame_at_all(
+        self, qapp: object, rig: _Rig
+    ) -> None:
+        """Field incident 07d37da6 (2026-10-20, Pi at 9cea2e9): after unpark, Dec+ "fails
+        immediately" with "no frame available before pulsing" -- neither camera was streaming,
+        so the nudge refused to move. A manual move is positioning, not measurement (AGENTS.md;
+        USER DECISION 2026-10-10): it moves without any frame and only reports that the
+        no-motion check could not run."""
+        rig.getter = lambda key: (lambda: None)  # type: ignore[method-assign,assignment,return-value]
+        rig.waiter = lambda key: (  # type: ignore[method-assign]
+            lambda _reference, _timeout: FrameAcquisitionResult(
+                FrameAcquisitionStatus.CAMERA_UNAVAILABLE
+            )
+        )
+        panel = rig.panel()
+        panel._on_nudge_clicked("left", MountAxis.AXIS2, AxisDirection.POSITIVE)
+        _drain(panel)
+
+        assert rig.client.axis_move_calls, (
+            "the nudge never moved the mount: " + panel._result_label.text()
+        )
+        axis, arcsec = _only_move(rig)
+        assert axis == "dec"
+        assert arcsec > 0
+        assert "Move failed" not in panel._result_label.text()
+        panel.stop()
+
     def test_a_calibrated_negative_nudge_moves_back_by_half_the_frame(self, qapp: object) -> None:
         rig = _Rig((_main(283.0), _GUIDE), rot_deg=10.0)
         panel = _calibrated(rig)

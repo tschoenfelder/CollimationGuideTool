@@ -17,7 +17,7 @@ dataset_uuids = []
 focused_command = """pytest -q \
 tests/collimation/ui/test_mount_align_nudge_returns.py \
 tests/collimation/ui/test_calibration_frame_validity.py::TestNoMotionIsExplicit::test_a_nudge_that_moved_nothing_is_not_a_confirmed_displacement \
-tests/collimation/application/test_mount_align_interface.py tests/collimation/ui/test_collimation_main_window.py::TestTrackingMode::test_a_nudge_moves_and_its_check_reports_tracking_that_cannot_be_established"""
+tests/collimation/application/test_mount_align_interface.py tests/collimation/ui/test_collimation_main_window.py::TestTrackingMode::test_a_nudge_moves_and_its_check_reports_tracking_that_cannot_be_established \ntests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestManualMovesMoveTheRealAdapter::test_a_nudge_moves_the_mount_with_no_camera_frame_at_all"""
 broader_tier = "component"
 field_only_assumptions = [
     "With real long exposures the check's AFTER wait runs on the capture worker while the operator keeps clicking; that a newer move always abandons it cleanly (and auto-exposure resumes) is proven on fakes only.",
@@ -60,3 +60,8 @@ evidence = "Review C1 revert-proof 2026-10-13, worktree wt-s66b-impl, the nudge 
 node = "tests/collimation/ui/test_collimation_main_window.py::TestTrackingMode::test_a_nudge_moves_and_its_check_reports_tracking_that_cannot_be_established"
 failed_before_fix = true
 evidence = "Review C2 revert-proof, same worktree, the tracking warning branch disabled: tests/collimation/ui/test_collimation_main_window.py:5348: assert None is not None (_last_error). Replaces test_nudge_refuses_before_any_pulse_when_tracking_cannot_be_established: a nudge is no longer gated on a measurement precondition (user decision 2026-10-10)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestManualMovesMoveTheRealAdapter::test_a_nudge_moves_the_mount_with_no_camera_frame_at_all"
+failed_before_fix = true
+evidence = "Field incident 07d37da6 (2026-10-20, Pi still at 9cea2e9): 'after unpark Dec+ move fails immediately' -- neither camera streaming. Revert-proof 2026-10-21, worktree at c6479e7 (pre-S6.6b) with this test: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:385: AssertionError: the nudge never moved the mount: Move failed: no frame available before pulsing (Main: camera not available; Guide: camera not available) -- the exact field message."
