@@ -88,6 +88,11 @@ from astrotool_core.mount.port import (
 )
 from astrotool_core.timing import SYSTEM_CLOCK, Clock, Deadline
 
+from collimation_tool.application.mount_align_guide import (
+    MOTION_GUIDE_PULSE,
+    guide_pulse_refusal,
+    send_guide_pulse_move,
+)
 from collimation_tool.application.mount_motion import (
     MotionClaim,
     MountAlignPrimitive,
@@ -402,8 +407,9 @@ class MountTestMoveRunner:
         caller reports it like any other failed move -- never queued, never silently dropped.
         A refused claim is not counted in `submit_count`.
 
-        S6.8b: `primitive` names the motion primitive of the steps; only AXIS (default, the
-        axis-move path above) is executed so far."""
+        S6.8b: `primitive` GUIDE_PULSE sends every step's `duration_ms` as OnStepAdapter >= 0.5.0
+        guide pulses while the mount keeps tracking (`_run_guide_sequence`); AXIS (default) is
+        the axis-move path above, unchanged."""
         if not steps:
             return False
         with self._lock:
@@ -444,9 +450,12 @@ class MountTestMoveRunner:
         doing so left the runner busy forever (buttons disabled, the Mount Align panel looking
         frozen)."""
         try:
-            outcome = self._run_sequence(
-                claim, mount_park, mount, steps, rate_preset, park_after, settle_ms
-            )
+            if primitive is MountAlignPrimitive.GUIDE_PULSE:
+                outcome = self._run_guide_sequence(claim, mount_park, mount, steps, settle_ms)
+            else:
+                outcome = self._run_sequence(
+                    claim, mount_park, mount, steps, rate_preset, park_after, settle_ms
+                )
         except Exception as exc:  # noqa: BLE001 -- see the docstring: nothing may strand busy
             _log.exception("mount test-move worker crashed")
             outcome = MountPulseOutcome(pulsed=False, error=f"worker crashed: {exc!r}")
@@ -497,6 +506,73 @@ class MountTestMoveRunner:
             _log.warning("Mount Align: %s", decision.note)
             self._note = decision.note
         return None if decision.allowed else decision.reason
+
+    def _run_guide_sequence(
+        self,
+        claim: MotionClaim,
+        mount_park: MountParkPort,
+        mount: MountPort,
+        steps: Sequence[PulseStep | AngularPulseStep],
+        settle_ms: int,
+    ) -> MountPulseOutcome:
+        """S6.8b: the steps as guide pulses while tracking. Nothing is unparked, parked or
+        tracking-changed here: a FRESH reading must show the mount unparked and tracking, the
+        mode still Astronomical and the capability reported (`guide_pulse_refusal`), else
+        nothing is sent. Each step is split into the adapter's pulse range with Stop checked
+        between pulses (`send_guide_pulse_move`); the settle is cut short by Stop."""
+        clock = self._clock
+        stop = claim.cancel
+        status = _fresh_park_status(
+            mount_park, timeout_s=_UNPARK_TIMEOUT_S, clock=clock, cancel=stop
+        )
+        if stop.is_set():
+            return MountPulseOutcome(
+                pulsed=False, error=f"{_STOPPED_BY_USER} -- nothing was sent to the mount"
+            )
+        if status is None:
+            return MountPulseOutcome(pulsed=False, error=_PARK_STATE_UNKNOWN)
+        enforcer = self._executor.tracking_enforcer
+        refusal = guide_pulse_refusal(
+            enforcer.mode if enforcer is not None else None,
+            parked=status.parked,
+            tracking=status.tracking if status.available else None,
+            mount=mount,
+        )
+        if refusal is not None:
+            return MountPulseOutcome(pulsed=False, error=refusal)
+        paths: list[str] = []
+        motion_started_at = clock.monotonic()
+        for step in steps:
+            axis, direction, duration_ms = step[0], step[1], step[2]
+            if stop.is_set():
+                return MountPulseOutcome(
+                    pulsed=False,
+                    error=f"{_STOPPED_BY_USER} -- {axis.name} {direction.name} not sent",
+                    motion_started_at=motion_started_at,
+                    motion_paths=tuple(paths),
+                )
+            result, _sent = send_guide_pulse_move(mount, axis, direction, duration_ms, stop)
+            paths.append(MOTION_GUIDE_PULSE)
+            if not result.accepted:
+                return MountPulseOutcome(
+                    pulsed=False,
+                    error=(
+                        f"pulse rejected for {axis.name} {direction.name} "
+                        f"({MOTION_GUIDE_PULSE}): {result.message}"
+                    ),
+                    motion_started_at=motion_started_at,
+                    motion_paths=tuple(paths),
+                )
+        motion_ended_at = clock.monotonic()
+        if settle_ms > 0 and not stop.is_set():
+            clock.sleep(settle_ms / 1000.0, stop)  # S6.3: Stop cuts it short
+        return MountPulseOutcome(
+            pulsed=True,
+            motion_started_at=motion_started_at,
+            motion_ended_at=motion_ended_at,
+            settled_at=clock.monotonic(),
+            motion_paths=tuple(paths),
+        )
 
     def _run_sequence(
         self,

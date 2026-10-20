@@ -15,6 +15,7 @@ from astrotool_core.mount import (
     AxisDirection,
     AxisResponse,
     CalibrationMatrix,
+    CalibrationUnit,
     DirectionCharacterization,
     MountAxis,
     is_degenerate,
@@ -125,14 +126,19 @@ class CalibrationResults:
         if step.direction is AxisDirection.POSITIVE:
             self.partial[camera_key][step.axis] = characterization.steady_state
 
-    def verdict(self, bounded: Mapping[str, str]) -> CalibrationVerdict:
+    def verdict(
+        self,
+        bounded: Mapping[str, str],
+        unit: CalibrationUnit = CalibrationUnit.AXIS_MS,
+    ) -> CalibrationVerdict:
         """Build each camera's `CalibrationMatrix`, unless its own AXIS1/AXIS2 responses are
         degenerate -- real report (diagnostic 0270868c): the driver can report a pulse fully
         accepted while producing no real, measurable mount motion. Storing that as a
         "successful" matrix used to only surface the problem later, confusingly, at the first
         nudge; checking it here means the affected camera's buttons never enable and the user
         sees a specific, actionable message immediately. `bounded`: the cameras sizing gave up
-        on (issue #46), with the reason shown for each."""
+        on (issue #46), with the reason shown for each. `unit` (S6.8b): the motion primitive
+        the run measured with, stored on every matrix."""
         verdict = CalibrationVerdict()
         lines = verdict.lines
         for key in ("left", "right"):
@@ -179,7 +185,8 @@ class CalibrationResults:
                 responses={
                     direction_key: characterization.steady_state
                     for direction_key, characterization in self.characterizations[key].items()
-                }
+                },
+                unit=unit,
             )
             lines.append(
                 f"{CAMERA_LABELS[key]}: RA-axis {format_response(axis1)} | "

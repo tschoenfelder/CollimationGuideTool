@@ -15,6 +15,7 @@ is validated as a whole before anything is sent.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import threading
 import time
@@ -30,8 +31,8 @@ from astrotool_core.acquisition.stable_frame_acquisition import (
     FrameAcquisitionStatus,
 )
 from astrotool_core.config import MountAlignmentSettings
-from astrotool_core.mount import AxisDirection, MountAxis
-from astrotool_core.mount.movement_sizing import CameraGeometry
+from astrotool_core.mount import AxisDirection, CalibrationUnit, MountAxis
+from astrotool_core.mount.movement_sizing import SIDEREAL_ARCSEC_PER_S, CameraGeometry
 from astrotool_core.mount.operating_mode import OperatingMode, TrackingEnforcer
 from astrotool_core.mount.tracking_mode import MOUNT_BUSY_REASON, TrackingMode
 from astrotool_core.onstep import (
@@ -53,6 +54,8 @@ from astrotool_core.testing.fake_onstep_indi_client import (
 from astrotool_core.testing.sim_onstep import SimulatedOnStepIndiClient
 from astrotool_core.timing import FakeClock
 from collimation_tool.application.mount_align_capture import CaptureJob as _CaptureJob
+from collimation_tool.application.mount_align_guide import split_guide_pulse_ms
+from collimation_tool.application.mount_motion import MountAlignPrimitive, MountMotionExecutor
 from collimation_tool.ui.focuser_panel import FocuserPanel
 from collimation_tool.ui.mount_park_panel import MountParkPanel
 from collimation_tool.ui.mount_test_move_panel import (
@@ -1101,3 +1104,256 @@ class TestAMoveNeverStopsTracking:
         assert len(rig.client.axis_move_calls) == before
         assert panel._last_error is not None and "To recover" in panel._last_error
         panel.stop()
+
+
+def _starfield(seed: int, shape: tuple[int, int]) -> np.ndarray:
+    """A sparse star field (Astronomical mode measures stars, not texture)."""
+    rng = np.random.default_rng(seed)
+    height, width = shape
+    yy, xx = np.mgrid[0:height, 0:width]
+    image = np.full(shape, 100.0, dtype=np.float32)
+    for _ in range(25):
+        x, y = rng.uniform(0, width), rng.uniform(0, height)
+        peak = rng.uniform(1500.0, 4000.0)
+        image += peak * np.exp(-((xx - x) ** 2 + (yy - y) ** 2) / (2 * 1.6**2))
+    return image.astype(np.float32)
+
+
+def _astro_panel(rig: _Rig) -> MountTestMovePanel:
+    """S6.8b: Astronomical mode, the mount unparked and tracking (the sky is being followed)."""
+    for seed, (key, camera) in enumerate(rig.cameras.items(), start=1):
+        rig.base[key] = _starfield(seed, (camera.height_px, camera.width_px))
+    rig.client.parked = False
+    rig.client.tracking = True
+    enforcer = TrackingEnforcer(
+        rig.park, OperatingMode.ASTRONOMICAL, settle_timeout_s=0, clock=FakeClock()
+    )
+    return rig.panel(tracking_enforcer=enforcer)
+
+
+class _GuideLog:
+    """Every guide pulse the fake 0.5.0 controller received, with the tracking state it found,
+    plus every emergency stop (ABORT + TRACK_OFF)."""
+
+    def __init__(self, rig: _Rig) -> None:
+        self.pulses: list[tuple[str, int, bool]] = []
+        self.stops: list[int] = []
+        real_pulse = rig.client.guide_pulse
+        real_stop = rig.client.emergency_stop
+
+        def pulse(direction: str, duration_ms: int, **kwargs: Any) -> Any:  # noqa: ANN401
+            self.pulses.append((direction, duration_ms, rig.client.tracking))
+            return real_pulse(direction, duration_ms, **kwargs)
+
+        def stop(**kwargs: Any) -> Any:  # noqa: ANN401
+            self.stops.append(1)
+            return real_stop(**kwargs)
+
+        rig.client.guide_pulse = pulse  # type: ignore[method-assign]
+        rig.client.emergency_stop = stop  # type: ignore[method-assign]
+
+
+def _guide_calibrated(rig: _Rig) -> MountTestMovePanel:
+    panel = _astro_panel(rig)
+    panel._run_calibration_button.click()
+    _drain(panel)
+    assert panel._calibration.get("left") is not None, panel._result_label.text()
+    return panel
+
+
+class TestAstronomicalMountAlignUsesGuidePulses:
+    """S6.8b (user decision 2026-10-11): in Astronomical mode with the mount tracking, Mount
+    Align moves with OnStepAdapter 0.5.0 guide pulses -- tracking is never turned off by it.
+    Before: S6.8a's explicit refusal ("not available yet"), nothing moved at all."""
+
+    def test_an_astronomical_calibration_completes_with_tracking_on_throughout(
+        self, qapp: object
+    ) -> None:
+        rig = _Rig((_main(780.0), _GUIDE), rot_deg=10.0)
+        log = _GuideLog(rig)
+        panel = _astro_panel(rig)
+        panel._run_calibration_button.click()
+        _drain(panel)
+
+        matrix = panel._calibration.get("left")
+        assert matrix is not None, panel._result_label.text()
+        assert matrix.unit is CalibrationUnit.GUIDE_PULSE_MS
+        assert log.pulses, "no guide pulse was sent"
+        assert rig.client.axis_move_calls == [], "an axis GOTO was sent while tracking"
+        assert all(tracking for _d, _ms, tracking in log.pulses), log.pulses
+        assert all(ms <= 5000 for _d, ms, _t in log.pulses), log.pulses
+        assert log.stops == [], "an emergency stop (ABORT + TRACK_OFF) was sent"
+        assert rig.client.tracking is True
+        trail = panel._tracking_enforcer.evidence()["transitions"]
+        assert all(t.get("command") != "stop_tracking" for t in trail), trail
+        ra, dec = rig.moved_arcsec()
+        assert abs(ra) < 6.0 and abs(dec) < 6.0, (ra, dec)  # paired moves: back near the start
+        seeds = [e for e in panel._sizing_log if e["event"] == "seed"]
+        assert seeds and seeds[0]["guide_rate_seed_x"] == panel._settings.guide_rate_seed_x
+        assert seeds[0]["guide_rate_assumed"] is True
+        panel.stop()
+
+    def test_an_uncalibrated_astronomical_nudge_is_sized_from_the_labelled_seed(
+        self, qapp: object
+    ) -> None:
+        """Also field incident 07d37da6: it moves with no camera frame at all."""
+        rig = _Rig((_main(780.0), _GUIDE))
+        rig.getter = lambda key: lambda: None  # type: ignore[method-assign,assignment,return-value]
+        rig.waiter = lambda key: (  # type: ignore[method-assign]
+            lambda _reference, _timeout: FrameAcquisitionResult(
+                FrameAcquisitionStatus.CAMERA_UNAVAILABLE
+            )
+        )
+        log = _GuideLog(rig)
+        panel = _astro_panel(rig)
+        panel._on_nudge_clicked("left", MountAxis.AXIS2, AxisDirection.POSITIVE)
+        text_while_moving = panel._result_label.text()
+        _drain(panel)
+
+        settings = panel._settings
+        expected_ms = round(
+            settings.nudge_target_fraction
+            * 780.0
+            / (settings.guide_rate_seed_x * SIDEREAL_ARCSEC_PER_S)
+            * 1000.0
+        )
+        assert rig.client.axis_move_calls == []
+        assert [d for d, _ms, _t in log.pulses] == ["north"] * len(log.pulses), log.pulses
+        assert sum(ms for _d, ms, _t in log.pulses) == expected_ms, log.pulses
+        assert len(log.pulses) > 1 and all(ms <= 5000 for _d, ms, _t in log.pulses)
+        assert "assumed guide rate" in text_while_moving, text_while_moving
+        assert "Move failed" not in panel._result_label.text(), panel._result_label.text()
+        assert rig.client.tracking is True and log.stops == []
+        panel.stop()
+
+    def test_an_astronomical_screen_move_is_sized_in_guide_ms_from_the_guide_calibration(
+        self, qapp: object
+    ) -> None:
+        rig = _Rig((_main(780.0), _GUIDE), rot_deg=10.0)
+        log = _GuideLog(rig)
+        panel = _guide_calibrated(rig)
+        before_pulses = len(log.pulses)
+        x0, _y0 = rig.image_shift_px("left")
+
+        panel._size_buttons[MovementSize.LARGE].setChecked(True)
+        panel._on_screen_move_clicked("left", ScreenDirection.RIGHT)
+        _drain(panel)
+
+        assert "Move failed" not in panel._result_label.text(), panel._result_label.text()
+        assert len(log.pulses) > before_pulses
+        assert rig.client.axis_move_calls == []
+        x1, _y1 = rig.image_shift_px("left")
+        wanted = panel._settings.screen_move_large_fraction * 240
+        assert abs((x1 - x0) - wanted) < 0.25 * wanted, (x1 - x0, wanted)
+        assert rig.client.tracking is True and log.stops == []
+        panel.stop()
+
+    def test_an_axis_calibration_is_not_used_for_guide_pulse_moves(self, qapp: object) -> None:
+        rig = _Rig((_main(780.0), _GUIDE))
+        panel = _calibrated(rig)  # Terrestrial: axis moves, equivalent ms
+        assert panel._calibration["left"].unit is CalibrationUnit.AXIS_MS
+        panel._tracking_enforcer.set_mode(OperatingMode.ASTRONOMICAL)
+        panel.operating_mode_changed()
+        rig.client.tracking = True
+        log = _GuideLog(rig)
+        moves = len(rig.client.axis_move_calls)
+
+        panel._size_buttons[MovementSize.LARGE].setChecked(True)
+        panel._on_screen_move_clicked("left", ScreenDirection.RIGHT)
+        _drain(panel)
+        screen_error = panel._last_error
+        panel._on_nudge_clicked("left", MountAxis.AXIS1, AxisDirection.POSITIVE)
+        _drain(panel)
+
+        assert log.pulses == [] and len(rig.client.axis_move_calls) == moves
+        assert screen_error is not None and "recalibrate" in screen_error, screen_error
+        assert panel._last_error is not None and "recalibrate" in panel._last_error
+        assert rig.client.tracking is True
+        panel.stop()
+
+    def test_a_guide_pulse_calibration_is_not_used_for_axis_moves(self, qapp: object) -> None:
+        rig = _Rig((_main(780.0), _GUIDE))
+        panel = _guide_calibrated(rig)
+        rig.client.tracking = False  # tracking off: Mount Align would move by axis GOTO
+        log = _GuideLog(rig)
+
+        panel._size_buttons[MovementSize.LARGE].setChecked(True)
+        panel._on_screen_move_clicked("left", ScreenDirection.RIGHT)
+        _drain(panel)
+        screen_error = panel._last_error
+        panel._on_nudge_clicked("left", MountAxis.AXIS1, AxisDirection.POSITIVE)
+        _drain(panel)
+
+        assert log.pulses == [] and rig.client.axis_move_calls == []
+        assert screen_error is not None and "recalibrate" in screen_error, screen_error
+        assert panel._last_error is not None and "recalibrate" in panel._last_error
+        assert panel.calibration_for("right") is None, "reacquisition must not get guide-ms"
+        panel.stop()
+
+    def test_a_mount_without_guide_pulses_keeps_the_explicit_refusal(
+        self, qapp: object, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A 0.4.1-shaped mount (no guide capability): S6.8a's refusal, nothing sent."""
+        rig = _Rig((_main(780.0), _GUIDE))
+        caps = rig.mount.capabilities()
+        monkeypatch.setattr(
+            rig.mount,
+            "capabilities",
+            lambda: dataclasses.replace(caps, supports_guide_pulses_while_tracking=False),
+        )
+        log = _GuideLog(rig)
+        panel = _astro_panel(rig)
+        panel._on_nudge_clicked("left", MountAxis.AXIS1, AxisDirection.POSITIVE)
+        _drain(panel)
+
+        assert log.pulses == [] and rig.client.axis_move_calls == []
+        assert panel._last_error is not None and "astronomical mode" in panel._last_error
+        assert rig.client.tracking is True
+        panel.stop()
+
+
+class TestGuidePulseMovesInTheRunner:
+    def test_a_move_beyond_the_per_pulse_cap_is_split_and_stop_ends_it_between_pulses(
+        self,
+    ) -> None:
+        rig = _Rig()
+        rig.client.parked = False
+        rig.client.tracking = True
+        log = _GuideLog(rig)
+        enforcer = TrackingEnforcer(
+            rig.park, OperatingMode.ASTRONOMICAL, settle_timeout_s=0, clock=FakeClock()
+        )
+        runner = MountTestMoveRunner(
+            clock=FakeClock(), executor=MountMotionExecutor(rig.mount, tracking_enforcer=enforcer)
+        )
+        real = rig.mount.guide_pulse
+
+        def pulse_then_stop(axis: MountAxis, direction: AxisDirection, ms: int) -> Any:  # noqa: ANN401
+            result = real(axis, direction, ms)
+            runner.abort()  # Stop arrives while the first pulse runs
+            return result
+
+        rig.mount.guide_pulse = pulse_then_stop  # type: ignore[method-assign]
+        assert runner.submit_sequence(
+            rig.park,
+            rig.mount,
+            [(MountAxis.AXIS1, AxisDirection.POSITIVE, 12000)],
+            park_after=False,
+            primitive=MountAlignPrimitive.GUIDE_PULSE,
+        )
+        deadline = time.monotonic() + 30.0
+        while runner.is_busy:
+            assert time.monotonic() < deadline
+            time.sleep(0.005)
+        outcome = runner.take_latest()
+
+        assert outcome is not None and not outcome.pulsed
+        assert outcome.error is not None and "stopped by the user" in outcome.error
+        assert [ms for _d, ms, _t in log.pulses] == [4000], log.pulses  # 12000 = 3 x 4000
+        assert rig.client.axis_move_calls == []
+
+    def test_a_long_move_is_split_into_even_pulses_within_the_range(self) -> None:
+        assert split_guide_pulse_ms(12000, (20, 5000)) == [4000, 4000, 4000]
+        assert split_guide_pulse_ms(5000, (20, 5000)) == [5000]
+        assert split_guide_pulse_ms(10001, (20, 5000)) == [3334, 3334, 3333]
+        assert split_guide_pulse_ms(19, (20, 5000)) == []

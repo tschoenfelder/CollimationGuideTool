@@ -117,6 +117,8 @@ class NudgeMove:
     clamped: bool
     #: S6.0: the angular size (arcsec) on a mount without timed pulses; None = timed.
     arcsec: float | None = None
+    #: S6.8b: a guide-pulse nudge sized from the ASSUMED guide-rate seed (not calibrated).
+    seed_note: str | None = None
 
 
 @dataclass

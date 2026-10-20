@@ -25,6 +25,12 @@ from astrotool_core.mount.movement_sizing import RATE_PRESET_X, CameraGeometry, 
 
 from collimation_tool.application.angular_move_plan import plan_angular_move
 from collimation_tool.application.mount_align_failures import MeasurementFailureClass, is_no_motion
+from collimation_tool.application.mount_align_guide import (
+    guide_seed_rate_arcsec_per_s,
+    seed_guide_ms,
+    seed_note,
+    unit_mismatch,
+)
 from collimation_tool.application.mount_align_measurement import Measurement, TargetMode
 from collimation_tool.application.mount_align_messages import (
     AXIS_LABELS,
@@ -35,6 +41,7 @@ from collimation_tool.application.mount_align_messages import (
 from collimation_tool.application.mount_align_motion import MotionStep
 from collimation_tool.application.mount_align_plan import NudgeMove, ScreenDirection
 from collimation_tool.application.mount_align_sizing import angular_unit_rate
+from collimation_tool.application.mount_motion import MountAlignPrimitive
 
 
 # ---- S6.0: manual moves on a mount without timed pulses --------------------------------------
@@ -51,7 +58,17 @@ def nudge_cap_arcsec(settings: MountAlignmentSettings) -> float:
     return settings.max_nudge_pulse_ms * nudge_rate_arcsec_per_s(settings) / 1000.0
 
 
-def cap_text(settings: MountAlignmentSettings, angular: bool) -> str:
+def guide_nudge_cap_ms(settings: MountAlignmentSettings) -> int:
+    """S6.8b: the guide-pulse nudge/screen-step cap -- the same angular envelope as
+    `nudge_cap_arcsec`, in guide-ms at the seed rate (a safety bound, not a size)."""
+    return round(nudge_cap_arcsec(settings) / guide_seed_rate_arcsec_per_s(settings) * 1000.0)
+
+
+def cap_text(
+    settings: MountAlignmentSettings, angular: bool, *, guide_pulse: bool = False
+) -> str:
+    if guide_pulse:
+        return f"{guide_nudge_cap_ms(settings)} guide-ms"
     if angular:
         return f'{nudge_cap_arcsec(settings):.0f}"'
     return f"{settings.max_nudge_pulse_ms}ms"
@@ -109,6 +126,7 @@ def plan_nudge(
     angular_only: Callable[[], bool],
     uncalibrated_arcsec: Callable[[], float],
     floor_arcsec: Callable[[], float],
+    primitive: MountAlignPrimitive = MountAlignPrimitive.AXIS,
 ) -> NudgePlan:
     """Size one RA/Dec nudge.
 
@@ -120,8 +138,25 @@ def plan_nudge(
     Real reports de295656/6cb859d2: a solved move beyond the safety cap is CLAMPED to the cap
     (a real, smaller step; clicking again continues), never refused. S6.0: on an angular-only
     mount the nudge is an angular move (uncalibrated: sized from the camera's optics), and one
-    below the mount's smallest angular move is refused before anything is sent."""
+    below the mount's smallest angular move is refused before anything is sent.
+
+    S6.8b: with `primitive` GUIDE_PULSE the nudge is guide-pulse ms -- uncalibrated: the
+    optics-sized angle at the ASSUMED guide-rate seed (labelled `seed_note`); calibrated:
+    from a guide-pulse matrix only. A matrix measured with the other primitive is refused
+    (`unit_mismatch`), nothing sent."""
     axis_label = AXIS_LABELS[axis]
+    if matrix is not None and (mismatch := unit_mismatch(matrix.unit, primitive)):
+        return NudgePlan(error=mismatch)
+    guide = primitive is MountAlignPrimitive.GUIDE_PULSE
+    if guide and matrix is None:
+        duration_ms = seed_guide_ms(uncalibrated_arcsec(), settings)
+        cap_ms = guide_nudge_cap_ms(settings)
+        return NudgePlan(
+            move=NudgeMove(
+                camera_key, axis, direction, min(duration_ms, cap_ms), duration_ms > cap_ms,
+                seed_note=seed_note(settings),
+            )
+        )
     if matrix is None:
         duration_ms = settings.pulse_ms
     else:
@@ -145,6 +180,12 @@ def plan_nudge(
         if duration_ms <= 0:
             return NudgePlan(notice=f"{CAMERA_LABELS[camera_key]}: nothing to move.")
     arcsec: float | None = None
+    if guide:
+        cap_ms = guide_nudge_cap_ms(settings)
+        clamped = duration_ms > cap_ms
+        return NudgePlan(
+            move=NudgeMove(camera_key, axis, direction, min(duration_ms, cap_ms), clamped)
+        )
     if angular_only():
         # S6.0: no timed pulse exists -- the nudge is an angular move. Uncalibrated: sized from
         # the camera's optics; calibrated: the solved duration is in the calibration's own unit
@@ -233,10 +274,16 @@ def plan_screen_move(
     mode: TargetMode,
     angular_only: Callable[[], bool],
     floor_arcsec: Callable[[], float],
+    primitive: MountAlignPrimitive = MountAlignPrimitive.AXIS,
+    guide_min_ms: int = 1,
 ) -> ScreenMovePlan:
     """Issue #31 Phase D: the (possibly two-axis) sequence that moves this camera's image the
     requested on-screen direction by `fraction` of its own frame. Clamped rather than refused
-    beyond the nudge safety cap (real report de295656, same setting as a nudge)."""
+    beyond the nudge safety cap (real report de295656, same setting as a nudge). S6.8b: with
+    `primitive` GUIDE_PULSE the steps are guide-pulse ms from a guide-pulse matrix (a
+    matrix of the other primitive is refused, nothing sent), capped per step."""
+    if (mismatch := unit_mismatch(matrix.unit, primitive)) is not None:
+        return ScreenMovePlan(error=mismatch)
     if frame is None:
         return ScreenMovePlan(error=f"{missing_label(mode)} before pulsing")
     frame_height, frame_width = frame.shape[:2]
@@ -249,6 +296,22 @@ def plan_screen_move(
         return ScreenMovePlan(error=str(exc))
     if not steps:
         return ScreenMovePlan(notice=f"{CAMERA_LABELS[camera_key]}: nothing to move.")
+    if primitive is MountAlignPrimitive.GUIDE_PULSE:
+        # A component below the shortest guide pulse (`guide_min_ms`, a fraction of an arcsec)
+        # is dropped and said so -- never sent, never a partially executed sequence.
+        cap_ms = guide_nudge_cap_ms(settings)
+        kept = [step for step in steps if step[2] >= guide_min_ms]
+        if not kept:
+            return ScreenMovePlan(notice=f"{CAMERA_LABELS[camera_key]}: nothing to move.")
+        guided: list[MotionStep] = [
+            (axis, direction, min(duration_ms, cap_ms)) for axis, direction, duration_ms in kept
+        ]
+        skipped = ", ".join(
+            f"{AXIS_LABELS[axis]} {ms} guide-ms" for axis, _d, ms in steps if ms < guide_min_ms
+        )
+        return ScreenMovePlan(
+            motion=guided, clamped=any(ms > cap_ms for _a, _d, ms in kept), skipped=skipped
+        )
     angular = angular_only()
     if angular:
         planned = plan_angular_screen_move(

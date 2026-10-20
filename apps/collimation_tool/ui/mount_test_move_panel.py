@@ -266,6 +266,7 @@ from astrotool_core.mount import (
     AxisDirection,
     AxisResponse,
     CalibrationMatrix,
+    CalibrationUnit,
     MountAxis,
     MountParkPort,
     MountPort,
@@ -305,6 +306,7 @@ from collimation_tool.application.mount_align_failures import (
     MeasurementFailureClass,
     is_no_motion,
 )
+from collimation_tool.application.mount_align_guide import UNIT_FOR_PRIMITIVE, seed_note
 from collimation_tool.application.mount_align_interface import (
     MountInterfaceState,
     mount_interface_state,
@@ -356,7 +358,11 @@ from collimation_tool.application.mount_align_sizing import (
     mount_is_angular_only,
     mount_supports_angular,
 )
-from collimation_tool.application.mount_motion import MountMotionExecutor
+from collimation_tool.application.mount_motion import (
+    MountAlignPrimitive,
+    MountMotionExecutor,
+    choose_mount_align_primitive,
+)
 from collimation_tool.ui.flow_layout import FlowLayout
 from collimation_tool.ui.mount_test_move_runner import MountTestMoveRunner
 
@@ -542,6 +548,8 @@ class MountTestMovePanel(QWidget):
         self._set_right_auto_exposure_paused = set_right_auto_exposure_paused or (lambda _: None)
         self._settings = settings if settings is not None else MountAlignmentSettings()
         self._runner = runner if runner is not None else MountTestMoveRunner()
+        #: S6.8b: the primitive of the last manual move submitted (its cap is named in it).
+        self._move_primitive = MountAlignPrimitive.AXIS
         #: S6.8a (R3): every Mount Align motion claims the app-wide mount-motion executor
         #: (MainWindow's); a standalone panel gets its own, bound to this panel's mount and its
         #: tracking enforcer (the rule "may this move run while tracking" lives there).
@@ -1430,6 +1438,7 @@ class MountTestMovePanel(QWidget):
             arcsec,
             rate_preset=self._sizing.rate_preset,
             settle_ms=self._settings.settle_ms,
+            primitive=self._sizing.primitive,
         )
         if not started:
             self._abort_calibration(
@@ -1448,11 +1457,13 @@ class MountTestMovePanel(QWidget):
         if step.role is CalibrationStepRole.RETURN:
             self._result_label.setText("Returning the mount to its start position…")
         else:
-            self._result_label.setText(
-                calibration_progress_text(
-                    step.axis, step.direction.name, step.role.value, duration_ms, arcsec
-                )
+            progress = calibration_progress_text(
+                step.axis, step.direction.name, step.role.value, duration_ms, arcsec
             )
+            seed_sized = self._sizing.axis_attempt[step.axis] == 1  # S6.8b: still the seed
+            if self._sizing.guide_pulse and self._sizing.is_probe(step) and seed_sized:
+                progress = f"{progress} -- {seed_note(self._settings)}"
+            self._result_label.setText(progress)
         self._update_buttons_enabled()
 
     def _abort_calibration(self, message: str, *, axis: MountAxis) -> None:
@@ -1506,6 +1517,7 @@ class MountTestMovePanel(QWidget):
                 motion,
                 rate_preset=self._sizing.rate_preset,
                 settle_ms=self._settings.settle_ms,
+                primitive=self._sizing.primitive,
             )
         self._update_buttons_enabled()
 
@@ -1701,6 +1713,7 @@ class MountTestMovePanel(QWidget):
         cameras = self._camera_geometry() if self._camera_geometry is not None else None
         self._sizing.start(
             angular_only=self._mount_is_angular_only(),
+            guide_pulse=self._mount_align_primitive() is MountAlignPrimitive.GUIDE_PULSE,
             cameras=cameras,
             distance_m=(
                 self._sizing_distance_for(self._target_mode()) if cameras is not None else None
@@ -1761,7 +1774,11 @@ class MountTestMovePanel(QWidget):
         )
 
     def _cap_text(self, angular: bool) -> str:
-        return cap_text(self._settings, angular)
+        return cap_text(
+            self._settings,
+            angular,
+            guide_pulse=self._move_primitive is MountAlignPrimitive.GUIDE_PULSE,
+        )
 
     def _exclude_camera_bounded(
         self, key: str, failure: MeasurementFailureClass, reason: str
@@ -1785,7 +1802,9 @@ class MountTestMovePanel(QWidget):
     def _finish_calibration(self) -> None:
         """Show the run's verdict (`CalibrationResults.verdict`: a matrix per usable camera,
         degenerate/no-motion cameras explained -- real report 0270868c)."""
-        verdict = self._results.verdict(self._sizing.bounded)
+        verdict = self._results.verdict(
+            self._sizing.bounded, UNIT_FOR_PRIMITIVE[self._sizing.primitive]
+        )
         self._calibration = verdict.matrices
         self._calibration_rate_preset_used = self._sizing.rate_preset
         self._screen_frame_shapes = {}  # re-read: the camera may have changed since
@@ -1811,8 +1830,26 @@ class MountTestMovePanel(QWidget):
     def calibration_for(self, camera_key: str) -> CalibrationMatrix | None:
         """The camera's full 4-direction calibration matrix ("left"=Main,
         "right"=Guide), or None if none exists -- issue #39: guide-assisted
-        reacquisition needs Guide's, and must fail explicitly without it."""
-        return self._calibration.get(camera_key)
+        reacquisition needs Guide's, and must fail explicitly without it.
+
+        S6.8b: only an AXIS-unit matrix (axis moves, equivalent ms) is handed out -- the
+        reacquisition's angular path converts its durations to angles; a guide-pulse matrix
+        (guide-ms) would be mis-sized there, so it reads as "no calibration" (explicit)."""
+        matrix = self._calibration.get(camera_key)
+        if matrix is None or matrix.unit is not CalibrationUnit.AXIS_MS:
+            return None
+        return matrix
+
+    def _mount_align_primitive(self) -> MountAlignPrimitive:
+        """S6.8b: guide pulses (Astronomical + tracking + capability) or axis moves -- decided
+        by `choose_mount_align_primitive` from the global mode, the mount's latest tracking
+        reading (GUI thread: never waits; the worker re-checks on a FRESH reading before
+        sending) and the reported capability."""
+        status = self._mount_park.status()
+        tracking = status.tracking if status.available else None
+        return choose_mount_align_primitive(
+            self._tracking_enforcer.mode, tracking, self._mount.capabilities()
+        )
 
     def _on_nudge_clicked(self, camera_key: str, axis: MountAxis, direction: AxisDirection) -> None:
         try:
@@ -1834,6 +1871,7 @@ class MountTestMovePanel(QWidget):
         # (uncalibrated: the fixed calibration step size; calibrated: the clicked direction's
         # own measured rate, half a frame, clamped to the safety cap; S6.0 angular-only).
         frame_getter = self._get_left_frame if camera_key == "left" else self._get_right_frame
+        primitive = self._mount_align_primitive()
         plan = plan_nudge(
             settings=self._settings,
             camera_key=camera_key,
@@ -1845,6 +1883,7 @@ class MountTestMovePanel(QWidget):
             angular_only=self._mount_is_angular_only,
             uncalibrated_arcsec=lambda: self._uncalibrated_nudge_arcsec(camera_key),
             floor_arcsec=self._min_angular_arcsec,
+            primitive=primitive,
         )
         if plan.error is not None:
             self._last_error = plan.error
@@ -1865,9 +1904,11 @@ class MountTestMovePanel(QWidget):
             move.axis, move.direction, move.duration_ms, move.arcsec,
             rate_preset=rate_preset,
             settle_ms=self._settings.settle_ms,
+            primitive=primitive,
         )
         if not started:
             return  # a move is already running
+        self._move_primitive = primitive
         self._last_failure_classes = {}
         # Paused from the move through the background check's AFTER capture (real incident
         # ca728d27: a gain change between BEFORE and AFTER broke the comparison); resumed when
@@ -1890,6 +1931,8 @@ class MountTestMovePanel(QWidget):
             if move.clamped
             else ""
         )
+        if move.seed_note is not None:  # S6.8b: an assumption, never shown as calibrated
+            suffix = f"{suffix} ({move.seed_note})"
         axis_label = AXIS_LABELS[move.axis]
         direction_label = "+" if move.direction is AxisDirection.POSITIVE else "-"
         self._result_label.setText(
@@ -2032,7 +2075,11 @@ class MountTestMovePanel(QWidget):
                 self._screen_frame_shapes[key] = (int(frame.shape[0]), int(frame.shape[1]))
         self._screen_move_refusals = screen_move_floor_refusals(
             settings=self._settings,
-            matrices=self._calibration,
+            matrices={
+                key: matrix
+                for key, matrix in self._calibration.items()
+                if matrix.unit is CalibrationUnit.AXIS_MS  # S6.8b: guide-ms has no floor
+            },
             frame_shapes=self._screen_frame_shapes,
             directions=[direction for _label, direction in _SCREEN_MOVE_BUTTONS],
             fraction=self._screen_move_fraction(),
@@ -2069,6 +2116,7 @@ class MountTestMovePanel(QWidget):
             return  # shouldn't be reachable -- the button stays disabled without one
         frame_getter = self._get_left_frame if camera_key == "left" else self._get_right_frame
         peek_frame = frame_getter()
+        primitive = self._mount_align_primitive()
         plan = plan_screen_move(
             settings=self._settings,
             camera_key=camera_key,
@@ -2079,6 +2127,12 @@ class MountTestMovePanel(QWidget):
             mode=self._target_mode(),
             angular_only=self._mount_is_angular_only,
             floor_arcsec=self._min_angular_arcsec,
+            primitive=primitive,
+            guide_min_ms=(
+                self._sizing.min_guide_ms()
+                if primitive is MountAlignPrimitive.GUIDE_PULSE
+                else 1
+            ),
         )
         if plan.error is not None:
             self._last_error = plan.error
@@ -2098,9 +2152,11 @@ class MountTestMovePanel(QWidget):
             self._runner, self._mount_park, self._mount, plan.motion,
             rate_preset=self._move_rate_preset(calibrated=True),
             settle_ms=self._settings.settle_ms,
+            primitive=primitive,
         )
         if not started:
             return  # a move is already running
+        self._move_primitive = primitive
         clamped = plan.clamped
         size_label = self._screen_move_size().value.capitalize()
         label = f"{CAMERA_LABELS[camera_key]} {screen_direction.name.lower()} ({size_label})"

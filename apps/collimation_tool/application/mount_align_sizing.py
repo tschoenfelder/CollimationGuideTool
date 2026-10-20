@@ -13,10 +13,16 @@ from __future__ import annotations
 import math
 from collections.abc import Callable
 from dataclasses import replace
-from typing import Any
+from typing import Any, cast
 
 from astrotool_core.config import MountAlignmentSettings
-from astrotool_core.mount import AxisDirection, AxisResponse, MountAxis, MountPort
+from astrotool_core.mount import (
+    AxisDirection,
+    AxisResponse,
+    GuidePulsePort,
+    MountAxis,
+    MountPort,
+)
 from astrotool_core.mount.movement_sizing import (
     CameraGeometry,
     SizingPolicy,
@@ -36,8 +42,17 @@ from collimation_tool.application.mount_align_failures import (
     MeasurementFailureClass,
     bounded_failure_class,
 )
+from collimation_tool.application.mount_align_guide import (
+    guide_seed_rate_arcsec_per_s,
+    seed_note,
+)
 from collimation_tool.application.mount_align_motion import MotionStep
 from collimation_tool.application.mount_align_plan import CalibrationStep, CalibrationStepRole
+from collimation_tool.application.mount_motion import MountAlignPrimitive
+
+#: S6.8b: the guide-pulse envelope's margin over the SEED-sized need -- the seed is an
+#: assumption, and a real guide rate half of it must still reach the band on the widest camera.
+GUIDE_SEED_MARGIN = 2.0
 
 ExcludeNoMotion = Callable[[str, int], None]
 ExcludeBounded = Callable[[str, MeasurementFailureClass, str], None]
@@ -101,6 +116,9 @@ class CalibrationSizing:
         #: pulses -- OnStepAdapter >= 0.4 over INDI). Every calibration step is then an angular
         #: move sized up front from the optics; no timed bootstrap, no rate learning needed.
         self.angular_only = False
+        #: S6.8b: this run moves with guide pulses while tracking (Astronomical mode); every
+        #: duration is guide-pulse ms, the first one sized from the ASSUMED guide-rate seed.
+        self.guide_pulse = False
         self.axis_arcsec: dict[MountAxis, float] = {}
         #: Net sky displacement (arcsec) per axis this run -- the angular counterpart of
         #: `axis_net_pulse_ms`, which an abort's return is sized from on an angular run.
@@ -125,6 +143,7 @@ class CalibrationSizing:
         angular_only: bool,
         cameras: list[CameraGeometry] | None,
         distance_m: float | None,
+        guide_pulse: bool = False,
     ) -> None:
         """Decide (per run) whether moves are sized from the cameras' optics.
 
@@ -139,7 +158,11 @@ class CalibrationSizing:
         self.log = []
         self.rate_preset = settings.rate_preset
         self.angular_active = False
-        self.angular_only = angular_only
+        self.guide_pulse = guide_pulse
+        # S6.8b: guide pulses are timed moves in their own unit -- no angular path this run.
+        self.angular_only = angular_only and not guide_pulse
+        if guide_pulse:
+            self.rate_preset = None
         if self.angular_only:
             # S6.0: no timed primitive exists, so every step -- even without known optics
             # (then the fixed `pulse_ms` size, expressed angularly) -- is an angular move.
@@ -154,16 +177,22 @@ class CalibrationSizing:
         self.axis_attempt = {MountAxis.AXIS1: 1, MountAxis.AXIS2: 1}
         if cameras is None:
             return
-        angular = mount_supports_angular(self._mount())
+        angular = mount_supports_angular(self._mount()) and not guide_pulse
+        if guide_pulse:
+            center_rate_x: float | None = settings.guide_rate_seed_x
+        else:
+            center_rate_x = settings.calibration_center_rate_x if angular else None
         policy = SizingPolicy(
             rate_preset=settings.calibration_rate_preset,
-            center_rate_x=settings.calibration_center_rate_x if angular else None,
+            center_rate_x=center_rate_x,
             target_fraction=settings.calibration_target_fraction,
             max_duration_ms=settings.max_calibration_pulse_ms,
             min_duration_ms=settings.min_calibration_pulse_ms,
         )
         if self.angular_only:
             policy = self.angular_only_policy(policy, cameras, distance_m)
+        if guide_pulse:
+            policy = self.guide_pulse_policy(policy, cameras, distance_m)
         plan = plan_first_move(
             cameras, policy, distance_m=distance_m, fallback_ms=settings.pulse_ms
         )
@@ -175,7 +204,7 @@ class CalibrationSizing:
         self.angular_active = angular
         # Angular mode: no rate preset anywhere -- OnStepAdapter's centering rate is the one
         # rate the timed bootstrap, the installed calibration and the angular moves share.
-        self.rate_preset = None if angular else policy.rate_preset
+        self.rate_preset = None if angular or guide_pulse else policy.rate_preset
         if angular and plan.target_arcsec is not None:
             self.axis_arcsec = {
                 MountAxis.AXIS1: plan.target_arcsec,
@@ -185,18 +214,53 @@ class CalibrationSizing:
             MountAxis.AXIS1: plan.duration_ms,
             MountAxis.AXIS2: plan.duration_ms,
         }
-        self.log.append(
-            {
-                "event": "seed",
-                "duration_ms": plan.duration_ms,
-                "seed_camera": plan.seed_camera,
-                "status": plan.status.value,
-                "rate_preset": self.rate_preset,
-                "distance_m": distance_m,
-                "angular": angular,
-                "target_arcsec": plan.target_arcsec,
-            }
-        )
+        seed: dict[str, Any] = {
+            "event": "seed",
+            "duration_ms": plan.duration_ms,
+            "seed_camera": plan.seed_camera,
+            "status": plan.status.value,
+            "rate_preset": self.rate_preset,
+            "distance_m": distance_m,
+            "angular": angular,
+            "target_arcsec": plan.target_arcsec,
+        }
+        if guide_pulse:  # S6.8b: additive keys -- the seed is an assumption, said so
+            seed.update(
+                guide_pulse=True,
+                guide_rate_seed_x=settings.guide_rate_seed_x,
+                guide_rate_assumed=True,
+                note=seed_note(settings),
+            )
+        self.log.append(seed)
+
+    @property
+    def primitive(self) -> MountAlignPrimitive:
+        """S6.8b: the motion primitive of this run's moves."""
+        return MountAlignPrimitive.GUIDE_PULSE if self.guide_pulse else MountAlignPrimitive.AXIS
+
+    def guide_pulse_policy(
+        self, policy: SizingPolicy, cameras: list[CameraGeometry], distance_m: float | None
+    ) -> SizingPolicy:
+        """S6.8b: a guide-pulse run's envelope. A guide pulse moves at the (slow) guide rate,
+        so the timed envelope (`max_calibration_pulse_ms`) is widened, from the configured
+        optics only, to what the widest participating camera's band needs at the seed rate,
+        with `GUIDE_SEED_MARGIN` for a real rate below the seed. The lower bound is at least
+        the mount's shortest guide pulse. A move longer than one pulse is split by the runner."""
+        policy = replace(policy, min_duration_ms=max(policy.min_duration_ms, self.min_guide_ms()))
+        widths = [fov[0] for camera in cameras if (fov := camera.fov_arcsec(distance_m))]
+        if not widths:
+            return policy
+        rate = guide_seed_rate_arcsec_per_s(self._settings())
+        needed_ms = math.ceil(GUIDE_SEED_MARGIN * policy.band_high * max(widths) / rate * 1000.0)
+        return replace(policy, max_duration_ms=max(policy.max_duration_ms, needed_ms))
+
+    def min_guide_ms(self) -> int:
+        """S6.8b: the mount's shortest guide pulse (1 when it reports no range)."""
+        mount = self._mount()
+        if not mount.capabilities().supports_guide_pulses_while_tracking:
+            return 1
+        bounds = cast(GuidePulsePort, mount).guide_pulse_range_ms
+        return max(1, bounds[0]) if bounds is not None else 1
 
     def unit_rate(self) -> float:
         return angular_unit_rate(self._settings())
@@ -236,8 +300,8 @@ class CalibrationSizing:
         cap = max(1, cap_ms)
         if total_ms <= 0:
             return []
-        if self.angular_only:
-            floor_ms = self.min_angular_ms()
+        if self.angular_only or self.guide_pulse:
+            floor_ms = self.min_angular_ms() if self.angular_only else self.min_guide_ms()
             if total_ms < floor_ms:
                 return []
             count = math.ceil(total_ms / max(cap, floor_ms))
@@ -254,6 +318,8 @@ class CalibrationSizing:
         """A move size for a message: arcsec on an angular-only mount, else ms."""
         if self.angular_only:
             return f'{duration_ms * self.unit_rate() / 1000.0:.0f}"'
+        if self.guide_pulse:  # S6.8b
+            return f"{duration_ms} guide-ms"
         return f"{duration_ms} ms"
 
     def rate_for(self, axis: MountAxis, direction: AxisDirection) -> float | None:
