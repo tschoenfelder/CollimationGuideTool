@@ -353,7 +353,6 @@ class MountTestMoveRunner:
         rate_preset: str | None = None,
         park_after: bool = True,
         settle_ms: int = 0,
-        primitive: MountAlignPrimitive = MountAlignPrimitive.AXIS,
     ) -> bool:
         """Start an unpark/pulse/(re-park unless `park_after=False`)
         sequence in the background. Returns False (a no-op) if one is
@@ -366,7 +365,6 @@ class MountTestMoveRunner:
             rate_preset=rate_preset,
             park_after=park_after,
             settle_ms=settle_ms,
-            primitive=primitive,
         )
 
     def submit_sequence(

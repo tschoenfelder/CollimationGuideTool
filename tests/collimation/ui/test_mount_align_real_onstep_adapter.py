@@ -1333,7 +1333,7 @@ class TestGuidePulseMovesInTheRunner:
             runner.abort()  # Stop arrives while the first pulse runs
             return result
 
-        rig.mount.guide_pulse = pulse_then_stop  # type: ignore[method-assign]
+        rig.mount.guide_pulse = pulse_then_stop  # type: ignore[method-assign,assignment]
         assert runner.submit_sequence(
             rig.park,
             rig.mount,

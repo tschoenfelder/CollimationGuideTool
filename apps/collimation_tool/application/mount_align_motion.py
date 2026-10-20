@@ -35,7 +35,6 @@ class MotionRunner(Protocol):
         rate_preset: str | None = None,
         park_after: bool = True,
         settle_ms: int = 0,
-        primitive: MountAlignPrimitive = MountAlignPrimitive.AXIS,
     ) -> bool: ...
 
     def submit_sequence(
@@ -73,6 +72,16 @@ def submit_axis_move(
     """One single-axis move (a calibration step or a nudge): timed when `arcsec` is None, else
     angular -- or (S6.8b, `primitive` GUIDE_PULSE) `duration_ms` of guide pulses while
     tracking. False = not started (a move is already running)."""
+    if primitive is MountAlignPrimitive.GUIDE_PULSE:
+        return submit_motion_sequence(
+            runner,
+            mount_park,
+            mount,
+            [(axis, direction, duration_ms)],
+            rate_preset=rate_preset,
+            settle_ms=settle_ms,
+            primitive=primitive,
+        )
     if arcsec is None:
         return runner.submit(
             mount_park,
@@ -83,7 +92,6 @@ def submit_axis_move(
             rate_preset=rate_preset,
             park_after=False,
             settle_ms=settle_ms,
-            **_primitive_kwargs(primitive),
         )
     return runner.submit_sequence(
         mount_park,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import threading
+from typing import cast
 
 import pytest
 from astrotool_core.mount import (
@@ -11,6 +12,7 @@ from astrotool_core.mount import (
     GuidePulseResult,
     MountAxis,
     MountCapabilities,
+    MountPort,
 )
 from astrotool_core.mount.operating_mode import OperatingMode
 from collimation_tool.application.mount_align_guide import (
@@ -51,6 +53,10 @@ class _Mount:
         return self.results.pop(0) if self.results else GuidePulseResult(accepted=True)
 
 
+def _port(mount: _Mount) -> MountPort:
+    return cast(MountPort, mount)
+
+
 @pytest.mark.parametrize(
     ("mode", "tracking", "caps", "expected"),
     [
@@ -86,15 +92,17 @@ def test_a_matrix_never_sizes_moves_of_the_other_primitive() -> None:
 def test_the_worker_check_refuses_on_a_fresh_reading() -> None:
     mount = _Mount()
     astro = OperatingMode.ASTRONOMICAL
-    assert guide_pulse_refusal(astro, parked=False, tracking=True, mount=mount) is None
+    assert guide_pulse_refusal(astro, parked=False, tracking=True, mount=_port(mount)) is None
     assert (
-        guide_pulse_refusal(OperatingMode.TERRESTRIAL, parked=False, tracking=True, mount=mount)
+        guide_pulse_refusal(
+            OperatingMode.TERRESTRIAL, parked=False, tracking=True, mount=_port(mount)
+        )
         == GUIDE_PULSE_MODE_CHANGED
     )
-    assert guide_pulse_refusal(astro, parked=True, tracking=True, mount=mount) == (
+    assert guide_pulse_refusal(astro, parked=True, tracking=True, mount=_port(mount)) == (
         GUIDE_PULSE_NOT_TRACKING
     )
-    assert guide_pulse_refusal(astro, parked=False, tracking=None, mount=mount) == (
+    assert guide_pulse_refusal(astro, parked=False, tracking=None, mount=_port(mount)) == (
         GUIDE_PULSE_NOT_TRACKING
     )
 
@@ -107,7 +115,7 @@ def test_a_failed_pulse_is_final_and_a_lost_tracking_is_said() -> None:
         ]
     )
     result, sent = send_guide_pulse_move(
-        mount,
+        _port(mount),
         MountAxis.AXIS1,
         AxisDirection.POSITIVE,
         15000,
@@ -121,11 +129,11 @@ def test_a_failed_pulse_is_final_and_a_lost_tracking_is_said() -> None:
 def test_a_move_below_the_shortest_pulse_or_without_a_range_sends_nothing() -> None:
     mount = _Mount()
     result, sent = send_guide_pulse_move(
-        mount, MountAxis.AXIS2, AxisDirection.NEGATIVE, 10, threading.Event()
+        _port(mount), MountAxis.AXIS2, AxisDirection.NEGATIVE, 10, threading.Event()
     )
     assert not result.accepted and sent == 0 and "nothing was sent" in result.message
     mount.guide_pulse_range_ms = None
     result, sent = send_guide_pulse_move(
-        mount, MountAxis.AXIS2, AxisDirection.NEGATIVE, 1000, threading.Event()
+        _port(mount), MountAxis.AXIS2, AxisDirection.NEGATIVE, 1000, threading.Event()
     )
     assert result.message == GUIDE_PULSE_UNSUPPORTED and sent == 0 and mount.calls == []
