@@ -1083,6 +1083,9 @@ class TestStopWorkerSafety:
     def test_concurrent_stops_never_start_two_workers(self) -> None:
         """Re-review P-e: the worker is started inside the stop bookkeeping's critical section."""
         clock, mount, _client = self._rig()
+        # Only this test's workers: a daemon stop worker left by an earlier test, still parked on
+        # that test's own manual FakeClock, is not ours to count or to drive (CI 9034d61/66df991).
+        before = {t for t in threading.enumerate() if t.name == "onstep-mount-stop"}
         barrier = threading.Barrier(8)
 
         def press_stop() -> None:
@@ -1094,7 +1097,9 @@ class TestStopWorkerSafety:
             presser.start()
         for presser in pressers:
             presser.join(_JOIN_S)
-        workers = [t for t in threading.enumerate() if t.name == "onstep-mount-stop"]
+        workers = [
+            t for t in threading.enumerate() if t.name == "onstep-mount-stop" and t not in before
+        ]
         try:
             assert len(workers) == 1, workers
         finally:
