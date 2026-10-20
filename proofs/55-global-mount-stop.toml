@@ -74,4 +74,4 @@ evidence = "Revert-proof 2026-10-21, mount_pulse_adapter.py at ff6754e (abort() 
 [[regression_tests]]
 node = "tests/core/onstep/test_onstep_adapters.py::TestStopThroughTheSharedConnection::test_a_stop_with_no_live_client_sends_nothing_and_still_latches"
 failed_before_fix = false
-evidence = "Guard for the new path (no live client: nothing opened, no worker, the latch still refuses the next move); passes before and after the change."
+reason_no_prefix_repro = "A guard for the new shared-client path (no live client: nothing opened, no worker, the latch still refuses the next move); the old code also sent nothing here, so there is no pre-fix failure."
