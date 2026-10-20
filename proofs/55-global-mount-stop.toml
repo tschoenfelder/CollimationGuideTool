@@ -1,0 +1,66 @@
+# Proof manifest -- schema in proofs/README.md.
+# Run: python scripts/prove.py 55-global-mount-stop
+issues = [55, 49]
+summary = """S6.8c-R5 (movement-paths F3/R5): a park slew had no in-app Stop -- MountParkPanel has no Stop \
+button and Mount Align's Stop is enabled only while Mount Align itself is busy; the hand controller or a power \
+cut were the only ways to stop a park. Now MainWindow has ONE always-visible "Stop mount" button, enabled \
+exactly while the MountMotionExecutor has a motion in flight (park/unpark, Mount Align, reacquisition -- every \
+workflow claims the one executor), driven by a new additive executor in-flight listener marshalled to the GUI \
+thread with a Qt signal. It calls the executor's lock-free abort() with no owner (never waits on \
+operation_lock) and does nothing while idle (an idle emergency stop would also turn tracking off). The shared \
+pulse adapter sends the stop only while it holds the OnStep connection (i.e. Mount Align connected), so for a \
+park started from the Mount panel alone the Stop borrows that hold for the call only and gives it back (the \
+stop worker keeps its own mount reference). A park/unpark whose claim the Stop cancelled reads "stopped by the \
+user", not "failed". OnStepAdapter 0.5.0's park() has no cancel hook: after the ABORT its status wait never \
+sees the parked state and returns unconfirmed only at its own timeout (120 s) or on a status fault \
+(indi_home.py:78-96, 111-133, 196-226); the Mount panel keeps its claim (and Stop stays enabled, other motion \
+refused busy) until park() returns."""
+modules = [
+    "apps/collimation_tool/ui/main_window.py",
+    "apps/collimation_tool/ui/mount_park_panel.py",
+    "apps/collimation_tool/application/mount_motion.py",
+]
+fix_commits = ["ff6754e"]
+dataset_uuids = []
+focused_command = "pytest -q tests/collimation/ui/test_main_window_global_mount_stop.py tests/collimation/application/test_mount_motion.py::TestInFlightListener"
+broader_tier = "component"
+field_only_assumptions = [
+    "A real park slew stops on OnStep's TELESCOPE_ABORT_MOTION (stop_mount_via_indi, indi_stop.py:22-50) sent while OnStepAdapter's park() still waits in its status loop -- the simulator models only that the stop reaches the controller while the park call blocks.",
+    "After that ABORT, OnStepAdapter's park() returns unconfirmed only after its 120 s status wait (or at once if OnStep flags park_failed/a fault): the Mount panel shows 'park stopped by the user -- waiting for OnStepAdapter to end the command' and the executor stays busy that long on the rig.",
+]
+gaps = [
+    "OnStepAdapter park() cannot be cancelled from the app (no cancel parameter, indi_home.py:78, 196-226); changing that is external (OnStepAdapter) and not requested here -- the Stop stops the mount, not the blocked call.",
+    "The borrowed connection hold is a MainWindow workaround for OnStepMountPulseAdapter.abort() needing its own hold (_mount() is None while not held, mount_pulse_adapter.py:230-232). The clean fix is in astrotool_core (abort through the shared connection whenever it has a client), outside this contract.",
+    "Whether the pulse adapter holds its connection is read through status().connected or the adapter's status_pending (one getattr probe; MountPort has no connection-state field).",
+    "Revert-proof is at the 'no Stop button' assertion for every MainWindow node (the button did not exist); the borrow, the idle guard and the 'stopped by the user' outcome are mutation-proven instead (see evidence).",
+]
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_main_window_global_mount_stop.py::test_stop_during_a_park_slew_reaches_the_mount_at_once[False]"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-21, worktree at 8ef922a (pre-fix) with the new tests: tests/collimation/ui/test_main_window_global_mount_stop.py:42: AssertionError: no always-visible mount Stop in the main window (called from :99). Mutation (no connection borrow): :107: AssertionError: Stop during the park slew never reached the mount. Mutation (no 'stopped by the user' outcome): :120: AssertionError: park failed -- OnStep did not reach the parked state: fake rejected park"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_main_window_global_mount_stop.py::test_stop_during_a_park_slew_reaches_the_mount_at_once[True]"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-21, worktree at 8ef922a (pre-fix): tests/collimation/ui/test_main_window_global_mount_stop.py:42: AssertionError: no always-visible mount Stop in the main window (called from :99)"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_main_window_global_mount_stop.py::test_stop_is_enabled_exactly_while_a_motion_is_in_flight"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-21, worktree at 8ef922a (pre-fix), all three owners (park, Mount Align, reacquisition): tests/collimation/ui/test_main_window_global_mount_stop.py:42: AssertionError: no always-visible mount Stop in the main window (called from :144)"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_main_window_global_mount_stop.py::test_stop_cancels_the_claim_in_flight_whoever_owns_it"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-21, worktree at 8ef922a (pre-fix): tests/collimation/ui/test_main_window_global_mount_stop.py:42: AssertionError: no always-visible mount Stop in the main window (called from :169)"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_main_window_global_mount_stop.py::test_stop_while_idle_is_harmless"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-21, worktree at 8ef922a (pre-fix): :178: AttributeError: 'MainWindow' object has no attribute '_on_mount_stop_clicked' (handler absent). Mutation (no idle guard): tests/collimation/ui/test_main_window_global_mount_stop.py:180: AssertionError: an idle Stop sent an emergency stop"
+
+[[regression_tests]]
+node = "tests/collimation/application/test_mount_motion.py::TestInFlightListener::test_accepted_claims_and_their_releases_notify_refusals_and_stale_releases_do_not"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-21, mount_motion.py at 8ef922a: tests/collimation/application/test_mount_motion.py:408: AttributeError: 'MountMotionExecutor' object has no attribute 'add_in_flight_listener' (import/API-level; the assertion-level nodes are the MainWindow enable/disable tests)"
