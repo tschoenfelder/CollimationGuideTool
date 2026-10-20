@@ -218,13 +218,6 @@ _DEFAULT_MANUAL_REASON = "Manual capture from UI (no note given)"
 _log = logging.getLogger(__name__)
 
 
-def _holds_connection(mount: MountPort) -> bool:
-    """S6.8c-R5: whether `mount` holds its connection right now (non-blocking: a status read
-    that finds the connection busy serves the last reading, S6.0c). `status_pending` covers
-    the OnStep pulse adapter connected but not read yet behind a running operation."""
-    return bool(mount.status().connected or getattr(mount, "status_pending", False))
-
-
 #: Issue #47: the optical trains that actually have a real CameraPanel in
 #: this app -- a wheel assignment naming any other train (e.g. "oag", which
 #: this app has no panel for) never gets a selector, only ever a status
@@ -700,28 +693,12 @@ class MainWindow(QMainWindow):
     def _on_mount_stop_clicked(self) -> None:
         """S6.8c-R5: the executor's lock-free `abort()` with no owner -- stops whatever moves;
         returns at once, never waits on the connection's `operation_lock`. While nothing moves
-        it does nothing (an idle emergency stop would also turn tracking off).
-
-        The executor's mount (the shared pulse adapter) sends the stop only while it holds the
-        OnStep connection, i.e. while Mount Align is connected. A park started from the Mount
-        panel alone would otherwise get no stop at all, so the adapter is held just for this
-        call (shares the client the Mount panel already holds: no I/O, no lock wait) and given
-        back at once -- the stop worker keeps its own reference to the mount."""
+        it does nothing (an idle emergency stop would also turn tracking off). The stop reaches
+        the mount through the shared OnStep connection whoever holds it (the pulse adapter's
+        `abort()`), so a park started from the Mount panel alone is stopped too."""
         if self._motion_executor.in_flight is None:
             return
-        mount = self._pulse_mount
-        borrowed = not _holds_connection(mount)
-        if borrowed:
-            try:
-                mount.connect()
-            except Exception:  # noqa: BLE001 -- the Stop itself must still run
-                _log.exception("mount Stop: could not reach the shared OnStep connection")
-                borrowed = False
-        try:
-            self._motion_executor.abort()
-        finally:
-            if borrowed:
-                mount.disconnect()
+        self._motion_executor.abort()
 
     def _calibration_geometry(self) -> list[CameraGeometry]:
         """Issue #46: sensor size + plate scale per participating camera (the

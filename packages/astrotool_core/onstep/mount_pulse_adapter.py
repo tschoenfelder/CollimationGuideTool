@@ -267,8 +267,13 @@ class OnStepMountPulseAdapter:
         the interrupted sequence, is refused unsent) and has the stop worker send OnStep's
         emergency stop WITHOUT `operation_lock` -- the deliberate exception to 9cea2e9's
         serialization, because the GOTO it must stop holds that lock until it ends. Every
-        call is served: a Stop while the worker is busy queues one more pass."""
-        mount = self._mount()
+        call is served: a Stop while the worker is busy queues one more pass.
+
+        S6.8c-R5: the stop goes through the SHARED connection's live client, whoever holds
+        it -- not only while this adapter does: a park slew started by the park adapter alone
+        (Mount Align not connected) must be stoppable too. With no live client nothing is sent
+        (nothing can be moving through this app); the latch is set either way."""
+        mount = self._stop_target()
         with self._state:
             self._cancel.set()
             if mount is None:
@@ -286,6 +291,11 @@ class OnStepMountPulseAdapter:
             # Started inside the critical section (re-review P-e): a concurrent abort() sees
             # this worker alive and only queues a pass, never starts a second worker.
             worker.start()
+
+    def _stop_target(self) -> IndiMount | None:
+        """The mount the Stop is sent to: the shared connection's live client (S6.8c-R5)."""
+        client = self._connection.client
+        return None if client is None else client.mount
 
     def _stop_worker_loop(self, mount: IndiMount) -> None:
         while True:

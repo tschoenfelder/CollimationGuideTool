@@ -1136,3 +1136,52 @@ class TestHeldOverMountStatusIsMarked:
     def test_nothing_read_yet_is_not_fresh(self) -> None:
         status = self._busy_reads(read_first=False)
         assert not status.connected and status.fresh is False
+
+
+class TestStopThroughTheSharedConnection:
+    """S6.8c-R5: the Stop reaches the mount whenever the shared OnStep connection has a live
+    client -- also when only ANOTHER adapter holds it (a park started from the Mount panel
+    while Mount Align, the pulse adapter's own user, is not connected). Before: `abort()` used
+    the pulse adapter's own hold and sent nothing."""
+
+    def test_a_stop_while_only_the_park_adapter_holds_the_connection_reaches_the_mount(
+        self,
+    ) -> None:
+        clock = FakeClock(auto_advance=False)
+        connection, made = make_simulated_onstep_connection(
+            OnStepScenario(parked=False, park_latency_s=60.0), clock=clock
+        )
+        park = OnStepMountParkAdapter(connection)
+        park.connect()
+        mount = OnStepMountPulseAdapter(connection)  # never connected
+        client = made[0]
+        parker = threading.Thread(target=park.park, daemon=True, name="test-park")
+        parker.start()
+        try:
+            assert clock.wait_for_sleepers(1, timeout_s=_JOIN_S), "the park slew never started"
+            mount.abort()
+            worker = mount._stop_worker
+            assert worker is not None, "Stop started no stop worker"
+            worker.join(_JOIN_S)
+            assert not worker.is_alive()
+            assert client.emergency_stop_calls == 1, "the Stop never reached the mount"
+            assert clock.blocked_sleepers == 1  # the park call itself is still blocked
+        finally:
+            clock.advance(60.0)
+            parker.join(_JOIN_S)
+            worker = mount._stop_worker
+            if worker is not None:
+                worker.join(_JOIN_S)
+        assert not parker.is_alive()
+        park.disconnect()
+
+    def test_a_stop_with_no_live_client_sends_nothing_and_still_latches(self) -> None:
+        connection, made = make_simulated_onstep_connection(OnStepScenario(parked=False))
+        mount = OnStepMountPulseAdapter(connection)
+        mount.abort()
+        assert mount._stop_worker is None
+        assert made == []  # nothing opened a connection for the Stop
+        mount.connect()
+        refused = mount.move_angular(MountAxis.AXIS1, AxisDirection.POSITIVE, 300.0)
+        assert not refused.accepted and "stopped by the user" in refused.message
+        mount.disconnect()
