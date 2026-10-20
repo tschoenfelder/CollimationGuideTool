@@ -19,13 +19,16 @@ import time
 import numpy as np
 import pytest
 from astrotool_core.camera.replay_camera import ReplayCamera
+from astrotool_core.mount.operating_mode import OperatingMode
 from astrotool_core.onstep import OnStepMountParkAdapter, OnStepMountPulseAdapter
 from astrotool_core.testing import OnStepScenario, make_simulated_onstep_connection
+from astrotool_core.testing.fake_mount import FakeMountAdapter
 from astrotool_core.testing.fake_mount_park import FakeMountPark
 from astrotool_core.testing.sim_onstep import SimulatedOnStepIndiClient
 from astrotool_core.timing import FakeClock
-from collimation_tool.application.mount_motion import MOTION_BUSY
+from collimation_tool.application.mount_motion import MotionClaim, MountMotionExecutor
 from collimation_tool.ui.main_window import MainWindow
+from collimation_tool.ui.mount_park_panel import MountParkPanel
 from PySide6.QtCore import QCoreApplication
 from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import QPushButton
@@ -107,6 +110,11 @@ def test_stop_during_a_park_slew_reaches_the_mount_at_once(
         assert client.emergency_stop_calls >= 1, "Stop during the park slew never reached the mount"
         assert clock.blocked_sleepers == 1
         assert connection._users == users_before, "Stop changed who holds the OnStep connection"
+        panel._poll_status()  # the park call is still blocked in OnStepAdapter
+        waiting = panel._status_label.text()
+        assert "stopped by the user — waiting for OnStepAdapter to end the command…" in waiting, (
+            waiting
+        )
     finally:
         # OnStepAdapter's park() after an ABORT: never confirms the parked state (indi_home.py:
         # 111-133), modelled by the simulator's rejected park once the slew time is over.
@@ -119,6 +127,8 @@ def test_stop_during_a_park_slew_reaches_the_mount_at_once(
     text = panel._status_label.text()
     assert "stopped by the user" in text, text
     assert "failed" not in text, text
+    # Review: the Stop never hides what OnStepAdapter reported.
+    assert "OnStepAdapter: OnStep did not reach the parked state: fake rejected park" in text, text
     assert not _stop_button(window).isEnabled(), "Stop stays enabled after the park ended"
     window.closeEvent(QCloseEvent())
     _join(pulse._stop_worker)
@@ -181,7 +191,119 @@ def test_stop_while_idle_is_harmless(qapp: object) -> None:
         claim = window._motion_executor.claim("Mount Align")
         assert not isinstance(claim, str) and not claim.cancelled, claim
         window._motion_executor.release(claim)
-        assert not str(window._motion_executor.claim("x")).startswith(MOTION_BUSY)
+        again = window._motion_executor.claim("x")
+        assert not isinstance(again, str) and not again.cancelled, again
+        window._motion_executor.release(again)
     finally:
         window.closeEvent(QCloseEvent())
         _join(pulse._stop_worker)
+
+
+# ---- no Stop pressed: the outcome is the command's own (review: `claim is not None` mutant) ----
+class _RecordingEnforcer:
+    """Stands in for the #44 `TrackingEnforcer`: records each enforcement context."""
+
+    mode = OperatingMode.ASTRONOMICAL
+
+    def __init__(self) -> None:
+        self.contexts: list[str] = []
+
+    def enforce(self, context: str, **_kwargs: object) -> None:
+        self.contexts.append(context)
+
+    def measurement_allowed(self) -> bool:
+        return True
+
+
+def _executor_backed_park_panel(
+    *, parked: bool
+) -> tuple[MountParkPanel, SimulatedOnStepIndiClient, _RecordingEnforcer, MountMotionExecutor]:
+    connection, made = make_simulated_onstep_connection(
+        OnStepScenario(parked=parked, tracking=False), clock=FakeClock()
+    )
+    enforcer = _RecordingEnforcer()
+    executor = MountMotionExecutor()
+    panel = MountParkPanel(
+        OnStepMountParkAdapter(connection),
+        tracking_enforcer=enforcer,  # type: ignore[arg-type]
+        motion_executor=executor,
+    )
+    panel._connect_button.setChecked(True)
+    return panel, made[0], enforcer, executor
+
+
+def _settle_action(panel: MountParkPanel) -> None:
+    _join(panel._action_worker)
+    panel._poll_status()
+
+
+def test_a_failing_park_with_no_stop_reads_failed(qapp: object) -> None:
+    panel, client, _enforcer, executor = _executor_backed_park_panel(parked=False)
+    client.park_rejected = True
+    panel._on_park()
+    _settle_action(panel)
+    text = panel._status_label.text()
+    assert text.startswith("park failed — "), text
+    assert "stopped by the user" not in text, text
+    assert executor.in_flight is None
+    panel.stop()
+
+
+def test_a_successful_unpark_with_no_stop_runs_the_unpark_enforcement(qapp: object) -> None:
+    panel, client, enforcer, executor = _executor_backed_park_panel(parked=True)
+    panel._on_unpark()
+    _settle_action(panel)
+    assert not client.parked
+    assert "unpark" in enforcer.contexts, enforcer.contexts
+    assert "stopped by the user" not in panel._status_label.text()
+    assert executor.in_flight is None
+    panel.stop()
+
+
+# ---- review LOW: the check-then-act gap of the global Stop ----------------------------------
+class _ReleaseAfterFirstSection:
+    """Wraps the executor's lock: right after the FIRST critical section the Stop handler
+    leaves, the motion in flight is released (it ended exactly at the click)."""
+
+    def __init__(self, inner: object, release: object) -> None:
+        self._inner = inner
+        self._release = release
+        self._fired = False
+
+    def __enter__(self) -> _ReleaseAfterFirstSection:
+        self._inner.acquire()  # type: ignore[attr-defined]
+        return self
+
+    def __exit__(self, *_exc: object) -> None:
+        self._inner.release()  # type: ignore[attr-defined]
+        if not self._fired:
+            self._fired = True
+            self._release()  # type: ignore[operator]
+
+
+def test_a_motion_ending_at_the_click_never_turns_stop_into_an_idle_emergency_stop(
+    qapp: object,
+) -> None:
+    mount = FakeMountAdapter()
+    image = np.full((60, 80), 100.0, dtype=np.float32)
+    window = MainWindow(
+        ReplayCamera.from_arrays([image], cycle=True),
+        device_lister=lambda: [],
+        mount=FakeMountPark(start_parked=False),
+        pulse_mount=mount,
+    )
+    executor = window._motion_executor
+    claim = executor.claim("Mount Align")
+    assert isinstance(claim, MotionClaim)
+    executor._lock = _ReleaseAfterFirstSection(  # type: ignore[assignment]
+        executor._lock, lambda: executor.release(claim)
+    )
+    window._on_mount_stop_clicked()
+
+    assert executor.in_flight is None
+    # A Stop reaches the mount only together with the motion it stopped -- never on idle.
+    assert len(mount.abort_log) == (1 if claim.cancelled else 0), (
+        mount.abort_log,
+        claim.cancelled,
+    )
+    window.closeEvent(QCloseEvent())

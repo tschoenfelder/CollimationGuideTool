@@ -298,9 +298,11 @@ class MountParkPanel(QWidget):
             self._action_in_flight = False
             self._pending_action = None
             if self._stopped_by_user():
-                self._status_label.setText(
-                    f"{(settled_action or 'action').capitalize()} stopped by the user."
-                )
+                # Review: a Stop never hides what OnStepAdapter reported for the command.
+                text = f"{(settled_action or 'action').capitalize()} stopped by the user"
+                if self._action_error is not None:
+                    text = f"{text} — OnStepAdapter: {self._action_error}"
+                self._status_label.setText(f"{text}.")
                 self._update_buttons_enabled()
                 return
             if self._action_error is not None:

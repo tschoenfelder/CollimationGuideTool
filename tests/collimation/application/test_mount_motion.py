@@ -415,3 +415,27 @@ class TestInFlightListener:
 
         assert seen == ["Mount Align", None]
         assert executor.in_flight is None
+
+
+class TestAbortInFlight:
+    """S6.8c-R5 review: the global Stop's atomic "stop only what is in flight"."""
+
+    def test_idle_sends_nothing_and_answers_false(self) -> None:
+        mount = FakeMountPark()
+        mount.abort_log = []  # type: ignore[attr-defined]
+        mount.abort = lambda: mount.abort_log.append(None)  # type: ignore[attr-defined]
+        executor = MountMotionExecutor(mount)
+        assert executor.abort_in_flight() is False
+        assert mount.abort_log == []  # type: ignore[attr-defined]
+
+    def test_in_flight_cancels_the_claim_and_stops_the_mount_once(self) -> None:
+        mount = FakeMountPark()
+        mount.abort_log = []  # type: ignore[attr-defined]
+        mount.abort = lambda: mount.abort_log.append(None)  # type: ignore[attr-defined]
+        executor = MountMotionExecutor(mount)
+        claim = executor.claim("the Mount panel's park")
+        assert isinstance(claim, MotionClaim)
+        assert executor.abort_in_flight() is True
+        assert claim.cancelled
+        assert mount.abort_log == [None]  # type: ignore[attr-defined]
+        executor.release(claim)

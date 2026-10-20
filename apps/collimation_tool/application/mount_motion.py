@@ -189,6 +189,26 @@ class MountMotionExecutor:
             for mount in mounts:
                 mount_abort(mount)
 
+    def abort_in_flight(self) -> bool:
+        """S6.8c-R5 (the global mount Stop): `abort()` with no owner, but only while a motion
+        is in flight -- decided under the same lock as `claim()`/`release()`, so a motion
+        released at the moment of the click never turns this into an idle emergency stop.
+        False (nothing cancelled, nothing sent) while idle; True when the claim in flight was
+        cancelled and the Stop sent to its mount and the executor's own (each once)."""
+        mounts: list[object] = []
+        with self._lock:
+            claim = self._claim
+            if claim is None:
+                return False
+            claim.cancel.set()
+            if claim.mount is not None:
+                mounts.append(claim.mount)
+            if self._mount is not None and all(m is not self._mount for m in mounts):
+                mounts.append(self._mount)
+            for mount in mounts:
+                mount_abort(mount)
+        return True
+
     def settle(self, claim: MotionClaim | None, seconds: float) -> bool:
         """Wait `seconds` on the executor's clock; False when Stop ended it early."""
         if seconds <= 0:

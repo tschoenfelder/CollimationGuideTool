@@ -691,14 +691,14 @@ class MainWindow(QMainWindow):
         self._mount_stop_button.setEnabled(self._motion_executor.in_flight is not None)
 
     def _on_mount_stop_clicked(self) -> None:
-        """S6.8c-R5: the executor's lock-free `abort()` with no owner -- stops whatever moves;
+        """S6.8c-R5: the executor's lock-free `abort_in_flight()` -- stops whatever moves;
         returns at once, never waits on the connection's `operation_lock`. While nothing moves
-        it does nothing (an idle emergency stop would also turn tracking off). The stop reaches
+        it does nothing (an idle emergency stop would also turn tracking off); that decision is
+        taken atomically with claim/release, so a motion ending right at the click never turns
+        the Stop into an idle emergency stop. The stop reaches
         the mount through the shared OnStep connection whoever holds it (the pulse adapter's
         `abort()`), so a park started from the Mount panel alone is stopped too."""
-        if self._motion_executor.in_flight is None:
-            return
-        self._motion_executor.abort()
+        self._motion_executor.abort_in_flight()
 
     def _calibration_geometry(self) -> list[CameraGeometry]:
         """Issue #46: sensor size + plate scale per participating camera (the
