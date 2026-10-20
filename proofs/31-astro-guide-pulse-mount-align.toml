@@ -32,7 +32,7 @@ modules = [
     "packages/astrotool_core/mount/axis_calibration.py",
     "packages/astrotool_core/config/mount_alignment_settings.py",
 ]
-fix_commits = ["f63374c", "ef95c28"]
+fix_commits = ["f63374c", "ef95c28", "f4b33c6"]
 dataset_uuids = []
 focused_command = """pytest -q \
 tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestAstronomicalMountAlignUsesGuidePulses \
