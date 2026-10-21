@@ -566,6 +566,40 @@ OnStepAdapter 0.5.0 `guide_pulse` while tracking; tracking is never turned off b
 
 ### S6.8d — dead timed path, nudge cap, stale texts (after S6.8b)
 
+**Contract (2026-10-21).**
+- **Allowed:** `ui/mount_test_move_runner.py`, `ui/mount_test_move_panel.py`, `application/mount_align_*.py`,
+  `application/recenter_policy.py` (timed branch D5 only), `application/mount_commands.py`,
+  `application/mount_motion.py` (docstring only), `astrotool_core/onstep/mount_pulse_adapter.py`
+  (`install_rate`/`installed_rate`/`pulse_axis`/`_NO_PULSE_PRIMITIVE`), `astrotool_core/onstep/mount_park_adapter.py`
+  (docstrings), `astrotool_core/mount/operating_mode.py` (refusal texts), `astrotool_core/mount/movement_sizing.py`,
+  `astrotool_core/config/mount_alignment_settings.py`, `ui/mount_park_panel.py` (comment), `apps/collimation_tool/main.py`
+  (stale comment), `testing/` fakes, `tests/collimation/test_onstep_boundary.py`, `pyproject.toml` (import-linter
+  contract only), their tests, docs/install.md config notes, new manifest(s).
+- **Behaviour changed:** (R9) the timed motion path is deleted from Mount Align and recenter (D3/D4/D5: `_pulse_with_retry`,
+  timed fallback, `MOTION_TIMED*`, bootstrap/`_learn_rate`, `install_rate`/`installed_rate`, `park_after=True`, the
+  `len(step) > 3` tuple-shape gate); the OnStep adapter's always-refusing `pulse_axis` stays only if `MountPort`
+  still needs it for the dormant GuideTool (then documented as such); the fakes move to the production contract
+  (angular + guide pulse). Settings `pulse_ms`, `rate_preset`, `calibration_rate_preset` (and `RATE_PRESET_X` if
+  unused) are removed; **an existing config.toml that still has them must keep loading** (ignored with one log
+  warning naming the key), with a config-migration note in install.md. (F11) the nudge cap becomes an explicit
+  arcsec setting with a default numerically equal to today's derived cap (behaviour-neutral), single owner.
+  (S6.8b #3) `ASTRONOMICAL_TRACKING_AXIS_MOVE_REFUSED` replaced by accurate texts for its three cases (0.4.1 mount →
+  needs OnStepAdapter ≥ 0.5.0; stale-reading race → retry; tracking turned on mid axis-calibration). (R11/F13) stale
+  docstrings/comments listed above; `mount_commands.rearm_after_stop` getattr `clear_abort` probe → capability or a
+  typed port method; boundary token list extended (`TELESCOPE_TIMED_GUIDE_*`, `ABS/REL_FOCUS_POSITION`, `ON_COORD_SET`)
+  after rewording docstrings that trip it; import-linter contract limiting `astrotool_core.indi.client` to
+  `filter_wheel` + `testing`.
+- **Tests:** deletion is neutral → characterization first (production-shaped Mount Align calibration/nudge/screen
+  move/reacquisition, both modes, byte-identical labels/diagnostics/commands before vs after, except the texts this
+  contract changes); old-config load test (failing first); refusal-text tests per case (failing first); boundary/
+  import-linter contracts fail on a planted violation (mutation evidence).
+- **Frozen:** executor API, `MountCapabilities`, OnStepAdapter-facing adapter API (`move_angular`, `guide_pulse`,
+  `abort`, `clear_abort`), every existing manifest assertion except nodes that test the deleted timed path (remove
+  those nodes with a note in the manifest).
+- **Dependencies:** S6.8a/b/c (done). Last S6 step.
+- **Non-goals:** GuideTool wiring (R10), OnStepAdapter requests (R2, cancellable park), cos(dec).
+- **Proof:** manifest(s); differential characterization evidence; `prove.py` for every 31/39/43/44/46/49/52/55 manifest PASS.
+
 R9/F11/R11. Contract written before start. Also (S6.8b review #3): `ASTRONOMICAL_TRACKING_AXIS_MOVE_REFUSED` ("...not available yet") is now wrong in three cases -- a 0.4.1 mount (should say: needs OnStepAdapter >= 0.5.0), a stale-reading race (tracking turned on between the panel's primitive choice and the send: retry), and tracking switched on mid axis-calibration (star calibration's tracking-ON verify); `mount_motion.py` module docstring line 18 ("until guide-pulse Mount Align, S6.8b") is stale. Also (S6.8a review #4): the runner's tracking gate is keyed on the step tuple shape (`len(step) > 3`), not on the primitive actually used — legacy timed path only; remove with the timed path. Stale docs (F13): panel docstring "Stop / duck-typed", `park_adapter.stop_tracking` docstring, `mount_park_panel.py:186`; `mount_commands.rearm_after_stop` getattr `clear_abort` probe.
 
 ### S5 — #55 + #52 duplication inventory (analysis only)
