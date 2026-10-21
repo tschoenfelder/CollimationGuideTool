@@ -43,6 +43,11 @@ _FORBIDDEN = (
     "TELESCOPE_TRACK_STATE",
     "FOCUS_ABORT_MOTION",
     "TELESCOPE_ABORT_MOTION",
+    # S6.8d (R11/F13): the remaining OnStep driver motion/focus/sync properties
+    "TELESCOPE_TIMED_GUIDE_",
+    "ABS_FOCUS_POSITION",
+    "REL_FOCUS_POSITION",
+    "ON_COORD_SET",
 )
 
 

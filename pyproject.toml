@@ -151,6 +151,17 @@ source_modules = ["astrotool_core.target.roi_tracker"]
 forbidden_modules = ["astrotool_core.mount"]
 
 [[tool.importlinter.contracts]]
+name = "the generic INDI client serves only the filter wheel (S6.8d, R11; never the OnStep device)"
+type = "forbidden"
+source_modules = ["astrotool_core", "collimation_tool", "guide_tool"]
+forbidden_modules = ["astrotool_core.indi.client"]
+ignore_imports = [
+  "astrotool_core.indi -> astrotool_core.indi.client",
+  "astrotool_core.filter_wheel.* -> astrotool_core.indi.client",
+  "astrotool_core.testing.* -> astrotool_core.indi.client",
+]
+
+[[tool.importlinter.contracts]]
 name = "OnStepAdapter is the only route to the OnStep controller (AGENTS.md)"
 type = "forbidden"
 source_modules = ["astrotool_core", "collimation_tool", "guide_tool"]

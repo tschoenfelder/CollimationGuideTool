@@ -12,7 +12,7 @@ hand-roll rather than add a new dependency for.
 
 Generic on purpose: this client knows nothing about focusers specifically
 — it tracks whatever "vectors" (INDI's term for a named group of
-properties, e.g. `ABS_FOCUS_POSITION`) a device defines/updates, and lets
+properties, e.g. a filter wheel's slot vector) a device defines/updates, and lets
 a caller wait for or read the latest known state of any of them by
 name. `astrotool_core/focus/indi_focuser_adapter.py` is the focuser-
 specific layer built on top of this.

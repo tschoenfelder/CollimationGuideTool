@@ -54,7 +54,7 @@ class FakeIndiServer:
         #: indifocuserinterface.cpp's source, see IndiFocuserAdapter's own
         #: docstring): MoveAbsFocuser()/MoveRelFocuser() can return
         #: IPS_ALERT, which the framework applies directly to
-        #: ABS_FOCUS_POSITION/REL_FOCUS_POSITION's own vector state --
+        #: the absolute/relative focus-position vectors' own state --
         #: unlike the mount's motion-switch rejection, the requested value
         #: is left in place, only the vector's state signals rejection.
         self._connected = False

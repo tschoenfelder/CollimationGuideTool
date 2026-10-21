@@ -106,8 +106,8 @@ modelled here except the guide pulse is therefore unchanged in 0.5.0:
 Deliberately NOT modeled (unknown or owned elsewhere): whether the real
 controller/driver honours INDI ABORT mid-GOTO exactly like this (field
 only), meridian phase/limit geometry, the
-`focuser_property_alert` blocker (whether the driver leaves ABS_FOCUS_POSITION
-in Alert after a rejection is driver behaviour), and the INDI wire protocol
+`focuser_property_alert` blocker (whether the driver leaves its absolute focus-position
+vector in Alert after a rejection is driver behaviour), and the INDI wire protocol
 underneath `OnStepIndiClient` (OnStepConnection never sees it).
 """
 
@@ -253,7 +253,7 @@ class FocuserScenario:
     busy_forever: bool = False
     #: The driver answers a move with an Alert -> 0.4.1's error text.
     reject_moves: bool = False
-    #: The driver stopped republishing ABS_FOCUS_POSITION -> `focuser_position_stale`.
+    #: The driver stopped republishing the focus position -> `focuser_position_stale`.
     position_stale: bool = False
     connected: bool = True
     #: S6.8c: `stop()` waits this long (clock time) for its confirmation after setting the
