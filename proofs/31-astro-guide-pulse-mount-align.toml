@@ -16,7 +16,13 @@ nudge are sized from the explicit MountAlignmentSettings.guide_rate_seed_x (defa
 config key [mount_alignment] guide_rate_seed_x), labelled as an assumption in the status line and the \
 sizing log ('guide_rate_assumed'), and replaced by the measured response (#46 probe resizing). A move longer \
 than one pulse (0.5.0: 20..5000 ms) is split into even pulses with Stop checked between them; a failed \
-pulse is final and says when the mount no longer tracks. A 0.4.1-shaped mount (no guide capability) keeps \
+pulse is final and says when the mount no longer tracks. USER DECISION 2026-10-21: Mount Align's Stop during \
+a guide-pulse move stays an immediate EMERGENCY stop (ABORT + TRACK_OFF) -- the pulse in flight is cut and \
+tracking goes off; the result text says the mount is NOT tracking any more and how to restore it. Review \
+fixes (d2024bb): a calibration step whose later pulse fails counts the guide-ms of its completed pulses, so \
+the abort's return equals what was sent (a sent-then-failed pulse is named in a WARNING, not returned); a \
+calibrated guide nudge/screen step is capped at the MEASURED guide rate (response x plate scale), the seed \
+only without one. A 0.4.1-shaped mount (no guide capability) keeps \
 S6.8a's explicit refusal; Terrestrial is unchanged (angular, tracking OFF). Field incident 07d37da6's rule \
 holds for guide-pulse nudges too: they move with no camera frame at all."""
 modules = [
@@ -32,11 +38,12 @@ modules = [
     "packages/astrotool_core/mount/axis_calibration.py",
     "packages/astrotool_core/config/mount_alignment_settings.py",
 ]
-fix_commits = ["f63374c", "ef95c28", "f4b33c6"]
+fix_commits = ["f63374c", "ef95c28", "f4b33c6", "d2024bb"]
 dataset_uuids = []
 focused_command = """pytest -q \
 tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestAstronomicalMountAlignUsesGuidePulses \
 tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestGuidePulseMovesInTheRunner \
+tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestGuidePulseReviewFixes \
 tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestAMoveNeverStopsTracking \
 tests/collimation/application/test_mount_align_guide.py \
 tests/core/config/test_mount_alignment_settings.py::TestGuideRateSeed"""
@@ -45,9 +52,14 @@ field_only_assumptions = [
     "The real guide rate vs the 1.0x seed: the seed only sizes the first probe (the measured displacement resizes it, #46); a real rate far below 0.5x could leave the widest camera bounded (envelope = 2x the seed-rate need).",
     "Settle after guide pulses: the configured settle_ms is reused unchanged; whether guide-pulse moves need a different settle on the rig is unmeasured.",
     "A supervised first Astronomical calibration on the rig (S8): long guide-pulse moves (e.g. ~13-26 s of guiding for 25% of a 780\" frame at 1x / 0.5x) hold operation_lock per pulse; tracking ON throughout, OnStep 'G' flag clearing within 0.5.0's post-chunk wait.",
+    "RA guide response has no cos(dec) term in the seed: at declination dec an RA guide pulse moves the star cos(dec) x the seed's angle, so the measured RA response shrinks toward the pole; GUIDE_SEED_MARGIN = 2.0 keeps the widest camera's band reachable only up to about dec 60 deg (cos 60 = 0.5) at a real rate equal to the seed -- above that (or with a slower real rate) the wide camera's RA follow-up may end bounded.",
+    "Stop during a guide pulse (user decision 2026-10-21) is OnStep's emergency stop: whether the real driver/firmware also ends the running guide timer on ABORT is unknown (0.5.0 note); tracking is OFF afterwards either way, and must be restored at the hand controller.",
 ]
 gaps = [
-    "The tests drive the production OnStepMountPulseAdapter over FakeOnStepIndiClient (instant 0.5.0 guide pulses, 0.5x sidereal), not the clocked #51 simulator; a Stop arriving DURING a pulse is covered by 39-astro-guide-pulse (adapter level), here Stop is proven between pulses.",
+    "The tests drive the production OnStepMountPulseAdapter over FakeOnStepIndiClient (instant 0.5.0 guide pulses, 0.5x sidereal), not the clocked #51 simulator.",
+    "S6.8d notes from the S6.8b review (not changed here, outside this contract): ASTRONOMICAL_TRACKING_AXIS_MOVE_REFUSED ('...not available yet') is now wrong in three cases -- a 0.4.1 mount (should say: needs OnStepAdapter >= 0.5.0), a stale-reading race (tracking switched on between the panel's primitive choice and the send: retry), and tracking switched on mid axis-calibration (star calibration's tracking-ON verify); mount_motion.py module docstring line 18 ('until guide-pulse Mount Align, S6.8b') is stale.",
+    "No in-app path turns tracking back ON in Astronomical mode after a Stop: the enforcer's P-a re-enforce runs only in TERRESTRIAL (it clears its pending flag on Astronomical) and never starts tracking; the only start_tracking is a star measurement's verify(TrackingMode.ON), which records a trail entry (command 'start_tracking').",
+    "test_a_calibrated_guide_nudge_is_capped_at_the_measured_guide_rate fails before d2024bb at the call (TypeError: unexpected keyword 'arcsec_per_px'), not at an assertion -- the measured-rate input did not exist.",
     "The panel decides the primitive from the mount's latest (possibly held-over) park/tracking reading on the GUI thread; the runner re-checks on a fresh reading. If tracking turned ON between the decision and the send, an axis move is refused by the S6.8a gate (its text still says 'not available yet' -- operating_mode.py is outside this contract, stale text for S6.8d).",
     "test_a_long_move_is_split_into_even_pulses_within_the_range and test_mount_align_guide.py / TestGuideRateSeed test scaffolding added in f63374c (no behaviour change) -- they pass before ef95c28 by construction and are listed for coverage only where marked.",
 ]
@@ -96,3 +108,18 @@ reason_no_prefix_repro = "unit test of the split helper added in the scaffolding
 node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestAMoveNeverStopsTracking::test_an_astronomical_screen_move_is_refused_and_tracking_stays_on"
 failed_before_fix = false
 reason_no_prefix_repro = "S6.8a's regression kept green: a Terrestrial-calibrated (axis-unit) matrix in Astronomical + tracking is now refused by the unit-mismatch rule instead of the axis gate -- still nothing sent, tracking on, no emergency stop"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestGuidePulseReviewFixes::test_a_step_failing_after_some_pulses_is_returned_by_exactly_what_was_sent"
+failed_before_fix = true
+evidence = "revert-proof 2026-10-21, worktree at 95189bb (pre-review-fix) with the branch's tests: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:1394: AssertionError: ([(AXIS1, POSITIVE, 4322, True), (AXIS1, POSITIVE, 4322, True), (AXIS1, POSITIVE, 4321, False)], 'Calibration failed: pulse rejected for AXIS1 POSITIVE (guide_pulse): refused by the test') -- 8644 guide-ms sent, nothing returned"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestGuidePulseReviewFixes::test_stop_during_a_guide_pulse_is_an_emergency_stop_and_says_tracking_is_off"
+failed_before_fix = true
+evidence = "revert-proof 2026-10-21, worktree at 95189bb: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:1429: AssertionError: Stopped by the user -- stop sent to the mount; the controls return once the interrupted move call has ended. (emergency stop sent and tracking False already held; the text did not say so)"
+
+[[regression_tests]]
+node = "tests/collimation/application/test_mount_align_guide.py::test_a_calibrated_guide_nudge_is_capped_at_the_measured_guide_rate"
+failed_before_fix = true
+evidence = "revert-proof 2026-10-21, worktree at 95189bb: tests/collimation/application/test_mount_align_guide.py:162: TypeError: plan_nudge() got an unexpected keyword argument 'arcsec_per_px' (see gaps: the measured-rate input did not exist)"
