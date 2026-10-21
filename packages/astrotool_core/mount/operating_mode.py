@@ -54,11 +54,40 @@ TERRESTRIAL_TRACKING_ON_REFUSED_REASON = (
 #: S6.8a (R1, user decision 2026-10-11): why an axis GOTO is refused while the mount tracks.
 #: OnStepAdapter refuses an axis move on a tracking mount and ends every axis move with tracking
 #: off, so the move could only run by stopping tracking -- which a move never decides on its own.
+#: S6.8d: the gate's own (generic) reason; a caller that knows the cause names it instead with
+#: one of the three texts below (the former "...not available yet" was wrong since S6.8b).
 ASTRONOMICAL_TRACKING_AXIS_MOVE_REFUSED = (
     "astronomical mode with the mount tracking: an axis move needs tracking off, and Mount "
-    "Align never turns tracking off on its own -- moving with guide pulses while tracking is "
-    "not available yet; nothing was sent, tracking stays on"
+    "Align never turns tracking off on its own -- nothing was sent, tracking stays on"
 )
+#: S6.8d (S6.8b review #3), cause 1: the mount cannot guide-pulse while tracking (OnStepAdapter
+#: 0.4.1) -- Astronomical Mount Align needs OnStepAdapter >= 0.5.0.
+ASTRONOMICAL_AXIS_MOVE_NEEDS_GUIDE_PULSES = (
+    "astronomical mode with the mount tracking: this mount cannot move with guide pulses while "
+    "tracking (needs OnStepAdapter >= 0.5.0), and an axis move needs tracking off, which Mount "
+    "Align never turns off on its own -- nothing was sent, tracking stays on"
+)
+#: Cause 2: tracking came on between choosing an axis move and sending it (a stale reading).
+ASTRONOMICAL_TRACKING_STARTED_BEFORE_THE_MOVE = (
+    "astronomical mode: the mount started tracking after this move was planned as an axis "
+    "move -- nothing was sent, tracking stays on; retry the move (it then moves with guide "
+    "pulses)"
+)
+#: Cause 3: tracking came on during an axis-move calibration (e.g. the star measurement's
+#: tracking-ON verify) -- the run's primitive is fixed, so the calibration must be rerun.
+ASTRONOMICAL_TRACKING_ON_DURING_AXIS_CALIBRATION = (
+    "astronomical mode: tracking was turned on during this axis-move calibration -- nothing more "
+    "was sent, tracking stays on; Run Calibration again (it then calibrates with guide pulses)"
+)
+
+
+def astronomical_axis_refusal(*, guide_pulses_supported: bool, calibration: bool) -> str:
+    """S6.8d: the accurate text for an Astronomical axis move refused because the mount tracks."""
+    if not guide_pulses_supported:
+        return ASTRONOMICAL_AXIS_MOVE_NEEDS_GUIDE_PULSES
+    if calibration:
+        return ASTRONOMICAL_TRACKING_ON_DURING_AXIS_CALIBRATION
+    return ASTRONOMICAL_TRACKING_STARTED_BEFORE_THE_MOVE
 TERRESTRIAL_TRACKING_AXIS_MOVE_REFUSED = (
     "terrestrial operating mode, but the mount reports tracking ON -- the tracking policy has "
     "not turned it off (see the Mount panel); nothing was sent and no emergency stop was issued"

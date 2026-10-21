@@ -1473,3 +1473,61 @@ class TestGlobalStopDuringAGuidePulseTrain:
         assert rig.client.tracking is False
         assert "NOT tracking" in panel._result_label.text(), panel._result_label.text()
         panel.stop()
+
+
+class TestAstronomicalAxisMoveRefusalsSayWhy:
+    """S6.8d (S6.8b review #3): an axis move refused in Astronomical mode because the mount
+    tracks used to say "moving with guide pulses while tracking is not available yet" -- wrong
+    since S6.8b. Each of its three real causes now says what happened and what to do; nothing is
+    sent and tracking stays on in every case (production adapter, fake OnStep INDI client)."""
+
+    def _refusal(
+        self, *, guide_capable: bool, calibration: bool, monkeypatch: pytest.MonkeyPatch
+    ) -> tuple[_Rig, str]:
+        rig = _Rig()
+        rig.client.parked = False
+        rig.client.tracking = True  # tracking although the move was planned as an axis move
+        if not guide_capable:
+            caps = rig.mount.capabilities()
+            monkeypatch.setattr(
+                rig.mount,
+                "capabilities",
+                lambda: dataclasses.replace(caps, supports_guide_pulses_while_tracking=False),
+            )
+        enforcer = TrackingEnforcer(
+            rig.park, OperatingMode.ASTRONOMICAL, settle_timeout_s=0, clock=FakeClock()
+        )
+        runner = MountTestMoveRunner(
+            clock=FakeClock(), executor=MountMotionExecutor(rig.mount, tracking_enforcer=enforcer)
+        )
+        assert runner.submit_sequence(
+            rig.park,
+            rig.mount,
+            [(MountAxis.AXIS1, AxisDirection.POSITIVE, 1000, 120.0)],
+            **({"calibration": True} if calibration else {}),  # type: ignore[arg-type]
+        )
+        while runner.is_busy:
+            time.sleep(0.005)
+        outcome = runner.take_latest()
+        assert outcome is not None and not outcome.pulsed and outcome.error is not None
+        assert rig.client.axis_move_calls == [] and rig.client.tracking is True
+        assert "not available yet" not in outcome.error
+        return rig, outcome.error
+
+    def test_a_mount_without_guide_pulses_needs_onstepadapter_0_5(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _rig, error = self._refusal(guide_capable=False, calibration=False, monkeypatch=monkeypatch)
+        assert "OnStepAdapter >= 0.5.0" in error, error
+
+    def test_tracking_switched_on_before_the_send_says_retry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _rig, error = self._refusal(guide_capable=True, calibration=False, monkeypatch=monkeypatch)
+        assert "retry" in error and "OnStepAdapter" not in error, error
+
+    def test_tracking_switched_on_mid_axis_calibration_says_run_it_again(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        _rig, error = self._refusal(guide_capable=True, calibration=True, monkeypatch=monkeypatch)
+        assert "during this axis-move calibration" in error and "Run Calibration" in error, error

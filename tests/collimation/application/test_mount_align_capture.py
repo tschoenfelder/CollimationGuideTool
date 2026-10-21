@@ -151,12 +151,14 @@ def test_indeterminate_stability_is_not_blamed_on_wind() -> None:
 def test_labels_and_exclusion_texts() -> None:
     assert missing_label("star") == "no star detected"
     assert missing_label("terrestrial") == "no frame available"
-    assert "commanded 400 ms move at preset 6" in no_motion_text(400, "6")
-    assert "(3 s at preset 6)" in bounded_text(
-        MeasurementFailureClass.MOVE_EXCEEDS_ENVELOPE, max_pulse_ms=3000, rate_preset="6"
-    )
+    # S6.8d: no rate preset is named any more (a guide run used to say "at preset None")
+    assert "commanded 120\" angular move" in no_motion_text('120"', angular=True)
+    guide = no_motion_text("400 guide-ms", angular=False)
+    assert "commanded 400 guide-ms move" in guide and "preset" not in guide
+    envelope = bounded_text(MeasurementFailureClass.MOVE_EXCEEDS_ENVELOPE, largest_move="900\"")
+    assert "(900\")" in envelope and "preset" not in envelope
     assert "overshoots" in bounded_text(
-        MeasurementFailureClass.MOVE_TOO_LARGE, max_pulse_ms=3000, rate_preset="6"
+        MeasurementFailureClass.MOVE_TOO_LARGE, largest_move="900\""
     )
 
 

@@ -203,8 +203,9 @@ class MountParkPanel(QWidget):
         self._update_buttons_enabled()
         run = self._mount.park if action == "park" else self._mount.unpark
         if getattr(self._mount, "long_running_actions", False):
-            # The mount slews for seconds to minutes (unpark also drives it home): never on
-            # the GUI thread. The poll loop watches the worker.
+            # Park slews for seconds to minutes (unpark is only a confirmed switch sequence,
+            # but shares the same blocking adapter path): never on the GUI thread. The poll
+            # loop watches the worker.
             self._action_worker = threading.Thread(
                 target=self._run_action, args=(run, claim), daemon=True, name="mount-park-action"
             )

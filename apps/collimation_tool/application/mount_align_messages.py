@@ -197,57 +197,37 @@ def describe_capture_failures(
     return " (" + "; ".join(parts) + ")"
 
 
-def no_motion_text(
-    duration_ms: int, rate_preset: str | None, *, angular_size: str | None = None
-) -> str:
-    """Issue #43: why a camera was excluded when its image did not move. `angular_size` (S6.6b):
-    on an angular-only mount the commanded move is an angle -- no rate preset is involved, so
-    none is named."""
-    if angular_size is not None:
+def no_motion_text(size: str, *, angular: bool) -> str:
+    """Issue #43: why a camera was excluded when its image did not move. `size` is the commanded
+    move in its own unit (`CalibrationSizing.format_size`). S6.8d: no rate preset exists, so none
+    is named (a guide-pulse run used to read "... ms move at preset None")."""
+    if angular:
         return (
             f"stable frames and a confident match, but the image did not move for a commanded "
-            f"{angular_size} angular move -- check that the mount really moves (unparked, "
+            f"{size} angular move -- check that the mount really moves (unparked, "
             "motion enabled, tracking off)"
         )
     return (
         f"stable frames and a confident match, but the image did not move for a commanded "
-        f"{duration_ms} ms move at preset {rate_preset} -- check that the "
-        "mount really moves (unparked, motion enabled, tracking off, slew rate)"
+        f"{size} move -- check that the mount really moves (unparked, tracking on, "
+        "guide pulses enabled)"
     )
 
 
-def bounded_text(
-    failure: MeasurementFailureClass,
-    *,
-    max_pulse_ms: int,
-    rate_preset: str | None,
-    angular_max: str | None = None,
-) -> str:
+def bounded_text(failure: MeasurementFailureClass, *, largest_move: str) -> str:
     """Issue #46: why a camera was excluded when sizing could not bring its move into band.
-    `angular_max` (S6.6b): on an angular-only mount the largest calibration move as an angle;
-    the advice then names the optics, not a rate preset (there is none)."""
-    if angular_max is not None:
-        if failure is MeasurementFailureClass.MOVE_EXCEEDS_ENVELOPE:
-            return (
-                f"even the largest normal calibration move ({angular_max}) shifts this camera "
-                "by less than a measurable part of its frame (exceeds the calibration "
-                "envelope) -- check this camera's configured optics (plate scale)"
-            )
-        return (
-            "the smallest calibration move the mount accepts already overshoots this "
-            "camera's frame -- check this camera's configured optics (plate scale)"
-        )
-    cap_s = max_pulse_ms / 1000.0
+    `largest_move`: the largest normal calibration move in the run's own unit (an angle, or
+    guide-ms). S6.8d: the advice names the optics -- the rate presets it used to suggest
+    (`calibration_rate_preset`) are gone."""
     if failure is MeasurementFailureClass.MOVE_EXCEEDS_ENVELOPE:
         return (
-            f"even the longest normal calibration move ({cap_s:g} s at preset "
-            f"{rate_preset}) shifts this camera by less than "
-            "a measurable part of its frame (exceeds the calibration envelope) -- "
-            "choose a faster calibration_rate_preset or an alternative policy"
+            f"even the largest normal calibration move ({largest_move}) shifts this camera "
+            "by less than a measurable part of its frame (exceeds the calibration "
+            "envelope) -- check this camera's configured optics (plate scale)"
         )
     return (
-        "the shortest useful calibration move already overshoots this camera's "
-        "frame -- choose a slower calibration_rate_preset"
+        "the smallest calibration move the mount accepts already overshoots this "
+        "camera's frame -- check this camera's configured optics (plate scale)"
     )
 
 

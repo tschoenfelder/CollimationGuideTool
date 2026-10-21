@@ -107,8 +107,9 @@ def _default_filter_wheels() -> list[FilterWheelAssignment]:
 def _default_pulse_mount(connection: OnStepConnection) -> MountPort:
     """The OnStep mount's bounded directional motion for the Mount Align
     panel, via OnStepAdapter's finite axis-degree move API (>= 0.4.0: no
-    timed/rate-based pulse exists over INDI, and moves below 720" are
-    refused -- see `OnStepMountPulseAdapter`'s module docstring)."""
+    timed/rate-based pulse exists over INDI, and moves below 30" -- OnStepAdapter's
+    `MIN_AXIS_ARCSEC`, lowered from 720" by OnStepAdapter#14 -- are refused; see
+    `OnStepMountPulseAdapter`'s module docstring)."""
     return OnStepMountPulseAdapter(connection)
 
 

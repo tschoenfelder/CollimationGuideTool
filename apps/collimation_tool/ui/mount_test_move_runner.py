@@ -73,6 +73,10 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import cast
 
+from astrotool_core.mount.operating_mode import (
+    ASTRONOMICAL_TRACKING_AXIS_MOVE_REFUSED,
+    astronomical_axis_refusal,
+)
 from astrotool_core.mount.park_port import MountParkPort, MountParkStatus
 from astrotool_core.mount.port import (
     AngularMotionPort,
@@ -264,6 +268,7 @@ class MountTestMoveRunner:
         *,
         settle_ms: int = 0,
         primitive: MountAlignPrimitive = MountAlignPrimitive.AXIS,
+        calibration: bool = False,
     ) -> bool:
         """Start a sequence of moves run back-to-back after a single unpark in the
         background (e.g. a composed two-axis direction-pad nudge) —
@@ -292,7 +297,10 @@ class MountTestMoveRunner:
 
         S6.8b: `primitive` GUIDE_PULSE sends every step's `duration_ms` as OnStepAdapter >= 0.5.0
         guide pulses while the mount keeps tracking (`_run_guide_sequence`); AXIS (default)
-        sends every step as an angular axis move (`_run_sequence`)."""
+        sends every step as an angular axis move (`_run_sequence`).
+
+        `calibration` (S6.8d): the steps belong to a calibration run -- only used to name the
+        cause when an Astronomical axis move is refused because the mount tracks."""
         if not steps:
             return False
         with self._lock:
@@ -310,7 +318,7 @@ class MountTestMoveRunner:
             self._claim = claim
         threading.Thread(
             target=self._run,
-            args=(claim, mount_park, mount, steps, settle_ms, primitive),
+            args=(claim, mount_park, mount, steps, settle_ms, primitive, calibration),
             daemon=True,
             name="mount-test-move",
         ).start()
@@ -324,6 +332,7 @@ class MountTestMoveRunner:
         steps: Sequence[PulseStep | AngularPulseStep],
         settle_ms: int,
         primitive: MountAlignPrimitive = MountAlignPrimitive.AXIS,
+        calibration: bool = False,
     ) -> None:
         """Worker entry point. Issue #49: whatever happens inside the sequence -- a driver or
         network exception at ANY step -- an outcome is ALWAYS published, `_busy` ALWAYS
@@ -334,7 +343,9 @@ class MountTestMoveRunner:
             if primitive is MountAlignPrimitive.GUIDE_PULSE:
                 outcome = self._run_guide_sequence(claim, mount_park, mount, steps, settle_ms)
             else:
-                outcome = self._run_sequence(claim, mount_park, mount, steps, settle_ms)
+                outcome = self._run_sequence(
+                    claim, mount_park, mount, steps, settle_ms, calibration
+                )
         except Exception as exc:  # noqa: BLE001 -- see the docstring: nothing may strand busy
             _log.exception("mount test-move worker crashed")
             outcome = MountPulseOutcome(pulsed=False, error=f"worker crashed: {exc!r}")
@@ -349,13 +360,16 @@ class MountTestMoveRunner:
         self,
         claim: MotionClaim,
         mount_park: MountParkPort,
+        mount: MountPort,
         initial: MountParkStatus,
+        calibration: bool,
     ) -> str | None:
         """S6.8a, after the mount is confirmed unparked: F12 -- an automatic unpark gets #44's
         unpark enforcement, like the Mount panel's own; R1 -- an axis move on a tracking mount
         is refused (tracking is never stopped here). Every step of an axis sequence is an axis
         move (S6.8d: the gate is no longer keyed on the step tuple's shape -- that only exempted
-        the deleted timed pulses). None = the sequence may move."""
+        the deleted timed pulses). None = the sequence may move. S6.8d: an Astronomical
+        refusal names its cause (`astronomical_axis_refusal`)."""
         stop = claim.cancel
         tracking: bool | None = initial.tracking
         if initial.parked:
@@ -383,7 +397,14 @@ class MountTestMoveRunner:
         if decision.note is not None:
             _log.warning("Mount Align: %s", decision.note)
             self._note = decision.note
-        return None if decision.allowed else decision.reason
+        if decision.allowed:
+            return None
+        if decision.reason == ASTRONOMICAL_TRACKING_AXIS_MOVE_REFUSED:
+            return astronomical_axis_refusal(
+                guide_pulses_supported=mount.capabilities().supports_guide_pulses_while_tracking,
+                calibration=calibration,
+            )
+        return decision.reason
 
     def _run_guide_sequence(
         self,
@@ -471,6 +492,7 @@ class MountTestMoveRunner:
         mount: MountPort,
         steps: Sequence[PulseStep | AngularPulseStep],
         settle_ms: int,
+        calibration: bool = False,
     ) -> MountPulseOutcome:
         pulsed = False
         paths: list[str] = []
@@ -499,7 +521,11 @@ class MountTestMoveRunner:
         why = _wait_for_parked(
             mount_park, want_parked=False, timeout_s=_UNPARK_TIMEOUT_S, clock=clock, cancel=stop
         )
-        refusal = None if why is not None else self._axis_move_refusal(claim, mount_park, initial)
+        refusal = (
+            None
+            if why is not None
+            else self._axis_move_refusal(claim, mount_park, mount, initial, calibration)
+        )
         if why == _WAIT_STOPPED:
             error = f"{_STOPPED_BY_USER} -- unpark not confirmed, no move sent"
         elif why is not None:

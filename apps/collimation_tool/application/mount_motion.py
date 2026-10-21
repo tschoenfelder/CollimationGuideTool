@@ -15,14 +15,14 @@ pulse) and the Mount panel's park/unpark -- runs under a `MotionClaim` taken fro
   (R8) all call it.
 - **The tracking rule (R1).** An axis GOTO never stops tracking to make itself possible:
   `axis_move_gate` asks the `TrackingEnforcer` (the #44 owner) -- a tracking mount is refused
-  with the mode's reason (Astronomical: until guide-pulse Mount Align, S6.8b), never
-  emergency-stopped. `enforce_after_unpark` runs #44's unpark enforcement after an automatic
-  unpark (F12), exactly as the Mount panel does after its own.
+  with the mode's reason (Astronomical: Mount Align then moves with guide pulses instead,
+  S6.8b), never emergency-stopped. `enforce_after_unpark` runs #44's unpark enforcement after
+  an automatic unpark (F12), exactly as the Mount panel does after its own.
 - **Interruptible settle.** `settle()` waits on the executor's clock and ends at once on Stop.
 
 Capabilities (S6.6b #55 C02): which primitives a mount has is read from
 `MountCapabilities`; the Stop latch (`abort`/`clear_abort`) has no capability field (the field
-set is frozen), so this module is its single probe.
+set is frozen) -- it is the typed `mount_commands.StopLatch` port (S6.8d).
 
 No Qt; no `time.sleep` (the injected `Clock`, #53).
 """

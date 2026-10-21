@@ -111,7 +111,7 @@ _DEFAULT_FRAME_SETTLE_MS = 500
 #: target displacement needs. For an axis with a slow calibrated rate
 #: (Guide's own AXIS2 that run: 13px per 500ms), a half-window target
 #: solved to 20+ real seconds -- silently clamped down to
-#: IndiMountPulseAdapter's own hardware ceiling (9999ms) with no warning,
+#: the then INDI pulse adapter's own hardware ceiling (9999ms) with no warning,
 #: and even *that* clamped pulse produced far more real motion than the
 #: short calibration pulse's rate predicted (extrapolating a rate that
 #: far out isn't reliable on real hardware -- acceleration ramp-up

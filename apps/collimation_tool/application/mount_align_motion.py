@@ -33,13 +33,19 @@ class MotionRunner(Protocol):
         *,
         settle_ms: int = 0,
         primitive: MountAlignPrimitive = MountAlignPrimitive.AXIS,
+        calibration: bool = False,
     ) -> bool: ...
 
 
-def _primitive_kwargs(primitive: MountAlignPrimitive) -> dict[str, MountAlignPrimitive]:
+def _extra_kwargs(primitive: MountAlignPrimitive, calibration: bool) -> dict[str, object]:
     """S6.8b: an axis move is submitted exactly as before (no `primitive` argument); only a
-    guide-pulse move names its primitive."""
-    return {} if primitive is MountAlignPrimitive.AXIS else {"primitive": primitive}
+    guide-pulse move names its primitive. S6.8d: only a calibration step says so."""
+    extra: dict[str, object] = {}
+    if primitive is not MountAlignPrimitive.AXIS:
+        extra["primitive"] = primitive
+    if calibration:
+        extra["calibration"] = True
+    return extra
 
 
 def submit_axis_move(
@@ -53,18 +59,26 @@ def submit_axis_move(
     *,
     settle_ms: int,
     primitive: MountAlignPrimitive = MountAlignPrimitive.AXIS,
+    calibration: bool = False,
 ) -> bool:
     """One single-axis move (a calibration step or a nudge): an angular move of `arcsec` -- or
     (S6.8b, `primitive` GUIDE_PULSE) `duration_ms` of guide pulses while tracking. An axis move
     without an angular size (`arcsec` None) is submitted as-is and refused by the runner before
-    anything is sent. False = not started (a move is already running)."""
+    anything is sent. `calibration`: the move is a calibration step (names the cause of an
+    Astronomical tracking refusal, S6.8d). False = not started (a move is already running)."""
     step: MotionStep = (
         (axis, direction, duration_ms)
         if primitive is MountAlignPrimitive.GUIDE_PULSE or arcsec is None
         else (axis, direction, duration_ms, arcsec)
     )
     return submit_motion_sequence(
-        runner, mount_park, mount, [step], settle_ms=settle_ms, primitive=primitive
+        runner,
+        mount_park,
+        mount,
+        [step],
+        settle_ms=settle_ms,
+        primitive=primitive,
+        calibration=calibration,
     )
 
 
@@ -76,8 +90,13 @@ def submit_motion_sequence(
     *,
     settle_ms: int,
     primitive: MountAlignPrimitive = MountAlignPrimitive.AXIS,
+    calibration: bool = False,
 ) -> bool:
     """Several moves back to back (a screen move, the return after an aborted calibration)."""
     return runner.submit_sequence(
-        mount_park, mount, steps, settle_ms=settle_ms, **_primitive_kwargs(primitive)
+        mount_park,
+        mount,
+        steps,
+        settle_ms=settle_ms,
+        **_extra_kwargs(primitive, calibration),  # type: ignore[arg-type]
     )

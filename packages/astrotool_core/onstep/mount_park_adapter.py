@@ -131,9 +131,10 @@ class OnStepMountParkAdapter(MountParkPort):
     def stop_tracking(self) -> None:
         """No bare "tracking off" exists over INDI yet -- `emergency_stop`
         (abort + tracking off, confirmed) is this port's only available
-        primitive and is at least as safe for this method's real caller
-        (`MainWindow.closeEvent`'s "don't leave the mount moving after the
-        app quits" safety net)."""
+        primitive (a bare `disable_tracking()` is an open OnStepAdapter request, R2). Its
+        callers: the Terrestrial tracking policy's repair (`TrackingEnforcer`, #44) and the
+        Mount panel's quit/disconnect cancel (don't leave the mount tracking after the app
+        quits). S6.8a: Mount Align's runner no longer calls it before every move."""
         with self._connection.operation_lock:
             mount = self._mount()
             if mount is None:

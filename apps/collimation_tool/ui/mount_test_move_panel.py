@@ -1432,6 +1432,7 @@ class MountTestMovePanel(QWidget):
             arcsec,
             settle_ms=self._settings.settle_ms,
             primitive=self._sizing.primitive,
+            calibration=True,
         )
         if not started:
             self._abort_calibration(
@@ -1511,6 +1512,7 @@ class MountTestMovePanel(QWidget):
                 motion,
                 settle_ms=self._settings.settle_ms,
                 primitive=self._sizing.primitive,
+                calibration=True,
             )
         self._update_buttons_enabled()
 
@@ -1695,8 +1697,9 @@ class MountTestMovePanel(QWidget):
 
     def _no_motion_text(self, duration_ms: int) -> str:
         # S6.6b: an angular-only run commands angles -- no rate preset to name.
-        angular = self._sizing.format_size(duration_ms) if self._sizing.angular_only else None
-        return no_motion_text(duration_ms, None, angular_size=angular)
+        return no_motion_text(
+            self._sizing.format_size(duration_ms), angular=self._sizing.angular_only
+        )
 
     def _exclude_camera_no_motion(self, key: str, duration_ms: int) -> None:
         self._calibration_failed_cameras.add(key)
@@ -1778,16 +1781,12 @@ class MountTestMovePanel(QWidget):
         self._calibration_failed_cameras.add(key)
         self._last_failure_classes[key] = failure
         policy = self._sizing.policy
+        # S6.6b/S6.8d: the largest move in the run's own unit (an angle, or guide-ms) -- no preset.
+        max_ms = policy.max_duration_ms if policy is not None else (
+            self._settings.max_calibration_pulse_ms
+        )
         self._sizing.bounded[key] = bounded_text(
-            failure,
-            max_pulse_ms=self._settings.max_calibration_pulse_ms,
-            rate_preset=None,
-            # S6.6b: an angular-only run names its largest move as an angle, not a preset.
-            angular_max=(
-                self._sizing.format_size(policy.max_duration_ms)
-                if self._sizing.angular_only and policy is not None
-                else None
-            ),
+            failure, largest_move=self._sizing.format_size(max_ms)
         )
         self._sizing.log.append({"event": "bounded", "camera": key, "reason": reason})
 
