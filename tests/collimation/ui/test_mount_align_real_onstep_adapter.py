@@ -1443,3 +1443,38 @@ def _stop_during_guide_move(
     assert inside.wait(10.0), "the guide pulse never started: " + panel._result_label.text()
     panel._on_stop()
     release.set()
+
+
+class TestGlobalStopDuringAGuidePulseTrain:
+    def test_the_global_mount_stop_ends_a_guide_pulse_train_and_says_tracking_is_off(
+        self, qapp: object
+    ) -> None:
+        """S6.8c-R5's global Stop (`MountMotionExecutor.abort_in_flight`) during a multi-pulse
+        guide move: no further pulse, the emergency stop is sent (user decision 2026-10-21),
+        and the result says the mount is NOT tracking any more."""
+        rig = _Rig((_main(780.0), _GUIDE))
+        log = _GuideLog(rig)
+        inside, release = threading.Event(), threading.Event()
+        logged_pulse = rig.client.guide_pulse
+
+        def held_pulse(direction: str, duration_ms: int, **kwargs: Any) -> Any:  # noqa: ANN401
+            inside.set()
+            release.wait(10.0)
+            return logged_pulse(direction, duration_ms, **kwargs)
+
+        rig.client.guide_pulse = held_pulse  # type: ignore[method-assign]
+        panel = _astro_panel(rig)
+        panel._on_nudge_clicked("left", MountAxis.AXIS1, AxisDirection.POSITIVE)  # ~6 pulses
+        assert inside.wait(10.0), panel._result_label.text()
+        assert panel._motion_executor.abort_in_flight() is True
+        release.set()
+        _drain(panel)
+        deadline = time.monotonic() + 10.0
+        while rig.client.tracking and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        assert len(log.pulses) == 1, log.pulses
+        assert log.stops, "the global Stop sent no emergency stop"
+        assert rig.client.tracking is False
+        assert "NOT tracking" in panel._result_label.text(), panel._result_label.text()
+        panel.stop()

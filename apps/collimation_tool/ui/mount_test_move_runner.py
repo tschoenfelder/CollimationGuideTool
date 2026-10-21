@@ -90,6 +90,7 @@ from astrotool_core.timing import SYSTEM_CLOCK, Clock, Deadline
 
 from collimation_tool.application.mount_align_guide import (
     MOTION_GUIDE_PULSE,
+    STOPPED_NOT_TRACKING,
     guide_pulse_refusal,
     send_guide_pulse_move,
 )
@@ -550,7 +551,10 @@ class MountTestMoveRunner:
             if stop.is_set():
                 return MountPulseOutcome(
                     pulsed=False,
-                    error=f"{_STOPPED_BY_USER} -- {axis.name} {direction.name} not sent",
+                    error=(
+                        f"{_STOPPED_BY_USER} -- {axis.name} {direction.name} not sent -- "
+                        f"{STOPPED_NOT_TRACKING}"
+                    ),
                     motion_started_at=motion_started_at,
                     motion_paths=tuple(paths),
                 )
@@ -559,11 +563,14 @@ class MountTestMoveRunner:
             )
             paths.append(MOTION_GUIDE_PULSE)
             if not result.accepted:
+                # User decision 2026-10-21: every Stop of a guide-pulse move (Mount Align's own
+                # or the global one) is the executor's emergency stop -- tracking is OFF now.
+                stopped = f" -- {STOPPED_NOT_TRACKING}" if stop.is_set() else ""
                 return MountPulseOutcome(
                     pulsed=False,
                     error=(
                         f"pulse rejected for {axis.name} {direction.name} "
-                        f"({MOTION_GUIDE_PULSE}): {result.message}"
+                        f"({MOTION_GUIDE_PULSE}): {result.message}{stopped}"
                     ),
                     motion_started_at=motion_started_at,
                     motion_paths=tuple(paths),
@@ -579,6 +586,8 @@ class MountTestMoveRunner:
             motion_ended_at=motion_ended_at,
             settled_at=clock.monotonic(),
             motion_paths=tuple(paths),
+            # a Stop that arrived during the last pulse: the move completed, tracking did not
+            note=STOPPED_NOT_TRACKING if stop.is_set() else None,
         )
 
     def _run_sequence(
