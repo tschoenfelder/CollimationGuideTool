@@ -7,7 +7,7 @@ event loop was blocked for minutes with no status text, and the operator retried
 
 The rig feeds the REAL `acquire_stable_frame` (exposure-start freshness) with frame streams whose
 exposure time makes captures take real (short) time; the panel runs in threaded-capture mode with
-its real QTimer, driven by `QTest.qWait` (the real event loop). A heartbeat QTimer proves the
+its real QTimer, driven by `_pump` (the real event loop). A heartbeat QTimer proves the
 loop is never blocked while a capture is in flight.
 
 The mount runner's own waits (stop_tracking gate delay, retries, settle) run on a FakeClock
@@ -41,8 +41,7 @@ from astrotool_core.timing import FakeClock
 from collimation_tool.ui import mount_test_move_runner as runner_module
 from collimation_tool.ui.mount_test_move_panel import MountTestMovePanel
 from collimation_tool.ui.mount_test_move_runner import MountTestMoveRunner
-from PySide6.QtCore import QTimer
-from PySide6.QtTest import QTest
+from PySide6.QtCore import QCoreApplication, QTimer
 
 _EXPOSURE_S = 0.12  # fake exposure of every frame (the panel's deadlines scale from it)
 #: Real time one frame takes on the worker thread: short by default (fast suite), the full
@@ -64,6 +63,22 @@ def _texture(seed: int, shape: tuple[int, int]) -> np.ndarray:
     base = rng.random(shape).astype(np.float32)
     smooth = sum(np.roll(np.roll(base, i, 0), j, 1) for i in range(4) for j in range(4))
     return np.asarray(smooth / 16.0 * 1000.0 + 100.0, dtype=np.float32)
+
+
+def _pump(ms: int) -> None:
+    """Run the REAL event loop (timers, queued signals, repaints) for `ms` milliseconds.
+
+    Not `QTest.qWait`: PySide6 keeps the GIL while qWait sleeps, so the panel's capture threads
+    crawl (each stability comparison ~100x slower) -- the `[unstable_image]` recovery test took
+    ~29 s against its 30 s budget and flaked (S8). `time.sleep` releases the GIL, as the
+    production event loop does while idle."""
+    deadline = time.monotonic() + ms / 1000.0
+    while True:
+        QCoreApplication.processEvents()
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(0.005, remaining))
 
 
 class _Rig:
@@ -186,7 +201,7 @@ def _wait_until(predicate: Callable[[], bool], *, timeout_s: float = 20.0) -> bo
     while time.monotonic() < deadline:
         if predicate():
             return True
-        QTest.qWait(15)  # runs the REAL event loop: timers, queued signals, repaints
+        _pump(15)  # runs the REAL event loop: timers, queued signals, repaints
     return predicate()
 
 
@@ -225,7 +240,7 @@ class TestTheEventLoopStaysResponsive:
         assert not panel._run_calibration_button.isEnabled()
         assert panel._stop_button.isEnabled()
         ticks_before = heartbeat.ticks
-        QTest.qWait(400)  # the capture is still running (a window takes ~0.5 s)
+        _pump(400)  # the capture is still running (a window takes ~0.5 s)
         assert heartbeat.ticks - ticks_before >= 15  # the event loop was NOT blocked
         text = panel._result_label.text().lower()
         assert "capturing" in text and "fresh" in text  # visible progress, not a silent freeze
@@ -239,7 +254,7 @@ class TestTheEventLoopStaysResponsive:
         panel._run_calibration_button.click()
         first = panel._result_label.text()
 
-        QTest.qWait(350)
+        _pump(350)
 
         assert panel._result_label.text() != first  # the elapsed counter moved
         assert " s" in panel._result_label.text()
@@ -255,7 +270,7 @@ class TestTheEventLoopStaysResponsive:
         panel._on_nudge_clicked("left", MountAxis.AXIS1, AxisDirection.POSITIVE)
 
         assert time.monotonic() - started < 0.3
-        QTest.qWait(300)
+        _pump(300)
         assert heartbeat.ticks >= 10
         _wait_idle(panel)
         assert rig.mount.pulse_log  # ... and the nudge itself still completed
@@ -451,7 +466,7 @@ class TestStop:
 
         assert panel.is_idle()  # immediately, not after the slow wait finishes
         _assert_recovered(panel)
-        QTest.qWait(900)  # the abandoned worker finishes in the background ...
+        _pump(900)  # the abandoned worker finishes in the background ...
         assert rig.mount.pulse_log == []  # ... and its stale result is discarded
         assert panel.is_idle()
         panel.stop()
@@ -485,7 +500,7 @@ class TestStop:
         _wait_idle(panel, timeout_s=10.0)
 
         assert panel.diagnostic_activity()["calibration_queue_len"] == 0
-        QTest.qWait(300)
+        _pump(300)
         assert len(rig.mount.pulse_log) <= 1  # the calibration did not carry on after Stop
         assert panel._run_calibration_button.isEnabled()
         panel.stop()

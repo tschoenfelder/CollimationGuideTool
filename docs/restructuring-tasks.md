@@ -810,9 +810,11 @@ R9/F11/R11. Contract written before start. Also (S6.8b review #3): `ASTRONOMICAL
 - **External request (S6.8c-R5):** OnStepAdapter `park()` blocks up to 120 s with no cancel hook; an ABORT stops the slew but the call (and the app's busy state, and quit) waits it out. Ask the user at S8.
 - **External request (S6.8 R2):** OnStepAdapter has no bare tracking-off; `stop()` = `ABORT`+`TRACK_OFF`.
   A `disable_tracking()` request is to be filed on OnStepAdapter (ask the user at S8); never patched locally.
-- **Pre-existing flake (S8):** `test_calibration_failure_recovery.py::TestEveryFailureReturnsToIdle::
-  test_failure_then_a_second_run_without_restarting[unstable_image]` (proof 49) fails ~1 in 6–8 local runs
-  on HEAD and on S6.6a alike (panel stuck capturing at ~4 s) — real-time residue in that test; investigate
-  in S8 before the rollout.
+- **Pre-existing flake (S8) — RESOLVED 2026-10-21:** `test_calibration_failure_recovery.py::TestEveryFailureReturnsToIdle::
+  test_failure_then_a_second_run_without_restarting[unstable_image]` took ~29 s against its 30 s `_wait_idle` budget.
+  Root cause (profiled): the test's `QTest.qWait` polling holds the GIL while sleeping under PySide6, starving the
+  capture threads (each stability comparison ~0.26 s instead of 2 ms). Test-only artifact — production idles in
+  `app.exec()`. Fixed by a GIL-releasing `_pump` (processEvents + time.sleep); the scenario now takes ~2.8 s, the
+  file 96 s → 10.6 s, 15/15 runs green.
 - **S5 live contradictions (9)** are listed in `docs/quality/duplication-audit.md`; each is owned by an
   S6 step and gets a failing regression before its fix.
