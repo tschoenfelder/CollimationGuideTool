@@ -44,6 +44,7 @@ focused_command = """pytest -q \
 tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestAstronomicalMountAlignUsesGuidePulses \
 tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestGuidePulseMovesInTheRunner \
 tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestGuidePulseReviewFixes \
+tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestGlobalStopDuringAGuidePulseTrain \
 tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestAMoveNeverStopsTracking \
 tests/collimation/application/test_mount_align_guide.py \
 tests/core/config/test_mount_alignment_settings.py::TestGuideRateSeed"""
