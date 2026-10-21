@@ -528,7 +528,7 @@ OnStepAdapter 0.5.0 `guide_pulse` while tracking; tracking is never turned off b
   settle). Sizes are guide-pulse milliseconds: a calibration is a **guide-pulse calibration** (matrix tagged
   with its primitive/unit); a matrix from one primitive is never used to size moves of the other (refuse +
   "recalibrate in this mode"). A move larger than the 5000 ms per-pulse cap is split into several pulses
-  (Stop checked between pulses; a pulse in flight runs to its end ≤ 5 s). The uncalibrated first move/nudge
+  (Stop checked between pulses; **user decision 2026-10-21:** Mount Align's Stop during a guide-pulse move stays an immediate emergency stop -- ABORT + TRACK_OFF cuts the pulse and tracking goes off, said so in the result text). The uncalibrated first move/nudge
   needs a guide-rate seed (not exposed by OnStepAdapter): use an explicit, named, configurable seed
   (single owner, templates/config.toml updated) labelled as an assumption in status/diagnostics and replaced
   by the measured value; never shown as calibrated. 0.4.1-shaped mount (no guide capability) in
@@ -566,7 +566,7 @@ OnStepAdapter 0.5.0 `guide_pulse` while tracking; tracking is never turned off b
 
 ### S6.8d — dead timed path, nudge cap, stale texts (after S6.8b)
 
-R9/F11/R11. Contract written before start. Also (S6.8a review #4): the runner's tracking gate is keyed on the step tuple shape (`len(step) > 3`), not on the primitive actually used — legacy timed path only; remove with the timed path. Stale docs (F13): panel docstring "Stop / duck-typed", `park_adapter.stop_tracking` docstring, `mount_park_panel.py:186`; `mount_commands.rearm_after_stop` getattr `clear_abort` probe.
+R9/F11/R11. Contract written before start. Also (S6.8b review #3): `ASTRONOMICAL_TRACKING_AXIS_MOVE_REFUSED` ("...not available yet") is now wrong in three cases -- a 0.4.1 mount (should say: needs OnStepAdapter >= 0.5.0), a stale-reading race (tracking turned on between the panel's primitive choice and the send: retry), and tracking switched on mid axis-calibration (star calibration's tracking-ON verify); `mount_motion.py` module docstring line 18 ("until guide-pulse Mount Align, S6.8b") is stale. Also (S6.8a review #4): the runner's tracking gate is keyed on the step tuple shape (`len(step) > 3`), not on the primitive actually used — legacy timed path only; remove with the timed path. Stale docs (F13): panel docstring "Stop / duck-typed", `park_adapter.stop_tracking` docstring, `mount_park_panel.py:186`; `mount_commands.rearm_after_stop` getattr `clear_abort` probe.
 
 ### S5 — #55 + #52 duplication inventory (analysis only)
 
