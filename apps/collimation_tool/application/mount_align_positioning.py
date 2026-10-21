@@ -21,7 +21,7 @@ from astrotool_core.mount import (
     MountAxis,
     solve_screen_move,
 )
-from astrotool_core.mount.movement_sizing import RATE_PRESET_X, CameraGeometry, rate_arcsec_per_s
+from astrotool_core.mount.movement_sizing import SIDEREAL_ARCSEC_PER_S, CameraGeometry
 
 from collimation_tool.application.angular_move_plan import plan_angular_move
 from collimation_tool.application.mount_align_failures import MeasurementFailureClass, is_no_motion
@@ -50,18 +50,17 @@ NO_ANGULAR_MOVE = (
 )
 
 
+#: S6.8d: an uncalibrated nudge's size when the clicked camera has no configured optics -- a
+#: fixed angle, numerically the former default (`pulse_ms` 1000 ms at the nudge `rate_preset`
+#: "7", 48 x sidereal), so removing those settings changed nothing here.
+NO_OPTICS_NUDGE_ARCSEC = 1000 * (48.0 * SIDEREAL_ARCSEC_PER_S) / 1000.0
+
+
 # ---- S6.0: manual moves are angular ----------------------------------------------------------
-def nudge_rate_arcsec_per_s(settings: MountAlignmentSettings) -> float:
-    preset = settings.rate_preset
-    if preset in RATE_PRESET_X:
-        return rate_arcsec_per_s(preset)
-    return angular_unit_rate(settings)
-
-
 def nudge_cap_arcsec(settings: MountAlignmentSettings) -> float:
-    """The farthest one nudge/screen step may move on an angular-only mount: the same envelope a
-    timed nudge had (`max_nudge_pulse_ms` at the nudge `rate_preset`)."""
-    return settings.max_nudge_pulse_ms * nudge_rate_arcsec_per_s(settings) / 1000.0
+    """The farthest one nudge/screen step may move (F11, S6.8d): the explicit angle
+    `max_nudge_arcsec` -- its single owner is the settings; no app-side rate model."""
+    return settings.max_nudge_arcsec
 
 
 def guide_nudge_cap_ms(
@@ -101,14 +100,14 @@ def uncalibrated_nudge_arcsec(
     """AGENTS.md / #31 Phase A: a pre-calibration nudge specified in frame terms
     (`nudge_target_fraction` of the clicked camera's frame width), converted to an angle from
     that camera's configured optics (`cameras`, the geometry provider; None = none). Without optics:
-    the size the configured timed nudge (`pulse_ms` at `rate_preset`) used to command."""
+    the fixed `NO_OPTICS_NUDGE_ARCSEC`."""
     if cameras is not None:
         distance = distance_m()
         for camera in cameras():
             fov = camera.fov_arcsec(distance) if camera.key == camera_key else None
             if fov is not None:
                 return settings.nudge_target_fraction * fov[0]
-    return settings.pulse_ms * nudge_rate_arcsec_per_s(settings) / 1000.0
+    return NO_OPTICS_NUDGE_ARCSEC
 
 
 @dataclass(frozen=True)

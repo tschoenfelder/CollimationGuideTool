@@ -26,6 +26,7 @@ from collimation_tool.application.mount_align_plan import (
     CalibrationStepRole,
 )
 from collimation_tool.application.mount_align_sizing import (
+    FALLBACK_CALIBRATION_MS,
     CalibrationSizing,
     angular_unit_rate,
     min_angular_arcsec,
@@ -152,14 +153,12 @@ def test_initial_state_matches_an_idle_panel() -> None:
 
 
 def test_without_optics_the_fixed_size_runs() -> None:
-    settings = MountAlignmentSettings(pulse_ms=700)
-    sizing = _sizing(_AngularMount(), settings)
+    sizing = _sizing(_AngularMount())
     sizing.start(angular_only=True, cameras=None, distance_m=None)
     assert sizing.policy is None and sizing.log == []
-    assert sizing.step_duration_ms(CALIBRATION_STEPS[0]) == 700
-    assert sizing.step_arcsec(CALIBRATION_STEPS[0], 700) == pytest.approx(
-        700 * sizing.unit_rate() / 1000.0
-    )
+    assert FALLBACK_CALIBRATION_MS == 1000  # the former pulse_ms default (S6.8d)
+    assert sizing.step_duration_ms(CALIBRATION_STEPS[0]) == FALLBACK_CALIBRATION_MS
+    assert sizing.step_arcsec(CALIBRATION_STEPS[0], 1000) == pytest.approx(sizing.unit_rate())
 
 
 def test_unknown_plate_scales_are_no_optics() -> None:
@@ -171,8 +170,7 @@ def test_unknown_plate_scales_are_no_optics() -> None:
 
 
 def test_optics_seed_a_sized_run_and_log_it() -> None:
-    settings = MountAlignmentSettings(calibration_rate_preset="6")
-    sizing = _sizing(_TimedMount(), settings)
+    sizing = _sizing(_TimedMount())
     sizing.start(angular_only=False, cameras=_cameras(), distance_m=None)
     assert sizing.policy is not None and sizing.log[0]["rate_preset"] is None
     assert set(sizing.geometry) == {"left", "right"}

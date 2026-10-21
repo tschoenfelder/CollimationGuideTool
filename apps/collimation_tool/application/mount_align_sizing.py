@@ -48,6 +48,11 @@ from collimation_tool.application.mount_align_motion import MotionStep
 from collimation_tool.application.mount_align_plan import CalibrationStep, CalibrationStepRole
 from collimation_tool.application.mount_motion import MountAlignPrimitive
 
+#: S6.8d: a calibration's first move when no participating camera has configured optics -- in
+#: the run's duration unit (equivalent ms of an angular run = 120" at the default 8x unit; guide
+#: ms). Numerically the former `pulse_ms` default, so removing that setting changed nothing.
+FALLBACK_CALIBRATION_MS = 1000
+
 #: S6.8b: the guide-pulse envelope's margin over the SEED-sized need -- the seed is an
 #: assumption, and a real guide rate half of it must still reach the band on the widest camera.
 GUIDE_SEED_MARGIN = 2.0
@@ -160,19 +165,17 @@ class CalibrationSizing:
         self.axis_arcsec = {}
         self.distance_m = None
         self.axis_duration_ms = {
-            MountAxis.AXIS1: settings.pulse_ms,
-            MountAxis.AXIS2: settings.pulse_ms,
+            MountAxis.AXIS1: FALLBACK_CALIBRATION_MS,
+            MountAxis.AXIS2: FALLBACK_CALIBRATION_MS,
         }
         self.axis_attempt = {MountAxis.AXIS1: 1, MountAxis.AXIS2: 1}
         if cameras is None:
             return
         angular = mount_supports_angular(self._mount()) and not guide_pulse
-        if guide_pulse:
-            center_rate_x: float | None = settings.guide_rate_seed_x
-        else:
-            center_rate_x = settings.calibration_center_rate_x if angular else None
+        center_rate_x = (
+            settings.guide_rate_seed_x if guide_pulse else settings.calibration_center_rate_x
+        )
         policy = SizingPolicy(
-            rate_preset=settings.calibration_rate_preset,
             center_rate_x=center_rate_x,
             target_fraction=settings.calibration_target_fraction,
             max_duration_ms=settings.max_calibration_pulse_ms,
@@ -183,7 +186,7 @@ class CalibrationSizing:
         if guide_pulse:
             policy = self.guide_pulse_policy(policy, cameras, distance_m)
         plan = plan_first_move(
-            cameras, policy, distance_m=distance_m, fallback_ms=settings.pulse_ms
+            cameras, policy, distance_m=distance_m, fallback_ms=FALLBACK_CALIBRATION_MS
         )
         if plan.status is SizingStatus.NO_OPTICS:
             return

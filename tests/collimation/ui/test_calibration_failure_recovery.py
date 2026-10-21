@@ -52,7 +52,6 @@ _SETTINGS = MountAlignmentSettings(
     frame_settle_ms=0,
     stability_sample_interval_s=0.0,
     stability_timeout_s=2.0,
-    pulse_ms=1000,
 )
 _SHAPES = {"left": (120, 200), "right": (100, 300)}
 

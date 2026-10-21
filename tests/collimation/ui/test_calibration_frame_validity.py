@@ -48,7 +48,6 @@ _SETTINGS = MountAlignmentSettings(
     frame_settle_ms=0,
     stability_sample_interval_s=0.0,
     stability_timeout_s=1.5,
-    pulse_ms=1000,
 )
 _SHAPES = {"left": (120, 200), "right": (100, 300)}
 _PX_PER_MS = {"left": 0.05, "right": 0.04}  # 1000 ms -> 50 px (25%) / 40 px
@@ -308,7 +307,6 @@ class TestStability:
             frame_settle_ms=0,
             stability_sample_interval_s=0.0,
             stability_timeout_s=0.4,
-            pulse_ms=1000,
         )
         panel = _panel(rig, settings=quick)
         panel._fresh_frame_timeout_s = lambda: 0.2  # type: ignore[method-assign]

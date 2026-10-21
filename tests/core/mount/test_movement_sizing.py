@@ -25,10 +25,11 @@ from astrotool_core.mount.movement_sizing import (
     measured_fraction,
     plan_first_move,
     plan_followup,
-    rate_arcsec_per_s,
+    seed_rate_arcsec_per_s,
 )
 
-_POLICY = SizingPolicy()  # preset 6 (20x), 25% target, 20-30% band, 3 s cap, 0.2 s floor
+#: 20x sidereal seed, 25% target, 20-30% band, 3 s cap, 0.2 s floor
+_POLICY = SizingPolicy(center_rate_x=20.0)
 
 _OAG = CameraGeometry("oag", 3840, 2160, 206.265 * 2.0 / 2030.0, focal_length_mm=2030.0)
 _MAIN = CameraGeometry("main", 3840, 2160, 206.265 * 2.9 / 2030.0, focal_length_mm=2030.0)
@@ -36,11 +37,14 @@ _GUIDE = CameraGeometry("guide", 1920, 1080, 206.265 * 2.9 / 180.0, focal_length
 
 
 class TestRates:
-    def test_preset_6_is_20x_sidereal(self) -> None:
-        assert abs(rate_arcsec_per_s("6") - 300.82) < 0.05
+    """S6.8d: the seed rate is `center_rate_x` x sidereal (the OnStep slew-rate preset table is
+    gone)."""
 
-    def test_preset_7_is_48x_sidereal(self) -> None:
-        assert abs(rate_arcsec_per_s("7") - 721.97) < 0.05
+    def test_20x_sidereal(self) -> None:
+        assert abs(seed_rate_arcsec_per_s(_POLICY) - 300.82) < 0.05
+
+    def test_48x_sidereal(self) -> None:
+        assert abs(seed_rate_arcsec_per_s(SizingPolicy(center_rate_x=48.0)) - 721.97) < 0.05
 
 
 class TestFiniteDistance:
@@ -105,7 +109,7 @@ class TestFirstMoveSeed:
         assert plan.duration_ms == 3000
 
     def test_a_faster_rate_brings_the_wide_guide_inside_the_cap(self) -> None:
-        fast = SizingPolicy(rate_preset="7")  # 48x = 721.97 "/s -> 2.21 s
+        fast = SizingPolicy(center_rate_x=48.0)  # 48x = 721.97 "/s -> 2.21 s
 
         plan = plan_first_move([_GUIDE], fast)
 

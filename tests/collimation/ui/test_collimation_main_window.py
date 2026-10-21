@@ -57,7 +57,10 @@ from collimation_tool.application.mount_align_messages import (
 )
 from collimation_tool.application.mount_align_plan import CALIBRATION_STEPS as _CALIBRATION_STEPS
 from collimation_tool.application.mount_align_positioning import nudge_cap_arcsec
-from collimation_tool.application.mount_align_sizing import angular_unit_rate
+from collimation_tool.application.mount_align_sizing import (
+    FALLBACK_CALIBRATION_MS,
+    angular_unit_rate,
+)
 from collimation_tool.ui.camera_panel import CameraPanel
 from collimation_tool.ui.focuser_panel import FocuserPanel
 from collimation_tool.ui.main_window import MainWindow
@@ -3722,16 +3725,15 @@ class TestMountTestMovePanel:
 
         self._run_calibration_to_completion(panel, timeout_s=60.0)
 
-        settings = MountAlignmentSettings()
         assert pulse_mount.equivalent_ms_log == [
-            (MountAxis.AXIS1, AxisDirection.POSITIVE, settings.pulse_ms),
-            (MountAxis.AXIS1, AxisDirection.POSITIVE, settings.pulse_ms),
-            (MountAxis.AXIS1, AxisDirection.NEGATIVE, settings.pulse_ms),
-            (MountAxis.AXIS1, AxisDirection.NEGATIVE, settings.pulse_ms),
-            (MountAxis.AXIS2, AxisDirection.POSITIVE, settings.pulse_ms),
-            (MountAxis.AXIS2, AxisDirection.POSITIVE, settings.pulse_ms),
-            (MountAxis.AXIS2, AxisDirection.NEGATIVE, settings.pulse_ms),
-            (MountAxis.AXIS2, AxisDirection.NEGATIVE, settings.pulse_ms),
+            (MountAxis.AXIS1, AxisDirection.POSITIVE, FALLBACK_CALIBRATION_MS),
+            (MountAxis.AXIS1, AxisDirection.POSITIVE, FALLBACK_CALIBRATION_MS),
+            (MountAxis.AXIS1, AxisDirection.NEGATIVE, FALLBACK_CALIBRATION_MS),
+            (MountAxis.AXIS1, AxisDirection.NEGATIVE, FALLBACK_CALIBRATION_MS),
+            (MountAxis.AXIS2, AxisDirection.POSITIVE, FALLBACK_CALIBRATION_MS),
+            (MountAxis.AXIS2, AxisDirection.POSITIVE, FALLBACK_CALIBRATION_MS),
+            (MountAxis.AXIS2, AxisDirection.NEGATIVE, FALLBACK_CALIBRATION_MS),
+            (MountAxis.AXIS2, AxisDirection.NEGATIVE, FALLBACK_CALIBRATION_MS),
         ]
         assert set(panel._calibration) == {"left", "right"}
         assert all(
@@ -3961,19 +3963,18 @@ class TestMountTestMovePanel:
             time.sleep(0.01)
         panel._poll()
 
-        settings = MountAlignmentSettings()
         # AXIS1's own full 4-step group (+,+,-,-) succeeded, AXIS2's own
         # forward (positive, first) pulse succeeded -- 5 real steps --
         # then the corrective return pulse (issue #31: AXIS2's own net
         # +pulse_ms so far, see _abort_calibration's own docstring) fires
         # fire-and-forget.
         assert pulse_mount.equivalent_ms_log == [
-            (MountAxis.AXIS1, AxisDirection.POSITIVE, settings.pulse_ms),
-            (MountAxis.AXIS1, AxisDirection.POSITIVE, settings.pulse_ms),
-            (MountAxis.AXIS1, AxisDirection.NEGATIVE, settings.pulse_ms),
-            (MountAxis.AXIS1, AxisDirection.NEGATIVE, settings.pulse_ms),
-            (MountAxis.AXIS2, AxisDirection.POSITIVE, settings.pulse_ms),
-            (MountAxis.AXIS2, AxisDirection.NEGATIVE, settings.pulse_ms),
+            (MountAxis.AXIS1, AxisDirection.POSITIVE, FALLBACK_CALIBRATION_MS),
+            (MountAxis.AXIS1, AxisDirection.POSITIVE, FALLBACK_CALIBRATION_MS),
+            (MountAxis.AXIS1, AxisDirection.NEGATIVE, FALLBACK_CALIBRATION_MS),
+            (MountAxis.AXIS1, AxisDirection.NEGATIVE, FALLBACK_CALIBRATION_MS),
+            (MountAxis.AXIS2, AxisDirection.POSITIVE, FALLBACK_CALIBRATION_MS),
+            (MountAxis.AXIS2, AxisDirection.NEGATIVE, FALLBACK_CALIBRATION_MS),
         ]
         # Now settled -- the message reflects the return pulse's own
         # actual, now-known outcome instead of still saying "returning".
@@ -4595,18 +4596,17 @@ class TestMountTestMovePanel:
         # needs a much longer overall budget than the default.
         self._run_calibration_to_completion(panel, timeout_s=90.0)
 
-        settings = MountAlignmentSettings()
         # All 8 steps still ran -- Main failing didn't cut the shared
         # mount sequence short.
         assert pulse_mount.equivalent_ms_log == [
-            (MountAxis.AXIS1, AxisDirection.POSITIVE, settings.pulse_ms),
-            (MountAxis.AXIS1, AxisDirection.POSITIVE, settings.pulse_ms),
-            (MountAxis.AXIS1, AxisDirection.NEGATIVE, settings.pulse_ms),
-            (MountAxis.AXIS1, AxisDirection.NEGATIVE, settings.pulse_ms),
-            (MountAxis.AXIS2, AxisDirection.POSITIVE, settings.pulse_ms),
-            (MountAxis.AXIS2, AxisDirection.POSITIVE, settings.pulse_ms),
-            (MountAxis.AXIS2, AxisDirection.NEGATIVE, settings.pulse_ms),
-            (MountAxis.AXIS2, AxisDirection.NEGATIVE, settings.pulse_ms),
+            (MountAxis.AXIS1, AxisDirection.POSITIVE, FALLBACK_CALIBRATION_MS),
+            (MountAxis.AXIS1, AxisDirection.POSITIVE, FALLBACK_CALIBRATION_MS),
+            (MountAxis.AXIS1, AxisDirection.NEGATIVE, FALLBACK_CALIBRATION_MS),
+            (MountAxis.AXIS1, AxisDirection.NEGATIVE, FALLBACK_CALIBRATION_MS),
+            (MountAxis.AXIS2, AxisDirection.POSITIVE, FALLBACK_CALIBRATION_MS),
+            (MountAxis.AXIS2, AxisDirection.POSITIVE, FALLBACK_CALIBRATION_MS),
+            (MountAxis.AXIS2, AxisDirection.NEGATIVE, FALLBACK_CALIBRATION_MS),
+            (MountAxis.AXIS2, AxisDirection.NEGATIVE, FALLBACK_CALIBRATION_MS),
         ]
         assert "left" not in panel._calibration
         assert "right" in panel._calibration
@@ -5772,8 +5772,8 @@ class TestScreenRelativeMove:
 
     def test_screen_move_clamps_to_the_safety_cap(self, qapp: object) -> None:
         pulse_mount = _EqMsMount()
-        # 10 ms at the nudge preset (48x) = 7.22" = 60 equivalent ms at the 8x unit
-        settings = MountAlignmentSettings(max_nudge_pulse_ms=10, screen_move_small_fraction=0.05)
+        # a 7.22" cap = 60 equivalent ms at the 8x unit
+        settings = MountAlignmentSettings(max_nudge_arcsec=7.21968, screen_move_small_fraction=0.05)
         panel = self._panel(mount=pulse_mount, settings=settings)
         panel._connect_button.setChecked(True)
         panel._calibration["left"] = self._matrix()

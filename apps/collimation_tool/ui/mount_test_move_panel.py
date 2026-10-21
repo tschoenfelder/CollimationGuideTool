@@ -581,9 +581,6 @@ class MountTestMovePanel(QWidget):
         #: S6.6b: the background #43 no-motion check after a nudge (never holds the panel
         #: busy; a new move, Stop or a mode change abandons it).
         self._nudge_check_job: CaptureJob | None = None
-        #: Diagnostics only (the nudge's `CommandedMovementContext`): the configured nudge
-        #: `rate_preset` an UNCALIBRATED nudge reported; never used to move the mount.
-        self._nudge_rate_preset: str | None = None
         self._capture_generation = 0
         self._last_internal_error: str | None = None
         self._last_cleanup_ok: bool | None = None
@@ -696,13 +693,11 @@ class MountTestMovePanel(QWidget):
         # splitter viewport, clipping content further down the panel (the
         # "mount interface not available" message) off the visible edge.
         # Word-wrapping it on its own row lets it shrink to fit instead.
+        # S6.8d: no rate preset or fixed pulse any more -- the label names the sizing rule only.
         calibration_description_label = QLabel(
-            f"Calibration (~{int(self._settings.calibration_target_fraction * 100)}% of frame, "
-            f"preset {self._settings.calibration_rate_preset}; "
-            f"fallback {self._settings.pulse_ms}ms @ preset {self._settings.rate_preset})"
+            f"Calibration (~{int(self._settings.calibration_target_fraction * 100)}% of frame)"
             if self._camera_geometry is not None
-            else f"Calibration ({self._settings.pulse_ms}ms, "
-            f"rate preset {self._settings.rate_preset})"
+            else "Calibration (fixed size: no camera optics configured)"
         )
         calibration_description_label.setWordWrap(True)
         calibration_description_row = QHBoxLayout()
@@ -1930,9 +1925,6 @@ class MountTestMovePanel(QWidget):
             direction=move.direction,
             label=CAMERA_LABELS[move.camera_key],
         )
-        self._nudge_rate_preset = (
-            None if move.camera_key in self._calibration else self._settings.rate_preset
-        )
         suffix = (
             f" (safety-capped at {self._cap_text()} -- "
             "click again to continue)"
@@ -1969,7 +1961,6 @@ class MountTestMovePanel(QWidget):
         self._last_movement_context = CommandedMovementContext(
             movement_type=pending.kind,
             duration_ms=pending.duration_ms,
-            rate_preset=self._nudge_rate_preset,
             axis=pending.axis.name,
             direction=pending.direction.name,
             minimum_settle_ms=self._settings.frame_settle_ms,

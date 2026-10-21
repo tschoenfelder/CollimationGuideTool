@@ -404,6 +404,26 @@ untouched by `git reset --hard`. Close and relaunch the apps from the
 Pi menu (or `.venv/bin/collimation-tool` / `.venv/bin/guide-tool` from a
 terminal) after upgrading — there is no background service to restart.
 
+### Config migration notes
+
+**Removed `[mount_alignment]` keys (S6.8d).** Mount Align no longer has a
+timed move (the OnStep adapter never had one; Mount Align moves by angle in
+Terrestrial mode and with guide pulses in Astronomical mode). These keys are
+therefore no longer read:
+
+| Removed key | What replaces it |
+|---|---|
+| `pulse_ms` | nothing to set — without camera optics a calibration's first move is a fixed 1000 ms equivalent (120″ angular, 1000 guide-ms) and an uncalibrated nudge a fixed 722″, the same sizes the old defaults gave |
+| `rate_preset` | nothing — no move runs at an OnStep slew-rate preset |
+| `calibration_rate_preset` | nothing — `calibration_center_rate_x` (angular) and `guide_rate_seed_x` (guide pulses) seed the first calibration move |
+| `max_nudge_pulse_ms` | `max_nudge_arcsec` — the safety cap of one nudge / screen-move step, as an angle (default 2165.904″, the cap the old defaults `max_nudge_pulse_ms = 3000` at preset `"7"` gave) |
+
+An existing `config.toml` that still contains them keeps loading: each
+removed key is ignored with one warning in the log naming it
+(`[mount_alignment] <key> is no longer used ... -- ignored`). Delete the
+lines to silence the warning. Only if you had changed `max_nudge_pulse_ms`
+from its default: set `max_nudge_arcsec` instead (old ms × 48 × 15.041 / 1000).
+
 Before pushing a release from a dev machine, run the full release gate
 (`scripts/check.sh --release` — see `CONTRIBUTING.md`) so the version
 you're about to have the Pi pull has passed the acceptance-regression

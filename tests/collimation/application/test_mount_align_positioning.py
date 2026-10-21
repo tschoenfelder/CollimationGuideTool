@@ -13,7 +13,7 @@ import numpy as np
 import pytest
 from astrotool_core.config import MountAlignmentSettings
 from astrotool_core.mount import AxisDirection, AxisResponse, CalibrationMatrix, MountAxis
-from astrotool_core.mount.movement_sizing import CameraGeometry, rate_arcsec_per_s
+from astrotool_core.mount.movement_sizing import CameraGeometry
 from collimation_tool.application.mount_align_motion import (
     MotionStep,
     submit_axis_move,
@@ -22,9 +22,9 @@ from collimation_tool.application.mount_align_motion import (
 from collimation_tool.application.mount_align_plan import ScreenDirection
 from collimation_tool.application.mount_align_positioning import (
     NO_ANGULAR_MOVE,
+    NO_OPTICS_NUDGE_ARCSEC,
     cap_text,
     nudge_cap_arcsec,
-    nudge_rate_arcsec_per_s,
     plan_nudge,
     plan_screen_move,
     uncalibrated_nudge_arcsec,
@@ -36,7 +36,7 @@ pytestmark = pytest.mark.unit
 A1, A2 = MountAxis.AXIS1, MountAxis.AXIS2
 POS, NEG = AxisDirection.POSITIVE, AxisDirection.NEGATIVE
 _SETTINGS = MountAlignmentSettings(
-    pulse_ms=500, rate_preset="6", max_nudge_pulse_ms=2000, nudge_target_fraction=0.5
+    max_nudge_arcsec=600.0, nudge_target_fraction=0.5
 )
 
 
@@ -75,10 +75,9 @@ def _nudge(**overrides: Any) -> Any:  # noqa: ANN401
 
 
 def test_nudge_rate_and_cap() -> None:
-    assert nudge_rate_arcsec_per_s(_SETTINGS) == rate_arcsec_per_s("6")
-    assert nudge_cap_arcsec(_SETTINGS) == pytest.approx(2.0 * rate_arcsec_per_s("6"))
-    odd = MountAlignmentSettings(rate_preset="not-a-preset")
-    assert nudge_rate_arcsec_per_s(odd) == angular_unit_rate(odd)
+    """F11 (S6.8d): the cap is the explicit setting -- no app-side rate model."""
+    assert nudge_cap_arcsec(_SETTINGS) == 600.0
+    assert nudge_cap_arcsec(MountAlignmentSettings()) == MountAlignmentSettings().max_nudge_arcsec
     assert cap_text(_SETTINGS) == f'{nudge_cap_arcsec(_SETTINGS):.0f}"'
     assert cap_text(_SETTINGS, guide_pulse=True) == (
         f'{nudge_cap_arcsec(_SETTINGS):.0f}" of guide pulses'
@@ -88,7 +87,8 @@ def test_nudge_rate_and_cap() -> None:
 def test_an_uncalibrated_nudge_uses_the_frame_fraction_or_the_fixed_pulse() -> None:
     cameras = [CameraGeometry("left", 1000, 800, 0.5)]
     assert uncalibrated_nudge_arcsec(_SETTINGS, "left", lambda: cameras, lambda: None) == 250.0
-    fallback = 500 * rate_arcsec_per_s("6") / 1000.0
+    fallback = NO_OPTICS_NUDGE_ARCSEC
+    assert fallback == 1000 * (48.0 * 15.041) / 1000.0  # the former pulse_ms default at "7"
     assert uncalibrated_nudge_arcsec(_SETTINGS, "right", lambda: cameras, lambda: None) == fallback
     assert uncalibrated_nudge_arcsec(_SETTINGS, "left", None, lambda: None) == fallback
 

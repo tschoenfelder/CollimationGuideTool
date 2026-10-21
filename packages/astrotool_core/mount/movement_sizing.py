@@ -21,26 +21,11 @@ than `min_duration_ms` (timing/acceleration would dominate).
 
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from enum import Enum
 
 #: Sidereal rate, arcsec per second.
 SIDEREAL_ARCSEC_PER_S = 15.041
-
-#: OnStep `:R#` slew-rate presets as multiples of sidereal (probed on the
-#: real driver, see indi_mount_pulse_adapter). "8"/"9" (Half-Max/Max) have no
-#: fixed multiple and are deliberately absent.
-RATE_PRESET_X: dict[str, float] = {
-    "0": 0.25,
-    "1": 0.5,
-    "2": 1.0,
-    "3": 2.0,
-    "4": 4.0,
-    "5": 8.0,
-    "6": 20.0,
-    "7": 48.0,
-}
 
 #: A measured shift beyond this fraction of the frame is near the estimator's
 #: alias limit (half the frame) and is never accepted as-is.
@@ -48,27 +33,6 @@ _ALIAS_FRACTION = 0.45
 #: Per-retry scale limits, so one noisy measurement cannot swing the move wildly.
 _MIN_SCALE = 0.25
 _MAX_SCALE = 4.0
-
-
-def rate_arcsec_per_s(preset: str) -> float:
-    return RATE_PRESET_X[preset] * SIDEREAL_ARCSEC_PER_S
-
-
-def measured_rate_arcsec_per_s(
-    camera: CameraGeometry,
-    dx_px: float,
-    dy_px: float,
-    duration_ms: float,
-    *,
-    distance_m: float | None = None,
-) -> float | None:
-    """The mount's REAL angular rate from one timed bootstrap move: the measured
-    2-D image shift x the camera's plate scale / the commanded duration. None
-    without configured optics or a usable duration (nothing is guessed)."""
-    scale = camera.arcsec_per_px_at(distance_m)
-    if scale is None or duration_ms <= 0:
-        return None
-    return math.hypot(dx_px, dy_px) * scale / (duration_ms / 1000.0)
 
 
 def finite_distance_scale(distance_m: float | None, focal_length_mm: float | None) -> float:
@@ -110,11 +74,10 @@ class CameraGeometry:
 
 @dataclass(frozen=True)
 class SizingPolicy:
-    rate_preset: str = "6"  # 20x sidereal
-    #: When set, the seed rate is this multiple of sidereal (OnStepAdapter's
-    #: center rate) instead of a `rate_preset` -- a SEED only, the measured
-    #: displacement is authoritative.
-    center_rate_x: float | None = None
+    #: The seed rate as a multiple of sidereal (OnStepAdapter's center rate for an angular run,
+    #: the assumed guide rate for guide pulses) -- a SEED only, the measured displacement is
+    #: authoritative. S6.8d: required (the OnStep slew-rate preset fallback is gone).
+    center_rate_x: float
     target_fraction: float = 0.25
     band_low: float = 0.20
     band_high: float = 0.30
@@ -164,7 +127,7 @@ def _clamp_duration(ms: float, policy: SizingPolicy) -> int:
 
 def plan_first_move(
     cameras: list[CameraGeometry],
-    policy: SizingPolicy | None = None,
+    policy: SizingPolicy,
     *,
     distance_m: float | None = None,
     fallback_ms: int = 1000,
@@ -177,7 +140,6 @@ def plan_first_move(
     measurement (camera/FOV rotation is arbitrary), and adaptive resizing
     then corrects a vertical or rotated response via `measured_fraction`.
     """
-    policy = policy or SizingPolicy()
     sized = [
         (fov[0], camera.key)
         for camera in cameras
@@ -199,9 +161,7 @@ def plan_first_move(
 
 
 def seed_rate_arcsec_per_s(policy: SizingPolicy) -> float:
-    if policy.center_rate_x is not None:
-        return policy.center_rate_x * SIDEREAL_ARCSEC_PER_S
-    return rate_arcsec_per_s(policy.rate_preset)
+    return policy.center_rate_x * SIDEREAL_ARCSEC_PER_S
 
 
 def measured_fraction(camera: CameraGeometry, dx_px: float, dy_px: float) -> float:

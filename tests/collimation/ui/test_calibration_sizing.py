@@ -319,7 +319,7 @@ class TestWithoutOptics:
 
         _run(panel)
 
-        assert {round(d, 6) for d in _moves(rig)} == {round(_SETTINGS.pulse_ms * 0.120328, 6)}
+        assert {round(d, 6) for d in _moves(rig)} == {round(1000 * 0.120328, 6)}  # 1000 ms
         panel.stop()
 
 

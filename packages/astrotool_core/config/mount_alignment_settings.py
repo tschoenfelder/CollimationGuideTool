@@ -1,12 +1,17 @@
 """Mount-alignment feature settings ("Run Calibration" + the per-camera
 direction pads in `MountTestMovePanel`).
 
-Requested directly: the calibration slew duration/rate and each direction
+Requested directly: the calibration move sizing and each direction
 button's target nudge size should be fixed constants, not a runtime UI
 control, but sourced from config rather than hardcoded in the panel — so a
-rig-specific value can be tuned (e.g. a different slew-rate preset, or a
-gentler nudge) by editing `~/.CollimationGuideTool/config.toml` directly,
-without a code change.
+rig-specific value can be tuned (e.g. a gentler nudge) by editing
+`~/.CollimationGuideTool/config.toml` directly, without a code change.
+
+S6.8d (R9): the timed-move settings `pulse_ms`, `rate_preset`,
+`calibration_rate_preset` and `max_nudge_pulse_ms` are gone (no Mount Align move is timed any
+more). An existing config.toml that still has them keeps loading: each is ignored with one
+warning naming it (`REMOVED_KEYS`; migration note in install.md). The nudge safety cap is the
+explicit angle `max_nudge_arcsec` (F11).
 
 Written to (read from, never written by this app — there is deliberately no
 UI to change these) the `[mount_alignment]` table in the same shared
@@ -19,6 +24,7 @@ here either.
 
 from __future__ import annotations
 
+import logging
 import math
 import tomllib
 from collections.abc import Callable
@@ -32,19 +38,23 @@ from astrotool_core.config import paths
 #: resolves the owner at call time (#55 D03).
 DEFAULT_CONFIG_PATH = paths.DEFAULT_OWN_CONFIG_PATH
 
-#: OnStep rate preset 7 is "48x" sidereal (presets 0-9, passed through
-#: OnStepAdapter's `move_*_timed(rate_preset=)`). Kept as the default here so
-#: the nudge pulses run fast.
-_DEFAULT_RATE_PRESET = "7"
-_DEFAULT_PULSE_MS = 1000
+_log = logging.getLogger(__name__)
+
+#: S6.8d (R9): `[mount_alignment]` keys of the deleted timed path. Still accepted in an old
+#: config.toml -- ignored, one warning naming each (see install.md "Config migration notes").
+REMOVED_KEYS: tuple[str, ...] = (
+    "pulse_ms",
+    "rate_preset",
+    "calibration_rate_preset",
+    "max_nudge_pulse_ms",
+)
+
 #: Issue #46: calibration moves are sized to ~25% of the frame (not a fixed
-#: pulse) at OnStep preset "6" (20x sidereal), capped at 3 s and never
-#: shorter than ~0.2 s -- see astrotool_core.mount.movement_sizing.
-_DEFAULT_CALIBRATION_RATE_PRESET = "6"
+#: move), capped and never below a minimum -- see astrotool_core.mount.movement_sizing.
 _DEFAULT_CALIBRATION_TARGET_FRACTION = 0.25
-#: Seed for the first (timed bootstrap) calibration move through OnStepAdapter: the
-#: controller's centering rate as a multiple of sidereal. ONLY a seed -- the measured
-#: displacement decides the real rate (installed into OnStepAdapter at runtime).
+#: The unit of an angular calibration's equivalent durations, and the seed of its first move:
+#: the controller's centering rate as a multiple of sidereal (`equivalent_duration`). ONLY a
+#: seed -- the measured displacement is authoritative.
 _DEFAULT_CALIBRATION_CENTER_RATE_X = 8.0
 #: S6.8b: the ASSUMED guide rate (x sidereal) that sizes the first, uncalibrated guide-pulse
 #: move of Astronomical Mount Align (calibration seed, uncalibrated nudge). OnStepAdapter 0.5.0
@@ -87,6 +97,13 @@ _DEFAULT_SETTLE_MS = 1000
 #: pulse, wait this much *again*, then take the frame actually used for
 #: measurement from *that* point on, not the first barely-fresh one.
 _DEFAULT_FRAME_SETTLE_MS = 500
+#: F11 (S6.8d): the farthest one nudge / screen-move step may move, as an angle (single owner;
+#: `mount_align_positioning.nudge_cap_arcsec` reads it, and the guide-pulse cap converts it).
+#: The default is numerically today's former derived cap: `max_nudge_pulse_ms` 3000 ms at the
+#: nudge `rate_preset` "7" (48 x sidereal 15.041"/s) = 3000 * (48.0 * 15.041) / 1000.0
+#: = 2165.904" -- behaviour-neutral (pinned by test_mount_alignment_settings). History of the
+#: cap (it was a duration then), kept for the reasons it exists:
+#:
 #: Real report (diagnostic de295656): "Guide showing buttons, but
 #: movement far too much" -- the pulse duration solved from a click's own
 #: calibrated rate had no cap at all, linearly extrapolating from the
@@ -116,8 +133,8 @@ _DEFAULT_FRAME_SETTLE_MS = 500
 #: toward the original target. Independently tunable like every other
 #: setting here; needing several clicks to reach one target is itself a
 #: signal that axis's calibrated rate is unreliably slow -- consider Run
-#: Calibration again with a longer pulse_ms instead of raising this cap.
-_DEFAULT_MAX_NUDGE_PULSE_MS = 3000
+#: Calibration again instead of raising this cap.
+_DEFAULT_MAX_NUDGE_ARCSEC = 2165.904
 #: Issue #30: the largest consecutive-frame displacement (px) still treated
 #: as "stable enough to measure" -- see `astrotool_core.acquisition.
 #: image_stability.check_image_stability`'s own tolerance_px parameter,
@@ -159,9 +176,7 @@ _DEFAULT_SCREEN_MOVE_LARGE_FRACTION = 0.30
 
 @dataclass(frozen=True)
 class MountAlignmentSettings:
-    """`pulse_ms`/`rate_preset` are used for every calibration test pulse
-    (the return pulse reuses the same values, trusting a symmetric
-    response). `nudge_target_fraction` is the displacement a single
+    """`nudge_target_fraction` is the displacement a single
     RA+/RA-/Dec+/Dec- direction-pad click aims for, as a fraction of the
     clicked camera's own frame width, used the same way for either axis
     (see `MountTestMovePanel._on_nudge_clicked`'s own docstring for why a
@@ -175,8 +190,8 @@ class MountAlignmentSettings:
     of that: how long MountTestMovePanel waits again, after the video
     stream first confirms it has caught up past the pulse, before
     actually taking the frame used for measurement -- see that panel's
-    own `_capture_both` docstring. `max_nudge_pulse_ms` caps how long a
-    single nudge pulse is allowed to run -- a solved duration exceeding
+    own `_capture_both` docstring. `max_nudge_arcsec` caps how far a
+    single nudge step may move (an angle, F11) -- a solved move exceeding
     it is clamped down to land exactly on this cap rather than refused
     outright -- see that constant's own docstring.
 
@@ -197,16 +212,14 @@ class MountAlignmentSettings:
     screen-relative ←→↑↓ control offers once that camera has a valid,
     non-degenerate 4-direction response model -- each is a fraction of
     *that camera's own* frame width/height, mirroring
-    `nudge_target_fraction`'s own reasoning. `max_nudge_pulse_ms` (above)
+    `nudge_target_fraction`'s own reasoning. `max_nudge_arcsec` (above)
     doubles as these controls' own safety cap too -- no separate setting,
     same clamp-not-refuse philosophy `_on_nudge_clicked` already uses."""
 
-    pulse_ms: int = _DEFAULT_PULSE_MS
-    rate_preset: str = _DEFAULT_RATE_PRESET
     nudge_target_fraction: float = _DEFAULT_NUDGE_TARGET_FRACTION
     settle_ms: int = _DEFAULT_SETTLE_MS
     frame_settle_ms: int = _DEFAULT_FRAME_SETTLE_MS
-    max_nudge_pulse_ms: int = _DEFAULT_MAX_NUDGE_PULSE_MS
+    max_nudge_arcsec: float = _DEFAULT_MAX_NUDGE_ARCSEC
     stability_tolerance_px: float = _DEFAULT_STABILITY_TOLERANCE_PX
     stability_sample_count: int = _DEFAULT_STABILITY_SAMPLE_COUNT
     stability_sample_interval_s: float = _DEFAULT_STABILITY_SAMPLE_INTERVAL_S
@@ -215,8 +228,7 @@ class MountAlignmentSettings:
     screen_move_medium_fraction: float = _DEFAULT_SCREEN_MOVE_MEDIUM_FRACTION
     screen_move_large_fraction: float = _DEFAULT_SCREEN_MOVE_LARGE_FRACTION
     #: Issue #46: adaptive calibration move sizing (only active when camera
-    #: optics are known; otherwise `pulse_ms`/`rate_preset` apply unchanged).
-    calibration_rate_preset: str = _DEFAULT_CALIBRATION_RATE_PRESET
+    #: optics are known; otherwise the fixed fallback size applies).
     calibration_target_fraction: float = _DEFAULT_CALIBRATION_TARGET_FRACTION
     calibration_center_rate_x: float = _DEFAULT_CALIBRATION_CENTER_RATE_X
     guide_rate_seed_x: float = _DEFAULT_GUIDE_RATE_SEED_X
@@ -262,13 +274,13 @@ def load_mount_alignment_settings(
     if not isinstance(table, dict):
         return defaults
 
-    try:
-        pulse_ms = int(table.get("pulse_ms", defaults.pulse_ms))
-    except (TypeError, ValueError):
-        pulse_ms = defaults.pulse_ms
-
-    rate_preset_value = table.get("rate_preset", defaults.rate_preset)
-    rate_preset = str(rate_preset_value) if rate_preset_value is not None else defaults.rate_preset
+    for key in REMOVED_KEYS:
+        if key in table:
+            _log.warning(
+                "[mount_alignment] %s is no longer used (S6.8d: Mount Align has no timed move) "
+                "-- ignored; see install.md 'Config migration notes'",
+                key,
+            )
 
     try:
         nudge_target_fraction = float(
@@ -286,11 +298,6 @@ def load_mount_alignment_settings(
         frame_settle_ms = int(table.get("frame_settle_ms", defaults.frame_settle_ms))
     except (TypeError, ValueError):
         frame_settle_ms = defaults.frame_settle_ms
-
-    try:
-        max_nudge_pulse_ms = int(table.get("max_nudge_pulse_ms", defaults.max_nudge_pulse_ms))
-    except (TypeError, ValueError):
-        max_nudge_pulse_ms = defaults.max_nudge_pulse_ms
 
     try:
         stability_tolerance_px = float(
@@ -342,12 +349,12 @@ def load_mount_alignment_settings(
         screen_move_large_fraction = defaults.screen_move_large_fraction
 
     return MountAlignmentSettings(
-        pulse_ms=pulse_ms,
-        rate_preset=rate_preset,
         nudge_target_fraction=nudge_target_fraction,
         settle_ms=settle_ms,
         frame_settle_ms=frame_settle_ms,
-        max_nudge_pulse_ms=max_nudge_pulse_ms,
+        max_nudge_arcsec=_read(
+            table, "max_nudge_arcsec", defaults.max_nudge_arcsec, _positive_float
+        ),
         stability_tolerance_px=stability_tolerance_px,
         stability_sample_count=stability_sample_count,
         stability_sample_interval_s=stability_sample_interval_s,
@@ -355,9 +362,6 @@ def load_mount_alignment_settings(
         screen_move_small_fraction=screen_move_small_fraction,
         screen_move_medium_fraction=screen_move_medium_fraction,
         screen_move_large_fraction=screen_move_large_fraction,
-        calibration_rate_preset=_read(
-            table, "calibration_rate_preset", defaults.calibration_rate_preset, str
-        ),
         calibration_target_fraction=_read(
             table, "calibration_target_fraction", defaults.calibration_target_fraction, float
         ),
