@@ -19,7 +19,7 @@ than one pulse (0.5.0: 20..5000 ms) is split into even pulses with Stop checked 
 pulse is final and says when the mount no longer tracks. USER DECISION 2026-10-21: Mount Align's Stop during \
 a guide-pulse move stays an immediate EMERGENCY stop (ABORT + TRACK_OFF) -- the pulse in flight is cut and \
 tracking goes off; the result text says the mount is NOT tracking any more and how to restore it. Review \
-fixes (d2024bb): a calibration step whose later pulse fails counts the guide-ms of its completed pulses, so \
+fixes (a4b0c4f): a calibration step whose later pulse fails counts the guide-ms of its completed pulses, so \
 the abort's return equals what was sent (a sent-then-failed pulse is named in a WARNING, not returned); a \
 calibrated guide nudge/screen step is capped at the MEASURED guide rate (response x plate scale), the seed \
 only without one. A 0.4.1-shaped mount (no guide capability) keeps \
@@ -38,7 +38,7 @@ modules = [
     "packages/astrotool_core/mount/axis_calibration.py",
     "packages/astrotool_core/config/mount_alignment_settings.py",
 ]
-fix_commits = ["f63374c", "ef95c28", "f4b33c6", "d2024bb"]
+fix_commits = ["20c17ad", "d3782c3", "df7561a", "a4b0c4f", "5097372"]
 dataset_uuids = []
 focused_command = """pytest -q \
 tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestAstronomicalMountAlignUsesGuidePulses \
@@ -56,38 +56,39 @@ field_only_assumptions = [
     "Stop during a guide pulse (user decision 2026-10-21) is OnStep's emergency stop: whether the real driver/firmware also ends the running guide timer on ABORT is unknown (0.5.0 note); tracking is OFF afterwards either way, and must be restored at the hand controller.",
 ]
 gaps = [
+    "Rebased onto ffce5d1 (S6.8c-R5) without conflicts: the 20c17ad / 3bb1b05 revert-proofs were run on their pre-rebase equivalents f63374c / 95189bb (same content on the older main 8ef922a).",
     "The tests drive the production OnStepMountPulseAdapter over FakeOnStepIndiClient (instant 0.5.0 guide pulses, 0.5x sidereal), not the clocked #51 simulator.",
     "S6.8d notes from the S6.8b review (not changed here, outside this contract): ASTRONOMICAL_TRACKING_AXIS_MOVE_REFUSED ('...not available yet') is now wrong in three cases -- a 0.4.1 mount (should say: needs OnStepAdapter >= 0.5.0), a stale-reading race (tracking switched on between the panel's primitive choice and the send: retry), and tracking switched on mid axis-calibration (star calibration's tracking-ON verify); mount_motion.py module docstring line 18 ('until guide-pulse Mount Align, S6.8b') is stale.",
     "No in-app path turns tracking back ON in Astronomical mode after a Stop: the enforcer's P-a re-enforce runs only in TERRESTRIAL (it clears its pending flag on Astronomical) and never starts tracking; the only start_tracking is a star measurement's verify(TrackingMode.ON), which records a trail entry (command 'start_tracking').",
-    "test_a_calibrated_guide_nudge_is_capped_at_the_measured_guide_rate fails before d2024bb at the call (TypeError: unexpected keyword 'arcsec_per_px'), not at an assertion -- the measured-rate input did not exist.",
+    "test_a_calibrated_guide_nudge_is_capped_at_the_measured_guide_rate fails before a4b0c4f at the call (TypeError: unexpected keyword 'arcsec_per_px'), not at an assertion -- the measured-rate input did not exist.",
     "The panel decides the primitive from the mount's latest (possibly held-over) park/tracking reading on the GUI thread; the runner re-checks on a fresh reading. If tracking turned ON between the decision and the send, an axis move is refused by the S6.8a gate (its text still says 'not available yet' -- operating_mode.py is outside this contract, stale text for S6.8d).",
-    "test_a_long_move_is_split_into_even_pulses_within_the_range and test_mount_align_guide.py / TestGuideRateSeed test scaffolding added in f63374c (no behaviour change) -- they pass before ef95c28 by construction and are listed for coverage only where marked.",
+    "test_a_long_move_is_split_into_even_pulses_within_the_range and test_mount_align_guide.py / TestGuideRateSeed test scaffolding added in 20c17ad (no behaviour change) -- they pass before d3782c3 by construction and are listed for coverage only where marked.",
 ]
 
 [[regression_tests]]
 node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestAstronomicalMountAlignUsesGuidePulses::test_an_astronomical_calibration_completes_with_tracking_on_throughout"
 failed_before_fix = true
-evidence = "revert-proof 2026-10-21, worktree at f63374c (scaffolding only) with the branch's test file: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:1179: AssertionError: Calibration failed: astronomical mode with the mount tracking: an axis move needs tracking off, and Mount Align never turns tracking off on its own -- moving with guide pulses while tracking is not available yet; nothing was sent, tracking stays on"
+evidence = "revert-proof 2026-10-21, worktree at 20c17ad (scaffolding only) with the branch's test file: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:1179: AssertionError: Calibration failed: astronomical mode with the mount tracking: an axis move needs tracking off, and Mount Align never turns tracking off on its own -- moving with guide pulses while tracking is not available yet; nothing was sent, tracking stays on"
 
 [[regression_tests]]
 node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestAstronomicalMountAlignUsesGuidePulses::test_an_uncalibrated_astronomical_nudge_is_sized_from_the_labelled_seed"
 failed_before_fix = true
-evidence = "revert-proof 2026-10-21, worktree at f63374c: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:1222: AssertionError: [] (no guide pulse sent -- the nudge was refused)"
+evidence = "revert-proof 2026-10-21, worktree at 20c17ad: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:1222: AssertionError: [] (no guide pulse sent -- the nudge was refused)"
 
 [[regression_tests]]
 node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestAstronomicalMountAlignUsesGuidePulses::test_an_astronomical_screen_move_is_sized_in_guide_ms_from_the_guide_calibration"
 failed_before_fix = true
-evidence = "revert-proof 2026-10-21, worktree at f63374c: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:1160: AssertionError: Calibration failed: astronomical mode with the mount tracking: an axis move needs tracking off ... not available yet; nothing was sent, tracking stays on"
+evidence = "revert-proof 2026-10-21, worktree at 20c17ad: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:1160: AssertionError: Calibration failed: astronomical mode with the mount tracking: an axis move needs tracking off ... not available yet; nothing was sent, tracking stays on"
 
 [[regression_tests]]
 node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestAstronomicalMountAlignUsesGuidePulses::test_an_axis_calibration_is_not_used_for_guide_pulse_moves"
 failed_before_fix = true
-evidence = "revert-proof 2026-10-21, worktree at f63374c: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:1269: AssertionError: astronomical mode with the mount tracking: an axis move needs tracking off ... not available yet; nothing was sent, tracking stays on"
+evidence = "revert-proof 2026-10-21, worktree at 20c17ad: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:1269: AssertionError: astronomical mode with the mount tracking: an axis move needs tracking off ... not available yet; nothing was sent, tracking stays on"
 
 [[regression_tests]]
 node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestAstronomicalMountAlignUsesGuidePulses::test_a_guide_pulse_calibration_is_not_used_for_axis_moves"
 failed_before_fix = true
-evidence = "revert-proof 2026-10-21, worktree at f63374c: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:1160: AssertionError: Calibration failed: astronomical mode with the mount tracking: an axis move needs tracking off ... not available yet; nothing was sent, tracking stays on"
+evidence = "revert-proof 2026-10-21, worktree at 20c17ad: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:1160: AssertionError: Calibration failed: astronomical mode with the mount tracking: an axis move needs tracking off ... not available yet; nothing was sent, tracking stays on"
 
 [[regression_tests]]
 node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestAstronomicalMountAlignUsesGuidePulses::test_a_mount_without_guide_pulses_keeps_the_explicit_refusal"
@@ -97,12 +98,12 @@ reason_no_prefix_repro = "characterization: S6.8a's refusal for a 0.4.1-shaped m
 [[regression_tests]]
 node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestGuidePulseMovesInTheRunner::test_a_move_beyond_the_per_pulse_cap_is_split_and_stop_ends_it_between_pulses"
 failed_before_fix = true
-evidence = "revert-proof 2026-10-21, worktree at f63374c: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:1351: AssertionError: assert ('pulse rejected for AXIS1 POSITIVE (timed): this mount reports no timed pulse support ... -- nothing was sent to the mount' is not None and 'stopped by the user' in ...)"
+evidence = "revert-proof 2026-10-21, worktree at 20c17ad: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:1351: AssertionError: assert ('pulse rejected for AXIS1 POSITIVE (timed): this mount reports no timed pulse support ... -- nothing was sent to the mount' is not None and 'stopped by the user' in ...)"
 
 [[regression_tests]]
 node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestGuidePulseMovesInTheRunner::test_a_long_move_is_split_into_even_pulses_within_the_range"
 failed_before_fix = false
-reason_no_prefix_repro = "unit test of the split helper added in the scaffolding commit f63374c (no consumer before ef95c28)"
+reason_no_prefix_repro = "unit test of the split helper added in the scaffolding commit 20c17ad (no consumer before d3782c3)"
 
 [[regression_tests]]
 node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestAMoveNeverStopsTracking::test_an_astronomical_screen_move_is_refused_and_tracking_stays_on"
@@ -112,14 +113,19 @@ reason_no_prefix_repro = "S6.8a's regression kept green: a Terrestrial-calibrate
 [[regression_tests]]
 node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestGuidePulseReviewFixes::test_a_step_failing_after_some_pulses_is_returned_by_exactly_what_was_sent"
 failed_before_fix = true
-evidence = "revert-proof 2026-10-21, worktree at 95189bb (pre-review-fix) with the branch's tests: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:1394: AssertionError: ([(AXIS1, POSITIVE, 4322, True), (AXIS1, POSITIVE, 4322, True), (AXIS1, POSITIVE, 4321, False)], 'Calibration failed: pulse rejected for AXIS1 POSITIVE (guide_pulse): refused by the test') -- 8644 guide-ms sent, nothing returned"
+evidence = "revert-proof 2026-10-21, worktree at 3bb1b05 (pre-review-fix) with the branch's tests: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:1394: AssertionError: ([(AXIS1, POSITIVE, 4322, True), (AXIS1, POSITIVE, 4322, True), (AXIS1, POSITIVE, 4321, False)], 'Calibration failed: pulse rejected for AXIS1 POSITIVE (guide_pulse): refused by the test') -- 8644 guide-ms sent, nothing returned"
 
 [[regression_tests]]
 node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestGuidePulseReviewFixes::test_stop_during_a_guide_pulse_is_an_emergency_stop_and_says_tracking_is_off"
 failed_before_fix = true
-evidence = "revert-proof 2026-10-21, worktree at 95189bb: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:1429: AssertionError: Stopped by the user -- stop sent to the mount; the controls return once the interrupted move call has ended. (emergency stop sent and tracking False already held; the text did not say so)"
+evidence = "revert-proof 2026-10-21, worktree at 3bb1b05: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:1429: AssertionError: Stopped by the user -- stop sent to the mount; the controls return once the interrupted move call has ended. (emergency stop sent and tracking False already held; the text did not say so)"
 
 [[regression_tests]]
 node = "tests/collimation/application/test_mount_align_guide.py::test_a_calibrated_guide_nudge_is_capped_at_the_measured_guide_rate"
 failed_before_fix = true
-evidence = "revert-proof 2026-10-21, worktree at 95189bb: tests/collimation/application/test_mount_align_guide.py:162: TypeError: plan_nudge() got an unexpected keyword argument 'arcsec_per_px' (see gaps: the measured-rate input did not exist)"
+evidence = "revert-proof 2026-10-21, worktree at 3bb1b05: tests/collimation/application/test_mount_align_guide.py:162: TypeError: plan_nudge() got an unexpected keyword argument 'arcsec_per_px' (see gaps: the measured-rate input did not exist)"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestGlobalStopDuringAGuidePulseTrain::test_the_global_mount_stop_ends_a_guide_pulse_train_and_says_tracking_is_off"
+failed_before_fix = true
+evidence = "revert-proof 2026-10-21, worktree at aa248c4 (rebased onto ffce5d1, before 5097372) with the branch's tests: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:1479: AssertionError: Move failed: pulse rejected for AXIS1 POSITIVE (guide_pulse): stopped by the user (guide pulse requires fresh unparked tracking state with no slew, HOME, fault or limit) -- one pulse, emergency stop and tracking OFF already held; the text did not say so"
