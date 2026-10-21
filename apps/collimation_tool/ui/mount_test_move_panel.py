@@ -306,7 +306,11 @@ from collimation_tool.application.mount_align_failures import (
     MeasurementFailureClass,
     is_no_motion,
 )
-from collimation_tool.application.mount_align_guide import UNIT_FOR_PRIMITIVE, seed_note
+from collimation_tool.application.mount_align_guide import (
+    STOPPED_NOT_TRACKING,
+    UNIT_FOR_PRIMITIVE,
+    seed_note,
+)
 from collimation_tool.application.mount_align_interface import (
     MountInterfaceState,
     mount_interface_state,
@@ -1446,6 +1450,7 @@ class MountTestMovePanel(QWidget):
             )
             return
         self._calibration_queue.pop(0)
+        self._move_primitive = self._sizing.primitive
         self._pending = PendingAction(
             kind="calibration",
             before=before,
@@ -1528,6 +1533,8 @@ class MountTestMovePanel(QWidget):
         pulsed: bool,
         pulse_error: str | None,
         completed_at: float,
+        guide_ms_sent: int = 0,
+        guide_ms_uncertain: int = 0,
     ) -> None:
         """Real report (diagnostic d14c3a9b): "esp. guide cam right...
         right movement greyed out". Guide's own frames were fine (real,
@@ -1560,7 +1567,17 @@ class MountTestMovePanel(QWidget):
         step = pending.step
         assert step is not None
         if not pulsed:
-            self._abort_calibration(pulse_error or "pulse failed", axis=step.axis)
+            message = pulse_error or "pulse failed"
+            # S6.8b review #2: the guide pulses of this step that completed DID move the mount --
+            # counted, so the abort's return undoes them too.
+            if guide_ms_sent > 0:
+                self._sizing.account_pulse(step, guide_ms_sent)
+            if guide_ms_uncertain > 0:
+                message = (
+                    f"{message} (WARNING: the failed guide pulse may have moved the mount up to "
+                    f"{guide_ms_uncertain} guide-ms more -- not included in the return)"
+                )
+            self._abort_calibration(message, axis=step.axis)
             return
         # Issue #31: every step is a real, measured pulse now (see
         # CALIBRATION_STEPS's own docstring) -- tracks this axis's own
@@ -1840,6 +1857,17 @@ class MountTestMovePanel(QWidget):
             return None
         return matrix
 
+    def _arcsec_per_px(self, camera_key: str) -> float | None:
+        """S6.8b review #4: the camera's configured plate scale at the current target distance
+        (None without optics) -- converts a measured guide rate to an angle."""
+        if self._camera_geometry is None:
+            return None
+        distance = self._sizing_distance_for(self._target_mode())
+        for camera in self._camera_geometry():
+            if camera.key == camera_key:
+                return camera.arcsec_per_px_at(distance)
+        return None
+
     def _mount_align_primitive(self) -> MountAlignPrimitive:
         """S6.8b: guide pulses (Astronomical + tracking + capability) or axis moves -- decided
         by `choose_mount_align_primitive` from the global mode, the mount's latest tracking
@@ -1884,6 +1912,7 @@ class MountTestMovePanel(QWidget):
             uncalibrated_arcsec=lambda: self._uncalibrated_nudge_arcsec(camera_key),
             floor_arcsec=self._min_angular_arcsec,
             primitive=primitive,
+            arcsec_per_px=lambda: self._arcsec_per_px(camera_key),
         )
         if plan.error is not None:
             self._last_error = plan.error
@@ -2133,6 +2162,7 @@ class MountTestMovePanel(QWidget):
                 if primitive is MountAlignPrimitive.GUIDE_PULSE
                 else 1
             ),
+            arcsec_per_px=self._arcsec_per_px(camera_key),
         )
         if plan.error is not None:
             self._last_error = plan.error
@@ -2204,6 +2234,11 @@ class MountTestMovePanel(QWidget):
         # mount adapter's abort() hands OnStep's stop to a worker (it never queues behind the
         # GOTO it stops). S6.8a: both through the one motion executor (it owns the Stop-latch
         # probe); a Stop also ends any other motion in flight on the shared mount.
+        # S6.8b (user decision 2026-10-21): during a guide-pulse move this Stop is an
+        # emergency stop -- the mount stops tracking; the text below says so.
+        guide_stopped = (
+            self._runner.is_busy and self._move_primitive is MountAlignPrimitive.GUIDE_PULSE
+        )
         self._runner.abort()
         self._motion_executor.abort()
         # Issue #49: Stop ends the whole calibration/nudge, not just the current pulse: nothing
@@ -2225,6 +2260,9 @@ class MountTestMovePanel(QWidget):
                 f" (mount may be off its start position: net commanded {unit} {net})" if net else ""
             )
             self._last_error = "stopped by the user"
+            if guide_stopped:
+                note = f"{note} -- {STOPPED_NOT_TRACKING}"
+                self._last_error = f"stopped by the user -- {STOPPED_NOT_TRACKING}"
             if self._runner.is_busy:
                 # The interrupted adapter call is still ending (OnStepAdapter has no cancel
                 # hook; it ends at its own timeout); the poll loop re-enables the controls then.
@@ -2282,6 +2320,8 @@ class MountTestMovePanel(QWidget):
                     self._finish_calibration_step(
                         pending, pulsed=outcome.pulsed, pulse_error=outcome.error,
                         completed_at=completed_at,
+                        guide_ms_sent=outcome.guide_ms_sent,
+                        guide_ms_uncertain=outcome.guide_ms_uncertain,
                     )
                 elif pending.kind == "nudge":
                     self._finish_nudge(

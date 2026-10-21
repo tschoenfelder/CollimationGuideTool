@@ -31,7 +31,7 @@ from astrotool_core.acquisition.stable_frame_acquisition import (
     FrameAcquisitionStatus,
 )
 from astrotool_core.config import MountAlignmentSettings
-from astrotool_core.mount import AxisDirection, CalibrationUnit, MountAxis
+from astrotool_core.mount import AxisDirection, CalibrationUnit, GuidePulseResult, MountAxis
 from astrotool_core.mount.movement_sizing import SIDEREAL_ARCSEC_PER_S, CameraGeometry
 from astrotool_core.mount.operating_mode import OperatingMode, TrackingEnforcer
 from astrotool_core.mount.tracking_mode import MOUNT_BUSY_REASON, TrackingMode
@@ -1357,3 +1357,89 @@ class TestGuidePulseMovesInTheRunner:
         assert split_guide_pulse_ms(5000, (20, 5000)) == [5000]
         assert split_guide_pulse_ms(10001, (20, 5000)) == [3334, 3334, 3333]
         assert split_guide_pulse_ms(19, (20, 5000)) == []
+
+
+class TestGuidePulseReviewFixes:
+    """S6.8b review round 1 (findings 1 and 2)."""
+
+    def test_a_step_failing_after_some_pulses_is_returned_by_exactly_what_was_sent(
+        self, qapp: object
+    ) -> None:
+        """Finding 2: the pulses of a calibration step that completed before a later pulse
+        failed moved the mount, but were never counted -- the abort's return came up short
+        while the text said 'returning the mount to its start position'."""
+        rig = _Rig((_main(780.0), _GUIDE), rot_deg=10.0)
+        real = rig.mount.guide_pulse
+        calls: list[tuple[MountAxis, AxisDirection, int, bool]] = []
+
+        def third_refused(axis: MountAxis, direction: AxisDirection, ms: int) -> Any:  # noqa: ANN401
+            if len(calls) == 2:  # the first probe is 3 pulses: refuse its last one, unsent
+                calls.append((axis, direction, ms, False))
+                return GuidePulseResult(accepted=False, message="refused by the test")
+            calls.append((axis, direction, ms, True))
+            return real(axis, direction, ms)
+
+        rig.mount.guide_pulse = third_refused  # type: ignore[method-assign,assignment]
+        panel = _astro_panel(rig)
+        panel._run_calibration_button.click()
+        _drain(panel)
+
+        sent = [ms for axis, direction, ms, ok in calls[:2] if ok]
+        returned = [
+            ms
+            for axis, direction, ms, ok in calls[3:]
+            if ok and axis is MountAxis.AXIS1 and direction is AxisDirection.NEGATIVE
+        ]
+        assert len(sent) == 2 and calls[2][3] is False, calls
+        assert sum(returned) == sum(sent), (calls, panel._result_label.text())
+        ra, _dec = rig.moved_arcsec()
+        assert abs(ra) < 1.0, ra
+        assert "refused by the test" in panel._result_label.text()
+        panel.stop()
+
+    def test_stop_during_a_guide_pulse_is_an_emergency_stop_and_says_tracking_is_off(
+        self, qapp: object
+    ) -> None:
+        """Finding 1 (user decision 2026-10-21): Mount Align's Stop during a guide-pulse move
+        stays an immediate emergency stop (ABORT + TRACK_OFF) -- and the text must say that the
+        mount is NOT tracking any more."""
+        rig = _Rig((_main(780.0), _GUIDE))
+        log = _GuideLog(rig)
+        inside, release = threading.Event(), threading.Event()
+        logged_pulse = rig.client.guide_pulse
+
+        def held_pulse(direction: str, duration_ms: int, **kwargs: Any) -> Any:  # noqa: ANN401
+            inside.set()
+            release.wait(10.0)
+            return logged_pulse(direction, duration_ms, **kwargs)
+
+        rig.client.guide_pulse = held_pulse  # type: ignore[method-assign]
+        panel = _astro_panel(rig)
+        _stop_during_guide_move(
+            panel, lambda: panel._on_nudge_clicked("left", MountAxis.AXIS1, AxisDirection.POSITIVE),
+            inside, release,
+        )
+        _drain(panel)
+        deadline = time.monotonic() + 10.0
+        while rig.client.tracking and time.monotonic() < deadline:
+            time.sleep(0.01)
+
+        assert log.stops, "Stop sent no emergency stop to the mount"
+        assert rig.client.tracking is False
+        assert "NOT tracking" in panel._result_label.text(), panel._result_label.text()
+        panel.stop()
+
+
+def _stop_during_guide_move(
+    panel: MountTestMovePanel,
+    start: Callable[[], None],
+    inside: threading.Event,
+    release: threading.Event,
+) -> None:
+    """Start a guide-pulse move (`start`), wait until the fake controller is INSIDE a guide
+    pulse (`inside`, set by a held `guide_pulse`), press Mount Align's Stop on this (GUI)
+    thread, then let the held pulse continue (`release`)."""
+    start()
+    assert inside.wait(10.0), "the guide pulse never started: " + panel._result_label.text()
+    panel._on_stop()
+    release.set()

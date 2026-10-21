@@ -58,17 +58,32 @@ def nudge_cap_arcsec(settings: MountAlignmentSettings) -> float:
     return settings.max_nudge_pulse_ms * nudge_rate_arcsec_per_s(settings) / 1000.0
 
 
-def guide_nudge_cap_ms(settings: MountAlignmentSettings) -> int:
+def guide_nudge_cap_ms(
+    settings: MountAlignmentSettings,
+    response: AxisResponse | None = None,
+    arcsec_per_px: float | None = None,
+) -> int:
     """S6.8b: the guide-pulse nudge/screen-step cap -- the same angular envelope as
-    `nudge_cap_arcsec`, in guide-ms at the seed rate (a safety bound, not a size)."""
-    return round(nudge_cap_arcsec(settings) / guide_seed_rate_arcsec_per_s(settings) * 1000.0)
+    `nudge_cap_arcsec`, in guide-ms (a safety bound, not a size). Converted at the MEASURED
+    guide rate of this direction (`response` px/ms x the camera's `arcsec_per_px`) once a
+    calibration exists and the optics are known; else at the assumed seed rate (review #4)."""
+    rate_arcsec_per_s = guide_seed_rate_arcsec_per_s(settings)
+    if (
+        response is not None
+        and arcsec_per_px is not None
+        and arcsec_per_px > 0
+        and response.duration_ms > 0
+        and response.magnitude_px > 0
+    ):
+        rate_arcsec_per_s = response.magnitude_px / response.duration_ms * arcsec_per_px * 1000.0
+    return round(nudge_cap_arcsec(settings) / rate_arcsec_per_s * 1000.0)
 
 
 def cap_text(
     settings: MountAlignmentSettings, angular: bool, *, guide_pulse: bool = False
 ) -> str:
-    if guide_pulse:
-        return f"{guide_nudge_cap_ms(settings)} guide-ms"
+    if guide_pulse:  # S6.8b: the cap is an angle, whatever guide rate converts it
+        return f'{nudge_cap_arcsec(settings):.0f}" of guide pulses'
     if angular:
         return f'{nudge_cap_arcsec(settings):.0f}"'
     return f"{settings.max_nudge_pulse_ms}ms"
@@ -127,6 +142,7 @@ def plan_nudge(
     uncalibrated_arcsec: Callable[[], float],
     floor_arcsec: Callable[[], float],
     primitive: MountAlignPrimitive = MountAlignPrimitive.AXIS,
+    arcsec_per_px: Callable[[], float | None] = lambda: None,
 ) -> NudgePlan:
     """Size one RA/Dec nudge.
 
@@ -181,7 +197,9 @@ def plan_nudge(
             return NudgePlan(notice=f"{CAMERA_LABELS[camera_key]}: nothing to move.")
     arcsec: float | None = None
     if guide:
-        cap_ms = guide_nudge_cap_ms(settings)
+        cap_ms = guide_nudge_cap_ms(
+            settings, matrix.response_for(axis, direction) if matrix else None, arcsec_per_px()
+        )
         clamped = duration_ms > cap_ms
         return NudgePlan(
             move=NudgeMove(camera_key, axis, direction, min(duration_ms, cap_ms), clamped)
@@ -276,6 +294,7 @@ def plan_screen_move(
     floor_arcsec: Callable[[], float],
     primitive: MountAlignPrimitive = MountAlignPrimitive.AXIS,
     guide_min_ms: int = 1,
+    arcsec_per_px: float | None = None,
 ) -> ScreenMovePlan:
     """Issue #31 Phase D: the (possibly two-axis) sequence that moves this camera's image the
     requested on-screen direction by `fraction` of its own frame. Clamped rather than refused
@@ -299,18 +318,24 @@ def plan_screen_move(
     if primitive is MountAlignPrimitive.GUIDE_PULSE:
         # A component below the shortest guide pulse (`guide_min_ms`, a fraction of an arcsec)
         # is dropped and said so -- never sent, never a partially executed sequence.
-        cap_ms = guide_nudge_cap_ms(settings)
         kept = [step for step in steps if step[2] >= guide_min_ms]
         if not kept:
             return ScreenMovePlan(notice=f"{CAMERA_LABELS[camera_key]}: nothing to move.")
+        caps = [
+            guide_nudge_cap_ms(settings, matrix.response_for(axis, direction), arcsec_per_px)
+            for axis, direction, _ms in kept
+        ]
         guided: list[MotionStep] = [
-            (axis, direction, min(duration_ms, cap_ms)) for axis, direction, duration_ms in kept
+            (axis, direction, min(duration_ms, cap))
+            for (axis, direction, duration_ms), cap in zip(kept, caps, strict=True)
         ]
         skipped = ", ".join(
             f"{AXIS_LABELS[axis]} {ms} guide-ms" for axis, _d, ms in steps if ms < guide_min_ms
         )
         return ScreenMovePlan(
-            motion=guided, clamped=any(ms > cap_ms for _a, _d, ms in kept), skipped=skipped
+            motion=guided,
+            clamped=any(step[2] > cap for step, cap in zip(kept, caps, strict=True)),
+            skipped=skipped,
         )
     angular = angular_only()
     if angular:

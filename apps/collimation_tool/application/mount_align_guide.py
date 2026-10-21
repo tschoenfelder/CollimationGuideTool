@@ -14,8 +14,10 @@ rate seed (`MountAlignmentSettings.guide_rate_seed_x`, OnStepAdapter exposes no 
 always labelled as such (`seed_note`).
 
 One guide pulse is bounded by the adapter's range (0.5.0: 20..5000 ms, sent in 500 ms chunks); a
-longer move is split into even pulses (`split_guide_pulse_ms`) with Stop checked between them --
-a pulse already in flight runs to its end (<= 5 s). No Qt; no waits of its own.
+longer move is split into even pulses (`split_guide_pulse_ms`) with Stop checked between them.
+Mount Align's Stop itself is an immediate EMERGENCY stop (user decision 2026-10-21): the
+executor's abort sends ABORT + TRACK_OFF, so the pulse in flight is cut and the mount no longer
+tracks -- said so (`STOPPED_NOT_TRACKING`). No Qt; no waits of its own.
 """
 
 from __future__ import annotations
@@ -62,6 +64,16 @@ GUIDE_PULSE_MODE_CHANGED = (
 GUIDE_PULSE_UNSUPPORTED = (
     "this mount reports no guide pulses while tracking (needs OnStepAdapter >= 0.5.0) -- "
     "nothing was sent"
+)
+
+
+#: The shared wording when a guide-pulse move ended with the mount no longer tracking.
+NOT_TRACKING_ANY_MORE = "the mount is NOT tracking any more, check it"
+#: Mount Align's Stop during a guide-pulse move (user decision 2026-10-21: an emergency stop).
+STOPPED_NOT_TRACKING = (
+    f"Stop is an emergency stop (ABORT + TRACK_OFF) -- {NOT_TRACKING_ANY_MORE}. To restore "
+    "tracking, turn it on at the hand controller / OnStep (Mount Align and the Astronomical "
+    "mode never turn tracking on themselves); then continue -- guide-pulse moves need it"
 )
 
 
@@ -131,15 +143,17 @@ def send_guide_pulse_move(
     direction: AxisDirection,
     total_ms: int,
     cancel: threading.Event,
-) -> tuple[CommandResult, int]:
+) -> tuple[CommandResult, int, int]:
     """One Mount Align guide-pulse move of `total_ms`: split into the adapter's pulse range,
-    Stop (`cancel`) checked before every pulse. Returns the result and how many pulses were
-    sent. A failed pulse is final; when the mount no longer tracks afterwards (0.5.0
-    emergency-stops on a failure after an issued chunk) the message says so."""
+    Stop (`cancel`) checked before every pulse. Returns the result, the guide-ms of the pulses
+    that COMPLETED, and the guide-ms of a pulse that was sent and then failed (it may have
+    moved the mount by any part of it -- unknown, so never counted as done). A failed pulse is
+    final; when the mount no longer tracks afterwards (0.5.0 emergency-stops on a failure after
+    an issued chunk) the message says so."""
     guiding = cast(GuidePulsePort, mount)
     bounds = guiding.guide_pulse_range_ms
     if bounds is None or not mount.capabilities().supports_guide_pulses_while_tracking:
-        return CommandResult(accepted=False, message=GUIDE_PULSE_UNSUPPORTED), 0
+        return CommandResult(accepted=False, message=GUIDE_PULSE_UNSUPPORTED), 0, 0
     pulses = split_guide_pulse_ms(total_ms, bounds)
     if not pulses:
         return (
@@ -151,9 +165,10 @@ def send_guide_pulse_move(
                 ),
             ),
             0,
+            0,
         )
-    sent = 0
-    for pulse_ms in pulses:
+    sent_ms = 0
+    for sent, pulse_ms in enumerate(pulses):
         if cancel.is_set():
             return (
                 CommandResult(
@@ -162,13 +177,18 @@ def send_guide_pulse_move(
                         f"stopped by the user -- {sent} of {len(pulses)} guide pulses sent"
                     ),
                 ),
-                sent,
+                sent_ms,
+                0,
             )
         result = guiding.guide_pulse(axis, direction, pulse_ms)
-        sent += 1
         if not result.accepted:
             message = result.message or "guide pulse refused"
             if result.tracking_off:
-                message = f"{message} -- the mount is NOT tracking any more, check it"
-            return CommandResult(accepted=False, message=message), sent
-    return CommandResult(accepted=True, message=f"{len(pulses)} guide pulse(s)"), sent
+                message = f"{message} -- {NOT_TRACKING_ANY_MORE}"
+            return (
+                CommandResult(accepted=False, message=message),
+                sent_ms,
+                pulse_ms if result.sent else 0,
+            )
+        sent_ms += pulse_ms
+    return CommandResult(accepted=True, message=f"{len(pulses)} guide pulse(s)"), sent_ms, 0

@@ -159,6 +159,11 @@ class MountPulseOutcome:
     #: S6.8a review: something the operator must be told even though the move ran (e.g. the
     #: Terrestrial tracking policy had to turn tracking off first). None = nothing.
     note: str | None = None
+    #: S6.8b review #2: a guide-pulse step that failed or was stopped partway -- the guide-ms
+    #: of its pulses that COMPLETED (the mount did move them), and of a pulse that was sent
+    #: and then failed (it may have moved by any part of it). 0 otherwise.
+    guide_ms_sent: int = 0
+    guide_ms_uncertain: int = 0
 
 
 #: `_wait_for_parked`'s answer when Stop ended the wait.
@@ -549,7 +554,9 @@ class MountTestMoveRunner:
                     motion_started_at=motion_started_at,
                     motion_paths=tuple(paths),
                 )
-            result, _sent = send_guide_pulse_move(mount, axis, direction, duration_ms, stop)
+            result, sent_ms, uncertain_ms = send_guide_pulse_move(
+                mount, axis, direction, duration_ms, stop
+            )
             paths.append(MOTION_GUIDE_PULSE)
             if not result.accepted:
                 return MountPulseOutcome(
@@ -560,6 +567,8 @@ class MountTestMoveRunner:
                     ),
                     motion_started_at=motion_started_at,
                     motion_paths=tuple(paths),
+                    guide_ms_sent=sent_ms,
+                    guide_ms_uncertain=uncertain_ms,
                 )
         motion_ended_at = clock.monotonic()
         if settle_ms > 0 and not stop.is_set():
