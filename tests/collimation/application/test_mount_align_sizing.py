@@ -1,5 +1,8 @@
 """S6.6a: Mount Align calibration sizing + net accounting (`CalibrationSizing`), moved out of
-`MountTestMovePanel` unchanged. Tested directly (no panel, no MainWindow, no Qt)."""
+`MountTestMovePanel` unchanged. Tested directly (no panel, no MainWindow, no Qt).
+
+S6.8d (R9): the timed bootstrap (`learn_rate` -> `install_rate`) and the rate preset are gone;
+its tests went with it."""
 
 from __future__ import annotations
 
@@ -37,32 +40,24 @@ A1, A2 = MountAxis.AXIS1, MountAxis.AXIS2
 
 
 class _TimedMount:
-    """No angular capability: the legacy timed calibration."""
+    """No angular capability (Mount Align cannot move it since S6.8d)."""
 
     def capabilities(self) -> MountCapabilities:
         return MountCapabilities(supports_pulse_guiding=True, min_pulse_ms=1, max_pulse_ms=9999)
 
 
 class _AngularMount:
-    """S6.6b: declares its angular moves and floor in `capabilities()` (no duck-typed property)."""
+    """S6.6b: declares its angular moves and floor in `capabilities()` (no duck-typed property).
+    S6.8d: the production contract -- no timed pulses."""
 
     def capabilities(self) -> MountCapabilities:
         return MountCapabilities(
-            supports_pulse_guiding=True,
-            min_pulse_ms=1,
-            max_pulse_ms=9999,
+            supports_pulse_guiding=False,
+            min_pulse_ms=0,
+            max_pulse_ms=0,
             supports_angular_moves=True,
             min_angular_arcsec=30.0,
         )
-
-    def __init__(self) -> None:
-        self.rates: dict[tuple[MountAxis, AxisDirection], float] = {}
-
-    def installed_rate(self, axis: MountAxis, direction: AxisDirection) -> float | None:
-        return self.rates.get((axis, direction))
-
-    def install_rate(self, axis: MountAxis, direction: AxisDirection, rate: float) -> None:
-        self.rates[(axis, direction)] = rate
 
     def move_angular(self, *_args: object) -> None:
         raise AssertionError("sizing never moves the mount")
@@ -93,7 +88,22 @@ def test_mount_capability_helpers() -> None:
     assert mount_supports_angular(_port(_AngularMount()))
     assert min_angular_arcsec(_port(_TimedMount())) == 0.0
     assert min_angular_arcsec(_port(_AngularMount())) == 30.0
-    assert not mount_is_angular_only(_port(_AngularMount()))  # it also reports timed pulses
+    assert mount_is_angular_only(_port(_AngularMount()))
+    assert not mount_is_angular_only(_port(_TimedMount()))
+
+
+class _TimedAndAngularMount(_AngularMount):
+    def capabilities(self) -> MountCapabilities:
+        return MountCapabilities(
+            supports_pulse_guiding=True, min_pulse_ms=1, max_pulse_ms=9999,
+            supports_angular_moves=True,
+        )
+
+
+def test_timed_pulses_never_make_mount_align_leave_the_angular_path() -> None:
+    """S6.8d (R9): a mount that ALSO reports timed pulses (the dormant GuideTool's
+    `pulse_axis`) is still moved angularly -- before, it got the timed bootstrap."""
+    assert mount_is_angular_only(_port(_TimedAndAngularMount()))
 
 
 class _DuckTypedOnlyMount(_AngularMount):
@@ -135,21 +145,21 @@ def test_the_reported_capabilities_decide_not_the_attributes() -> None:
 
 def test_initial_state_matches_an_idle_panel() -> None:
     sizing = _sizing(_TimedMount())
-    assert sizing.rate_preset == ""
     assert not sizing.angular_active and not sizing.angular_only and sizing.policy is None
     assert sizing.axis_net_pulse_ms == {A1: 0, A2: 0}
     assert sizing.axis_net_arcsec == {A1: 0.0, A2: 0.0}
     assert sizing.log == [] and sizing.bounded == {}
 
 
-def test_without_optics_the_legacy_fixed_pulse_runs() -> None:
-    settings = MountAlignmentSettings(pulse_ms=700, rate_preset="5")
-    sizing = _sizing(_TimedMount(), settings)
-    sizing.start(angular_only=False, cameras=None, distance_m=None)
+def test_without_optics_the_fixed_size_runs() -> None:
+    settings = MountAlignmentSettings(pulse_ms=700)
+    sizing = _sizing(_AngularMount(), settings)
+    sizing.start(angular_only=True, cameras=None, distance_m=None)
     assert sizing.policy is None and sizing.log == []
-    assert sizing.rate_preset == "5"
     assert sizing.step_duration_ms(CALIBRATION_STEPS[0]) == 700
-    assert sizing.step_arcsec(CALIBRATION_STEPS[0], 700) is None  # timed
+    assert sizing.step_arcsec(CALIBRATION_STEPS[0], 700) == pytest.approx(
+        700 * sizing.unit_rate() / 1000.0
+    )
 
 
 def test_unknown_plate_scales_are_no_optics() -> None:
@@ -164,7 +174,7 @@ def test_optics_seed_a_sized_run_and_log_it() -> None:
     settings = MountAlignmentSettings(calibration_rate_preset="6")
     sizing = _sizing(_TimedMount(), settings)
     sizing.start(angular_only=False, cameras=_cameras(), distance_m=None)
-    assert sizing.policy is not None and sizing.rate_preset == "6"
+    assert sizing.policy is not None and sizing.log[0]["rate_preset"] is None
     assert set(sizing.geometry) == {"left", "right"}
     assert [entry["event"] for entry in sizing.log] == ["seed"]
     assert sizing.log[0]["seed_camera"] == "left"
@@ -174,36 +184,6 @@ def test_optics_seed_a_sized_run_and_log_it() -> None:
     assert sizing.smallest_fov_key(["right", "left"]) == "left"
     assert sizing.is_probe(CALIBRATION_STEPS[0])
     assert not sizing.is_probe(CALIBRATION_STEPS[1])
-
-
-def test_an_angular_capable_mount_bootstraps_timed_then_moves_by_angle() -> None:
-    mount = _AngularMount()
-    sizing = _sizing(mount)
-    sizing.start(angular_only=False, cameras=_cameras(), distance_m=None)
-    assert sizing.angular_active and sizing.rate_preset is None
-    step = CALIBRATION_STEPS[0]
-    assert sizing.step_arcsec(step, 1000) is None  # no rate yet: timed bootstrap
-    sizing.learn_rate(
-        step, angular_arcsec=None, duration_ms=1000, responses={"left": _response(100.0)}
-    )
-    assert mount.rates[(A1, POS)] == pytest.approx(50.0)  # 100 px * 0.5"/px / 1 s
-    assert sizing.axis_net_arcsec[A1] == pytest.approx(50.0)  # the bootstrap is accounted
-    assert sizing.step_arcsec(step, 1000) == pytest.approx(50.0)
-    assert sizing.log[-1]["event"] == "rate_installed"
-
-
-def test_learning_skips_angular_moves_and_no_motion() -> None:
-    mount = _AngularMount()
-    sizing = _sizing(mount)
-    sizing.start(angular_only=False, cameras=_cameras(), distance_m=None)
-    step = CALIBRATION_STEPS[0]
-    sizing.learn_rate(
-        step, angular_arcsec=40.0, duration_ms=1000, responses={"left": _response(9.0)}
-    )
-    sizing.learn_rate(
-        step, angular_arcsec=None, duration_ms=1000, responses={"left": _response(0.5)}
-    )
-    assert mount.rates == {}
 
 
 def test_net_accounting_returns_the_mount() -> None:
@@ -224,7 +204,7 @@ def test_angular_only_runs_are_sized_up_front_and_return_by_angle() -> None:
     sizing = _sizing(mount)
     sizing.start(angular_only=True, cameras=None, distance_m=None)
     unit = sizing.unit_rate()
-    assert sizing.angular_active and sizing.angular_only and sizing.rate_preset is None
+    assert sizing.angular_active and sizing.angular_only
     step = CALIBRATION_STEPS[0]
     assert sizing.step_arcsec(step, 1000) == pytest.approx(unit)
     sizing.account_arcsec(step, 1000, unit)

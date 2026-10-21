@@ -5,25 +5,25 @@ calibrated nudges and screen moves were SOLVED from a matrix measured at the cal
 ("6", 20x) but EXECUTED at the nudge rate_preset ("7", 48x) -- a 2.4x over-move (a 100 px \
 nudge moved 240 px). Now a move solved from a matrix runs at the rate that matrix was measured \
 at (mount_align_positioning.execution_rate_preset); an uncalibrated nudge, sized from pulse_ms \
-at rate_preset, still runs at rate_preset."""
+at rate_preset, still runs at rate_preset. S6.8d (R9): the timed path and the rate presets are deleted (execution_rate_preset with them), so the mismatch can no longer occur; the original nodes (TestCalibratedMovesRunAtTheCalibrationRate) were removed and the requested-fraction AC is pinned on the production contract by TestCalibratedMovesMoveTheRequestedFraction."""
 modules = [
     "apps/collimation_tool/application/mount_align_positioning.py",
     "apps/collimation_tool/ui/mount_test_move_panel.py",
 ]
 fix_commits = ["1a89844"]
 dataset_uuids = ["de295656"]
-focused_command = "pytest -q tests/collimation/ui/test_calibration_sizing.py::TestCalibratedMovesRunAtTheCalibrationRate"
+focused_command = "pytest -q tests/collimation/ui/test_calibration_sizing.py::TestCalibratedMovesMoveTheRequestedFraction"
 broader_tier = "component"
 field_only_assumptions = [
     "Whether de295656's over-move was this rate mismatch is not confirmed -- the production OnStep mount over INDI is angular-only (no timed pulses), where the preset is ignored; this affects timed-capable mounts.",
 ]
 
 [[regression_tests]]
-node = "tests/collimation/ui/test_calibration_sizing.py::TestCalibratedMovesRunAtTheCalibrationRate::test_a_calibrated_nudge_moves_the_requested_fraction_of_the_frame"
-failed_before_fix = true
-evidence = "Failing regression written first, revert-proven 2026-10-13 in worktree wt-s66b-impl (execution_rate_preset -> settings.rate_preset): tests/collimation/ui/test_calibration_sizing.py:367: AssertionError: (240, '7') -- a 100 px nudge moved 240 px at preset 7"
+node = "tests/collimation/ui/test_calibration_sizing.py::TestCalibratedMovesMoveTheRequestedFraction::test_a_calibrated_nudge_moves_the_requested_fraction_of_the_frame"
+failed_before_fix = false
+reason_no_prefix_repro = "S6.8d replacement: the original node was revert-proven 2026-10-13 (wt-s66b-impl: a 100 px nudge moved 240 px at preset 7); its rate-preset path is deleted, so the fix can no longer be reverted -- this pins the same requested-fraction AC on the production contract."
 
 [[regression_tests]]
-node = "tests/collimation/ui/test_calibration_sizing.py::TestCalibratedMovesRunAtTheCalibrationRate::test_a_screen_move_runs_at_the_calibration_rate"
-failed_before_fix = true
-evidence = "Same revert: tests/collimation/ui/test_calibration_sizing.py:384: AssertionError: assert {'7'} == {'6'}"
+node = "tests/collimation/ui/test_calibration_sizing.py::TestCalibratedMovesMoveTheRequestedFraction::test_a_screen_move_is_an_angular_move"
+failed_before_fix = false
+reason_no_prefix_repro = "S6.8d replacement of test_a_screen_move_runs_at_the_calibration_rate (revert-proven 2026-10-13; rate presets now deleted): a calibrated screen move is an angular move, never a timed pulse."

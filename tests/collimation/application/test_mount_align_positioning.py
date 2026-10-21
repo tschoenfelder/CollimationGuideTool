@@ -1,5 +1,8 @@
 """S6.6a: Mount Align nudge / screen-move sizing and the one motion-submission point, moved out of
-`MountTestMovePanel` unchanged. Tested directly (no panel, no MainWindow, no Qt)."""
+`MountTestMovePanel` unchanged. Tested directly (no panel, no MainWindow, no Qt).
+
+S6.8d (R9): the timed nudge / screen move (`max_nudge_pulse_ms`, `runner.submit`) is deleted --
+a mount without angular moves is refused before anything is sent."""
 
 from __future__ import annotations
 
@@ -18,6 +21,7 @@ from collimation_tool.application.mount_align_motion import (
 )
 from collimation_tool.application.mount_align_plan import ScreenDirection
 from collimation_tool.application.mount_align_positioning import (
+    NO_ANGULAR_MOVE,
     cap_text,
     nudge_cap_arcsec,
     nudge_rate_arcsec_per_s,
@@ -62,7 +66,7 @@ def _nudge(**overrides: Any) -> Any:  # noqa: ANN401
         "matrix": None,
         "peek_frame": lambda: np.zeros((100, 400)),
         "mode": "terrestrial",
-        "angular_only": lambda: False,
+        "angular_only": lambda: True,
         "uncalibrated_arcsec": lambda: 100.0,
         "floor_arcsec": lambda: 30.0,
     }
@@ -75,8 +79,10 @@ def test_nudge_rate_and_cap() -> None:
     assert nudge_cap_arcsec(_SETTINGS) == pytest.approx(2.0 * rate_arcsec_per_s("6"))
     odd = MountAlignmentSettings(rate_preset="not-a-preset")
     assert nudge_rate_arcsec_per_s(odd) == angular_unit_rate(odd)
-    assert cap_text(_SETTINGS, False) == "2000ms"
-    assert cap_text(_SETTINGS, True) == f'{nudge_cap_arcsec(_SETTINGS):.0f}"'
+    assert cap_text(_SETTINGS) == f'{nudge_cap_arcsec(_SETTINGS):.0f}"'
+    assert cap_text(_SETTINGS, guide_pulse=True) == (
+        f'{nudge_cap_arcsec(_SETTINGS):.0f}" of guide pulses'
+    )
 
 
 def test_an_uncalibrated_nudge_uses_the_frame_fraction_or_the_fixed_pulse() -> None:
@@ -87,17 +93,27 @@ def test_an_uncalibrated_nudge_uses_the_frame_fraction_or_the_fixed_pulse() -> N
     assert uncalibrated_nudge_arcsec(_SETTINGS, "left", None, lambda: None) == fallback
 
 
-def test_an_uncalibrated_timed_nudge_is_the_fixed_pulse_and_never_peeks() -> None:
+def test_an_uncalibrated_nudge_never_peeks() -> None:
     plan = _nudge(peek_frame=lambda: pytest.fail("no peek without a calibration"))
     assert plan.move is not None and plan.error is None
-    assert (plan.move.duration_ms, plan.move.clamped, plan.move.arcsec) == (500, False, None)
+    assert (plan.move.clamped, plan.move.arcsec) == (False, 100.0)
+
+
+def test_a_mount_without_angular_moves_is_refused_before_anything_is_sent() -> None:
+    """S6.8d (R9): there is no timed nudge any more."""
+    assert _nudge(angular_only=lambda: False).error == NO_ANGULAR_MOVE
+    assert _nudge(angular_only=lambda: False, matrix=_matrix()).error == NO_ANGULAR_MOVE
+    assert _screen(angular_only=lambda: False).error == NO_ANGULAR_MOVE
 
 
 def test_a_calibrated_nudge_moves_half_the_frame_and_is_clamped_to_the_cap() -> None:
-    plan = _nudge(matrix=_matrix(0.1))  # 200 px at 0.1 px/ms = 2000 ms
-    assert plan.move is not None and (plan.move.duration_ms, plan.move.clamped) == (2000, False)
-    slow = _nudge(matrix=_matrix(0.05))  # 4000 ms -> capped
-    assert slow.move is not None and (slow.move.duration_ms, slow.move.clamped) == (2000, True)
+    unit = angular_unit_rate(_SETTINGS)
+    plan = _nudge(matrix=_matrix(0.1))  # 200 px at 0.1 px/ms = 2000 equivalent ms
+    assert plan.move is not None and not plan.move.clamped
+    assert plan.move.arcsec == pytest.approx(2000 * unit / 1000.0)
+    slow = _nudge(matrix=_matrix(0.001))  # 200000 equivalent ms -> capped
+    assert slow.move is not None and slow.move.clamped
+    assert slow.move.arcsec == pytest.approx(nudge_cap_arcsec(_SETTINGS))
 
 
 def test_calibrated_nudge_refusals_and_notices() -> None:
@@ -134,18 +150,19 @@ def _screen(**overrides: Any) -> Any:  # noqa: ANN401
         "fraction": 0.1,
         "frame": np.zeros((100, 400)),
         "mode": "star",
-        "angular_only": lambda: False,
+        "angular_only": lambda: True,
         "floor_arcsec": lambda: 0.0,
     }
     values.update(overrides)
     return plan_screen_move(**values)
 
 
-def test_a_timed_screen_move_is_solved_from_the_matrix() -> None:
-    plan = _screen()  # 40 px right = RA+ 400 ms
-    assert plan.motion == [(A1, POS, 400)] and not plan.clamped and not plan.angular
-    capped = _screen(fraction=10.0)
-    assert capped.motion == [(A1, POS, 2000)] and capped.clamped
+def test_a_screen_move_is_solved_from_the_matrix_as_an_angle() -> None:
+    unit = angular_unit_rate(_SETTINGS)
+    plan = _screen()  # 40 px right = RA+ 400 equivalent ms
+    assert plan.motion is not None and plan.angular and not plan.clamped
+    assert [step[:3] for step in plan.motion] == [(A1, POS, 400)]
+    assert plan.motion[0][3] == pytest.approx(400 * unit / 1000.0)
 
 
 def test_screen_move_refusals_and_notices() -> None:
@@ -165,18 +182,6 @@ class _Runner:
     def __init__(self) -> None:
         self.calls: list[tuple[str, Any, dict[str, object]]] = []
 
-    def submit(
-        self,
-        park: object,
-        mount: object,
-        axis: MountAxis,
-        direction: AxisDirection,
-        pulse_ms: int,
-        **kwargs: object,
-    ) -> bool:
-        self.calls.append(("submit", (axis, direction, pulse_ms), kwargs))
-        return True
-
     def submit_sequence(
         self, park: object, mount: object, steps: Sequence[MotionStep], **kwargs: object
     ) -> bool:
@@ -184,21 +189,19 @@ class _Runner:
         return True
 
 
-def test_a_move_without_an_angle_is_a_timed_pulse_else_an_angular_sequence() -> None:
+def test_every_move_is_one_submitted_sequence() -> None:
+    """S6.8d (R9): no timed `runner.submit`; an axis move without an angle is submitted as-is
+    (the runner refuses it before anything is sent)."""
     runner = _Runner()
     park: Any = object()
     mount: Any = object()
-    options = {"rate_preset": "6", "park_after": False, "settle_ms": 7}
     port: Any = runner
-    timed = submit_axis_move(port, park, mount, A1, POS, 300, None, rate_preset="6", settle_ms=7)
-    angular = submit_axis_move(port, park, mount, A2, NEG, 300, 45.0, rate_preset="6", settle_ms=7)
-    sequence = submit_motion_sequence(
-        port, park, mount, [(A1, POS, 10)], rate_preset=None, settle_ms=0
-    )
-    assert timed and angular and sequence
-    unpreset = {"rate_preset": None, "park_after": False, "settle_ms": 0}
+    unsized = submit_axis_move(port, park, mount, A1, POS, 300, None, settle_ms=7)
+    angular = submit_axis_move(port, park, mount, A2, NEG, 300, 45.0, settle_ms=7)
+    sequence = submit_motion_sequence(port, park, mount, [(A1, POS, 10)], settle_ms=0)
+    assert unsized and angular and sequence
     assert runner.calls == [
-        ("submit", (A1, POS, 300), options),
-        ("submit_sequence", [(A2, NEG, 300, 45.0)], options),
-        ("submit_sequence", [(A1, POS, 10)], unpreset),
+        ("submit_sequence", [(A1, POS, 300)], {"settle_ms": 7}),
+        ("submit_sequence", [(A2, NEG, 300, 45.0)], {"settle_ms": 7}),
+        ("submit_sequence", [(A1, POS, 10)], {"settle_ms": 0}),
     ]

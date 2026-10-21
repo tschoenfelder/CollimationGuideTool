@@ -438,21 +438,12 @@ class TestAngularMotion:
         assert not result.accepted
         assert client.axis_move_calls == []
 
-    def test_install_rate_is_accepted_but_never_required(self) -> None:
-        """Unlike 0.3.5, `move_angular` needs no installed rate at all --
-        `install_rate`/`installed_rate` are kept only for API compatibility."""
+    def test_a_move_needs_no_installed_rate(self) -> None:
+        """S6.8d (R9): the former accepted-but-unused `install_rate`/`installed_rate` are gone --
+        the degree-target move needs no rate, in either direction."""
         pulse, client = self._ready()
-        assert pulse.installed_rate(MountAxis.AXIS1, AxisDirection.POSITIVE) is None
-        pulse.install_rate(MountAxis.AXIS1, AxisDirection.POSITIVE, 120.0)
-        assert pulse.installed_rate(MountAxis.AXIS1, AxisDirection.POSITIVE) == 120.0
-        # ... yet a move works before any rate is installed for the OTHER direction:
+        assert not hasattr(pulse, "install_rate") and not hasattr(pulse, "installed_rate")
         assert pulse.move_angular(MountAxis.AXIS1, AxisDirection.NEGATIVE, 1000.0).accepted
-
-    def test_invalid_rates_are_still_rejected(self) -> None:
-        pulse, _ = self._ready()
-        for bad in (0.0, -3.0, float("nan"), float("inf")):
-            with pytest.raises(ValueError):
-                pulse.install_rate(MountAxis.AXIS1, AxisDirection.POSITIVE, bad)
 
     def test_angular_moves_map_to_signed_degree_offsets(self) -> None:
         pulse, client = self._ready()

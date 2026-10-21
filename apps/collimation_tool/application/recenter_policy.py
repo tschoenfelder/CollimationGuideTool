@@ -6,13 +6,11 @@ Redesigned (not a literal port) from smart_telescope's
 implementation derived pulse duration from a theoretical sidereal-rate
 constant (`pixel_scale_arcsec` + a guide-rate fraction) and called the old
 MountPort's `guide(direction: str, duration_ms)` using an assumed image-
-orientation sign convention (`dx>0 -> "w"`, `dy>0 -> "n"`). The new
-MountPort only has `pulse_axis(axis, direction, duration_ms)`; rather than
+orientation sign convention (`dx>0 -> "w"`, `dy>0 -> "n"`). Rather than
 reintroduce sidereal-rate arithmetic or an assumed orientation, this
 policy uses Stage 4's empirically measured `CalibrationMatrix` directly:
-`duration_ms = |offset_component_px| / measured_px_per_ms`, and picks
-whichever `AxisDirection`'s calibrated response vector actually opposes
-the measured error (by its measured sign, not an assumed convention).
+each correction is solved in 2-D from the measured responses, whose signs (not an assumed
+convention) pick the `AxisDirection` that opposes the measured error.
 
 Tolerance/settle/divergence-guard fields port near-verbatim from
 `MountCenteringConfig`. One behavior change from the source (see
@@ -29,11 +27,9 @@ the two axis moves of one 2-D plan), not only between corrections. The policy ru
 `abort()` (fine-collimation Cancel) cancels the claim, which ends a settle at once and stops the
 loop, and stops a running GOTO through the mount's own lock-free Stop.
 
-Mounts without timed pulses (S6.0b, #39 / audit P01). OnStepAdapter >= 0.4 over INDI has no
-timed primitive: `OnStepMountPulseAdapter.capabilities().supports_pulse_guiding` is False and
-its `pulse_axis` always refuses -- the single authoritative capability source, the same one
-Mount Align's `supports_timed_pulse` reads. On such a mount every correction is an angular
-`move_angular`, never a `pulse_axis`, and it is solved in 2-D from BOTH axes' measured
+Angular corrections (S6.0b, #39 / audit P01). OnStepAdapter >= 0.4 over INDI has no timed
+primitive, so every correction (without `guide_pulses`) is an angular `move_angular`, never a
+`pulse_axis`, and it is solved in 2-D from BOTH axes' measured
 responses (`solve_screen_move`), so a camera rotated arbitrarily against the mount axes (or
 seeing an axis inverted) converges -- review of S6.0b: mapping image x to RA and y to Dec
 diverged at 90 degrees. On these mounts Mount Align stores the matrix in equivalent ms at
@@ -56,9 +52,8 @@ below a pixel at any practical guide rate), and nothing at all is sent when ever
 A refused/failed pulse ends the loop as `pulse_rejected` with the adapter's message; OnStepAdapter
 warnings (e.g. meridian_flip_required) and "tracking is now OFF" are carried on the result.
 
-The timed path (mounts that report timed pulses) is unchanged and still maps image x to AXIS1
-and y to AXIS2 -- rotation-blind, pinned as a known defect by a strict xfail
-(test_recenter_policy.py::TestTimedPathRotation); no production timed mount is wired today.
+S6.8d (R9, movement-paths D5): the timed path (one `pulse_axis` on the dominant axis, mapping
+image x to AXIS1 and y to AXIS2 -- rotation-blind) is gone; no production mount had timed pulses.
 """
 
 from __future__ import annotations
@@ -95,8 +90,8 @@ _LOCKED_STATES = (TrackingState.LOCKED, TrackingState.REACQUIRED)
 _log = logging.getLogger(__name__)
 
 _NO_MOTION_PRIMITIVE = (
-    "this mount reports no timed pulse support (capabilities().supports_pulse_guiding is "
-    "False) and offers no angular move -- nothing was sent to the mount"
+    "this mount offers no angular move (capabilities().supports_angular_moves is False) -- "
+    "nothing was sent to the mount"
 )
 
 #: S6.0b: in this closed loop a sub-floor component may be dropped when the image error it
@@ -148,8 +143,8 @@ class MountCorrectionResult:
     pulse_rejected, max_pulses, cancelled, below_mount_minimum_move,
     move_cap_below_mount_minimum, calibration_degenerate.
 
-    `pulse_rejected`: the mount refused a correction (timed pulse or angular move) --
-    `message` carries the adapter's own reason. Mounts without timed pulses only, nothing sent
+    `pulse_rejected`: the mount refused a correction (angular move or guide pulse) --
+    `message` carries the adapter's own reason. Angular corrections only, nothing sent
     in each case: `below_mount_minimum_move` -- the remaining correction needs a component
     smaller than the smallest angular move the mount accepts (`success` then says whether the
     residual is within `rough_tolerance_px`, the criterion `max_pulses` uses, or within the
@@ -188,11 +183,11 @@ class CollimationRecenterPolicy:
         """`motion_claim` (S6.8a): the executor claim this correction runs under -- its
         cancel (Stop / Cancel) ends a settle at once and stops the loop. None = no claim.
 
-        `center_rate_x`: the unit the matrix's equivalent ms are in on a mount without timed
+        `center_rate_x`: the unit the matrix's equivalent ms are in for angular
         pulses -- pass the loaded `MountAlignmentSettings.calibration_center_rate_x` (the
-        matrix was stored with it); None = that setting's own default. Unused on timed mounts.
+        matrix was stored with it); None = that setting's own default. Unused for guide pulses.
 
-        `max_step_px` (mounts without timed pulses): the largest image shift one angular move
+        `max_step_px`: the largest image shift one angular move
         may produce, per axis, converted to arcsec through the measured matrix -- the caller
         sizes it from the camera frame (see `FocusedStarAcquisition`). None = the fixed
         `max_pulse_ms` cap in the configured unit (~60" at 8x).
@@ -225,7 +220,6 @@ class CollimationRecenterPolicy:
         pulses = 0
         prev_dist: float | None = None
         diverge_count = 0
-        timed = bool(self._mount.capabilities().supports_pulse_guiding)
         warnings: set[str] = set()
 
         def finish(result: MountCorrectionResult) -> MountCorrectionResult:
@@ -258,7 +252,7 @@ class CollimationRecenterPolicy:
                 diverge_count = max(0, diverge_count - 1)
             prev_dist = dist
 
-            planned = self._plan(dx, dy, timed)
+            planned = self._plan(dx, dy)
             if isinstance(planned, _NotSent):
                 if planned.reason == "below_mount_minimum_move":
                     return finish(self._below_floor_result(pulses, dist, planned.message))
@@ -318,10 +312,10 @@ class CollimationRecenterPolicy:
             return True
         return cancel_check is not None and cancel_check()
 
-    def _plan(self, dx: float, dy: float, timed: bool) -> list[_CorrectionStep] | _NotSent:
+    def _plan(self, dx: float, dy: float) -> list[_CorrectionStep] | _NotSent:
         if self._guide_pulses:
             return self._guide_correction(dx, dy)
-        return self._timed_correction(dx, dy) if timed else self._angular_correction(dx, dy)
+        return self._angular_correction(dx, dy)
 
     def _fastest_px_per_ms(self, axis: MountAxis) -> float:
         return max(
@@ -359,18 +353,6 @@ class CollimationRecenterPolicy:
                 f"({shortest} ms) -- nothing was sent",
             )
         return steps
-
-    def _timed_correction(self, dx: float, dy: float) -> list[_CorrectionStep]:
-        """One timed pulse on the dominant axis (unchanged pre-S6.0b behaviour)."""
-        axis = MountAxis.AXIS1 if abs(dx) >= abs(dy) else MountAxis.AXIS2
-        offset_component = dx if axis is MountAxis.AXIS1 else dy
-        direction = self._direction_opposing(axis, offset_component)
-        axis_response = self._calibration.response_for(axis, direction)
-        px_per_ms = max(axis_response.px_per_ms, 1e-9)
-        duration_ms = max(
-            1, min(self._config.max_pulse_ms, round(abs(offset_component) / px_per_ms))
-        )
-        return [partial(self._mount.pulse_axis, axis, direction, duration_ms)]
 
     def _angular_correction(self, dx: float, dy: float) -> list[_CorrectionStep] | _NotSent:
         """The angular moves (at most one per axis) that bring the star from (dx, dy) toward
@@ -465,13 +447,3 @@ class CollimationRecenterPolicy:
             ms = self._max_step_px / max(px_per_ms, 1e-9)
             caps[axis] = max(floor, equivalent_ms_to_arcsec(ms, center_rate_x=self._center_rate_x))
         return caps
-
-    def _direction_opposing(self, axis: MountAxis, offset_component: float) -> AxisDirection:
-        """Pick the AxisDirection whose calibrated response opposes offset_component."""
-        positive_response = self._calibration.response_for(axis, AxisDirection.POSITIVE)
-        positive_component = (
-            positive_response.dx_px if axis is MountAxis.AXIS1 else positive_response.dy_px
-        )
-        if (positive_component > 0) != (offset_component > 0):
-            return AxisDirection.POSITIVE
-        return AxisDirection.NEGATIVE

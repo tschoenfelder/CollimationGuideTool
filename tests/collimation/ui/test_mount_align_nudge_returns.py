@@ -23,7 +23,7 @@ from astrotool_core.acquisition.stable_frame_acquisition import (
 from astrotool_core.config import MountAlignmentSettings
 from astrotool_core.mount import AxisDirection, MountAxis
 from astrotool_core.mount.operating_mode import OperatingMode, TrackingEnforcer
-from astrotool_core.testing.fake_mount import FakeMountAdapter
+from astrotool_core.testing.fake_mount import FakeAngularMountAdapter
 from astrotool_core.testing.fake_mount_park import FakeMountPark
 from astrotool_core.timing import FakeClock
 from collimation_tool.ui.mount_test_move_panel import MountTestMovePanel
@@ -51,8 +51,8 @@ class _SlowCamera:
         )
 
 
-def _panel(camera: _SlowCamera) -> tuple[MountTestMovePanel, FakeMountAdapter]:
-    mount = FakeMountAdapter()
+def _panel(camera: _SlowCamera) -> tuple[MountTestMovePanel, FakeAngularMountAdapter]:
+    mount = FakeAngularMountAdapter()
     park = FakeMountPark(start_parked=False)
     panel = MountTestMovePanel(
         mount,
@@ -85,9 +85,9 @@ def test_the_move_is_sent_at_once_without_waiting_for_a_before_capture(qapp: obj
     panel, mount = _panel(camera)
 
     panel._on_nudge_clicked("left", MountAxis.AXIS1, AxisDirection.POSITIVE)
-    _until(lambda: mount.pulse_log, panel)
+    _until(lambda: mount.angular_log, panel)
 
-    assert mount.pulse_log[0][:2] == (MountAxis.AXIS1, AxisDirection.POSITIVE)
+    assert mount.angular_log[0][:2] == (MountAxis.AXIS1, AxisDirection.POSITIVE)
     camera.release.set()
     panel.stop()
 
@@ -99,7 +99,10 @@ def test_the_nudge_returns_when_the_move_completes_while_the_check_still_runs(
     panel, mount = _panel(camera)
 
     panel._on_nudge_clicked("left", MountAxis.AXIS1, AxisDirection.POSITIVE)
-    _until(lambda: mount.pulse_log and panel._pending is None and not panel._runner.is_busy, panel)
+    _until(
+        lambda: mount.angular_log and panel._pending is None and not panel._runner.is_busy,
+        panel,
+    )
 
     assert "done" in panel._result_label.text(), panel._result_label.text()
     assert panel._nudge_buttons["left"]["RA +"].isEnabled()  # the controls are back
@@ -117,7 +120,10 @@ def test_a_new_move_abandons_a_running_check(qapp: object) -> None:
     camera = _SlowCamera()
     panel, mount = _panel(camera)
     panel._on_nudge_clicked("left", MountAxis.AXIS1, AxisDirection.POSITIVE)
-    _until(lambda: mount.pulse_log and panel._pending is None and not panel._runner.is_busy, panel)
+    _until(
+        lambda: mount.angular_log and panel._pending is None and not panel._runner.is_busy,
+        panel,
+    )
     first_check = panel._nudge_check_job
     assert first_check is not None
 
@@ -160,7 +166,7 @@ def test_an_abandoned_check_never_sends_a_tracking_command(qapp: object) -> None
     camera = _SlowCamera()
     camera.release.set()
     park = _GatedPark()
-    mount = FakeMountAdapter()
+    mount = FakeAngularMountAdapter()
     panel = MountTestMovePanel(
         mount,
         mount_park=park,

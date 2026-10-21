@@ -1,6 +1,8 @@
 """MountTestMoveRunner timing (issue #53, S3b): every runner wait -- the fresh
-park reading (S6.0c), the unpark/re-park confirmation, the stop_tracking gate
-delay, rejection retries and the settle -- and what Stop does in each of them.
+park reading (S6.0c), the unpark confirmation and the settle -- and what Stop does in each
+of them. S6.8d (R9): the timed path's waits (rejection retries, the re-park confirmation) are
+gone with it, and so are their tests; the moves are angular steps on the production-shaped
+`FakeAngularMountAdapter`.
 
 Two sections:
 
@@ -22,13 +24,15 @@ from collections.abc import Callable
 import pytest
 from astrotool_core.mount.park_port import MountParkPort, MountParkStatus
 from astrotool_core.mount.port import AxisDirection, CommandResult, MountAxis
-from astrotool_core.testing.fake_mount import FakeMountAdapter
+from astrotool_core.testing.fake_mount import FakeAngularMountAdapter
 from astrotool_core.testing.fake_mount_park import FakeMountPark
 from astrotool_core.timing import SYSTEM_CLOCK, FakeClock
 from collimation_tool.ui import mount_test_move_runner as runner_module
 from collimation_tool.ui.mount_test_move_runner import MountPulseOutcome, MountTestMoveRunner
 
 _A1P = (MountAxis.AXIS1, AxisDirection.POSITIVE)
+#: One angular axis step (100 equivalent ms, 12").
+_STEP = [(MountAxis.AXIS1, AxisDirection.POSITIVE, 100, 12.0)]
 
 
 def _drain(runner: MountTestMoveRunner, *, timeout_s: float = 5.0) -> MountPulseOutcome:
@@ -97,22 +101,17 @@ class _StopOnStatusCall(_ScriptedPark):
         return super().status()
 
 
-class _StopDuringMove(FakeMountAdapter):
-    """Presses Stop while the (accepted) pulse is in the adapter."""
+class _StopDuringMove(FakeAngularMountAdapter):
+    """Presses Stop while the (accepted) move is in the adapter."""
 
     def __init__(self, runner: MountTestMoveRunner) -> None:
         super().__init__()
         self._runner = runner
 
-    def pulse_axis(
-        self,
-        axis: MountAxis,
-        direction: AxisDirection,
-        duration_ms: int,
-        *,
-        rate_preset: str | None = None,
+    def move_angular(
+        self, axis: MountAxis, direction: AxisDirection, arcsec: float
     ) -> CommandResult:
-        result = super().pulse_axis(axis, direction, duration_ms, rate_preset=rate_preset)
+        result = super().move_angular(axis, direction, arcsec)
         self._runner.abort()
         return result
 
@@ -124,85 +123,64 @@ class TestCharacterizationBeforeS3b:
     @pytest.fixture(autouse=True)
     def _fast_constants(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setattr(runner_module, "_UNPARK_TIMEOUT_S", 0.05)
-        monkeypatch.setattr(runner_module, "_REPARK_TIMEOUT_S", 0.05)
         monkeypatch.setattr(runner_module, "_PARK_POLL_INTERVAL_S", 0.005)
-        monkeypatch.setattr(runner_module, "_PULSE_REJECTION_RETRY_DELAY_S", 0.001)
 
     def test_a_park_state_never_read_freshly_sends_nothing_at_all(self) -> None:
         park = _ScriptedPark(lambda _i: (True, False))  # connection busy throughout
-        mount = FakeMountAdapter()
+        mount = FakeAngularMountAdapter()
         mount.connect()
         runner = MountTestMoveRunner()
-        runner.submit(park, mount, *_A1P, 100, park_after=False)
+        runner.submit_sequence(park, mount, _STEP)
         outcome = _drain(runner)
         assert outcome.pulsed is False
         assert outcome.error == runner_module._PARK_STATE_UNKNOWN
         assert park.commands == []  # not even unpark/stop_tracking
-        assert mount.pulse_log == []
+        assert mount.angular_log == []
         assert outcome.motion_started_at is None and outcome.settled_at is None
 
     def test_an_unpark_confirmation_lost_to_a_busy_connection_says_so(self) -> None:
         # Decision reading fresh+parked; afterwards every reading is held over (busy).
         park = _ScriptedPark(lambda i: (True, i == 0))
-        mount = FakeMountAdapter()
+        mount = FakeAngularMountAdapter()
         mount.connect()
         runner = MountTestMoveRunner()
-        runner.submit(park, mount, *_A1P, 100, park_after=False)
+        runner.submit_sequence(park, mount, _STEP)
         outcome = _drain(runner)
         assert outcome.pulsed is False
         assert outcome.error is not None
         assert "stayed busy (no fresh reading)" in outcome.error
         assert park.commands == ["unpark"]
-        assert mount.pulse_log == []
+        assert mount.angular_log == []
 
     def test_an_unpark_never_confirmed_on_fresh_readings_says_not_confirmed(self) -> None:
         park = _ScriptedPark(lambda _i: (True, True))  # stays parked, readings fresh
-        mount = FakeMountAdapter()
+        mount = FakeAngularMountAdapter()
         mount.connect()
         runner = MountTestMoveRunner()
-        runner.submit(park, mount, *_A1P, 100, park_after=False)
+        runner.submit_sequence(park, mount, _STEP)
         outcome = _drain(runner)
         assert outcome.error is not None and "(not confirmed)" in outcome.error
-        assert mount.pulse_log == []
-
-    def test_a_rejected_pulse_is_attempted_exactly_the_retry_budget_then_reported(
-        self,
-    ) -> None:
-        mount = FakeMountAdapter(reject_first_n_pulses=999)
-        mount.connect()
-        runner = MountTestMoveRunner()
-        runner.submit(FakeMountPark(start_parked=True), mount, *_A1P, 100, park_after=False)
-        outcome = _drain(runner)
-        assert outcome.pulsed is False
-        assert mount._pulse_attempt_count == runner_module._PULSE_REJECTION_RETRIES  # noqa: SLF001
-        assert outcome.error is not None and "still parked?" in outcome.error
+        assert mount.angular_log == []
 
     def test_stop_pressed_during_the_fresh_park_wait_sends_no_step(self) -> None:
         runner = MountTestMoveRunner()
         # 1st reading held over (busy) -> the worker waits; Stop arrives on the 2nd poll,
         # which is fresh and parked.
         park = _StopOnStatusCall(lambda i: (i < 2, i >= 1), runner, n=1)
-        mount = FakeMountAdapter()
+        mount = FakeAngularMountAdapter()
         mount.connect()
-        runner.submit(park, mount, *_A1P, 100, park_after=False)
+        runner.submit_sequence(park, mount, _STEP)
         outcome = _drain(runner)
         assert outcome.pulsed is False
         assert outcome.error is not None and "stopped by the user" in outcome.error
-        assert mount.pulse_log == []
+        assert mount.angular_log == []
 
     def test_stop_during_the_last_move_skips_the_settle(self) -> None:
         runner = MountTestMoveRunner()
         mount = _StopDuringMove(runner)
         mount.connect()
         started = time.monotonic()
-        runner.submit(
-            FakeMountPark(start_parked=True),
-            mount,
-            *_A1P,
-            100,
-            park_after=False,
-            settle_ms=5000,
-        )
+        runner.submit_sequence(FakeMountPark(start_parked=True), mount, _STEP, settle_ms=5000)
         outcome = _drain(runner, timeout_s=3.0)
         assert time.monotonic() - started < 3.0  # the 5 s settle never ran
         assert outcome.pulsed is True  # the move itself was accepted
@@ -278,25 +256,20 @@ class _TimedPark(MountParkPort):
         self.commands.append(("start_tracking", self._clock.monotonic()))
 
 
-class _StampedMount(FakeMountAdapter):
-    """Connected `FakeMountAdapter` that records the clock time of every pulse attempt."""
+class _StampedMount(FakeAngularMountAdapter):
+    """Connected production-shaped fake that records the clock time of every move."""
 
-    def __init__(self, clock: FakeClock, *, reject_first_n_pulses: int = 0) -> None:
-        super().__init__(reject_first_n_pulses=reject_first_n_pulses)
+    def __init__(self, clock: FakeClock) -> None:
+        super().__init__()
         self._clock = clock
         self.attempted_at: list[float] = []
         self.connect()
 
-    def pulse_axis(
-        self,
-        axis: MountAxis,
-        direction: AxisDirection,
-        duration_ms: int,
-        *,
-        rate_preset: str | None = None,
+    def move_angular(
+        self, axis: MountAxis, direction: AxisDirection, arcsec: float
     ) -> CommandResult:
         self.attempted_at.append(self._clock.monotonic())
-        return super().pulse_axis(axis, direction, duration_ms, rate_preset=rate_preset)
+        return super().move_angular(axis, direction, arcsec)
 
 
 @pytest.fixture
@@ -304,20 +277,18 @@ def exact_polling(monkeypatch: pytest.MonkeyPatch) -> None:
     """Binary-exact poll interval and timeouts, so the boundary instants are exact."""
     monkeypatch.setattr(runner_module, "_PARK_POLL_INTERVAL_S", 0.25)
     monkeypatch.setattr(runner_module, "_UNPARK_TIMEOUT_S", 1.0)
-    monkeypatch.setattr(runner_module, "_REPARK_TIMEOUT_S", 1.0)
 
 
 def _run(
     clock: FakeClock,
     park: MountParkPort,
-    mount: FakeMountAdapter,
+    mount: FakeAngularMountAdapter,
     *,
     settle_ms: int = 0,
-    park_after: bool = False,
     runner: MountTestMoveRunner | None = None,
 ) -> MountPulseOutcome:
     runner = runner or MountTestMoveRunner(clock=clock)
-    assert runner.submit(park, mount, *_A1P, 100, park_after=park_after, settle_ms=settle_ms)
+    assert runner.submit_sequence(park, mount, _STEP, settle_ms=settle_ms)
     return _drain(runner)
 
 
@@ -413,22 +384,6 @@ class TestGateDelayAndRetries:
         assert clock.sleeps == []
         assert mount.attempted_at == [0.0]
 
-    @pytest.mark.parametrize(
-        ("rejections", "pulsed"),
-        [(5, True), (6, False)],
-        ids=["accepted_on_the_last_allowed_attempt", "budget_exhausted"],
-    )
-    def test_the_retry_budget_boundary(self, rejections: int, pulsed: bool) -> None:
-        clock = FakeClock()
-        mount = _StampedMount(clock, reject_first_n_pulses=rejections)
-        outcome = _run(clock, _TimedPark(clock), mount, settle_ms=2000)
-        assert outcome.pulsed is pulsed
-        # 6 attempts at most, 0.3 s apart; no wait after the last attempt
-        assert mount.attempted_at == pytest.approx([0.3 * i for i in range(6)])
-        retry_waits = [0.3] * 5
-        assert clock.sleeps == (retry_waits + [2.0] if pulsed else retry_waits)
-
-
 class TestSettle:
     def test_the_settle_is_exactly_settle_ms_after_the_last_move(self) -> None:
         clock = FakeClock()
@@ -440,9 +395,7 @@ class TestSettle:
     def test_the_runner_stays_busy_until_the_last_instant_of_the_settle(self) -> None:
         clock = FakeClock(auto_advance=False)
         runner = MountTestMoveRunner(clock=clock)
-        runner.submit(
-            _TimedPark(clock), _StampedMount(clock), *_A1P, 100, park_after=False, settle_ms=750
-        )
+        runner.submit_sequence(_TimedPark(clock), _StampedMount(clock), _STEP, settle_ms=750)
         assert clock.wait_for_sleepers(1)
         clock.advance(0.5)
         assert runner.is_busy and runner.take_latest() is None
@@ -451,31 +404,10 @@ class TestSettle:
         assert outcome.settled_at == 0.75 and outcome.pulsed is True
 
 
-class TestRepark:
-    def test_park_after_waits_for_the_park_confirmation(self, exact_polling: None) -> None:
-        clock = FakeClock()
-        park = _TimedPark(clock, park_delay_s=0.5)
-        outcome = _run(clock, park, _StampedMount(clock), park_after=True)
-        assert outcome.error is None and outcome.pulsed is True
-        assert [name for name, _t in park.commands] == ["unpark", "park"]
-        assert clock.monotonic() == 0.5
-
-    def test_a_park_never_confirmed_is_reported_after_the_repark_deadline(
-        self, exact_polling: None
-    ) -> None:
-        clock = FakeClock()
-        park = _TimedPark(clock, park_delay_s=None)
-        outcome = _run(clock, park, _StampedMount(clock), park_after=True)
-        assert outcome.pulsed is True
-        assert outcome.error == "mount did not confirm re-parked in time (not confirmed)"
-        assert clock.monotonic() == 1.0
-
-
 class TestStopInEachWaitState:
     """Stop (`abort()`) pressed while the worker is inside each wait. S6.3: every wait takes
     the Stop event, so it ends AT the Stop instant (fake time) instead of running to its end;
-    nothing further is sent to the mount after Stop -- no unpark, no further
-    pulse or retry, no re-park command (a re-park already commanded is no longer awaited).
+    nothing further is sent to the mount after Stop -- no unpark, no further move.
     Before S6.3 (S3b pins) each wait ran to its end and only the next step was skipped."""
 
     def test_stop_during_the_fresh_park_wait(self, exact_polling: None) -> None:
@@ -501,23 +433,10 @@ class TestStopInEachWaitState:
         assert mount.attempted_at == []
         assert clock.monotonic() == 0.3
 
-    def test_stop_during_a_rejection_retry_delay_sends_no_further_attempt(self) -> None:
-        clock = FakeClock()
-        runner = MountTestMoveRunner(clock=clock)
-        clock.call_at(0.1, runner.abort)
-        mount = _StampedMount(clock, reject_first_n_pulses=1)
-        outcome = _run(clock, _TimedPark(clock), mount, runner=runner)
-        assert mount.attempted_at == [0.0]
-        assert outcome.pulsed is False
-        assert outcome.error is not None and "stopped by the user" in outcome.error
-        assert clock.monotonic() == 0.1
-
     def test_stop_during_the_settle_ends_the_settle(self) -> None:
         clock = FakeClock(auto_advance=False)
         runner = MountTestMoveRunner(clock=clock)
-        runner.submit(
-            _TimedPark(clock), _StampedMount(clock), *_A1P, 100, park_after=False, settle_ms=750
-        )
+        runner.submit_sequence(_TimedPark(clock), _StampedMount(clock), _STEP, settle_ms=750)
         assert clock.wait_for_sleepers(1)
         clock.advance(0.25)
         runner.abort()
@@ -527,26 +446,3 @@ class TestStopInEachWaitState:
         # move itself was accepted, the settle is skipped from the Stop on.
         assert outcome.pulsed is True and outcome.error is None
         assert outcome.settled_at == 0.25
-
-    def test_stop_during_the_repark_wait_ends_the_wait(self, exact_polling: None) -> None:
-        clock = FakeClock()
-        runner = MountTestMoveRunner(clock=clock)
-        clock.call_at(0.25, runner.abort)
-        park = _TimedPark(clock, park_delay_s=0.5)
-        outcome = _run(clock, park, _StampedMount(clock), park_after=True, runner=runner)
-        assert outcome.pulsed is True
-        assert outcome.error is not None and "stopped by the user" in outcome.error
-        assert "re-park" in outcome.error
-        assert [name for name, _t in park.commands] == ["unpark", "park"]
-        assert clock.monotonic() == 0.25  # no longer waits for the park confirmation
-
-    def test_stop_before_the_repark_sends_no_park_command(self) -> None:
-        clock = FakeClock()
-        runner = MountTestMoveRunner(clock=clock)
-        mount = _StopDuringMove(runner)
-        mount.connect()
-        park = _TimedPark(clock)
-        outcome = _run(clock, park, mount, park_after=True, runner=runner)
-        assert outcome.pulsed is True
-        assert [name for name, _t in park.commands] == ["unpark"]
-        assert outcome.error is not None and "re-park" in outcome.error

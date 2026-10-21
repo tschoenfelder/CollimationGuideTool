@@ -42,7 +42,7 @@ field_only_assumptions = [
     "A Stop during a reacquisition GOTO is honoured by OnStep (S6.0c's assumption); the reacquisition's own cancel_check does not interrupt a running GOTO.",
 ]
 gaps = [
-    "Timed path (no production timed mount wired) is rotation-blind: pinned by the strict xfail TestTimedPathRotation, not fixed (frozen in S6.0b).",
+    "S6.8d (R9, D5): the rotation-blind timed path is deleted, and with it the strict xfail TestTimedPathRotation and the node test_recenter_policy.py::TestTimedPathCharacterization (removed from this manifest).",
     "cancel_check is consulted between corrections only; a running angular GOTO is not interrupted by the reacquisition's cancel (recorded by the coordinator).",
     "No fresh-frame check after each move (S6.7).",
     "OnStepAdapter's 10-degree maximum is not reported by the adapter (only min_angular_arcsec is); the frame/tracker-sized step stays far below it, and a refusal beyond it would be surfaced.",
@@ -201,11 +201,6 @@ reason_no_prefix_repro = "Pins the new single owner of the S6.0 ms<->arcsec fact
 node = "tests/collimation/application/test_angular_move_plan.py"
 failed_before_fix = false
 reason_no_prefix_repro = "Pins the shared angular planning rule moved out of MountTestMovePanel._plan_angular_screen_move (screen-move behaviour unchanged; its panel tests stay green) and its per-axis caps (absent before the re-review fix: TypeError at test_angular_move_plan.py:146)."
-
-[[regression_tests]]
-node = "tests/collimation/application/test_recenter_policy.py::TestTimedPathCharacterization"
-failed_before_fix = false
-reason_no_prefix_repro = "Characterization of the timed path, written and run green on HEAD before the change; frozen behaviour for timed-capable mounts."
 
 [[regression_tests]]
 node = "tests/collimation/application/test_recenter_policy.py::TestAngularPathWithoutAUsableMotion"

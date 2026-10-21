@@ -8,13 +8,14 @@ modules = [
 ]
 fix_commits = ["4b94860"]
 dataset_uuids = []
-focused_command = """pytest -q \ntests/core/mount/test_movement_sizing.py::TestRates \ntests/core/mount/test_movement_sizing.py::TestFirstMoveSeed \ntests/core/mount/test_movement_sizing.py::TestMeasuredFraction \ntests/core/mount/test_movement_sizing.py::TestAdaptiveResizing \ntests/core/mount/test_movement_sizing.py::TestWideCameraFollowUp \ntests/collimation/ui/test_calibration_sizing.py \ntests/collimation/ui/test_calibration_angular.py::TestBootstrapThenAngular \ntests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestCalibrationMovesTheRealAdapter::test_the_first_move_is_the_up_front_25_percent_angular_seed \ntests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestCalibrationMovesTheRealAdapter::test_the_wide_camera_gets_its_own_larger_angular_follow_up \ntests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestStopDuringABlockingAngularGoto::test_the_nudge_click_that_starts_a_goto_does_not_block_the_gui_thread \ntests/collimation/ui/test_calibration_frame_validity.py::TestStability::test_stability_never_reached_fails_explicitly_and_never_measures \ntests/core/config/test_mount_alignment_settings.py::TestCalibrationSizingSettings"""
+focused_command = """pytest -q \ntests/core/mount/test_movement_sizing.py::TestRates \ntests/core/mount/test_movement_sizing.py::TestFirstMoveSeed \ntests/core/mount/test_movement_sizing.py::TestMeasuredFraction \ntests/core/mount/test_movement_sizing.py::TestAdaptiveResizing \ntests/core/mount/test_movement_sizing.py::TestWideCameraFollowUp \ntests/collimation/ui/test_calibration_sizing.py \ntests/collimation/ui/test_calibration_angular.py::TestEveryMoveIsAngular \ntests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestCalibrationMovesTheRealAdapter::test_the_first_move_is_the_up_front_25_percent_angular_seed \ntests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestCalibrationMovesTheRealAdapter::test_the_wide_camera_gets_its_own_larger_angular_follow_up \ntests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestStopDuringABlockingAngularGoto::test_the_nudge_click_that_starts_a_goto_does_not_block_the_gui_thread \ntests/collimation/ui/test_calibration_frame_validity.py::TestStability::test_stability_never_reached_fails_explicitly_and_never_measures \ntests/core/config/test_mount_alignment_settings.py::TestCalibrationSizingSettings"""
 broader_tier = "component"
 field_only_assumptions = [
     "The 25 % band is reached on the real rig in the first one or two moves (real plate scales, real rate preset 6 = 20x sidereal).",
 ]
 gaps = [
     "'AGENTS.md records and enforces this architectural decision' is documentation; no automated check reads AGENTS.md.",
+    "S6.8d (R9): node tests/collimation/ui/test_calibration_angular.py::TestBootstrapThenAngular removed -- it tested the deleted timed bootstrap (D4); the angular sizing AC is pinned by TestEveryMoveIsAngular in the same file.",
 ]
 
 [[regression_tests]]
@@ -48,9 +49,9 @@ failed_before_fix = false
 reason_no_prefix_repro = "Feature/AC test written together with the implementation in 4b94860: the behavior did not exist before, so there is no pre-fix code it could fail against (no revert-proof attempted in S7)."
 
 [[regression_tests]]
-node = "tests/collimation/ui/test_calibration_angular.py::TestBootstrapThenAngular"
+node = "tests/collimation/ui/test_calibration_angular.py::TestEveryMoveIsAngular"
 failed_before_fix = false
-reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after 4b94860 landed, so there is no pre-fix failure to show."
+reason_no_prefix_repro = "S6.8d replacement of the removed TestBootstrapThenAngular node (deleted timed bootstrap): pins the same ~25%-of-frame sizing on the production contract; written with S6.8d, so no pre-fix failure exists."
 
 [[regression_tests]]
 node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestCalibrationMovesTheRealAdapter::test_the_first_move_is_the_up_front_25_percent_angular_seed"

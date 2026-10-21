@@ -8,7 +8,7 @@ modules = [
 ]
 fix_commits = ["ef2ce57"]
 dataset_uuids = []
-focused_command = """pytest -q \ntests/collimation/test_onstep_boundary.py::test_no_source_file_bypasses_onstepadapter \ntests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestManualMovesMoveTheRealAdapter::test_an_uncalibrated_ra_nudge_moves_the_mount \ntests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestManualMovesMoveTheRealAdapter::test_an_uncalibrated_dec_minus_nudge_moves_the_mount \ntests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestManualMovesMoveTheRealAdapter::test_a_screen_move_after_calibration_moves_the_mount \ntests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestStopDuringABlockingAngularGoto::test_the_nudge_click_that_starts_a_goto_does_not_block_the_gui_thread \ntests/collimation/ui/test_calibration_angular.py::TestBootstrapThenAngular::test_the_angular_size_is_the_calculated_25_percent_of_the_frame \ntests/core/mount/test_movement_sizing.py::TestFiniteDistance \ntests/core/mount/test_movement_sizing.py::TestFirstMoveSeed \ntests/core/mount/test_movement_sizing.py::TestWideCameraFollowUp \ntests/core/mount/test_movement_sizing.py::TestSymmetryAndCameraCount::test_any_number_of_cameras_participate_not_just_two \ntests/collimation/ui/test_calibration_frame_validity.py::TestStability::test_one_camera_unstable_one_stable_excludes_only_the_unstable_one \ntests/core/mount/test_axis_calibration.py::TestDirectionCharacterization \ntests/core/mount/test_axis_calibration.py::TestSolveScreenMove \ntests/core/mount/test_axis_calibration.py::test_calibrate_axis_multi_pulses_once_and_measures_every_measurer \ntests/collimation/ui/test_calibration_frame_validity.py::TestOverlappingAndStaleFramesAreNeverMeasured::test_a_poisoned_frame_never_reaches_the_estimator"""
+focused_command = """pytest -q \ntests/collimation/test_onstep_boundary.py::test_no_source_file_bypasses_onstepadapter \ntests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestManualMovesMoveTheRealAdapter::test_an_uncalibrated_ra_nudge_moves_the_mount \ntests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestManualMovesMoveTheRealAdapter::test_an_uncalibrated_dec_minus_nudge_moves_the_mount \ntests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestManualMovesMoveTheRealAdapter::test_a_screen_move_after_calibration_moves_the_mount \ntests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestStopDuringABlockingAngularGoto::test_the_nudge_click_that_starts_a_goto_does_not_block_the_gui_thread \ntests/collimation/ui/test_calibration_angular.py::TestEveryMoveIsAngular::test_the_very_first_move_is_the_up_front_25_percent_angle \ntests/core/mount/test_movement_sizing.py::TestFiniteDistance \ntests/core/mount/test_movement_sizing.py::TestFirstMoveSeed \ntests/core/mount/test_movement_sizing.py::TestWideCameraFollowUp \ntests/core/mount/test_movement_sizing.py::TestSymmetryAndCameraCount::test_any_number_of_cameras_participate_not_just_two \ntests/collimation/ui/test_calibration_frame_validity.py::TestStability::test_one_camera_unstable_one_stable_excludes_only_the_unstable_one \ntests/core/mount/test_axis_calibration.py::TestDirectionCharacterization \ntests/core/mount/test_axis_calibration.py::TestSolveScreenMove \ntests/core/mount/test_axis_calibration.py::test_calibrate_axis_multi_pulses_once_and_measures_every_measurer \ntests/collimation/ui/test_calibration_frame_validity.py::TestOverlappingAndStaleFramesAreNeverMeasured::test_a_poisoned_frame_never_reaches_the_estimator"""
 broader_tier = "component"
 field_only_assumptions = [
     "The real OnStep mount's backlash/reversal deficit and the 8-step per-direction calibration have never been run live.",
@@ -16,6 +16,7 @@ field_only_assumptions = [
 ]
 gaps = [
     "'AGENTS.md contains this decision' is a documentation AC with no automated check (only the OnStep import-boundary test pins the code side).",
+    "S6.8d (R9): node TestBootstrapThenAngular::test_the_angular_size_is_the_calculated_25_percent_of_the_frame removed with the deleted timed bootstrap it ran behind; the same AC (an up-front ~25%-of-frame angular move) is pinned by TestEveryMoveIsAngular::test_the_very_first_move_is_the_up_front_25_percent_angle.",
 ]
 
 [[regression_tests]]
@@ -44,9 +45,9 @@ failed_before_fix = false
 reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after ef2ce57 landed, so there is no pre-fix failure to show."
 
 [[regression_tests]]
-node = "tests/collimation/ui/test_calibration_angular.py::TestBootstrapThenAngular::test_the_angular_size_is_the_calculated_25_percent_of_the_frame"
+node = "tests/collimation/ui/test_calibration_angular.py::TestEveryMoveIsAngular::test_the_very_first_move_is_the_up_front_25_percent_angle"
 failed_before_fix = false
-reason_no_prefix_repro = "Linked from another fix's proof: pins this AC's current behavior; it was written after ef2ce57 landed, so there is no pre-fix failure to show."
+reason_no_prefix_repro = "S6.8d replacement of the removed TestBootstrapThenAngular node: pins the same AC on the production contract (angular moves only); written with S6.8d, so no pre-fix failure exists."
 
 [[regression_tests]]
 node = "tests/core/mount/test_movement_sizing.py::TestFiniteDistance"

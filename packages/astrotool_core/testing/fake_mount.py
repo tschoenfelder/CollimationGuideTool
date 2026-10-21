@@ -1,9 +1,10 @@
-"""FakeMountAdapter — MountPort test double that accepts and records pulses.
+"""Mount test doubles.
 
-Named explicitly in collimation-guidetool-architektur.md alongside
-NoMountAdapter and IndiMountAdapter. Records every accepted pulse in
-``pulse_log`` so calibration/guide-controller tests can assert what was
-actually sent, without a real INDI/OnStep connection.
+`FakeMountAdapter` -- a `MountPort` that accepts and records TIMED pulses (`pulse_axis`) in
+``pulse_log``. S6.8d (R9): only the dormant GuideTool (`GuideCorrectionPolicy`,
+`calibrate_axes`) still uses timed pulses; the production OnStep adapter has none, so Mount Align
+cannot move this fake (it reports no angular moves) -- Mount Align tests use
+`FakeAngularMountAdapter`, the production contract (angular moves + guide pulses).
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from __future__ import annotations
 from astrotool_core.mount.port import (
     AxisDirection,
     CommandResult,
+    GuidePulseResult,
     MountAxis,
     MountCapabilities,
     MountStatus,
@@ -23,12 +25,20 @@ _FAKE_MOUNT_CAPABILITIES = MountCapabilities(
 )
 
 
+#: S6.8d (R9): the production contract -- `OnStepMountPulseAdapter` on OnStepAdapter 0.5.0:
+#: angular moves and guide pulses while tracking, NO timed `pulse_axis`.
 _FAKE_ANGULAR_MOUNT_CAPABILITIES = MountCapabilities(
-    supports_pulse_guiding=True,
-    min_pulse_ms=1,
-    max_pulse_ms=9999,
+    supports_pulse_guiding=False,
+    min_pulse_ms=0,
+    max_pulse_ms=0,
+    supports_guide_pulses_while_tracking=True,
     supports_angular_moves=True,
 )
+#: The (min, max) guide-pulse duration the fake accepts (OnStepAdapter 0.5.0's own bounds).
+FAKE_GUIDE_PULSE_RANGE_MS = (1, 5000)
+#: Sidereal rate, arcsec per second -- the fake's default guide rate (1x sidereal).
+_SIDEREAL_ARCSEC_PER_S = 15.041
+_NO_TIMED_PULSE = "fake production mount: no timed pulse primitive (pulse_axis always refuses)"
 
 
 class FakeMountAdapter:
@@ -36,13 +46,8 @@ class FakeMountAdapter:
         self._fail_connect = fail_connect
         self._connected = False
         self._tracking = False
-        #: Real report 45e5ae86 ("SEV 1"): a pulse can still get rejected
-        #: for a short window even after the mount has already confirmed
-        #: unparked -- see IndiMountPulseAdapter's own module docstring
-        #: for the sourced mechanism, and MountTestMoveRunner's own retry
-        #: logic this simulates for. The first `reject_first_n_pulses`
-        #: calls to pulse_axis() report accepted=False; every call after
-        #: that accepts normally.
+        #: The first `reject_first_n_pulses` calls to pulse_axis() report
+        #: accepted=False; every call after that accepts normally.
         self._reject_first_n_pulses = reject_first_n_pulses
         self._pulse_attempt_count = 0
         self.pulse_log: list[tuple[MountAxis, AxisDirection, int]] = []
@@ -52,10 +57,7 @@ class FakeMountAdapter:
         #: it unchanged and recording rate_preset separately avoids
         #: touching every one of those assertions for an unrelated field.
         self.rate_log: list[str | None] = []
-        #: Not part of MountPort (see IndiMountPulseAdapter.abort()'s own
-        #: docstring on why) -- present here purely so
-        #: MountTestMovePanel's duck-typed "Stop" button is testable
-        #: against a fake instead of only the real INDI adapter.
+        #: Every `abort()` call (the motion executor's Stop reaches the mount through it).
         self.abort_log: list[None] = []
 
     def connect(self) -> None:
@@ -98,38 +100,41 @@ class FakeMountAdapter:
 
 
 class FakeAngularMountAdapter(FakeMountAdapter):
-    """`FakeMountAdapter` + `AngularMotionPort`, with a small physical model.
-
-    The mount really moves the sky at `true_rate` arcsec/s per axis direction (unknown
-    to the application). A timed pulse moves `true_rate x duration`; an angular move of
-    `arcsec` runs for `arcsec / installed_rate` seconds (that is what OnStepAdapter does),
-    so it moves `arcsec x true_rate / installed_rate` -- exactly right only when the
-    installed rate was measured correctly. `sky_arcsec[axis]` is the cumulative signed
-    result (axis1 + = east, axis2 + = north)."""
+    """A `MountPort` with the PRODUCTION contract (S6.8d, R9): `AngularMotionPort.move_angular`
+    and `GuidePulsePort.guide_pulse`, and -- like `OnStepMountPulseAdapter` -- a `pulse_axis`
+    that always refuses. A small physical model: an angular move of `arcsec` moves the sky by
+    `arcsec x scale` (`scale` per axis direction models a mount that does not move exactly what
+    was commanded; 1.0 = exact), a guide pulse by `guide_rate x duration`. `sky_arcsec[axis]` is
+    the cumulative signed result (axis1 + = east, axis2 + = north)."""
 
     def __init__(
         self,
         *,
-        true_rate: dict[tuple[MountAxis, AxisDirection], float] | float = 100.0,
+        scale: dict[tuple[MountAxis, AxisDirection], float] | float = 1.0,
+        guide_rate_arcsec_per_s: float = _SIDEREAL_ARCSEC_PER_S,
         refuse_angular: str | None = None,
         **kwargs: object,
     ) -> None:
         super().__init__(**kwargs)  # type: ignore[arg-type]
-        self._true_rate = true_rate
-        self._installed: dict[tuple[MountAxis, AxisDirection], float] = {}
+        self._scale = scale
+        self._guide_rate = guide_rate_arcsec_per_s
         self.refuse_angular = refuse_angular
         self.angular_log: list[tuple[MountAxis, AxisDirection, float]] = []
-        self.install_log: list[tuple[MountAxis, AxisDirection, float]] = []
+        self.guide_log: list[tuple[MountAxis, AxisDirection, int]] = []
         self.sky_arcsec: dict[MountAxis, float] = {MountAxis.AXIS1: 0.0, MountAxis.AXIS2: 0.0}
 
-    def _true(self, axis: MountAxis, direction: AxisDirection) -> float:
-        if isinstance(self._true_rate, dict):
-            return self._true_rate[(axis, direction)]
-        return self._true_rate
+    def _scale_for(self, axis: MountAxis, direction: AxisDirection) -> float:
+        if isinstance(self._scale, dict):
+            return self._scale[(axis, direction)]
+        return self._scale
 
     @staticmethod
     def _sign(direction: AxisDirection) -> int:
         return 1 if direction is AxisDirection.POSITIVE else -1
+
+    def capabilities(self) -> MountCapabilities:
+        """The production capabilities (no angular floor, no stated maximum)."""
+        return _FAKE_ANGULAR_MOUNT_CAPABILITIES
 
     def pulse_axis(
         self,
@@ -139,23 +144,8 @@ class FakeAngularMountAdapter(FakeMountAdapter):
         *,
         rate_preset: str | None = None,
     ) -> CommandResult:
-        result = super().pulse_axis(axis, direction, duration_ms, rate_preset=rate_preset)
-        if result.accepted:
-            self.sky_arcsec[axis] += (
-                self._sign(direction) * self._true(axis, direction) * duration_ms / 1000.0
-            )
-        return result
-
-    def capabilities(self) -> MountCapabilities:
-        """S6.5: declares the angular moves it implements (no floor, no stated maximum)."""
-        return _FAKE_ANGULAR_MOUNT_CAPABILITIES
-
-    def installed_rate(self, axis: MountAxis, direction: AxisDirection) -> float | None:
-        return self._installed.get((axis, direction))
-
-    def install_rate(self, axis: MountAxis, direction: AxisDirection, arcsec_per_s: float) -> None:
-        self._installed[(axis, direction)] = arcsec_per_s
-        self.install_log.append((axis, direction, arcsec_per_s))
+        """Refuses, exactly like the production adapter (no timed primitive)."""
+        return CommandResult(accepted=False, message=_NO_TIMED_PULSE)
 
     def move_angular(
         self, axis: MountAxis, direction: AxisDirection, arcsec: float
@@ -164,11 +154,58 @@ class FakeAngularMountAdapter(FakeMountAdapter):
             return CommandResult(accepted=False, message="not connected")
         if self.refuse_angular is not None:
             return CommandResult(accepted=False, message=self.refuse_angular)
-        installed = self._installed.get((axis, direction))
-        if installed is None:
-            return CommandResult(accepted=False, message="no centering rate installed")
         self.angular_log.append((axis, direction, arcsec))
-        self.sky_arcsec[axis] += (
-            self._sign(direction) * arcsec * self._true(axis, direction) / installed
-        )
+        self.sky_arcsec[axis] += self._sign(direction) * arcsec * self._scale_for(axis, direction)
         return CommandResult(accepted=True)
+
+    @property
+    def guide_pulse_range_ms(self) -> tuple[int, int] | None:
+        return FAKE_GUIDE_PULSE_RANGE_MS
+
+    def guide_pulse(
+        self, axis: MountAxis, direction: AxisDirection, duration_ms: int
+    ) -> GuidePulseResult:
+        if not self._connected:
+            return GuidePulseResult(accepted=False, message="not connected")
+        low, high = FAKE_GUIDE_PULSE_RANGE_MS
+        if not low <= duration_ms <= high:
+            return GuidePulseResult(
+                accepted=False, message=f"guide pulse of {duration_ms} ms outside {low}..{high}"
+            )
+        self.guide_log.append((axis, direction, duration_ms))
+        self.sky_arcsec[axis] += self._sign(direction) * self._guide_rate * duration_ms / 1000.0
+        return GuidePulseResult(
+            accepted=True,
+            sent=True,
+            tracking_preserved=True,
+            chunks_requested=1,
+            chunks_completed=1,
+        )
+
+
+class FakeEquivalentMsMountAdapter(FakeAngularMountAdapter):
+    """`FakeAngularMountAdapter` that also records every accepted angular move in
+    `equivalent_ms_log` as (axis, direction, equivalent ms) -- the S6.0 calibration unit Mount
+    Align sizes in (`unit_arcsec_per_s`, default the configured `calibration_center_rate_x`
+    x sidereal). S6.8d: lets the panel tests that model image motion per ms keep doing so on
+    the production contract (they used to read the timed `pulse_log`)."""
+
+    def __init__(self, *, unit_arcsec_per_s: float | None = None, **kwargs: object) -> None:
+        super().__init__(**kwargs)  # type: ignore[arg-type]
+        if unit_arcsec_per_s is None:
+            from astrotool_core.config import MountAlignmentSettings
+
+            unit_arcsec_per_s = (
+                MountAlignmentSettings().calibration_center_rate_x * _SIDEREAL_ARCSEC_PER_S
+            )
+        self._unit_arcsec_per_s = unit_arcsec_per_s
+        self.equivalent_ms_log: list[tuple[MountAxis, AxisDirection, int]] = []
+
+    def move_angular(
+        self, axis: MountAxis, direction: AxisDirection, arcsec: float
+    ) -> CommandResult:
+        result = super().move_angular(axis, direction, arcsec)
+        if result.accepted:
+            ms = round(arcsec / self._unit_arcsec_per_s * 1000.0)
+            self.equivalent_ms_log.append((axis, direction, ms))
+        return result

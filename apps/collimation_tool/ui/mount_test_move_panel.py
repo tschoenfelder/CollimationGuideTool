@@ -55,7 +55,7 @@ every pulse, whether a calibration step or a direction-pad nudge, goes
 through `MountTestMoveRunner`, which unparks first if needed (a real-
 hardware check found OnStep refuses motion commands
 while parked — a deliberate safety interlock, not a defect) and then never
-re-parks (`park_after=False` on every call here) — "Run Calibration" and the
+re-parks — "Run Calibration" and the
 direction pads are meant to run one after another across a single unparked
 working session, and re-parking after each pulse would undo the point of
 staying unparked between them. Parking back up when done stays the separate
@@ -107,12 +107,9 @@ response out of.
 
 Real hardware motion with no way to interrupt it once started is a real
 safety gap (incident 9551627f) — the "Stop" button, wired to
-`OnStepMountPulseAdapter.abort()` (cooperative cancel + OnStep stop) via duck-typing
-(`getattr`, not a `MountPort` Protocol method — that Protocol is the
-architecture doc's literal contract, not something to extend unilaterally
-for one adapter's extra capability), still applies to every pulse this
-panel issues. A no-op if the injected `mount` doesn't have `abort()` (e.g.
-`NoMountAdapter`/`FakeMountAdapter` unless a test adds one).
+the app-wide `MountMotionExecutor.abort()` (S6.8a: it cancels the running sequence's claim
+and calls the mount adapter's lock-free `abort()` -- for `OnStepMountPulseAdapter` the
+cooperative cancel + OnStep's emergency stop), still applies to every move this panel issues.
 
 Frame capture happens *here*, on the Qt main thread, both before submitting
 a pulse (sequence) and again once the runner reports it finished —
@@ -347,7 +344,6 @@ from collimation_tool.application.mount_align_plan import (
 from collimation_tool.application.mount_align_positioning import (
     cap_text,
     check_nudge_motion,
-    execution_rate_preset,
     nudge_cap_arcsec,
     nudge_tracking_warning,
     plan_nudge,
@@ -489,8 +485,8 @@ class MountTestMovePanel(QWidget):
         #: inline, which keeps synchronous callers and tests unchanged.
         self._threaded_captures = threaded_captures
         #: Issue #46: per-camera sensor size + plate scale, for sizing calibration
-        #: moves to ~25% of the frame. None (or unknown optics) => the legacy
-        #: fixed `pulse_ms`/`rate_preset` calibration, unchanged.
+        #: moves to ~25% of the frame. None (or unknown optics) => the fixed
+        #: fallback calibration size.
         self._camera_geometry = camera_geometry
         self._calibration_distance_m = calibration_distance_m
         #: Issue #44/#48: the app-wide tracking policy AND the single owner of the operating
@@ -585,6 +581,8 @@ class MountTestMovePanel(QWidget):
         #: S6.6b: the background #43 no-motion check after a nudge (never holds the panel
         #: busy; a new move, Stop or a mode change abandons it).
         self._nudge_check_job: CaptureJob | None = None
+        #: Diagnostics only (the nudge's `CommandedMovementContext`): the configured nudge
+        #: `rate_preset` an UNCALIBRATED nudge reported; never used to move the mount.
         self._nudge_rate_preset: str | None = None
         self._capture_generation = 0
         self._last_internal_error: str | None = None
@@ -599,9 +597,6 @@ class MountTestMovePanel(QWidget):
         #: `mount_align_calibration.CalibrationResults`.
         self._results = CalibrationResults()
         self._calibration: dict[str, CalibrationMatrix] = {}
-        #: S6.6b: the rate preset the stored matrices were measured at -- calibrated manual
-        #: moves run at it (`mount_align_positioning.execution_rate_preset`).
-        self._calibration_rate_preset_used: str | None = self._settings.rate_preset
         self._last_responses: dict[str, AxisResponse] | None = None
         self._last_error: str | None = None
         #: True between _abort_calibration() submitting a stranded return
@@ -1440,7 +1435,6 @@ class MountTestMovePanel(QWidget):
             step.direction,
             duration_ms,
             arcsec,
-            rate_preset=self._sizing.rate_preset,
             settle_ms=self._settings.settle_ms,
             primitive=self._sizing.primitive,
         )
@@ -1520,7 +1514,6 @@ class MountTestMovePanel(QWidget):
                 self._mount_park,
                 self._mount,
                 motion,
-                rate_preset=self._sizing.rate_preset,
                 settle_ms=self._settings.settle_ms,
                 primitive=self._sizing.primitive,
             )
@@ -1596,7 +1589,6 @@ class MountTestMovePanel(QWidget):
         self._last_movement_context = CommandedMovementContext(
             movement_type=pending.kind,
             duration_ms=duration_ms,
-            rate_preset=self._sizing.rate_preset,
             axis=step.axis.name,
             direction=step.direction.name,
             minimum_settle_ms=self._settings.frame_settle_ms,
@@ -1643,12 +1635,6 @@ class MountTestMovePanel(QWidget):
             angular_arcsec=pending.angular_arcsec,
             duration_ms=pending.duration_ms,
             motion_paths=self._last_motion_paths,
-        )
-        self._sizing.learn_rate(
-            step,
-            angular_arcsec=pending.angular_arcsec,
-            duration_ms=pending.duration_ms,
-            responses=responses,
         )
         if len(self._calibration_failed_cameras) >= 2:
             self._abort_calibration(
@@ -1715,7 +1701,7 @@ class MountTestMovePanel(QWidget):
     def _no_motion_text(self, duration_ms: int) -> str:
         # S6.6b: an angular-only run commands angles -- no rate preset to name.
         angular = self._sizing.format_size(duration_ms) if self._sizing.angular_only else None
-        return no_motion_text(duration_ms, self._sizing.rate_preset, angular_size=angular)
+        return no_motion_text(duration_ms, None, angular_size=angular)
 
     def _exclude_camera_no_motion(self, key: str, duration_ms: int) -> None:
         self._calibration_failed_cameras.add(key)
@@ -1746,10 +1732,6 @@ class MountTestMovePanel(QWidget):
     @property
     def _angular_active(self) -> bool:
         return self._sizing.angular_active
-
-    @property
-    def _calibration_rate_preset(self) -> str | None:
-        return self._sizing.rate_preset
 
     @property
     def _axis_net_pulse_ms(self) -> dict[MountAxis, int]:
@@ -1790,11 +1772,9 @@ class MountTestMovePanel(QWidget):
             lambda: self._sizing_distance_for(self._target_mode()),
         )
 
-    def _cap_text(self, angular: bool) -> str:
+    def _cap_text(self) -> str:
         return cap_text(
-            self._settings,
-            angular,
-            guide_pulse=self._move_primitive is MountAlignPrimitive.GUIDE_PULSE,
+            self._settings, guide_pulse=self._move_primitive is MountAlignPrimitive.GUIDE_PULSE
         )
 
     def _exclude_camera_bounded(
@@ -1806,7 +1786,7 @@ class MountTestMovePanel(QWidget):
         self._sizing.bounded[key] = bounded_text(
             failure,
             max_pulse_ms=self._settings.max_calibration_pulse_ms,
-            rate_preset=self._sizing.rate_preset,
+            rate_preset=None,
             # S6.6b: an angular-only run names its largest move as an angle, not a preset.
             angular_max=(
                 self._sizing.format_size(policy.max_duration_ms)
@@ -1823,7 +1803,6 @@ class MountTestMovePanel(QWidget):
             self._sizing.bounded, UNIT_FOR_PRIMITIVE[self._sizing.primitive]
         )
         self._calibration = verdict.matrices
-        self._calibration_rate_preset_used = self._sizing.rate_preset
         self._screen_frame_shapes = {}  # re-read: the camera may have changed since
         self._refresh_screen_move_limits()
         self._last_failure_classes.update(verdict.failure_classes)
@@ -1927,11 +1906,9 @@ class MountTestMovePanel(QWidget):
         # last stability-VERIFIED at-rest reference (taken before this move is submitted).
         reference = self._reusable_reference(mode)
         self._cancel_nudge_check()  # a new move: an older check's AFTER would be mid-motion
-        rate_preset = self._move_rate_preset(calibrated=move.camera_key in self._calibration)
         started = submit_axis_move(
             self._runner, self._mount_park, self._mount,
             move.axis, move.direction, move.duration_ms, move.arcsec,
-            rate_preset=rate_preset,
             settle_ms=self._settings.settle_ms,
             primitive=primitive,
         )
@@ -1953,9 +1930,11 @@ class MountTestMovePanel(QWidget):
             direction=move.direction,
             label=CAMERA_LABELS[move.camera_key],
         )
-        self._nudge_rate_preset = rate_preset
+        self._nudge_rate_preset = (
+            None if move.camera_key in self._calibration else self._settings.rate_preset
+        )
         suffix = (
-            f" (safety-capped at {self._cap_text(move.arcsec is not None)} -- "
+            f" (safety-capped at {self._cap_text()} -- "
             "click again to continue)"
             if move.clamped
             else ""
@@ -1998,7 +1977,7 @@ class MountTestMovePanel(QWidget):
         axis_label = AXIS_LABELS[pending.axis]
         direction_label = "+" if pending.direction is AxisDirection.POSITIVE else "-"
         suffix = (
-            f" (safety-capped at {self._cap_text(self._mount_is_angular_only())} -- "
+            f" (safety-capped at {self._cap_text()} -- "
             "click again to continue toward the target)"
             if pending.clamped
             else ""
@@ -2083,11 +2062,6 @@ class MountTestMovePanel(QWidget):
             self._last_error = check.warning
         self._result_label.setText(f"{done}{check.note}")
 
-    def _move_rate_preset(self, *, calibrated: bool) -> str | None:
-        return execution_rate_preset(
-            self._settings, self._calibration_rate_preset_used, calibrated=calibrated
-        )
-
     def _on_move_size_changed(self) -> None:
         self._refresh_screen_move_limits()
         self._update_buttons_enabled()
@@ -2171,7 +2145,6 @@ class MountTestMovePanel(QWidget):
         if plan.motion is None:
             self._result_label.setText(plan.notice or "")
             return
-        angular = plan.angular
         skipped_note = (
             f" (skipped a {plan.skipped} component below the mount's smallest move)"
             if plan.skipped
@@ -2180,7 +2153,6 @@ class MountTestMovePanel(QWidget):
         self._cancel_nudge_check()  # S6.6b: an open nudge check would span this move
         started = submit_motion_sequence(
             self._runner, self._mount_park, self._mount, plan.motion,
-            rate_preset=self._move_rate_preset(calibrated=True),
             settle_ms=self._settings.settle_ms,
             primitive=primitive,
         )
@@ -2194,7 +2166,7 @@ class MountTestMovePanel(QWidget):
             kind="screen_move", before={}, mode=self._target_mode(), label=label, clamped=clamped,
             motion_axes=tuple(step[0] for step in plan.motion),
         )
-        suffix = f" (safety-capped at {self._cap_text(angular)}/step)" if clamped else ""
+        suffix = f" (safety-capped at {self._cap_text()}/step)" if clamped else ""
         self._result_label.setText(f"Moving {label}…{suffix}{skipped_note}")
         self._update_buttons_enabled()
 
@@ -2222,7 +2194,7 @@ class MountTestMovePanel(QWidget):
         self._last_pulse_completed_at = completed_at
         self._last_error = None  # a completed move must not keep an earlier move's error
         suffix = (
-            f" (safety-capped at {self._cap_text(self._mount_is_angular_only())}/step -- "
+            f" (safety-capped at {self._cap_text()}/step -- "
             "click again to continue toward the target)"
             if pending.clamped
             else ""

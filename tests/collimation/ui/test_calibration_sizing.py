@@ -9,7 +9,12 @@ ANY retry / follow-up sequence just works -- unlike the scripted
 `_stepped_frame_pair` helpers, which fix the number of captures up front.
 
 The mount runner's waits run on a FakeClock (#53, S3b): on the real clock its stop_tracking
-gate delay alone cost ~0.3 s per calibration move."""
+gate delay alone cost ~0.3 s per calibration move.
+
+S6.8d (R9): the mount is the production-shaped `FakeAngularMountAdapter` -- every move is an
+angle (sized up front; the duration envelope is widened to the widest camera's band), so sizes
+here read in arcsec. The rate-preset tests (a calibrated move run at the preset its matrix was
+measured at, S6.0 finding 6) went with the presets."""
 
 from __future__ import annotations
 
@@ -26,7 +31,7 @@ from astrotool_core.config import MountAlignmentSettings
 from astrotool_core.mount import AxisDirection, MountAxis
 from astrotool_core.mount.movement_sizing import CameraGeometry
 from astrotool_core.mount.operating_mode import OperatingMode, TrackingEnforcer
-from astrotool_core.testing.fake_mount import FakeMountAdapter
+from astrotool_core.testing.fake_mount import FakeAngularMountAdapter
 from astrotool_core.testing.fake_mount_park import FakeMountPark
 from astrotool_core.timing import FakeClock
 from collimation_tool.ui.mount_test_move_panel import MountTestMovePanel
@@ -39,11 +44,11 @@ _SETTINGS = MountAlignmentSettings(
     stability_timeout_s=3.0,
 )
 
-# Nominal optics used for SIZING (what the config says). Preset 6 = 20x sidereal
-# = 0.30082 "/ms.
+# Nominal optics used for SIZING (what the config says).
 _LEFT = CameraGeometry("left", 200, 120, 3.0)  # FOV 600" x 360"   (narrow / "Main-like")
 _RIGHT = CameraGeometry("right", 300, 100, 12.0)  # FOV 3600" x 1200" (wide  / "Guide-like")
-_ARCSEC_PER_MS = 0.30082
+#: The widest camera's band edge: the largest normal calibration move (30% of 3600").
+_ENVELOPE_ARCSEC = 0.30 * 3600.0
 
 
 def _texture(seed: int, shape: tuple[int, int]) -> np.ndarray:
@@ -58,7 +63,7 @@ class _PhysicsRig:
     geometry -- focus/finite distance -- which is exactly why measured pixels
     are authoritative)."""
 
-    def __init__(self, mount: FakeMountAdapter, true_scale: dict[str, float]) -> None:
+    def __init__(self, mount: FakeAngularMountAdapter, true_scale: dict[str, float]) -> None:
         self.mount = mount
         self.true_scale = true_scale
         self.shapes = {
@@ -71,10 +76,10 @@ class _PhysicsRig:
         }
 
     def offset(self, key: str) -> tuple[int, int]:
-        px_per_ms = _ARCSEC_PER_MS / self.true_scale[key]
+        px_per_arcsec = 1.0 / self.true_scale[key]
         dx = dy = 0.0
-        for axis, direction, duration_ms in self.mount.pulse_log:
-            signed = duration_ms * px_per_ms * (1 if direction is AxisDirection.POSITIVE else -1)
+        for axis, direction, arcsec in self.mount.angular_log:
+            signed = arcsec * px_per_arcsec * (1 if direction is AxisDirection.POSITIVE else -1)
             if axis is MountAxis.AXIS1:
                 dx += signed
             else:
@@ -136,38 +141,42 @@ def _run(panel: MountTestMovePanel, *, timeout_s: float = 90.0) -> None:
         assert time.monotonic() < deadline, "calibration never completed"
 
 
-def _signed_net(rig: _PhysicsRig, axis: MountAxis) -> int:
+def _signed_net(rig: _PhysicsRig, axis: MountAxis) -> float:
     return sum(
         d if direction is AxisDirection.POSITIVE else -d
-        for a, direction, d in rig.mount.pulse_log
+        for a, direction, d in rig.mount.angular_log
         if a is axis
     )
+
+
+def _moves(rig: _PhysicsRig, axis: MountAxis | None = None) -> list[float]:
+    return [d for a, _dr, d in rig.mount.angular_log if axis is None or a is axis]
 
 
 class TestSizedCalibration:
     def test_the_first_pulse_is_sized_from_the_smallest_fov_not_a_fixed_pulse(
         self, qapp: object
     ) -> None:
-        rig = _PhysicsRig(FakeMountAdapter(), {"left": 3.0, "right": 12.0})
+        rig = _PhysicsRig(FakeAngularMountAdapter(), {"left": 3.0, "right": 12.0})
         panel = _panel(rig)
 
         _run(panel)
 
-        # 25% of the narrow camera's 600" width = 150" / 0.30082 "/ms = 499 ms
-        first = rig.mount.pulse_log[0]
+        # 25% of the narrow camera's 600" width = 150"
+        first = rig.mount.angular_log[0]
         assert first[0] is MountAxis.AXIS1
-        assert abs(first[2] - 499) <= 3
-        assert rig.mount.rate_log[0] == "6"  # 20x sidereal
+        assert abs(first[2] - 150.0) < 1.0
+        assert rig.mount.pulse_log == []  # never a timed pulse
         panel.stop()
 
     def test_both_directions_of_an_axis_use_the_same_nominal_size(self, qapp: object) -> None:
-        rig = _PhysicsRig(FakeMountAdapter(), {"left": 3.0, "right": 12.0})
+        rig = _PhysicsRig(FakeAngularMountAdapter(), {"left": 3.0, "right": 12.0})
         panel = _panel(rig)
 
         _run(panel)
 
         for axis in (MountAxis.AXIS1, MountAxis.AXIS2):
-            log = rig.mount.pulse_log
+            log = rig.mount.angular_log
             positive = [d for a, dr, d in log if a is axis and dr is AxisDirection.POSITIVE]
             negative = [d for a, dr, d in log if a is axis and dr is AxisDirection.NEGATIVE]
             # Same nominal magnitudes in both directions (only the mirror image).
@@ -175,7 +184,7 @@ class TestSizedCalibration:
         panel.stop()
 
     def test_the_narrow_camera_calibrates_in_the_25_percent_band(self, qapp: object) -> None:
-        rig = _PhysicsRig(FakeMountAdapter(), {"left": 3.0, "right": 12.0})
+        rig = _PhysicsRig(FakeAngularMountAdapter(), {"left": 3.0, "right": 12.0})
         panel = _panel(rig)
 
         _run(panel)
@@ -184,59 +193,60 @@ class TestSizedCalibration:
         assert matrix is not None
         response = matrix.response_for(MountAxis.AXIS1, AxisDirection.POSITIVE)
         assert 0.20 <= abs(response.dx_px) / 200 <= 0.30
-        assert abs(response.px_per_ms - 0.1003) < 0.005
+        # 50 px per 150" -> per equivalent ms of the 8x unit (0.120328 "/ms)
+        assert abs(response.px_per_ms - 0.120328 / 3.0) < 0.005
         panel.stop()
 
     def test_the_wide_camera_gets_a_larger_followup_and_the_narrow_result_survives(
         self, qapp: object
     ) -> None:
-        rig = _PhysicsRig(FakeMountAdapter(), {"left": 3.0, "right": 12.0})
+        rig = _PhysicsRig(FakeAngularMountAdapter(), {"left": 3.0, "right": 12.0})
         panel = _panel(rig)
 
         _run(panel)
 
-        durations = sorted({d for _a, _dr, d in rig.mount.pulse_log})
-        assert max(durations) > 2500  # the follow-up, ~25% of the wide frame
-        assert max(durations) <= 3000  # never beyond the cap
+        sizes = _moves(rig)
+        assert max(sizes) > 750.0  # the follow-up, ~25% of the wide frame (900")
+        assert max(sizes) <= _ENVELOPE_ARCSEC + 1e-6  # never beyond the envelope
         wide = panel.calibration_for("right")
         narrow = panel.calibration_for("left")
         assert wide is not None and narrow is not None
         wide_response = wide.response_for(MountAxis.AXIS1, AxisDirection.POSITIVE)
         narrow_response = narrow.response_for(MountAxis.AXIS1, AxisDirection.POSITIVE)
         assert abs(wide_response.dx_px) / 300 >= 0.10  # measurable
-        assert narrow_response.duration_ms < 1000  # the small move's result was kept
+        assert narrow_response.duration_ms < 2000  # the small (150") move's result was kept
         panel.stop()
 
     def test_the_mount_is_returned_to_its_start_after_a_clean_run(self, qapp: object) -> None:
-        rig = _PhysicsRig(FakeMountAdapter(), {"left": 3.0, "right": 12.0})
+        rig = _PhysicsRig(FakeAngularMountAdapter(), {"left": 3.0, "right": 12.0})
         panel = _panel(rig)
 
         _run(panel)
 
-        assert _signed_net(rig, MountAxis.AXIS1) == 0
-        assert _signed_net(rig, MountAxis.AXIS2) == 0
+        assert abs(_signed_net(rig, MountAxis.AXIS1)) < 1e-6
+        assert abs(_signed_net(rig, MountAxis.AXIS2)) < 1e-6
         panel.stop()
 
     def test_no_pulse_ever_exceeds_the_normal_cap(self, qapp: object) -> None:
-        rig = _PhysicsRig(FakeMountAdapter(), {"left": 3.0, "right": 12.0})
+        rig = _PhysicsRig(FakeAngularMountAdapter(), {"left": 3.0, "right": 12.0})
         panel = _panel(rig)
 
         _run(panel)
 
-        assert all(d <= 3000 for _a, _dr, d in rig.mount.pulse_log)
+        assert all(d <= _ENVELOPE_ARCSEC + 1e-6 for d in _moves(rig))
         panel.stop()
 
 
 class TestAdaptiveResizing:
     def test_an_undershoot_is_increased_automatically(self, qapp: object) -> None:
         # Reality moves the image 4x less than the configured optics predict.
-        rig = _PhysicsRig(FakeMountAdapter(), {"left": 12.0, "right": 12.0})
+        rig = _PhysicsRig(FakeAngularMountAdapter(), {"left": 12.0, "right": 12.0})
         panel = _panel(rig)
 
         _run(panel)
 
-        first_axis1 = [d for a, _dr, d in rig.mount.pulse_log if a is MountAxis.AXIS1]
-        assert abs(first_axis1[0] - 499) <= 3
+        first_axis1 = _moves(rig, MountAxis.AXIS1)
+        assert abs(first_axis1[0] - 150.0) < 1.0
         assert first_axis1[1] > 1.8 * first_axis1[0]  # grown after the undershoot
         matrix = panel.calibration_for("left")
         assert matrix is not None
@@ -246,12 +256,12 @@ class TestAdaptiveResizing:
 
     def test_an_overshoot_is_reduced_automatically(self, qapp: object) -> None:
         # Reality moves the image 1.5x more than predicted (37.5% of the width).
-        rig = _PhysicsRig(FakeMountAdapter(), {"left": 2.0, "right": 12.0})
+        rig = _PhysicsRig(FakeAngularMountAdapter(), {"left": 2.0, "right": 12.0})
         panel = _panel(rig)
 
         _run(panel)
 
-        first_axis1 = [d for a, _dr, d in rig.mount.pulse_log if a is MountAxis.AXIS1]
+        first_axis1 = _moves(rig, MountAxis.AXIS1)
         assert first_axis1[1] < 0.8 * first_axis1[0]
         matrix = panel.calibration_for("left")
         assert matrix is not None
@@ -260,25 +270,25 @@ class TestAdaptiveResizing:
         panel.stop()
 
     def test_discarded_probe_moves_do_not_leave_the_mount_displaced(self, qapp: object) -> None:
-        rig = _PhysicsRig(FakeMountAdapter(), {"left": 12.0, "right": 12.0})
+        rig = _PhysicsRig(FakeAngularMountAdapter(), {"left": 12.0, "right": 12.0})
         panel = _panel(rig)
 
         _run(panel)
 
-        assert _signed_net(rig, MountAxis.AXIS1) == 0
-        assert _signed_net(rig, MountAxis.AXIS2) == 0
+        assert abs(_signed_net(rig, MountAxis.AXIS1)) < 1e-6
+        assert abs(_signed_net(rig, MountAxis.AXIS2)) < 1e-6
         panel.stop()
 
     def test_the_second_axis_starts_from_the_first_axis_accepted_size(self, qapp: object) -> None:
-        rig = _PhysicsRig(FakeMountAdapter(), {"left": 12.0, "right": 12.0})
+        rig = _PhysicsRig(FakeAngularMountAdapter(), {"left": 12.0, "right": 12.0})
         panel = _panel(rig)
 
         _run(panel)
 
-        axis1 = [d for a, _dr, d in rig.mount.pulse_log if a is MountAxis.AXIS1]
-        axis2 = [d for a, _dr, d in rig.mount.pulse_log if a is MountAxis.AXIS2]
+        axis1 = _moves(rig, MountAxis.AXIS1)
+        axis2 = _moves(rig, MountAxis.AXIS2)
         accepted_axis1 = axis1[1]  # first retry after the undershoot
-        assert abs(axis2[0] - accepted_axis1) <= 5  # no repeat of the undershoot
+        assert abs(axis2[0] - accepted_axis1) <= 1.0  # no repeat of the undershoot
         panel.stop()
 
 
@@ -286,63 +296,39 @@ class TestBoundedOutcomes:
     def test_a_camera_that_stays_unmeasurable_even_at_the_cap_is_reported_not_faked(
         self, qapp: object
     ) -> None:
-        # The wide camera moves a little (~0.8% of its width for the Main-sized move) but even
-        # the 3 s cap only reaches ~5% of its frame (<10%): measurable, yet beyond the envelope.
-        rig = _PhysicsRig(FakeMountAdapter(), {"left": 3.0, "right": 60.0})
+        # The wide camera moves 5x less than its configured optics predict: even the largest
+        # normal move (the 1080" envelope) reaches only ~6% of its frame (<10%).
+        rig = _PhysicsRig(FakeAngularMountAdapter(), {"left": 3.0, "right": 60.0})
         panel = _panel(rig)
 
         _run(panel)
 
         assert panel.calibration_for("left") is not None  # narrow camera unaffected
         assert panel.calibration_for("right") is None
-        assert all(d <= 3000 for _a, _dr, d in rig.mount.pulse_log)  # no silent extension
-        text = panel._result_label.text().lower()
-        assert "3 s" in text or "envelope" in text
+        assert all(d <= _ENVELOPE_ARCSEC + 1e-6 for d in _moves(rig))  # no silent extension
+        assert "envelope" in panel._result_label.text().lower()
         panel.stop()
 
 
-class TestLegacyBehaviour:
-    def test_without_optics_the_fixed_configured_pulse_is_used_unchanged(
+class TestWithoutOptics:
+    def test_without_optics_the_fixed_size_is_used_as_an_angle(
         self, qapp: object
     ) -> None:
-        rig = _PhysicsRig(FakeMountAdapter(), {"left": 3.0, "right": 12.0})
+        rig = _PhysicsRig(FakeAngularMountAdapter(), {"left": 3.0, "right": 12.0})
         panel = _panel(rig, geometry=False)
 
         _run(panel)
 
-        assert {d for _a, _dr, d in rig.mount.pulse_log} == {_SETTINGS.pulse_ms}
-        assert set(rig.mount.rate_log) == {_SETTINGS.rate_preset}
+        assert {round(d, 6) for d in _moves(rig)} == {round(_SETTINGS.pulse_ms * 0.120328, 6)}
         panel.stop()
 
 
-class _RateAwareRig(_PhysicsRig):
-    """Like `_PhysicsRig`, but a pulse moves the image in proportion to the rate preset it ran
-    at (`RATE_PRESET_X`; the sizing optics assume preset 6 = 20x sidereal)."""
+class TestCalibratedMovesMoveTheRequestedFraction:
+    """A move solved from the matrix moves what it was asked to (de295656's over-move class;
+    S6.8d: there is no rate preset any more to get wrong)."""
 
-    def offset(self, key: str) -> tuple[int, int]:
-        from astrotool_core.mount.movement_sizing import RATE_PRESET_X
-
-        dx = dy = 0.0
-        for (axis, direction, duration_ms), preset in zip(
-            self.mount.pulse_log, self.mount.rate_log, strict=True
-        ):
-            scale = RATE_PRESET_X[preset or "6"] / RATE_PRESET_X["6"]
-            px_per_ms = _ARCSEC_PER_MS * scale / self.true_scale[key]
-            signed = duration_ms * px_per_ms * (1 if direction is AxisDirection.POSITIVE else -1)
-            if axis is MountAxis.AXIS1:
-                dx += signed
-            else:
-                dy += signed
-        return round(dy), round(dx)
-
-
-class TestCalibratedMovesRunAtTheCalibrationRate:
-    """S6.0 finding (6), candidate explanation for diagnostic de295656: on a timed-capable mount
-    the calibrated moves were SOLVED from a matrix measured at the calibration preset ("6",
-    20x) but EXECUTED at the nudge `rate_preset` ("7", 48x) -- a 2.4x over-move."""
-
-    def _calibrated(self) -> tuple[_RateAwareRig, MountTestMovePanel]:
-        rig = _RateAwareRig(FakeMountAdapter(), {"left": 3.0, "right": 12.0})
+    def _calibrated(self) -> tuple[_PhysicsRig, MountTestMovePanel]:
+        rig = _PhysicsRig(FakeAngularMountAdapter(), {"left": 3.0, "right": 12.0})
         panel = _panel(rig)
         _run(panel)
         assert panel.calibration_for("left") is not None
@@ -353,24 +339,23 @@ class TestCalibratedMovesRunAtTheCalibrationRate:
     ) -> None:
         rig, panel = self._calibrated()
         before = rig.offset("left")[1]
-        logged = len(rig.mount.pulse_log)
+        logged = len(rig.mount.angular_log)
 
         panel._on_nudge_clicked("left", MountAxis.AXIS1, AxisDirection.POSITIVE)
         deadline = time.monotonic() + 30.0
-        while len(rig.mount.pulse_log) == logged or panel._runner.is_busy or panel._pending:
+        while len(rig.mount.angular_log) == logged or panel._runner.is_busy or panel._pending:
             assert time.monotonic() < deadline, "the nudge never ran"
             time.sleep(0.005)
             panel._poll()
 
         moved = rig.offset("left")[1] - before
         target = _SETTINGS.nudge_target_fraction * _LEFT.width_px  # 100 px
-        assert abs(moved - target) <= 0.1 * target, (moved, rig.mount.rate_log[-1])
-        assert rig.mount.rate_log[-1] == "6"  # the rate the matrix was measured at
+        assert abs(moved - target) <= 0.1 * target, moved
         panel.stop()
 
-    def test_a_screen_move_runs_at_the_calibration_rate(self, qapp: object) -> None:
+    def test_a_screen_move_is_an_angular_move(self, qapp: object) -> None:
         rig, panel = self._calibrated()
-        logged = len(rig.mount.pulse_log)
+        logged = len(rig.mount.angular_log)
         from collimation_tool.ui.mount_test_move_panel import ScreenDirection
 
         panel._on_screen_move_clicked("left", ScreenDirection.RIGHT)
@@ -380,6 +365,6 @@ class TestCalibratedMovesRunAtTheCalibrationRate:
             time.sleep(0.005)
             panel._poll()
 
-        assert len(rig.mount.pulse_log) > logged
-        assert set(rig.mount.rate_log[logged:]) == {"6"}
+        assert len(rig.mount.angular_log) > logged
+        assert rig.mount.pulse_log == []
         panel.stop()

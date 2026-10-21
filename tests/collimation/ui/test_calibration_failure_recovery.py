@@ -32,13 +32,12 @@ from astrotool_core.acquisition.stable_frame_acquisition import (
     acquire_stable_frame,
 )
 from astrotool_core.config import MountAlignmentSettings
-from astrotool_core.mount import AxisDirection, MountAxis
+from astrotool_core.mount import AxisDirection, CommandResult, MountAxis
 from astrotool_core.mount.movement_sizing import CameraGeometry
 from astrotool_core.mount.operating_mode import OperatingMode, TrackingEnforcer
-from astrotool_core.testing.fake_mount import FakeMountAdapter
+from astrotool_core.testing.fake_mount import FakeEquivalentMsMountAdapter
 from astrotool_core.testing.fake_mount_park import FakeMountPark
 from astrotool_core.timing import FakeClock
-from collimation_tool.ui import mount_test_move_runner as runner_module
 from collimation_tool.ui.mount_test_move_panel import MountTestMovePanel
 from collimation_tool.ui.mount_test_move_runner import MountTestMoveRunner
 from PySide6.QtCore import QCoreApplication, QTimer
@@ -85,7 +84,7 @@ class _Rig:
     """Frame streams driven by the mount's cumulative pulses; failure modes are plain flags."""
 
     def __init__(
-        self, mount: FakeMountAdapter, *, real_frame_s: float = _FAST_REAL_FRAME_S
+        self, mount: FakeEquivalentMsMountAdapter, *, real_frame_s: float = _FAST_REAL_FRAME_S
     ) -> None:
         self.mount = mount
         #: S6.7: frames are stamped on this clock, which the panel and its runner share.
@@ -102,13 +101,13 @@ class _Rig:
 
     def clean(self, key: str, extra: int = 0) -> np.ndarray:
         dx = dy = 0.0
-        for axis, direction, ms in self.mount.pulse_log:
+        for axis, direction, ms in self.mount.equivalent_ms_log:
             signed = ms * self.px_per_ms[key] * (1 if direction is AxisDirection.POSITIVE else -1)
             if axis is MountAxis.AXIS1:
                 dx += signed
             else:
                 dy += signed
-        scrambled = self.scramble_after_pulse and bool(self.mount.pulse_log)
+        scrambled = self.scramble_after_pulse and bool(self.mount.equivalent_ms_log)
         base = self.alt[key] if scrambled else self.base[key]
         return np.roll(np.roll(base, round(dy), axis=0), round(dx) + extra, axis=1)
 
@@ -227,7 +226,7 @@ class TestTheEventLoopStaysResponsive:
     def test_run_calibration_returns_at_once_and_the_loop_keeps_ticking(
         self, qapp: object
     ) -> None:
-        rig = _Rig(FakeMountAdapter(), real_frame_s=_SLOW_REAL_FRAME_S)
+        rig = _Rig(FakeEquivalentMsMountAdapter(), real_frame_s=_SLOW_REAL_FRAME_S)
         panel = _panel(rig)
         heartbeat = _Heartbeat()
 
@@ -249,7 +248,7 @@ class TestTheEventLoopStaysResponsive:
         panel.stop()
 
     def test_the_progress_text_reports_elapsed_time(self, qapp: object) -> None:
-        rig = _Rig(FakeMountAdapter())
+        rig = _Rig(FakeEquivalentMsMountAdapter())
         panel = _panel(rig)
         panel._run_calibration_button.click()
         first = panel._result_label.text()
@@ -262,7 +261,7 @@ class TestTheEventLoopStaysResponsive:
         panel.stop()
 
     def test_a_nudge_capture_is_off_the_gui_thread_too(self, qapp: object) -> None:
-        rig = _Rig(FakeMountAdapter())
+        rig = _Rig(FakeEquivalentMsMountAdapter())
         panel = _panel(rig)
         heartbeat = _Heartbeat()
 
@@ -273,7 +272,7 @@ class TestTheEventLoopStaysResponsive:
         _pump(300)
         assert heartbeat.ticks >= 10
         _wait_idle(panel)
-        assert rig.mount.pulse_log  # ... and the nudge itself still completed
+        assert rig.mount.equivalent_ms_log  # ... and the nudge itself still completed
         heartbeat.stop()
         panel.stop()
 
@@ -306,20 +305,35 @@ def _setup_nothing(rig: _Rig, panel: MountTestMovePanel, park: FakeMountPark) ->
     """The fault is built into the mount itself (see `_SCENARIOS`)."""
 
 
-def _plain_mount() -> FakeMountAdapter:
-    return FakeMountAdapter()
+def _plain_mount() -> FakeEquivalentMsMountAdapter:
+    return FakeEquivalentMsMountAdapter()
 
 
-def _rejecting_mount() -> FakeMountAdapter:
-    # the runner retries a rejected pulse 6 times: the first 6 attempts are all refused, so the
-    # first calibration step fails; later attempts (the retry) are accepted
-    return FakeMountAdapter(reject_first_n_pulses=6)
+class _RejectFirstMove(FakeEquivalentMsMountAdapter):
+    """The first angular move is refused (S6.8d: no runner retry any more), so the first
+    calibration step fails; later moves (the second run) are accepted."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._refused = False
+
+    def move_angular(
+        self, axis: MountAxis, direction: AxisDirection, arcsec: float
+    ) -> CommandResult:
+        if not self._refused:
+            self._refused = True
+            return CommandResult(accepted=False, message="mount rejected the motion command")
+        return super().move_angular(axis, direction, arcsec)
+
+
+def _rejecting_mount() -> FakeEquivalentMsMountAdapter:
+    return _RejectFirstMove()
 
 
 _SCENARIOS: dict[
     str,
     tuple[
-        Callable[[], FakeMountAdapter],
+        Callable[[], FakeEquivalentMsMountAdapter],
         Callable[[_Rig, MountTestMovePanel, FakeMountPark], None],
     ],
 ] = {
@@ -336,7 +350,6 @@ class TestEveryFailureReturnsToIdle:
     def test_failure_then_a_second_run_without_restarting(
         self, qapp: object, monkeypatch: pytest.MonkeyPatch, scenario: str
     ) -> None:
-        monkeypatch.setattr(runner_module, "_PULSE_REJECTION_RETRY_DELAY_S", 0.01)
         make_mount, setup = _SCENARIOS[scenario]
         rig = _Rig(make_mount())
         park = FakeMountPark(start_parked=True)
@@ -355,11 +368,12 @@ class TestEveryFailureReturnsToIdle:
         rig.jitter = {"left": None, "right": None}
         rig.scramble_after_pulse = False
         rig.raise_in_waiter = False
-        rig.mount.pulse_log.clear()
+        rig.mount.equivalent_ms_log.clear()
         panel._fresh_frame_timeout_s = lambda: 5.0  # type: ignore[method-assign]
         panel._run_calibration_button.click()
         assert panel.diagnostic_activity()["capture_in_flight"] is True
-        assert _wait_until(lambda: bool(rig.mount.pulse_log), timeout_s=15.0)  # it really runs
+        # it really runs
+        assert _wait_until(lambda: bool(rig.mount.equivalent_ms_log), timeout_s=15.0)
         panel._on_stop()
         _wait_idle(panel)
         heartbeat.stop()
@@ -368,7 +382,7 @@ class TestEveryFailureReturnsToIdle:
 
 class TestOtherFailureClasses:
     def test_no_motion_is_reported_and_the_panel_is_reusable(self, qapp: object) -> None:
-        rig = _Rig(FakeMountAdapter())
+        rig = _Rig(FakeEquivalentMsMountAdapter())
         rig.px_per_ms = {"left": 0.0, "right": 0.0}
         panel = _panel(rig)
 
@@ -381,7 +395,7 @@ class TestOtherFailureClasses:
         panel.stop()
 
     def test_a_tracking_state_failure_is_reported_and_recoverable(self, qapp: object) -> None:
-        rig = _Rig(FakeMountAdapter())
+        rig = _Rig(FakeEquivalentMsMountAdapter())
         park = FakeMountPark(start_parked=False, refuse_stop_tracking=True)
         park.start_tracking()  # ON, and the mount refuses to turn it OFF
         enforcer = TrackingEnforcer(park, OperatingMode.TERRESTRIAL, settle_timeout_s=0.05)
@@ -392,7 +406,7 @@ class TestOtherFailureClasses:
 
         _assert_recovered(panel)
         assert "tracking" in panel._result_label.text().lower()
-        assert rig.mount.pulse_log == []  # nothing was ever commanded
+        assert rig.mount.equivalent_ms_log == []  # nothing was ever commanded
         panel.stop()
 
     def test_a_crash_of_the_runner_worker_is_reported_and_recoverable(
@@ -402,7 +416,7 @@ class TestOtherFailureClasses:
             def unpark(self) -> None:
                 raise ConnectionError("indiserver went away during unpark")
 
-        rig = _Rig(FakeMountAdapter())
+        rig = _Rig(FakeEquivalentMsMountAdapter())
         panel = _panel(rig, park=_RaisingPark(start_parked=True))
 
         panel._run_calibration_button.click()
@@ -415,7 +429,7 @@ class TestOtherFailureClasses:
     def test_an_exception_in_a_continuation_resets_the_state_and_is_re_raised(
         self, qapp: object, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        rig = _Rig(FakeMountAdapter())
+        rig = _Rig(FakeEquivalentMsMountAdapter())
         panel = _panel(rig)
         panel._timer.stop()  # drive _poll by hand so the exception is observable
 
@@ -441,7 +455,7 @@ class TestOtherFailureClasses:
         def broken_geometry() -> list[CameraGeometry]:
             raise RuntimeError("optics lookup failed")
 
-        rig = _Rig(FakeMountAdapter())
+        rig = _Rig(FakeEquivalentMsMountAdapter())
         panel = _panel(rig, geometry=broken_geometry)
 
         with pytest.raises(RuntimeError, match="optics lookup failed"):
@@ -457,7 +471,7 @@ class TestStop:
     def test_stop_during_a_capture_returns_to_idle_at_once_and_nothing_runs_later(
         self, qapp: object
     ) -> None:
-        rig = _Rig(FakeMountAdapter())
+        rig = _Rig(FakeEquivalentMsMountAdapter())
         panel = _panel(rig)
         panel._run_calibration_button.click()
         assert panel.diagnostic_activity()["capture_in_flight"] is True
@@ -467,12 +481,12 @@ class TestStop:
         assert panel.is_idle()  # immediately, not after the slow wait finishes
         _assert_recovered(panel)
         _pump(900)  # the abandoned worker finishes in the background ...
-        assert rig.mount.pulse_log == []  # ... and its stale result is discarded
+        assert rig.mount.equivalent_ms_log == []  # ... and its stale result is discarded
         assert panel.is_idle()
         panel.stop()
 
     def test_stop_then_a_new_run_works(self, qapp: object) -> None:
-        rig = _Rig(FakeMountAdapter())
+        rig = _Rig(FakeEquivalentMsMountAdapter())
         panel = _panel(rig)
         panel._run_calibration_button.click()
         panel._stop_button.click()
@@ -480,7 +494,7 @@ class TestStop:
         panel._run_calibration_button.click()
 
         assert panel.diagnostic_activity()["capture_in_flight"] is True
-        assert _wait_until(lambda: bool(rig.mount.pulse_log), timeout_s=15.0)
+        assert _wait_until(lambda: bool(rig.mount.equivalent_ms_log), timeout_s=15.0)
         panel._on_stop()
         _wait_idle(panel)
         panel.stop()
@@ -491,7 +505,7 @@ class TestStop:
                 time.sleep(0.5)  # the runner worker stays busy for a while
                 super().unpark()
 
-        rig = _Rig(FakeMountAdapter())
+        rig = _Rig(FakeEquivalentMsMountAdapter())
         panel = _panel(rig, park=_SlowPark(start_parked=True))
         panel._run_calibration_button.click()
         assert _wait_until(lambda: panel.diagnostic_activity()["runner_busy"], timeout_s=10.0)
@@ -501,7 +515,7 @@ class TestStop:
 
         assert panel.diagnostic_activity()["calibration_queue_len"] == 0
         _pump(300)
-        assert len(rig.mount.pulse_log) <= 1  # the calibration did not carry on after Stop
+        assert len(rig.mount.equivalent_ms_log) <= 1  # the calibration did not carry on after Stop
         assert panel._run_calibration_button.isEnabled()
         panel.stop()
 
@@ -513,7 +527,7 @@ class TestBundle6d33f37cRegression:
         """The field case: Main's frames never satisfy the freshness rule, Guide's do; the
         operator clicked Run Calibration / nudges again and again. Every attempt must fail
         VISIBLY, return to idle, and keep the event loop alive -- never freeze."""
-        rig = _Rig(FakeMountAdapter())
+        rig = _Rig(FakeEquivalentMsMountAdapter())
         rig.never_fresh["left"] = True
         panel = _panel(rig)
         panel._fresh_frame_timeout_s = lambda: 0.3  # type: ignore[method-assign]
@@ -526,7 +540,8 @@ class TestBundle6d33f37cRegression:
             _assert_recovered(panel)
             assert heartbeat.ticks > ticks_before, f"attempt {attempt}: event loop blocked"
             assert "no frame available" in panel._result_label.text().lower()
-            assert rig.mount.pulse_log == []  # failed at the first BEFORE capture, as in the bundle
+            # failed at the first BEFORE capture, as in the bundle
+            assert rig.mount.equivalent_ms_log == []
 
         heartbeat.stop()
         panel.stop()
@@ -534,7 +549,7 @@ class TestBundle6d33f37cRegression:
 
 class TestDiagnostics:
     def test_activity_reports_state_capture_runner_and_timer(self, qapp: object) -> None:
-        rig = _Rig(FakeMountAdapter())
+        rig = _Rig(FakeEquivalentMsMountAdapter())
         panel = _panel(rig)
 
         idle = panel.diagnostic_activity()

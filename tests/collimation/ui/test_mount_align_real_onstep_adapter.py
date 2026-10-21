@@ -492,7 +492,6 @@ class TestRunnerAgainstTheRealAdapter:
             rig.park,
             rig.mount,
             [(MountAxis.AXIS1, AxisDirection.POSITIVE, 1000, 150.0)],
-            park_after=False,
         )
         while runner.is_busy:
             time.sleep(0.005)
@@ -507,12 +506,12 @@ class TestRunnerAgainstTheRealAdapter:
     def test_a_duration_only_step_is_refused_explicitly_without_retrying_pulse_axis(
         self, rig: _Rig
     ) -> None:
-        """A timed step on a mount that reports no timed pulses is refused once, by the
-        runner, naming the missing angular size -- never retried against `pulse_axis`."""
+        """An axis step without an angular size is refused once, by the runner, naming the
+        missing angular size -- never sent to `pulse_axis` (S6.8d: there is no timed path)."""
         runner = MountTestMoveRunner()
         started = time.monotonic()
-        assert runner.submit(
-            rig.park, rig.mount, MountAxis.AXIS1, AxisDirection.POSITIVE, 1000, park_after=False
+        assert runner.submit_sequence(
+            rig.park, rig.mount, [(MountAxis.AXIS1, AxisDirection.POSITIVE, 1000)]
         )
         while runner.is_busy:
             time.sleep(0.005)
@@ -620,7 +619,6 @@ class TestStopDuringABlockingAngularGoto:
                 (MountAxis.AXIS1, AxisDirection.POSITIVE, 1000, 300.0),
                 (MountAxis.AXIS2, AxisDirection.POSITIVE, 1000, 300.0),
             ],
-            park_after=False,
         )
         assert clock.wait_for_sleepers(1)
 
@@ -711,7 +709,6 @@ class TestStopDuringABlockingAngularGoto:
             rig.park,
             rig.mount,
             [(MountAxis.AXIS1, AxisDirection.POSITIVE, 1000, 300.0)],
-            park_after=False,
         )
         assert clock.wait_for_sleepers(1)
         with _watchdog(clock) as fired:
@@ -734,7 +731,6 @@ class TestStopDuringABlockingAngularGoto:
             rig.park,
             rig.mount,
             [(MountAxis.AXIS1, AxisDirection.POSITIVE, 1000, 300.0)],
-            park_after=False,
         )
         assert clock.wait_for_sleepers(1)
         with _watchdog(clock) as fired:
@@ -1338,7 +1334,6 @@ class TestGuidePulseMovesInTheRunner:
             rig.park,
             rig.mount,
             [(MountAxis.AXIS1, AxisDirection.POSITIVE, 12000)],
-            park_after=False,
             primitive=MountAlignPrimitive.GUIDE_PULSE,
         )
         deadline = time.monotonic() + 30.0

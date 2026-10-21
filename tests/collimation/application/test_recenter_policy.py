@@ -1,7 +1,18 @@
+"""CollimationRecenterPolicy unit tests on a production-shaped mount.
+
+S6.8d (R9, movement-paths D5): the timed path (one `pulse_axis` on the dominant axis) is
+deleted; `MovingMount` now has the production contract -- angular moves only, no timed pulse --
+and records each angular move as its equivalent ms (S6.0 matrix unit, `calibration_center_rate_x`
+x sidereal), so the sizes below read in the matrix's unit. The timed-path tests
+(TestTimedPathCharacterization, TestTimedPathRotation's strict xfail, the dominant-axis test)
+were removed with the path."""
+
 import math
 
 import pytest
+from astrotool_core.config import MountAlignmentSettings
 from astrotool_core.mount.axis_calibration import AxisResponse, CalibrationMatrix
+from astrotool_core.mount.movement_sizing import SIDEREAL_ARCSEC_PER_S
 from astrotool_core.mount.port import (
     AxisDirection,
     CommandResult,
@@ -35,8 +46,16 @@ def make_calibration(px_per_ms: float = 0.1, duration_ms: int = 100) -> Calibrat
     return CalibrationMatrix(responses=responses)
 
 
+#: Arcsec per equivalent ms of the matrix unit (test-side model of the S6.0 unit).
+_ARCSEC_PER_MS = (
+    MountAlignmentSettings().calibration_center_rate_x * SIDEREAL_ARCSEC_PER_S / 1000.0
+)
+
+
 class MovingMount:
-    """Test double: applies each accepted pulse to a simulated star position."""
+    """Test double with the production contract (angular moves, no timed pulse): applies each
+    accepted angular move to a simulated star position; `pulse_log` records it in equivalent
+    ms."""
 
     def __init__(
         self, calibration: CalibrationMatrix, start: tuple[float, float], *, accept: bool = True
@@ -53,7 +72,12 @@ class MovingMount:
         pass
 
     def capabilities(self) -> MountCapabilities:
-        return MountCapabilities(supports_pulse_guiding=True, min_pulse_ms=1, max_pulse_ms=9999)
+        return MountCapabilities(
+            supports_pulse_guiding=False,
+            min_pulse_ms=0,
+            max_pulse_ms=0,
+            supports_angular_moves=True,
+        )
 
     def status(self) -> MountStatus:
         return MountStatus(connected=True, tracking=True, slewing=False)
@@ -66,6 +90,12 @@ class MovingMount:
         *,
         rate_preset: str | None = None,
     ) -> CommandResult:
+        raise AssertionError("the policy must never send a timed pulse (S6.8d)")
+
+    def move_angular(
+        self, axis: MountAxis, direction: AxisDirection, arcsec: float
+    ) -> CommandResult:
+        duration_ms = round(arcsec / _ARCSEC_PER_MS)
         self.pulse_log.append((axis, direction, duration_ms))
         if not self._accept:
             return CommandResult(accepted=False, message="rejected for test")
@@ -103,16 +133,6 @@ def test_negative_offset_picks_the_opposing_positive_direction() -> None:
 
     assert result.success is True
     assert mount.pulse_log == [(MountAxis.AXIS1, AxisDirection.POSITIVE, 500)]
-
-
-def test_dominant_axis_chosen_by_larger_offset_component() -> None:
-    calibration = make_calibration()
-    mount = MovingMount(calibration, start=(10.0, 50.0))
-    policy = CollimationRecenterPolicy(mount, calibration, RecenterConfig(settle_ms=0))
-
-    policy.center(lambda: _locked(mount), reference=(0.0, 0.0))
-
-    assert mount.pulse_log[0][0] is MountAxis.AXIS2
 
 
 def test_pulse_duration_is_clamped_to_max_pulse_ms() -> None:
@@ -180,15 +200,10 @@ def test_diverging_offset_aborts_after_max_diverge_count() -> None:
     positions = iter([50.0, 60.0, 75.0, 95.0])
 
     class DivergingMount(MovingMount):
-        def pulse_axis(
-            self,
-            axis: MountAxis,
-            direction: AxisDirection,
-            duration_ms: int,
-            *,
-            rate_preset: str | None = None,
+        def move_angular(
+            self, axis: MountAxis, direction: AxisDirection, arcsec: float
         ) -> CommandResult:
-            self.pulse_log.append((axis, direction, duration_ms))
+            self.pulse_log.append((axis, direction, round(arcsec / _ARCSEC_PER_MS)))
             self.x = next(positions)
             return CommandResult(accepted=True)
 
@@ -222,74 +237,6 @@ def test_max_iterations_reports_final_offset_and_pass_fail_by_rough_tolerance() 
     assert result.success is True  # within the generous rough tolerance
 
 
-class TestTimedPathCharacterization:
-    """S6.0b: written and run green BEFORE the angular path was added -- a mount that reports
-    timed pulses keeps pulsing via `pulse_axis`, sized from the matrix in ms, even when it also
-    offers angular moves."""
-
-    class _TimedAndAngularMount(MovingMount):
-        def capabilities(self) -> MountCapabilities:
-            return MountCapabilities(
-                supports_pulse_guiding=True,
-                min_pulse_ms=1,
-                max_pulse_ms=9999,
-                supports_angular_moves=True,
-                min_angular_arcsec=30.0,
-            )
-
-        def __init__(self, *args: object, **kwargs: object) -> None:
-            super().__init__(*args, **kwargs)  # type: ignore[arg-type]
-            self.angular_calls: list[tuple[MountAxis, AxisDirection, float]] = []
-
-        def move_angular(
-            self, axis: MountAxis, direction: AxisDirection, arcsec: float
-        ) -> CommandResult:
-            self.angular_calls.append((axis, direction, arcsec))
-            return CommandResult(accepted=False, message="must not be used on a timed mount")
-
-    def test_a_timed_mount_with_angular_moves_still_pulses(self) -> None:
-        calibration = make_calibration()
-        mount = self._TimedAndAngularMount(calibration, start=(50.0, -20.0))
-        policy = CollimationRecenterPolicy(mount, calibration, RecenterConfig(settle_ms=0))
-
-        result = policy.center(lambda: _locked(mount), reference=(0.0, 0.0))
-
-        assert result.success is True
-        assert result.reason == "within_tolerance"
-        assert mount.angular_calls == []
-        assert mount.pulse_log == [
-            (MountAxis.AXIS1, AxisDirection.NEGATIVE, 500),
-            (MountAxis.AXIS2, AxisDirection.POSITIVE, 200),
-        ]
-
-    def test_a_short_timed_correction_is_sent_however_small(self) -> None:
-        # No floor on the timed path: a 0.6 px residual beyond a tight tolerance is a 6 ms pulse.
-        calibration = make_calibration()
-        mount = self._TimedAndAngularMount(calibration, start=(0.6, 0.0))
-        policy = CollimationRecenterPolicy(
-            mount, calibration, RecenterConfig(settle_ms=0, fine_tolerance_px=0.5)
-        )
-
-        result = policy.center(lambda: _locked(mount), reference=(0.0, 0.0))
-
-        assert result.reason == "within_tolerance"
-        assert mount.pulse_log == [(MountAxis.AXIS1, AxisDirection.NEGATIVE, 6)]
-
-    def test_a_rejected_timed_pulse_is_reported_after_one_attempt(self) -> None:
-        calibration = make_calibration()
-        mount = self._TimedAndAngularMount(calibration, start=(50.0, 0.0), accept=False)
-        policy = CollimationRecenterPolicy(mount, calibration, RecenterConfig(settle_ms=0))
-
-        result = policy.center(lambda: _locked(mount), reference=(0.0, 0.0))
-
-        assert (result.success, result.reason, result.pulses_issued) == (
-            False,
-            "pulse_rejected",
-            1,
-        )
-        assert mount.angular_calls == []
-
-
 def _rotated_calibration(rot_deg: float, px_per_ms: float = 0.1) -> CalibrationMatrix:
     """+AXIS1 moves the star along +x and +AXIS2 along +y of the MOUNT frame; the camera is
     rotated by `rot_deg` against it."""
@@ -312,29 +259,8 @@ def _rotated_calibration(rot_deg: float, px_per_ms: float = 0.1) -> CalibrationM
     return CalibrationMatrix(responses=responses)
 
 
-class TestTimedPathRotation:
-    """Review of S6.0b: the TIMED path (frozen in S6.0b) maps image x to AXIS1 and y to AXIS2
-    and sizes from one component -- a camera rotated 90 degrees against the mount does not
-    converge. Pinned here as a known defect of the timed path (no production timed mount is
-    wired today: OnStepAdapter >= 0.4 has no timed pulse); the angular path solves in 2-D."""
-
-    @pytest.mark.xfail(
-        strict=True,
-        raises=AssertionError,
-        reason="timed path maps image x->AXIS1, y->AXIS2 (rotation-blind); frozen in S6.0b",
-    )
-    def test_a_camera_rotated_90_degrees_converges_on_the_timed_path(self) -> None:
-        calibration = _rotated_calibration(90.0)
-        mount = MovingMount(calibration, start=(50.0, 0.0))
-        policy = CollimationRecenterPolicy(mount, calibration, RecenterConfig(settle_ms=0))
-
-        result = policy.center(lambda: _locked(mount), reference=(0.0, 0.0))
-
-        assert result.reason == "within_tolerance", result
-
-
 class _NoTimedPulseMount(MovingMount):
-    """A mount that reports no timed pulses (and, unless given, no angular move either)."""
+    """A mount that reports no timed pulses and, unless given, no angular move either."""
 
     def capabilities(self) -> MountCapabilities:
         return MountCapabilities(supports_pulse_guiding=False, min_pulse_ms=0, max_pulse_ms=0)
@@ -381,7 +307,7 @@ class TestTheFloorIsTheReportedCapability:
 
 
 class TestAngularPathWithoutAUsableMotion:
-    def test_a_mount_with_neither_timed_nor_angular_moves_is_refused_unsent(self) -> None:
+    def test_a_mount_without_angular_moves_is_refused_unsent(self) -> None:
         calibration = make_calibration()
         mount = _NoTimedPulseMount(calibration, start=(50.0, 0.0))
         policy = CollimationRecenterPolicy(mount, calibration, RecenterConfig(settle_ms=0))
@@ -393,7 +319,7 @@ class TestAngularPathWithoutAUsableMotion:
             "pulse_rejected",
             0,
         )
-        assert "no timed pulse support" in result.message
+        assert "offers no angular move" in result.message
         assert mount.pulse_log == []
 
     def test_a_degenerate_calibration_is_reported_and_nothing_sent(self) -> None:

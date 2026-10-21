@@ -3,7 +3,7 @@ import threading
 import time
 from collections.abc import Callable
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 import numpy as np
 import pytest
@@ -31,8 +31,13 @@ from astrotool_core.focus.port import FocuserStatus
 from astrotool_core.frames.frame import Frame
 from astrotool_core.mount.axis_calibration import AxisResponse, CalibrationMatrix
 from astrotool_core.mount.operating_mode import OperatingMode, TrackingEnforcer
-from astrotool_core.mount.park_port import MountParkPort, MountParkStatus
-from astrotool_core.mount.port import AxisDirection, CommandResult, MountAxis, MountPort
+from astrotool_core.mount.park_port import MountParkStatus
+from astrotool_core.mount.port import (
+    AxisDirection,
+    CommandResult,
+    GuidePulseResult,
+    MountAxis,
+)
 from astrotool_core.registration.astap_adapter import (
     AstapSolveHint,
     AstapSolveResult,
@@ -40,7 +45,7 @@ from astrotool_core.registration.astap_adapter import (
 )
 from astrotool_core.registration.optical_prior import OpticalPrior
 from astrotool_core.registration.result import CrossCameraRegistrationResult
-from astrotool_core.testing.fake_mount import FakeMountAdapter
+from astrotool_core.testing.fake_mount import FakeEquivalentMsMountAdapter as _EqMsMount
 from astrotool_core.testing.fake_mount_park import FakeMountPark
 from astrotool_core.testing.fake_touptek import FakeTouptekCamera
 from astrotool_core.testing.frame_factory import donut_image, single_star_image
@@ -51,6 +56,8 @@ from collimation_tool.application.mount_align_messages import (
     degenerate_calibration_message as _degenerate_calibration_message,
 )
 from collimation_tool.application.mount_align_plan import CALIBRATION_STEPS as _CALIBRATION_STEPS
+from collimation_tool.application.mount_align_positioning import nudge_cap_arcsec
+from collimation_tool.application.mount_align_sizing import angular_unit_rate
 from collimation_tool.ui.camera_panel import CameraPanel
 from collimation_tool.ui.focuser_panel import FocuserPanel
 from collimation_tool.ui.main_window import MainWindow
@@ -3287,7 +3294,7 @@ class TestMountParkOneActionAtATime:
 
 class _SlowMountPark(FakeMountPark):
     """FakeMountPark whose unpark() takes a moment to settle -- a plain
-    FakeMountPark/FakeMountAdapter pair settle instantly, so
+    FakeMountPark/_EqMsMount pair settle instantly, so
     MountTestMoveRunner's background thread can finish before a test's
     own next line runs; this keeps it observably busy for a beat."""
 
@@ -3339,7 +3346,7 @@ class _FakeTimeMountTestMovePanel(MountTestMovePanel):
 
 class TestMountTestMovePanel:
     """Mount-alignment tool — see MountTestMovePanel's docstring.
-    FakeMountAdapter stands in for a real IndiMountPulseAdapter here; the
+    _EqMsMount stands in for a real IndiMountPulseAdapter here; the
     INDI wire protocol itself is covered by tests/core/mount and
     tests/contracts instead. `compose_screen_move` itself (no longer
     called by this panel -- see its own docstring for why the direction
@@ -3371,7 +3378,7 @@ class TestMountTestMovePanel:
 
         monkeypatch.setattr(main_window_module, "MountTestMovePanel", _FakeTimeMountTestMovePanel)
 
-    def _window(self, *, mount_park: FakeMountPark, pulse_mount: FakeMountAdapter) -> MainWindow:
+    def _window(self, *, mount_park: FakeMountPark, pulse_mount: _EqMsMount) -> MainWindow:
         return MainWindow(
             _star_camera(50.0, 50.0),
             guide_camera=_star_camera(20.0, 30.0),
@@ -3394,7 +3401,7 @@ class TestMountTestMovePanel:
 
         def frame(key: str) -> np.ndarray:
             dx = dy = 0.0
-            for axis, direction, ms in mount.pulse_log:  # type: ignore[attr-defined]
+            for axis, direction, ms in mount.equivalent_ms_log:  # type: ignore[attr-defined]
                 signed = ms * px_per_ms * (1 if direction is AxisDirection.POSITIVE else -1)
                 if axis is MountAxis.AXIS1:
                     dx += signed
@@ -3461,7 +3468,7 @@ class TestMountTestMovePanel:
         barely-fresh one. Standalone panel -- see the Quit-cleanup
         fix's own lesson on why, for a scenario that doesn't need
         CameraPanel/MainWindow at all."""
-        pulse_mount = FakeMountAdapter()
+        pulse_mount = _EqMsMount()
         calls: list[float] = []
 
         def wait_and_record(reference: float, _timeout: float) -> FrameAcquisitionResult:
@@ -3502,7 +3509,7 @@ class TestMountTestMovePanel:
     def test_after_capture_never_grants_the_second_wait_if_the_first_never_catches_up(
         self, qapp: object
     ) -> None:
-        pulse_mount = FakeMountAdapter()
+        pulse_mount = _EqMsMount()
         call_count = 0
 
         def never_catches_up(_reference: float, _timeout: float) -> FrameAcquisitionResult:
@@ -3559,7 +3566,7 @@ class TestMountTestMovePanel:
             return _ok_result(_NON_FLAT_FRAME)
 
         panel = MountTestMovePanel(
-            FakeMountAdapter(),
+            _EqMsMount(),
             mount_park=FakeMountPark(start_parked=True),
             get_left_frame=lambda: np.zeros((10, 10), dtype=np.float32),
             get_right_frame=lambda: np.zeros((10, 10), dtype=np.float32),
@@ -3604,7 +3611,7 @@ class TestMountTestMovePanel:
             return _ok_result(_NON_FLAT_FRAME)
 
         panel = MountTestMovePanel(
-            FakeMountAdapter(),
+            _EqMsMount(),
             mount_park=FakeMountPark(start_parked=True),
             get_left_frame=lambda: np.zeros((10, 10), dtype=np.float32),
             get_right_frame=lambda: np.zeros((10, 10), dtype=np.float32),
@@ -3630,7 +3637,7 @@ class TestMountTestMovePanel:
     def test_starts_disconnected_with_calibration_and_nudge_buttons_disabled(
         self, qapp: object
     ) -> None:
-        window = self._window(mount_park=FakeMountPark(), pulse_mount=FakeMountAdapter())
+        window = self._window(mount_park=FakeMountPark(), pulse_mount=_EqMsMount())
         panel = window._test_move_panel
         assert not panel._run_calibration_button.isEnabled()
         assert all(
@@ -3647,7 +3654,7 @@ class TestMountTestMovePanel:
         # unparking transparently for every pulse it issues.
         for start_parked in (True, False):
             window = self._window(
-                mount_park=FakeMountPark(start_parked=start_parked), pulse_mount=FakeMountAdapter()
+                mount_park=FakeMountPark(start_parked=start_parked), pulse_mount=_EqMsMount()
             )
             window._mount_panel._connect_button.setChecked(True)
             window._test_move_panel._connect_button.setChecked(True)
@@ -3659,7 +3666,7 @@ class TestMountTestMovePanel:
     ) -> None:
         window = self._window(
             mount_park=FakeMountPark(start_parked=True),
-            pulse_mount=FakeMountAdapter(fail_connect=True),
+            pulse_mount=_EqMsMount(fail_connect=True),
         )
         window._mount_panel._connect_button.setChecked(True)
         window._test_move_panel._connect_button.setChecked(True)
@@ -3674,7 +3681,7 @@ class TestMountTestMovePanel:
     def test_run_calibration_pulses_all_four_steps_in_order_and_builds_both_matrices(
         self, qapp: object
     ) -> None:
-        pulse_mount = FakeMountAdapter()
+        pulse_mount = _EqMsMount()
         mount_park = FakeMountPark(start_parked=True)
         window = self._window(mount_park=mount_park, pulse_mount=pulse_mount)
         self._connect_and_stream_cameras(window)
@@ -3716,7 +3723,7 @@ class TestMountTestMovePanel:
         self._run_calibration_to_completion(panel, timeout_s=60.0)
 
         settings = MountAlignmentSettings()
-        assert pulse_mount.pulse_log == [
+        assert pulse_mount.equivalent_ms_log == [
             (MountAxis.AXIS1, AxisDirection.POSITIVE, settings.pulse_ms),
             (MountAxis.AXIS1, AxisDirection.POSITIVE, settings.pulse_ms),
             (MountAxis.AXIS1, AxisDirection.NEGATIVE, settings.pulse_ms),
@@ -3726,7 +3733,6 @@ class TestMountTestMovePanel:
             (MountAxis.AXIS2, AxisDirection.NEGATIVE, settings.pulse_ms),
             (MountAxis.AXIS2, AxisDirection.NEGATIVE, settings.pulse_ms),
         ]
-        assert pulse_mount.rate_log == [settings.rate_preset] * 8
         assert set(panel._calibration) == {"left", "right"}
         assert all(
             button.isEnabled()
@@ -3756,7 +3762,7 @@ class TestMountTestMovePanel:
         as its own reference), not the old bare instant `get_frame()`
         read. `get_frame()` is therefore never called at all in a
         calibration run any more; kept wired here only to confirm that."""
-        pulse_mount = FakeMountAdapter()
+        pulse_mount = _EqMsMount()
         mount_park = FakeMountPark(start_parked=True)
         window = self._window(mount_park=mount_park, pulse_mount=pulse_mount)
         self._connect_and_stream_cameras(window)
@@ -3780,7 +3786,7 @@ class TestMountTestMovePanel:
             # NO_MOTION outcome now) -- shift with the cumulative signed pulse durations.
             shift = sum(
                 ms if direction is AxisDirection.POSITIVE else -ms
-                for axis, direction, ms in pulse_mount.pulse_log
+                for axis, direction, ms in pulse_mount.equivalent_ms_log
                 if axis is MountAxis.AXIS1
             )
             return np.roll(content, round(shift * 0.03), axis=1)
@@ -3813,9 +3819,9 @@ class TestMountTestMovePanel:
     ) -> None:
         """Real report: "calibration doesn't wait for mount to be
         stabilized" -- confirms the configured settle_ms actually reaches
-        MountTestMoveRunner.submit() for every one of Run Calibration's
-        four steps, not just that the setting exists."""
-        pulse_mount = FakeMountAdapter()
+        MountTestMoveRunner.submit_sequence() for every one of Run Calibration's
+        steps, not just that the setting exists."""
+        pulse_mount = _EqMsMount()
         mount_park = FakeMountPark(start_parked=True)
         window = self._window(mount_park=mount_park, pulse_mount=pulse_mount)
         self._connect_and_stream_cameras(window)
@@ -3825,26 +3831,13 @@ class TestMountTestMovePanel:
         self._make_scene_move(panel)
 
         settle_values: list[int | None] = []
-        real_submit = panel._runner.submit
+        real_submit = panel._runner.submit_sequence
 
-        def spy_submit(
-            mount_park: MountParkPort,
-            mount: MountPort,
-            axis: MountAxis,
-            direction: AxisDirection,
-            pulse_ms: int,
-            *,
-            rate_preset: str | None = None,
-            park_after: bool = True,
-            settle_ms: int = 0,
-        ) -> bool:
+        def spy_submit(*args: Any, settle_ms: int = 0, **kwargs: Any) -> bool:  # noqa: ANN401
             settle_values.append(settle_ms)
-            return real_submit(
-                mount_park, mount, axis, direction, pulse_ms,
-                rate_preset=rate_preset, park_after=park_after, settle_ms=settle_ms,
-            )
+            return real_submit(*args, settle_ms=settle_ms, **kwargs)
 
-        panel._runner.submit = spy_submit  # type: ignore[method-assign]
+        panel._runner.submit_sequence = spy_submit  # type: ignore[method-assign]
 
         self._run_calibration_to_completion(panel, timeout_s=60.0)
 
@@ -3859,7 +3852,7 @@ class TestMountTestMovePanel:
         the measured displacement. MainWindow wires MountTestMovePanel's
         pause/resume to CameraPanel.set_auto_exposure_paused (not
         set_updates_paused -- frame capture must keep running)."""
-        pulse_mount = FakeMountAdapter()
+        pulse_mount = _EqMsMount()
         mount_park = FakeMountPark(start_parked=True)
         window = self._window(mount_park=mount_park, pulse_mount=pulse_mount)
         self._connect_and_stream_cameras(window)
@@ -3882,7 +3875,7 @@ class TestMountTestMovePanel:
 
     def test_run_calibration_never_reparks_the_mount(self, qapp: object) -> None:
         mount_park = FakeMountPark(start_parked=True)
-        window = self._window(mount_park=mount_park, pulse_mount=FakeMountAdapter())
+        window = self._window(mount_park=mount_park, pulse_mount=_EqMsMount())
         self._connect_and_stream_cameras(window)
         window._mount_panel._connect_button.setChecked(True)
         window._test_move_panel._connect_button.setChecked(True)
@@ -3905,7 +3898,7 @@ class TestMountTestMovePanel:
         whole remaining queue unconditionally, silently dropping AXIS2's
         own already-queued return pulse and leaving the mount stranded
         off its start position. It must still be sent."""
-        pulse_mount = FakeMountAdapter()
+        pulse_mount = _EqMsMount()
         mount_park = FakeMountPark(start_parked=True)
         window = self._window(mount_park=mount_park, pulse_mount=pulse_mount)
         self._connect_and_stream_cameras(window)
@@ -3974,7 +3967,7 @@ class TestMountTestMovePanel:
         # then the corrective return pulse (issue #31: AXIS2's own net
         # +pulse_ms so far, see _abort_calibration's own docstring) fires
         # fire-and-forget.
-        assert pulse_mount.pulse_log == [
+        assert pulse_mount.equivalent_ms_log == [
             (MountAxis.AXIS1, AxisDirection.POSITIVE, settings.pulse_ms),
             (MountAxis.AXIS1, AxisDirection.POSITIVE, settings.pulse_ms),
             (MountAxis.AXIS1, AxisDirection.NEGATIVE, settings.pulse_ms),
@@ -3998,7 +3991,7 @@ class TestMountTestMovePanel:
         retry logic, which covers transient rejection but not every
         possible failure)."""
 
-        class _RejectsAxis2NegativeMount(FakeMountAdapter):
+        class _RejectsAxis2NegativeMount(_EqMsMount):
             """Every pulse succeeds normally except AXIS2 NEGATIVE (the
             one this test needs to be the stranded return step) --
             targeted by (axis, direction) rather than attempt count, so
@@ -4006,17 +3999,12 @@ class TestMountTestMovePanel:
             all succeed for this scenario to even reach AXIS2's stranded
             return) are unaffected."""
 
-            def pulse_axis(
-                self,
-                axis: MountAxis,
-                direction: AxisDirection,
-                duration_ms: int,
-                *,
-                rate_preset: str | None = None,
+            def move_angular(
+                self, axis: MountAxis, direction: AxisDirection, arcsec: float
             ) -> CommandResult:
                 if axis is MountAxis.AXIS2 and direction is AxisDirection.NEGATIVE:
                     return CommandResult(accepted=False, message="simulated rejection")
-                return super().pulse_axis(axis, direction, duration_ms, rate_preset=rate_preset)
+                return super().move_angular(axis, direction, arcsec)
 
         pulse_mount = _RejectsAxis2NegativeMount()
         mount_park = FakeMountPark(start_parked=True)
@@ -4026,10 +4014,6 @@ class TestMountTestMovePanel:
         window._test_move_panel._connect_button.setChecked(True)
         panel = window._test_move_panel
         self._make_scene_move(panel)
-        import collimation_tool.ui.mount_test_move_runner as runner_module
-
-        original_delay = runner_module._PULSE_REJECTION_RETRY_DELAY_S
-        runner_module._PULSE_REJECTION_RETRY_DELAY_S = 0.01  # keep the test fast
 
         # See the sibling test above for why this is the 28th left-camera
         # call (issue #31 Phase C: 8 steps, 6 left-camera calls each --
@@ -4061,7 +4045,7 @@ class TestMountTestMovePanel:
                 time.sleep(0.01)
             panel._poll()
         finally:
-            runner_module._PULSE_REJECTION_RETRY_DELAY_S = original_delay
+            pass
 
         assert "Calibration failed" in panel._result_label.text()
         assert "WARNING: mount may not have returned to start position" in (
@@ -4072,12 +4056,12 @@ class TestMountTestMovePanel:
     def test_run_calibration_button_and_nudge_pads_disable_and_stop_enables_mid_sequence(
         self, qapp: object
     ) -> None:
-        # A plain FakeMountPark/FakeMountAdapter settle instantly, so the
+        # A plain FakeMountPark/_EqMsMount settle instantly, so the
         # runner's background thread can finish before this test's own
         # next line runs -- _SlowMountPark keeps it busy long enough to
         # actually observe the in-flight button states.
         window = self._window(
-            mount_park=_SlowMountPark(start_parked=True), pulse_mount=FakeMountAdapter()
+            mount_park=_SlowMountPark(start_parked=True), pulse_mount=_EqMsMount()
         )
         self._connect_and_stream_cameras(window)
         window._mount_panel._connect_button.setChecked(True)
@@ -4097,7 +4081,7 @@ class TestMountTestMovePanel:
         window.close()
 
     def test_stop_calls_abort_on_the_pulse_mount(self, qapp: object) -> None:
-        pulse_mount = FakeMountAdapter()
+        pulse_mount = _EqMsMount()
         window = self._window(mount_park=FakeMountPark(start_parked=True), pulse_mount=pulse_mount)
         window._test_move_panel._connect_button.setChecked(True)
         window._test_move_panel._on_stop()
@@ -4106,7 +4090,7 @@ class TestMountTestMovePanel:
 
     def test_diagnostic_context_includes_calibration_and_last_result(self, qapp: object) -> None:
         window = self._window(
-            mount_park=FakeMountPark(start_parked=True), pulse_mount=FakeMountAdapter()
+            mount_park=FakeMountPark(start_parked=True), pulse_mount=_EqMsMount()
         )
         self._connect_and_stream_cameras(window)
         window._mount_panel._connect_button.setChecked(True)
@@ -4212,7 +4196,7 @@ class TestMountTestMovePanel:
         raw before/after pair must be individually retrievable, labelled
         by axis and before/after, for both cameras."""
         window = self._window(
-            mount_park=FakeMountPark(start_parked=True), pulse_mount=FakeMountAdapter()
+            mount_park=FakeMountPark(start_parked=True), pulse_mount=_EqMsMount()
         )
         self._connect_and_stream_cameras(window)
         window._mount_panel._connect_button.setChecked(True)
@@ -4240,7 +4224,7 @@ class TestMountTestMovePanel:
         self, qapp: object
     ) -> None:
         window = self._window(
-            mount_park=FakeMountPark(start_parked=True), pulse_mount=FakeMountAdapter()
+            mount_park=FakeMountPark(start_parked=True), pulse_mount=_EqMsMount()
         )
         self._connect_and_stream_cameras(window)
         window._mount_panel._connect_button.setChecked(True)
@@ -4275,7 +4259,7 @@ class TestMountTestMovePanel:
         the camera settings they were taken with. Every CALIBSRC frame
         must now also carry EXPOSURE (seconds)/GAIN."""
         window = self._window(
-            mount_park=FakeMountPark(start_parked=True), pulse_mount=FakeMountAdapter()
+            mount_park=FakeMountPark(start_parked=True), pulse_mount=_EqMsMount()
         )
         self._connect_and_stream_cameras(window)
         window._mount_panel._connect_button.setChecked(True)
@@ -4298,7 +4282,7 @@ class TestMountTestMovePanel:
 
     def test_closing_the_window_disconnects_the_pulse_mount(self, qapp: object) -> None:
         window = self._window(
-            mount_park=FakeMountPark(start_parked=True), pulse_mount=FakeMountAdapter()
+            mount_park=FakeMountPark(start_parked=True), pulse_mount=_EqMsMount()
         )
         window._test_move_panel._connect_button.setChecked(True)
         window.close()
@@ -4309,14 +4293,14 @@ class TestMountTestMovePanel:
     ) -> None:
         """Issue #44/#48: the app-wide operating mode (default Terrestrial, tracking
         required OFF) alone selects Mount Align's measurement -- no local toggle."""
-        window = self._window(mount_park=FakeMountPark(), pulse_mount=FakeMountAdapter())
+        window = self._window(mount_park=FakeMountPark(), pulse_mount=_EqMsMount())
         panel = window._test_move_panel
         assert panel._target_mode() == "terrestrial"
         window._operating_astronomical_button.click()
         assert panel._target_mode() == "star"
 
     def test_selecting_terrestrial_globally_switches_mount_align_back(self, qapp: object) -> None:
-        window = self._window(mount_park=FakeMountPark(), pulse_mount=FakeMountAdapter())
+        window = self._window(mount_park=FakeMountPark(), pulse_mount=_EqMsMount())
         panel = window._test_move_panel
         window._operating_astronomical_button.click()
         window._operating_terrestrial_button.click()
@@ -4326,7 +4310,7 @@ class TestMountTestMovePanel:
         """#48: no stale mode -- a calibration started under Terrestrial (whole-frame
         correlation, tracking off) must not carry on with star measurements and tracking on
         after the user switches to Astronomical; it is stopped and says why."""
-        pulse_mount = FakeMountAdapter()
+        pulse_mount = _EqMsMount()
         window = self._window(mount_park=FakeMountPark(start_parked=True), pulse_mount=pulse_mount)
         self._connect_and_stream_cameras(window)
         window._mount_panel._connect_button.setChecked(True)
@@ -4359,7 +4343,7 @@ class TestMountTestMovePanel:
         """Real incident 6fa2aa59: a daytime/indoor capture with no star
         correctly refuses rather than moving the real mount for nothing —
         this is the failure Terrestrial mode exists to work around."""
-        pulse_mount = FakeMountAdapter()
+        pulse_mount = _EqMsMount()
         window = MainWindow(
             _textured_camera(seed=10),
             guide_camera=_textured_camera(seed=11),
@@ -4377,14 +4361,14 @@ class TestMountTestMovePanel:
 
         assert "no star detected" in panel._result_label.text()
         assert not panel._runner.is_busy  # never submitted -- no pulse issued
-        assert pulse_mount.pulse_log == []
+        assert pulse_mount.equivalent_ms_log == []
         assert not panel._calibration
         window.close()
 
     def test_terrestrial_mode_calibration_succeeds_on_a_textureless_camera_via_cross_correlation(
         self, qapp: object
     ) -> None:
-        pulse_mount = FakeMountAdapter()
+        pulse_mount = _EqMsMount()
         window = MainWindow(
             _textured_camera(seed=10),
             guide_camera=_textured_camera(seed=11),
@@ -4434,7 +4418,7 @@ class TestMountTestMovePanel:
         confusingly, the first time a nudge button called
         compose_screen_move() and hit the same degenerate-matrix check for
         a different reason. It must be caught right here instead."""
-        pulse_mount = FakeMountAdapter()
+        pulse_mount = _EqMsMount()
         window = MainWindow(
             _textured_camera(seed=10),
             guide_camera=_textured_camera(seed=11),
@@ -4502,7 +4486,7 @@ class TestMountTestMovePanel:
         a real, actionable "check the mount" signal, unlike AXIS2's. The
         message must tell these two apart per axis, not lump every zero
         reading into one generic "check the mount" line."""
-        pulse_mount = FakeMountAdapter()
+        pulse_mount = _EqMsMount()
         window = MainWindow(
             _textured_camera(seed=10),
             guide_camera=_textured_camera(seed=11),
@@ -4567,7 +4551,7 @@ class TestMountTestMovePanel:
         failing later at the measurement step (`MATCH_FAILED`) --
         `_capture_both`'s own per-camera tolerance (see its docstring)
         is what keeps this from also taking Guide down with it."""
-        pulse_mount = FakeMountAdapter()
+        pulse_mount = _EqMsMount()
         window = MainWindow(
             _textured_camera(seed=10),
             guide_camera=_textured_camera(seed=11),
@@ -4614,7 +4598,7 @@ class TestMountTestMovePanel:
         settings = MountAlignmentSettings()
         # All 8 steps still ran -- Main failing didn't cut the shared
         # mount sequence short.
-        assert pulse_mount.pulse_log == [
+        assert pulse_mount.equivalent_ms_log == [
             (MountAxis.AXIS1, AxisDirection.POSITIVE, settings.pulse_ms),
             (MountAxis.AXIS1, AxisDirection.POSITIVE, settings.pulse_ms),
             (MountAxis.AXIS1, AxisDirection.NEGATIVE, settings.pulse_ms),
@@ -4663,7 +4647,7 @@ class TestMountTestMovePanel:
         # here (see the Quit-cleanup fix's own lesson: "test a single
         # panel's own logic by constructing that panel directly, not via
         # a full MainWindow").
-        pulse_mount = FakeMountAdapter()
+        pulse_mount = _EqMsMount()
         panel = MountTestMovePanel(
             pulse_mount,
             mount_park=(park := FakeMountPark(start_parked=True)),
@@ -4688,7 +4672,7 @@ class TestMountTestMovePanel:
 
         # Never even reached the mount -- neither camera could produce a
         # usable "before" frame at all.
-        assert pulse_mount.pulse_log == []
+        assert pulse_mount.equivalent_ms_log == []
         assert not panel._calibration
         assert "Calibration failed" in panel._result_label.text()
         assert "before pulsing" in panel._result_label.text()
@@ -4702,7 +4686,7 @@ class TestMountTestMovePanel:
     ) -> None:
         """#48: Mount Align reports the global mode and the measurement it selects; the
         collimation target type is reported separately (top-level `target_mode`)."""
-        window = self._window(mount_park=FakeMountPark(), pulse_mount=FakeMountAdapter())
+        window = self._window(mount_park=FakeMountPark(), pulse_mount=_EqMsMount())
         context = window._diagnostic_context()
         assert context["mount_test_move"]["operating_mode"] == "terrestrial"
         assert context["mount_test_move"]["measurement_mode"] == "terrestrial"
@@ -4715,7 +4699,7 @@ class TestMountTestMovePanel:
         # A hand-crafted, axis-aligned calibration (rather than one built
         # by a real Run Calibration pass) -- see class docstring for why:
         # a static single-frame camera's own calibration is degenerate.
-        pulse_mount = FakeMountAdapter()
+        pulse_mount = _EqMsMount()
         mount_park = FakeMountPark(start_parked=True)
         window = self._window(mount_park=mount_park, pulse_mount=pulse_mount)
         self._connect_and_stream_cameras(window)
@@ -4763,9 +4747,7 @@ class TestMountTestMovePanel:
         # fixture's own 120x120 frame and the default
         # nudge_target_fraction=0.5 give a target of 120*0.5 = 60px ->
         # 60 / 0.1 = 600ms, directly on AXIS1 (RA+'s own axis).
-        settings = MountAlignmentSettings()
-        assert pulse_mount.pulse_log == [(MountAxis.AXIS1, AxisDirection.POSITIVE, 600)]
-        assert pulse_mount.rate_log == [settings.rate_preset]
+        assert pulse_mount.equivalent_ms_log == [(MountAxis.AXIS1, AxisDirection.POSITIVE, 600)]
         assert "Main" in panel._result_label.text()
         assert "Guide" in panel._result_label.text()
         assert "failed" not in panel._result_label.text().lower()
@@ -4782,10 +4764,10 @@ class TestMountTestMovePanel:
         still be moved (not enough structure to correlate, or one axis
         reading a real physical zero that run), and the buttons existing
         at all was the whole point. With no calibrated rate to solve a
-        target-distance duration from, a click pulses for the same fixed
-        duration a calibration test step itself uses
-        (`MountAlignmentSettings.pulse_ms`) instead of refusing."""
-        pulse_mount = FakeMountAdapter()
+        target-distance duration from (and no camera optics here), a click moves the fixed
+        uncalibrated nudge angle instead of refusing (S6.8d: an angular move of 722" = 6000
+        equivalent ms at the 8x unit; it was a timed 1000 ms `pulse_ms` pulse on fakes)."""
+        pulse_mount = _EqMsMount()
         window = self._window(
             mount_park=FakeMountPark(start_parked=True), pulse_mount=pulse_mount
         )
@@ -4804,10 +4786,7 @@ class TestMountTestMovePanel:
             time.sleep(0.01)
         panel._poll()
 
-        settings = MountAlignmentSettings()
-        assert pulse_mount.pulse_log == [
-            (MountAxis.AXIS2, AxisDirection.NEGATIVE, settings.pulse_ms)
-        ]
+        assert pulse_mount.equivalent_ms_log == [(MountAxis.AXIS2, AxisDirection.NEGATIVE, 6000)]
         assert "Move failed" not in panel._result_label.text()
         window.close()
 
@@ -4830,8 +4809,8 @@ class TestMountTestMovePanel:
             displayed_calls += 1
             return np.zeros((10, 10), dtype=np.float32)
 
-        pulse_mount = FakeMountAdapter()
-        pulse_mount.connect()  # FakeMountAdapter rejects pulses until connected
+        pulse_mount = _EqMsMount()
+        pulse_mount.connect()  # _EqMsMount rejects pulses until connected
         panel = MountTestMovePanel(
             pulse_mount,
             mount_park=(park := FakeMountPark(start_parked=True)),
@@ -4854,7 +4833,7 @@ class TestMountTestMovePanel:
             time.sleep(0.01)
         moved_at = time.monotonic()
         panel._poll()
-        assert pulse_mount.pulse_log
+        assert pulse_mount.equivalent_ms_log
         # The check's AFTER went through the verified wait (3-sample window, both cameras),
         # referenced to this move's completion; the displayed frame was never consulted.
         assert len(wait_calls) >= 6
@@ -4870,7 +4849,7 @@ class TestMountTestMovePanel:
         Standalone panel (not a full MainWindow) since this only needs
         MountTestMovePanel's own logic -- see the Quit-cleanup fix's own
         lesson on why that's preferred when nothing else is exercised."""
-        pulse_mount = FakeMountAdapter()
+        pulse_mount = _EqMsMount()
         # Left/Main: 400x200 (width x height); Right/Guide: 100x50 --
         # deliberately different from each other, matching Main/Guide's
         # real very-different sensor resolutions in this app.
@@ -4921,15 +4900,15 @@ class TestMountTestMovePanel:
         # old composed screen-relative move did -- see _on_nudge_clicked's
         # own docstring) -- each camera's own frame, not a shared constant.
         _click_and_wait("left", "RA +")
-        assert pulse_mount.pulse_log[-1] == (
+        assert pulse_mount.equivalent_ms_log[-1] == (
             MountAxis.AXIS1, AxisDirection.POSITIVE, round(400 * settings.nudge_target_fraction)
         )
         _click_and_wait("right", "RA +")
-        assert pulse_mount.pulse_log[-1] == (
+        assert pulse_mount.equivalent_ms_log[-1] == (
             MountAxis.AXIS1, AxisDirection.POSITIVE, round(100 * settings.nudge_target_fraction)
         )
         _click_and_wait("left", "Dec +")
-        assert pulse_mount.pulse_log[-1] == (
+        assert pulse_mount.equivalent_ms_log[-1] == (
             MountAxis.AXIS2, AxisDirection.POSITIVE, round(400 * settings.nudge_target_fraction)
         )
         panel.stop()
@@ -4939,9 +4918,9 @@ class TestMountTestMovePanel:
     ) -> None:
         """Real report: "calibration doesn't wait for mount to be
         stabilized" -- confirms the configured settle_ms actually reaches
-        MountTestMoveRunner.submit() for a nudge, not just Run
-        Calibration's own submit() calls."""
-        pulse_mount = FakeMountAdapter()
+        MountTestMoveRunner.submit_sequence() for a nudge, not just Run
+        Calibration's own calls."""
+        pulse_mount = _EqMsMount()
         mount_park = FakeMountPark(start_parked=True)
         window = self._window(mount_park=mount_park, pulse_mount=pulse_mount)
         self._connect_and_stream_cameras(window)
@@ -4964,26 +4943,13 @@ class TestMountTestMovePanel:
         panel._update_buttons_enabled()
 
         settle_values: list[int | None] = []
-        real_submit = panel._runner.submit
+        real_submit = panel._runner.submit_sequence
 
-        def spy_submit(
-            mount_park: MountParkPort,
-            mount: MountPort,
-            axis: MountAxis,
-            direction: AxisDirection,
-            pulse_ms: int,
-            *,
-            rate_preset: str | None = None,
-            park_after: bool = True,
-            settle_ms: int = 0,
-        ) -> bool:
+        def spy_submit(*args: Any, settle_ms: int = 0, **kwargs: Any) -> bool:  # noqa: ANN401
             settle_values.append(settle_ms)
-            return real_submit(
-                mount_park, mount, axis, direction, pulse_ms,
-                rate_preset=rate_preset, park_after=park_after, settle_ms=settle_ms,
-            )
+            return real_submit(*args, settle_ms=settle_ms, **kwargs)
 
-        panel._runner.submit = spy_submit  # type: ignore[method-assign]
+        panel._runner.submit_sequence = spy_submit  # type: ignore[method-assign]
 
         panel._nudge_buttons["left"]["RA +"].click()
         deadline = time.monotonic() + 5.0
@@ -5019,7 +4985,7 @@ class TestMountTestMovePanel:
         failing later at the measurement step. `_capture_both`'s own
         per-camera tolerance (see its docstring) is what keeps this from
         also withholding Guide's own confirmed reading."""
-        pulse_mount = FakeMountAdapter()
+        pulse_mount = _EqMsMount()
         window = MainWindow(
             _textured_camera(seed=10),
             guide_camera=_textured_camera(seed=11),
@@ -5075,7 +5041,7 @@ class TestMountTestMovePanel:
         panel._poll()
 
         # The pulse ran regardless -- not refused, not rolled back.
-        assert pulse_mount.pulse_log != []
+        assert pulse_mount.equivalent_ms_log != []
         assert "Move failed" not in panel._result_label.text()
         checked = panel._result_label.text().split("done.", 1)[1]  # the S6.6b check's note
         lines = {line.strip().split(":", 1)[0]: line for line in checked.split(" | ")}
@@ -5113,7 +5079,7 @@ class TestMountTestMovePanel:
         identical target and hit the identical refusal every time). The
         move must now be scaled down to land exactly on the cap and
         actually run, not refused."""
-        pulse_mount = FakeMountAdapter()
+        pulse_mount = _EqMsMount()
         window = self._window(
             mount_park=FakeMountPark(start_parked=True), pulse_mount=pulse_mount
         )
@@ -5142,13 +5108,13 @@ class TestMountTestMovePanel:
 
         panel._nudge_buttons["left"]["Dec +"].click()
 
-        cap_ms = MountAlignmentSettings().max_nudge_pulse_ms
-        # Submitted immediately at the clamped duration, scaled down to
-        # exactly the cap rather than the ~120s the uncapped
-        # extrapolation would have solved for.
-        assert pulse_mount.pulse_log == [(MountAxis.AXIS2, AxisDirection.POSITIVE, cap_ms)]
+        cap_arcsec = nudge_cap_arcsec(MountAlignmentSettings())
+        cap_ms = round(cap_arcsec / angular_unit_rate(MountAlignmentSettings()) * 1000.0)
+        # Submitted immediately at the clamped size, scaled down to exactly the cap (S6.8d: an
+        # angle) rather than what the uncapped extrapolation would have solved for.
+        assert pulse_mount.equivalent_ms_log == [(MountAxis.AXIS2, AxisDirection.POSITIVE, cap_ms)]
         assert "safety-capped" in panel._result_label.text()
-        assert str(cap_ms) in panel._result_label.text()
+        assert f'{cap_arcsec:.0f}"' in panel._result_label.text()
         assert "Move failed" not in panel._result_label.text()
 
         while panel._runner.is_busy:
@@ -5176,7 +5142,7 @@ class TestMountTestMovePanel:
         a whole -- axis1/axis2 aren't parallel -- doesn't guarantee
         neither one is individually degenerate) -- dividing by that axis's
         own zero rate must report cleanly, not crash."""
-        pulse_mount = FakeMountAdapter()
+        pulse_mount = _EqMsMount()
         window = self._window(
             mount_park=FakeMountPark(start_parked=True), pulse_mount=pulse_mount
         )
@@ -5204,7 +5170,7 @@ class TestMountTestMovePanel:
         assert "Move failed" in panel._result_label.text()
         assert "RA-axis" in panel._result_label.text()
         assert "no usable motion" in panel._result_label.text()
-        assert pulse_mount.pulse_log == []
+        assert pulse_mount.equivalent_ms_log == []
         window.close()
 
 
@@ -5227,7 +5193,7 @@ class _StubbornMountPark(FakeMountPark):
 def _static_frame_panel(
     mount_park: FakeMountPark,
     *,
-    pulse_mount: FakeMountAdapter | None = None,
+    pulse_mount: _EqMsMount | None = None,
     settings: MountAlignmentSettings | None = None,
     terrestrial: bool = False,
 ) -> MountTestMovePanel:
@@ -5237,7 +5203,7 @@ def _static_frame_panel(
     # TestFovCalibration coverage, etc.).
     star = single_star_image((40, 40), x=20.0, y=20.0, peak=2000.0, sigma=2.5, background=100.0)
     return MountTestMovePanel(
-        pulse_mount or FakeMountAdapter(),
+        pulse_mount or _EqMsMount(),
         mount_park=mount_park,
         tracking_enforcer=_terrestrial_owner(mount_park) if terrestrial else None,
         get_left_frame=lambda: star.copy(),
@@ -5320,14 +5286,14 @@ class TestTrackingMode:
     def test_run_calibration_refuses_before_any_pulse_when_tracking_cannot_be_established(
         self, qapp: object
     ) -> None:
-        pulse_mount = FakeMountAdapter()
+        pulse_mount = _EqMsMount()
         mount_park = _StubbornMountPark(start_parked=True)
         panel = _static_frame_panel(mount_park, pulse_mount=pulse_mount)
 
         panel._on_run_calibration_clicked()
 
         assert "tracking" in panel._result_label.text().lower()
-        assert pulse_mount.pulse_log == []  # never actually pulsed
+        assert pulse_mount.equivalent_ms_log == []  # never actually pulsed
         panel.stop()
 
     def test_a_nudge_moves_and_its_check_reports_tracking_that_cannot_be_established(
@@ -5337,7 +5303,7 @@ class TestTrackingMode:
         -- no measurement precondition gates it any more (it used to be refused here by its
         BEFORE capture's tracking check). The tracking problem is still reported: the
         background #43 check cannot measure and says why."""
-        pulse_mount = FakeMountAdapter()
+        pulse_mount = _EqMsMount()
         mount_park = _StubbornMountPark(start_parked=False)
         panel = _static_frame_panel(mount_park, pulse_mount=pulse_mount)
         # A fast enough rate that the solved nudge duration stays well
@@ -5364,7 +5330,7 @@ class TestTrackingMode:
             time.sleep(0.01)
             panel._poll()
 
-        assert pulse_mount.pulse_log  # the move itself ran
+        assert pulse_mount.equivalent_ms_log  # the move itself ran
         text = panel._result_label.text()
         assert "done" in text
         # Review C2: a warning in nudge wording, recorded for diagnostics too
@@ -5379,32 +5345,45 @@ class TestTrackingMode:
         shall be re-verified because the driver/mount may change state as
         a side effect" -- simulates the real OnStep quirk this project has
         already hit once (see project memory: the tracking-leak incident)
-        by having tracking flip itself back off, as a side effect of the
-        pulse, right before the AFTER capture -- must be caught and
-        repaired (not silently measured against an untracked frame)."""
+        by having tracking flip itself off as a side effect of the first
+        move, right before the AFTER capture -- must be caught and
+        repaired (not silently measured against an untracked frame).
+
+        S6.8d: an Astronomical (star) calibration on a tracking mount moves with guide pulses
+        (S6.8b); before, this test ran it as timed pulses, the only primitive that skipped the
+        axis-move tracking gate."""
         mount_park = FakeMountPark(start_parked=False)
         mount_park.start_tracking()  # correct going in
-        pulse_mount = FakeMountAdapter()
-        pulse_mount.connect()  # FakeMountAdapter rejects pulses until connected
-        panel = _static_frame_panel(mount_park, pulse_mount=pulse_mount)
 
-        real_submit = panel._runner.submit
-        flipped = False
+        class _FirstPulseStopsTracking(_EqMsMount):
+            flipped = False
 
-        def submit_and_flip_tracking(*args: object, **kwargs: object) -> bool:
-            # Only the *first* pulse disturbs tracking -- _finish_calibration_step
-            # chains synchronously into the next step's own submit() once
-            # this one's outcome is processed (same poll() call), so
-            # flipping it on every submit would just catch this test
-            # mid-repair for a later step instead of the one under test.
-            nonlocal flipped
-            if not flipped:
-                mount_park.stop_tracking()  # simulate the driver's own side effect
-                flipped = True
-            return real_submit(*args, **kwargs)  # type: ignore[arg-type]
+            def guide_pulse(
+                self, axis: MountAxis, direction: AxisDirection, duration_ms: int
+            ) -> GuidePulseResult:
+                result = super().guide_pulse(axis, direction, duration_ms)
+                if not self.flipped:
+                    self.flipped = True
+                    mount_park.stop_tracking()  # simulate the driver's own side effect
+                return result
 
-        panel._runner.submit = submit_and_flip_tracking  # type: ignore[method-assign]
+        pulse_mount = _FirstPulseStopsTracking()
+        pulse_mount.connect()
+        star = single_star_image(
+            (40, 40), x=20.0, y=20.0, peak=2000.0, sigma=2.5, background=100.0
+        )
+        panel = MountTestMovePanel(
+            pulse_mount,
+            mount_park=mount_park,
+            tracking_enforcer=TrackingEnforcer(
+                mount_park, OperatingMode.ASTRONOMICAL, settle_timeout_s=0, clock=FakeClock()
+            ),
+            get_left_frame=lambda: star.copy(),
+            get_right_frame=lambda: star.copy(),
+            settings=MountAlignmentSettings(stability_sample_interval_s=0.0),
+        )
         panel._connection.connect()  # _poll() itself is a no-op otherwise
+        repairs_before = mount_park.start_tracking_count
 
         panel._on_run_calibration_clicked()
         deadline = time.monotonic() + 5.0
@@ -5431,7 +5410,8 @@ class TestTrackingMode:
         # this step's response is recorded; the repair itself, not a
         # snapshot of a state a concurrent next pulse may already be
         # disturbing again, is what this test pins.
-        assert mount_park.start_tracking_count >= 1
+        assert pulse_mount.flipped
+        assert mount_park.start_tracking_count > repairs_before
         assert panel._last_tracking_error is None  # not stuck reporting a mismatch
         panel.stop()
 
@@ -5460,7 +5440,7 @@ class TestMotionAwareCapture:
             return _ok_result(np.zeros((10, 10), dtype=np.float32))
 
         panel = MountTestMovePanel(
-            FakeMountAdapter(),
+            _EqMsMount(),
             mount_park=mount_park,
             get_left_frame=lambda: np.zeros((10, 10), dtype=np.float32),
             get_right_frame=lambda: np.zeros((10, 10), dtype=np.float32),
@@ -5494,7 +5474,7 @@ class TestMotionAwareCapture:
             )
 
         panel = MountTestMovePanel(
-            FakeMountAdapter(),
+            _EqMsMount(),
             mount_park=FakeMountPark(start_parked=True),
             get_left_frame=lambda: np.zeros((10, 10), dtype=np.float32),
             get_right_frame=lambda: np.zeros((10, 10), dtype=np.float32),
@@ -5538,7 +5518,7 @@ class TestMotionAwareCapture:
         flat = np.full((60, 60), 4095.0, dtype=np.float32)
 
         panel = MountTestMovePanel(
-            FakeMountAdapter(),
+            _EqMsMount(),
             mount_park=FakeMountPark(start_parked=True),
             get_left_frame=lambda: np.zeros((10, 10), dtype=np.float32),
             get_right_frame=lambda: np.zeros((10, 10), dtype=np.float32),
@@ -5569,7 +5549,7 @@ class TestMotionAwareCapture:
         star = single_star_image((40, 40), x=20.0, y=20.0, peak=2000.0, sigma=2.5, background=100.0)
         settings = MountAlignmentSettings(stability_sample_interval_s=0.0)
         panel = MountTestMovePanel(
-            FakeMountAdapter(),
+            _EqMsMount(),
             mount_park=FakeMountPark(start_parked=True),
             get_left_frame=lambda: star.copy(),
             get_right_frame=lambda: star.copy(),
@@ -5600,7 +5580,7 @@ class TestMotionAwareCapture:
         star = single_star_image((40, 40), x=20.0, y=20.0, peak=2000.0, sigma=2.5, background=100.0)
         settings = MountAlignmentSettings(stability_sample_interval_s=0.0)
         panel = MountTestMovePanel(
-            FakeMountAdapter(),
+            _EqMsMount(),
             mount_park=FakeMountPark(start_parked=True),
             get_left_frame=lambda: star.copy(),
             get_right_frame=lambda: star.copy(),
@@ -5634,7 +5614,7 @@ class TestMotionAwareCapture:
             return FrameAcquisitionResult(FrameAcquisitionStatus.EXPOSURE_OVERLAPPED_MOTION)
 
         panel = MountTestMovePanel(
-            FakeMountAdapter(),
+            _EqMsMount(),
             mount_park=FakeMountPark(start_parked=True),
             get_left_frame=lambda: np.zeros((10, 10), dtype=np.float32),
             get_right_frame=lambda: np.zeros((10, 10), dtype=np.float32),
@@ -5663,7 +5643,7 @@ class TestMotionAwareCapture:
             return FrameAcquisitionResult(FrameAcquisitionStatus.EXPOSURE_OVERLAPPED_MOTION)
 
         panel = MountTestMovePanel(
-            FakeMountAdapter(),
+            _EqMsMount(),
             mount_park=FakeMountPark(start_parked=True),
             get_left_frame=lambda: np.zeros((10, 10), dtype=np.float32),
             get_right_frame=lambda: np.zeros((10, 10), dtype=np.float32),
@@ -5718,10 +5698,10 @@ class TestScreenRelativeMove:
     def _panel(
         self,
         *,
-        mount: FakeMountAdapter | None = None,
+        mount: _EqMsMount | None = None,
         settings: MountAlignmentSettings | None = None,
     ) -> MountTestMovePanel:
-        pulse_mount = mount if mount is not None else FakeMountAdapter()
+        pulse_mount = mount if mount is not None else _EqMsMount()
         pulse_mount.connect()
         # (height=100, width=200) -- distinct dimensions so a mixed-up
         # width/height would show up as a wrong solved duration.
@@ -5758,7 +5738,7 @@ class TestScreenRelativeMove:
         panel.stop()
 
     def test_clicking_left_solves_and_submits_the_right_pulse_sequence(self, qapp: object) -> None:
-        pulse_mount = FakeMountAdapter()
+        pulse_mount = _EqMsMount()
         panel = self._panel(mount=pulse_mount)
         panel._connect_button.setChecked(True)
         panel._calibration["left"] = self._matrix()
@@ -5770,12 +5750,12 @@ class TestScreenRelativeMove:
         # Small (default) = 5% of this camera's own 200px-wide frame =
         # 10px target, left = -dx -- AXIS1's own 0.1 px/ms rate (either
         # direction, symmetric here) solves 100ms.
-        assert pulse_mount.pulse_log == [(MountAxis.AXIS1, AxisDirection.NEGATIVE, 100)]
+        assert pulse_mount.equivalent_ms_log == [(MountAxis.AXIS1, AxisDirection.NEGATIVE, 100)]
         assert "Main left (Small)" in panel._result_label.text()
         panel.stop()
 
     def test_medium_size_solves_a_larger_duration_than_small(self, qapp: object) -> None:
-        pulse_mount = FakeMountAdapter()
+        pulse_mount = _EqMsMount()
         panel = self._panel(mount=pulse_mount)
         panel._connect_button.setChecked(True)
         panel._calibration["left"] = self._matrix()
@@ -5787,12 +5767,13 @@ class TestScreenRelativeMove:
 
         # Medium (15%, default settings) of 200px = 30px target -- 3x
         # Small's own 10px target, so 3x the duration (300ms vs 100ms).
-        assert pulse_mount.pulse_log == [(MountAxis.AXIS1, AxisDirection.POSITIVE, 300)]
+        assert pulse_mount.equivalent_ms_log == [(MountAxis.AXIS1, AxisDirection.POSITIVE, 300)]
         panel.stop()
 
     def test_screen_move_clamps_to_the_safety_cap(self, qapp: object) -> None:
-        pulse_mount = FakeMountAdapter()
-        settings = MountAlignmentSettings(max_nudge_pulse_ms=50, screen_move_small_fraction=0.05)
+        pulse_mount = _EqMsMount()
+        # 10 ms at the nudge preset (48x) = 7.22" = 60 equivalent ms at the 8x unit
+        settings = MountAlignmentSettings(max_nudge_pulse_ms=10, screen_move_small_fraction=0.05)
         panel = self._panel(mount=pulse_mount, settings=settings)
         panel._connect_button.setChecked(True)
         panel._calibration["left"] = self._matrix()
@@ -5801,10 +5782,9 @@ class TestScreenRelativeMove:
         panel._on_screen_move_clicked("left", ScreenDirection.LEFT)
         self._drive_to_completion(panel)
 
-        # Solved duration (100ms, same math as the first test above)
-        # exceeds max_nudge_pulse_ms=50 -- clamped down, not refused, same
-        # established philosophy as _on_nudge_clicked's own safety cap.
-        assert pulse_mount.pulse_log == [(MountAxis.AXIS1, AxisDirection.NEGATIVE, 50)]
+        # Solved size (100 equivalent ms, same math as the first test above) exceeds the cap
+        # (60) -- clamped down, not refused, same philosophy as _on_nudge_clicked's own cap.
+        assert pulse_mount.equivalent_ms_log == [(MountAxis.AXIS1, AxisDirection.NEGATIVE, 60)]
         assert "safety-capped" in panel._result_label.text()
         panel.stop()
 
@@ -5813,7 +5793,7 @@ class TestScreenRelativeMove:
         screen-relative click must never invoke the stability-verified
         (or any) frame wait after its pulse completes -- see
         `_on_screen_move_clicked`'s own docstring for why."""
-        pulse_mount = FakeMountAdapter()
+        pulse_mount = _EqMsMount()
         panel = self._panel(mount=pulse_mount)
         panel._connect_button.setChecked(True)
         panel._calibration["left"] = self._matrix()
@@ -5839,10 +5819,9 @@ class TestScreenRelativeMove:
     def test_screen_move_reports_a_pulse_rejection(self, qapp: object) -> None:
         # Clicking Connect below calls this same pulse_mount's own
         # .connect() (MountTestMovePanel._on_toggle_connect), so a merely
-        # *unconnected* mount can't simulate a rejected pulse here --
-        # reject every retry attempt instead (see FakeMountAdapter's own
-        # docstring on reject_first_n_pulses).
-        pulse_mount = FakeMountAdapter(reject_first_n_pulses=999)
+        # *unconnected* mount can't simulate a rejected move here -- the
+        # mount refuses every angular move instead (S6.8d).
+        pulse_mount = _EqMsMount(refuse_angular="mount rejected the motion command")
         panel = MountTestMovePanel(
             pulse_mount,
             mount_park=FakeMountPark(start_parked=True),

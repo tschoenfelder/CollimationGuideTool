@@ -8,7 +8,9 @@ from typing import Any
 
 import numpy as np
 import pytest
+from astrotool_core.config import MountAlignmentSettings
 from astrotool_core.mount.axis_calibration import AxisResponse, CalibrationMatrix
+from astrotool_core.mount.movement_sizing import SIDEREAL_ARCSEC_PER_S
 from astrotool_core.mount.port import (
     AxisDirection,
     CommandResult,
@@ -27,6 +29,16 @@ from astrotool_core.testing.frame_factory import StarSpec, single_star_image, st
 from astrotool_core.testing.sim_frames import OnDemandFrameSource
 from astrotool_core.timing import FakeClock
 from collimation_tool.application.star_acquisition import AcquisitionStatus, FocusedStarAcquisition
+
+#: S6.8d (R9): the production contract -- angular moves, no timed pulse. Each angular move is
+#: recorded in equivalent ms of the S6.0 matrix unit (`calibration_center_rate_x` x sidereal).
+_PRODUCTION_CAPABILITIES = MountCapabilities(
+    supports_pulse_guiding=False, min_pulse_ms=0, max_pulse_ms=0, supports_angular_moves=True
+)
+_ARCSEC_PER_MS = (
+    MountAlignmentSettings().calibration_center_rate_x * SIDEREAL_ARCSEC_PER_S / 1000.0
+)
+
 
 _MAIN_SHAPE = (80, 100)  # height, width
 _GUIDE_SHAPE = (300, 400)
@@ -83,12 +95,29 @@ class _MovingGuideMount:
         pass
 
     def capabilities(self) -> MountCapabilities:
-        return MountCapabilities(supports_pulse_guiding=True, min_pulse_ms=1, max_pulse_ms=9999)
+        return _PRODUCTION_CAPABILITIES
+
+    def move_angular(
+        self, axis: MountAxis, direction: AxisDirection, arcsec: float
+    ) -> CommandResult:
+        """S6.8d: the production primitive -- recorded in equivalent ms of the matrix unit."""
+        return self._apply(axis, direction, round(arcsec / _ARCSEC_PER_MS))
+
+    def pulse_axis(
+        self,
+        axis: MountAxis,
+        direction: AxisDirection,
+        duration_ms: int,
+        *,
+        rate_preset: str | None = None,
+    ) -> CommandResult:
+        """Like the production adapter: no timed primitive (S6.8d)."""
+        return CommandResult(accepted=False, message="no timed pulse primitive")
 
     def status(self) -> MountStatus:
         return MountStatus(connected=True, tracking=True, slewing=False)
 
-    def pulse_axis(
+    def _apply(
         self, axis: MountAxis, direction: AxisDirection, duration_ms: int,
         *, rate_preset: str | None = None,
     ) -> CommandResult:
@@ -300,7 +329,7 @@ class TestAC1_4GuideAssistedReacquisition:
         positions = iter([260.0, 270.0, 285.0, 305.0, 330.0, 360.0])
 
         class _DivergingMount(_MovingGuideMount):
-            def pulse_axis(
+            def _apply(
                 self, axis: MountAxis, direction: AxisDirection, duration_ms: int,
                 *, rate_preset: str | None = None,
             ) -> CommandResult:

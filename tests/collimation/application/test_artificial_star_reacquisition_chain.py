@@ -6,8 +6,10 @@ mount tracking, no celestial coordinates anywhere in the chain."""
 from __future__ import annotations
 
 import numpy as np
+from astrotool_core.config import MountAlignmentSettings
 from astrotool_core.diffraction.optical_reference_model import OpticalConfig
 from astrotool_core.mount.axis_calibration import AxisResponse, CalibrationMatrix
+from astrotool_core.mount.movement_sizing import SIDEREAL_ARCSEC_PER_S
 from astrotool_core.mount.port import (
     AxisDirection,
     CommandResult,
@@ -26,6 +28,16 @@ from collimation_tool.application.star_acquisition import (
     FocusedStarAcquisition,
 )
 from collimation_tool.domain.target_mode import CollimationTargetMode
+
+#: S6.8d (R9): the production contract -- angular moves, no timed pulse. Each angular move is
+#: recorded in equivalent ms of the S6.0 matrix unit (`calibration_center_rate_x` x sidereal).
+_PRODUCTION_CAPABILITIES = MountCapabilities(
+    supports_pulse_guiding=False, min_pulse_ms=0, max_pulse_ms=0, supports_angular_moves=True
+)
+_ARCSEC_PER_MS = (
+    MountAlignmentSettings().calibration_center_rate_x * SIDEREAL_ARCSEC_PER_S / 1000.0
+)
+
 
 _MAIN_SHAPE = (140, 140)
 _GUIDE_SHAPE = (400, 400)
@@ -61,12 +73,29 @@ class _GuideMount:
         pass
 
     def capabilities(self) -> MountCapabilities:
-        return MountCapabilities(supports_pulse_guiding=True, min_pulse_ms=1, max_pulse_ms=9999)
+        return _PRODUCTION_CAPABILITIES
+
+    def move_angular(
+        self, axis: MountAxis, direction: AxisDirection, arcsec: float
+    ) -> CommandResult:
+        """S6.8d: the production primitive -- recorded in equivalent ms of the matrix unit."""
+        return self._apply(axis, direction, round(arcsec / _ARCSEC_PER_MS))
+
+    def pulse_axis(
+        self,
+        axis: MountAxis,
+        direction: AxisDirection,
+        duration_ms: int,
+        *,
+        rate_preset: str | None = None,
+    ) -> CommandResult:
+        """Like the production adapter: no timed primitive (S6.8d)."""
+        return CommandResult(accepted=False, message="no timed pulse primitive")
 
     def status(self) -> MountStatus:
         return MountStatus(connected=True, tracking=False, slewing=False)  # tracking OFF
 
-    def pulse_axis(
+    def _apply(
         self, axis: MountAxis, direction: AxisDirection, duration_ms: int,
         *, rate_preset: str | None = None,
     ) -> CommandResult:

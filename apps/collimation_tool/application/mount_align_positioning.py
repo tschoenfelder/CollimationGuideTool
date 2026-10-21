@@ -43,8 +43,14 @@ from collimation_tool.application.mount_align_plan import NudgeMove, ScreenDirec
 from collimation_tool.application.mount_align_sizing import angular_unit_rate
 from collimation_tool.application.mount_motion import MountAlignPrimitive
 
+#: S6.8d (R9): an axis move is an angular move or nothing -- the timed move is gone.
+NO_ANGULAR_MOVE = (
+    "this mount reports no angular moves (capabilities().supports_angular_moves is False) -- "
+    "nothing was sent"
+)
 
-# ---- S6.0: manual moves on a mount without timed pulses --------------------------------------
+
+# ---- S6.0: manual moves are angular ----------------------------------------------------------
 def nudge_rate_arcsec_per_s(settings: MountAlignmentSettings) -> float:
     preset = settings.rate_preset
     if preset in RATE_PRESET_X:
@@ -79,14 +85,11 @@ def guide_nudge_cap_ms(
     return round(nudge_cap_arcsec(settings) / rate_arcsec_per_s * 1000.0)
 
 
-def cap_text(
-    settings: MountAlignmentSettings, angular: bool, *, guide_pulse: bool = False
-) -> str:
+def cap_text(settings: MountAlignmentSettings, *, guide_pulse: bool = False) -> str:
+    """The nudge/screen-step safety cap for a message: always an angle (S6.8d: no timed move)."""
     if guide_pulse:  # S6.8b: the cap is an angle, whatever guide rate converts it
         return f'{nudge_cap_arcsec(settings):.0f}" of guide pulses'
-    if angular:
-        return f'{nudge_cap_arcsec(settings):.0f}"'
-    return f"{settings.max_nudge_pulse_ms}ms"
+    return f'{nudge_cap_arcsec(settings):.0f}"'
 
 
 def uncalibrated_nudge_arcsec(
@@ -106,18 +109,6 @@ def uncalibrated_nudge_arcsec(
             if fov is not None:
                 return settings.nudge_target_fraction * fov[0]
     return settings.pulse_ms * nudge_rate_arcsec_per_s(settings) / 1000.0
-
-
-def execution_rate_preset(
-    settings: MountAlignmentSettings, calibration_rate_preset: str | None, *, calibrated: bool
-) -> str | None:
-    """The rate preset a manual move runs at (S6.6b). A move SOLVED from a calibration matrix
-    must run at the rate that matrix was measured at (`calibration_rate_preset`: the
-    calibration preset of a sized run, None = OnStep's centering rate on an angular-capable
-    mount) -- running it at the nudge `rate_preset` ("7", 48x) instead of a sized calibration's
-    "6" (20x) over-moved 2.4x (S6.0 finding 6, candidate for diagnostic de295656). An
-    uncalibrated nudge is sized from `pulse_ms` at `rate_preset`, so it runs there."""
-    return calibration_rate_preset if calibrated else settings.rate_preset
 
 
 @dataclass(frozen=True)
@@ -146,15 +137,15 @@ def plan_nudge(
 ) -> NudgePlan:
     """Size one RA/Dec nudge.
 
-    Uncalibrated (no `matrix`): the fixed `pulse_ms` a calibration step itself uses -- RA/Dec
+    Uncalibrated (no `matrix`): `uncalibrated_arcsec` (sized from the camera's optics) -- RA/Dec
     buttons are never held hostage to a calibration existing (real diagnostic 5e71b958).
     Calibrated: the clicked direction's own measured rate (#31 Phase C) solves the duration that
     moves `nudge_target_fraction` of THIS camera's frame width (`peek_frame`).
 
     Real reports de295656/6cb859d2: a solved move beyond the safety cap is CLAMPED to the cap
-    (a real, smaller step; clicking again continues), never refused. S6.0: on an angular-only
-    mount the nudge is an angular move (uncalibrated: sized from the camera's optics), and one
-    below the mount's smallest angular move is refused before anything is sent.
+    (a real, smaller step; clicking again continues), never refused. S6.0: the nudge is an
+    angular move, and one below the mount's smallest angular move is refused before anything is
+    sent. S6.8d: a mount without angular moves gets an explicit refusal (no timed move exists).
 
     S6.8b: with `primitive` GUIDE_PULSE the nudge is guide-pulse ms -- uncalibrated: the
     optics-sized angle at the ASSUMED guide-rate seed (labelled `seed_note`); calibrated:
@@ -173,9 +164,10 @@ def plan_nudge(
                 seed_note=seed_note(settings),
             )
         )
-    if matrix is None:
-        duration_ms = settings.pulse_ms
-    else:
+    if not guide and not angular_only():
+        return NudgePlan(error=NO_ANGULAR_MOVE)
+    duration_ms = 0
+    if matrix is not None:
         response = matrix.response_for(axis, direction)
         if response.magnitude_px <= 0 or response.duration_ms <= 0:
             # Shouldn't happen for a non-degenerate matrix -- defensive, so a genuinely zero
@@ -195,7 +187,6 @@ def plan_nudge(
         duration_ms = round(target_px / rate_px_per_ms)
         if duration_ms <= 0:
             return NudgePlan(notice=f"{CAMERA_LABELS[camera_key]}: nothing to move.")
-    arcsec: float | None = None
     if guide:
         cap_ms = guide_nudge_cap_ms(
             settings, matrix.response_for(axis, direction) if matrix else None, arcsec_per_px()
@@ -204,29 +195,24 @@ def plan_nudge(
         return NudgePlan(
             move=NudgeMove(camera_key, axis, direction, min(duration_ms, cap_ms), clamped)
         )
-    if angular_only():
-        # S6.0: no timed pulse exists -- the nudge is an angular move. Uncalibrated: sized from
-        # the camera's optics; calibrated: the solved duration is in the calibration's own unit
-        # (see `angular_unit_rate`), so it converts back to the exact angle.
-        unit = angular_unit_rate(settings)
-        arcsec = uncalibrated_arcsec() if matrix is None else duration_ms * unit / 1000.0
-        cap = nudge_cap_arcsec(settings)
-        clamped = arcsec > cap
-        arcsec = min(arcsec, cap)
-        floor = floor_arcsec()
-        if arcsec < floor:
-            # Refused before anything is sent: the mount cannot make a move this small.
-            return NudgePlan(
-                error=(
-                    f"{AXIS_LABELS[axis]} move of {arcsec:.1f}\" is below the mount's "
-                    f'smallest angular move ({floor:.0f}") -- nothing was sent'
-                )
+    # S6.0: the nudge is an angular move. Uncalibrated: sized from the camera's optics;
+    # calibrated: the solved duration is in the calibration's own unit (see
+    # `angular_unit_rate`), so it converts back to the exact angle.
+    unit = angular_unit_rate(settings)
+    arcsec = uncalibrated_arcsec() if matrix is None else duration_ms * unit / 1000.0
+    cap = nudge_cap_arcsec(settings)
+    clamped = arcsec > cap
+    arcsec = min(arcsec, cap)
+    floor = floor_arcsec()
+    if arcsec < floor:
+        # Refused before anything is sent: the mount cannot make a move this small.
+        return NudgePlan(
+            error=(
+                f"{AXIS_LABELS[axis]} move of {arcsec:.1f}\" is below the mount's "
+                f'smallest angular move ({floor:.0f}") -- nothing was sent'
             )
-        duration_ms = max(1, round(arcsec / unit * 1000.0))
-    else:
-        clamped = duration_ms > settings.max_nudge_pulse_ms
-        if clamped:
-            duration_ms = settings.max_nudge_pulse_ms
+        )
+    duration_ms = max(1, round(arcsec / unit * 1000.0))
     return NudgePlan(move=NudgeMove(camera_key, axis, direction, duration_ms, clamped, arcsec))
 
 
@@ -238,7 +224,7 @@ class ScreenMovePlan:
     clamped: bool = False
     #: The axis component dropped below the mount's smallest move ("" = none).
     skipped: str = ""
-    #: True = an angular-only mount (S6.0): the safety cap is an angle.
+    #: True = an angular move (S6.0); False for guide pulses.
     angular: bool = False
     error: str | None = None
     notice: str | None = None
@@ -337,22 +323,16 @@ def plan_screen_move(
             clamped=any(step[2] > cap for step, cap in zip(kept, caps, strict=True)),
             skipped=skipped,
         )
-    angular = angular_only()
-    if angular:
-        planned = plan_angular_screen_move(
-            settings, matrix, steps, math.hypot(target_dx_px, target_dy_px), floor_arcsec()
-        )
-        if isinstance(planned, str):
-            # Refused BEFORE anything is sent -- never a partially executed sequence.
-            return ScreenMovePlan(error=planned, below_floor=True)
-        motion, clamped, skipped = planned
-        return ScreenMovePlan(motion=motion, clamped=clamped, skipped=skipped, angular=True)
-    clamped = any(duration_ms > settings.max_nudge_pulse_ms for _, _, duration_ms in steps)
-    timed: list[MotionStep] = [
-        (axis, direction, min(duration_ms, settings.max_nudge_pulse_ms))
-        for axis, direction, duration_ms in steps
-    ]
-    return ScreenMovePlan(motion=timed, clamped=clamped)
+    if not angular_only():
+        return ScreenMovePlan(error=NO_ANGULAR_MOVE)
+    planned = plan_angular_screen_move(
+        settings, matrix, steps, math.hypot(target_dx_px, target_dy_px), floor_arcsec()
+    )
+    if isinstance(planned, str):
+        # Refused BEFORE anything is sent -- never a partially executed sequence.
+        return ScreenMovePlan(error=planned, below_floor=True)
+    motion, clamped, skipped = planned
+    return ScreenMovePlan(motion=motion, clamped=clamped, skipped=skipped, angular=True)
 
 
 def screen_move_floor_refusals(

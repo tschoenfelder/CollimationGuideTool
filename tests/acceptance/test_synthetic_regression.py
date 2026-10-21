@@ -6,8 +6,10 @@ from typing import Any
 
 import numpy as np
 import pytest
+from astrotool_core.config import MountAlignmentSettings
 from astrotool_core.frames.analysis_plane import build_analysis_plane
 from astrotool_core.mount.axis_calibration import AxisResponse, CalibrationMatrix
+from astrotool_core.mount.movement_sizing import SIDEREAL_ARCSEC_PER_S
 from astrotool_core.mount.port import (
     AxisDirection,
     CommandResult,
@@ -20,6 +22,16 @@ from astrotool_core.testing.frame_factory import donut_image, make_frame
 from collimation_tool.application.collimation_controller import CollimationController
 from collimation_tool.application.recenter_policy import CollimationRecenterPolicy, RecenterConfig
 from collimation_tool.domain.collimation_measurement import DonutAnalyzer
+
+#: S6.8d (R9): the production contract -- angular moves, no timed pulse. Each angular move is
+#: recorded in equivalent ms of the S6.0 matrix unit (`calibration_center_rate_x` x sidereal).
+_PRODUCTION_CAPABILITIES = MountCapabilities(
+    supports_pulse_guiding=False, min_pulse_ms=0, max_pulse_ms=0, supports_angular_moves=True
+)
+_ARCSEC_PER_MS = (
+    MountAlignmentSettings().calibration_center_rate_x * SIDEREAL_ARCSEC_PER_S / 1000.0
+)
+
 
 DATA = Path(__file__).resolve().parents[2] / "datasets" / "acceptance"
 
@@ -118,12 +130,29 @@ class SyntheticOnStepMount:
         self.connected = False
 
     def capabilities(self) -> MountCapabilities:
-        return MountCapabilities(supports_pulse_guiding=True, min_pulse_ms=1, max_pulse_ms=9999)
+        return _PRODUCTION_CAPABILITIES
+
+    def move_angular(
+        self, axis: MountAxis, direction: AxisDirection, arcsec: float
+    ) -> CommandResult:
+        """S6.8d: the production primitive -- recorded in equivalent ms of the matrix unit."""
+        return self._apply(axis, direction, round(arcsec / _ARCSEC_PER_MS))
+
+    def pulse_axis(
+        self,
+        axis: MountAxis,
+        direction: AxisDirection,
+        duration_ms: int,
+        *,
+        rate_preset: str | None = None,
+    ) -> CommandResult:
+        """Like the production adapter: no timed primitive (S6.8d)."""
+        return CommandResult(accepted=False, message="no timed pulse primitive")
 
     def status(self) -> MountStatus:
         return MountStatus(connected=self.connected, tracking=self.connected, slewing=False)
 
-    def pulse_axis(
+    def _apply(
         self,
         axis: MountAxis,
         direction: AxisDirection,

@@ -90,7 +90,7 @@ def _start_mount_align_goto(
 ) -> None:
     runner = window._test_move_panel._runner
     assert runner.submit_sequence(
-        park, mount, [(MountAxis.AXIS1, AxisDirection.POSITIVE, 100, 60.0)], park_after=False
+        park, mount, [(MountAxis.AXIS1, AxisDirection.POSITIVE, 100, 60.0)]
     )
     assert mount.entered.wait(_SAFETY_S), "the Mount Align GOTO never started"
 

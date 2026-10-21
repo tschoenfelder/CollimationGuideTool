@@ -12,7 +12,9 @@ a parallel implementation here): `pulse_axis` (a timed move at an installed
 rate) has **no** INDI equivalent -- the new primitive is a verified
 degree-target GOTO, not a duration-at-a-rate pulse.
 `capabilities().supports_pulse_guiding` is `False` and `pulse_axis` always
-refuses.
+refuses. S6.8d (R9): `pulse_axis` is kept ONLY because `MountPort` still declares it for the
+dormant GuideTool (`GuideCorrectionPolicy`, `calibrate_axes`; no mount is wired there). Mount
+Align and reacquisition never call it -- they use `move_angular` and `guide_pulse`.
 
 `move_angular` works for offsets from 30" to 36000" (10 degrees) --
 OnStepAdapter's own bound (raised from an original 720" floor after
@@ -20,9 +22,9 @@ OnStepAdapter#14: every seed in AGENTS.md's Mount Align policy now clears
 it). Requests outside that range are refused with an explicit message,
 never silently clamped.
 
-`install_rate`/`installed_rate` are accepted-but-unused no-ops: the new
-primitive takes a target offset directly and needs no arcsec/s rate to
-convert a timed pulse into a distance, unlike 0.3.5's `move_ra`/`move_dec`.
+S6.8d (R9): the former `install_rate`/`installed_rate` (accepted-but-unused no-ops kept from
+0.3.5's `move_ra`/`move_dec`) are gone -- the degree-target move needs no installed rate, and
+Mount Align no longer measures one (its timed bootstrap was deleted).
 
 Stop during a GOTO (S6.0c). OnStepAdapter's `move_*_axis_deg` (0.4.1; unchanged in 0.5.0) blocks for
 the whole GOTO (indi_axis_motion.py:164-208, default 30 s timeout) and has no
@@ -183,8 +185,6 @@ class OnStepMountPulseAdapter:
         self._in_flight_is_guide = False
         #: S6.0d: guide-pulse bounds of the connected OnStepAdapter; None = no capability.
         self._guide_range_ms: tuple[int, int] | None = None
-        #: Accepted but never consulted -- see module docstring.
-        self._rates: dict[tuple[MountAxis, AxisDirection], float] = {}
 
     def connect(self) -> None:
         if not self._held:
@@ -333,17 +333,7 @@ class OnStepMountPulseAdapter:
         with self._state:
             self._cancel.clear()
 
-    # ---- AngularMotionPort ------------------------------------------------
-    def installed_rate(self, axis: MountAxis, direction: AxisDirection) -> float | None:
-        return self._rates.get((axis, direction))
-
-    def install_rate(self, axis: MountAxis, direction: AxisDirection, arcsec_per_s: float) -> None:
-        """Recorded for API compatibility only -- OnStepAdapter's degree-target
-        move needs no rate. Still validates input, matching 0.3.5's contract."""
-        if not (0.0 < arcsec_per_s < float("inf")):
-            raise ValueError(f"invalid centering rate {arcsec_per_s!r}")
-        self._rates[(axis, direction)] = float(arcsec_per_s)
-
+    # ---- angular moves (`AngularMotionPort.move_angular`) -----------------
     def move_angular(
         self, axis: MountAxis, direction: AxisDirection, arcsec: float
     ) -> CommandResult:
@@ -521,6 +511,7 @@ class OnStepMountPulseAdapter:
         return True, f" -- {where}the mount is NOT tracking any more ({cause})"
 
     # ---- MountPort ----------------------------------------------------
+    # S6.8d: kept only for `MountPort` (the dormant GuideTool) -- see the module docstring.
     def pulse_axis(
         self,
         axis: MountAxis,

@@ -31,7 +31,7 @@ from astrotool_core.mount import AxisDirection, MountAxis
 from astrotool_core.mount.movement_sizing import CameraGeometry
 from astrotool_core.mount.operating_mode import OperatingMode, TrackingEnforcer
 from astrotool_core.target.translation_offset import measure_translation_offset
-from astrotool_core.testing.fake_mount import FakeMountAdapter
+from astrotool_core.testing.fake_mount import FakeEquivalentMsMountAdapter
 from astrotool_core.testing.fake_mount_park import FakeMountPark
 from astrotool_core.timing import FakeClock
 from collimation_tool.application import mount_align_measurement as panel_module
@@ -70,7 +70,7 @@ class _Rig:
 
     def __init__(
         self,
-        mount: FakeMountAdapter,
+        mount: FakeEquivalentMsMountAdapter,
         *,
         px_per_ms: dict[str, float] | None = None,
         dead_moves: frozenset[tuple[MountAxis, AxisDirection]] = frozenset(),
@@ -89,7 +89,7 @@ class _Rig:
 
     def _shift(self, key: str) -> tuple[int, int]:
         dx = dy = 0.0
-        for axis, direction, ms in self.mount.pulse_log:
+        for axis, direction, ms in self.mount.equivalent_ms_log:
             if (axis, direction) in self.dead_moves:
                 continue
             signed = ms * self.px_per_ms[key] * (1 if direction is AxisDirection.POSITIVE else -1)
@@ -219,7 +219,7 @@ class TestOverlappingAndStaleFramesAreNeverMeasured:
     def test_a_poisoned_frame_never_reaches_the_estimator(
         self, qapp: object, monkeypatch: pytest.MonkeyPatch, kind: str
     ) -> None:
-        rig = _Rig(FakeMountAdapter())
+        rig = _Rig(FakeEquivalentMsMountAdapter())
         rig.bad_kind = {"left": kind, "right": kind}
         spy = _Spy(monkeypatch)
         panel = _panel(rig)
@@ -236,7 +236,7 @@ class TestOverlappingAndStaleFramesAreNeverMeasured:
     def test_the_first_clean_post_settle_exposure_is_accepted(
         self, qapp: object, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        rig = _Rig(FakeMountAdapter())
+        rig = _Rig(FakeEquivalentMsMountAdapter())
         spy = _Spy(monkeypatch)
         panel = _panel(rig)
 
@@ -249,7 +249,7 @@ class TestOverlappingAndStaleFramesAreNeverMeasured:
     def test_the_latest_displayed_frame_is_never_measurement_evidence(
         self, qapp: object, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        rig = _Rig(FakeMountAdapter())
+        rig = _Rig(FakeEquivalentMsMountAdapter())
         spy = _Spy(monkeypatch)
         panel = _panel(rig)
 
@@ -264,7 +264,7 @@ class TestStability:
     def test_frames_still_moving_after_the_move_keep_the_wait_going(
         self, qapp: object, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        rig = _Rig(FakeMountAdapter())
+        rig = _Rig(FakeEquivalentMsMountAdapter())
         # the image keeps drifting 20 px per draw for the first few draws, then settles
         rig.jitter = {
             "left": lambda draw: 20 * draw if draw <= 4 else 80,
@@ -282,14 +282,14 @@ class TestStability:
     def test_stability_never_reached_fails_explicitly_and_never_measures(
         self, qapp: object, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        rig = _Rig(FakeMountAdapter())
+        rig = _Rig(FakeEquivalentMsMountAdapter())
         rig.jitter = {"left": lambda d: 25 * d, "right": lambda d: 25 * d}  # always moving
         spy = _Spy(monkeypatch)
         panel = _panel(rig)
 
         _run(panel)
 
-        assert rig.mount.pulse_log == []  # an unstable BEFORE: the step never started
+        assert rig.mount.equivalent_ms_log == []  # an unstable BEFORE: the step never started
         assert spy.panel_calls == 0  # the response estimator was never called
         assert panel.calibration_for("left") is None and panel.calibration_for("right") is None
         assert "failed" in panel._result_label.text().lower()
@@ -300,7 +300,7 @@ class TestStability:
     def test_one_camera_unstable_one_stable_excludes_only_the_unstable_one(
         self, qapp: object, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        rig = _Rig(FakeMountAdapter())
+        rig = _Rig(FakeEquivalentMsMountAdapter())
         rig.jitter = {"left": lambda d: 25 * d, "right": None}  # only Main keeps moving
         _Spy(monkeypatch)
         quick = MountAlignmentSettings(
@@ -325,7 +325,7 @@ class TestNudgeBeforeIsVerified:
     def test_a_nudge_never_uses_the_latest_displayed_frame(
         self, qapp: object, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        rig = _Rig(FakeMountAdapter())
+        rig = _Rig(FakeEquivalentMsMountAdapter())
         spy = _Spy(monkeypatch)
         panel = _panel(rig)
 
@@ -340,15 +340,15 @@ class TestNudgeBeforeIsVerified:
     def test_a_verified_at_rest_reference_is_reused_only_until_the_mount_is_commanded(
         self, qapp: object, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        rig = _Rig(FakeMountAdapter())
+        rig = _Rig(FakeEquivalentMsMountAdapter())
         _Spy(monkeypatch)
         panel = _panel(rig)
         panel._on_nudge_clicked("left", MountAxis.AXIS1, AxisDirection.POSITIVE)
         _drive(panel)  # its verified AFTER is now the at-rest reference
 
         assert panel._reusable_reference("terrestrial") is not None  # nothing commanded since
-        assert panel._runner.submit(
-            panel._mount_park, panel._mount, MountAxis.AXIS1, AxisDirection.POSITIVE, 50
+        assert panel._runner.submit_sequence(
+            panel._mount_park, panel._mount, [(MountAxis.AXIS1, AxisDirection.POSITIVE, 50, 6.0)]
         )
         _drive(panel)
         assert panel._reusable_reference("terrestrial") is None  # a pulse invalidated it
@@ -357,7 +357,7 @@ class TestNudgeBeforeIsVerified:
     def test_an_old_reference_is_not_reused(
         self, qapp: object, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        rig = _Rig(FakeMountAdapter())
+        rig = _Rig(FakeEquivalentMsMountAdapter())
         _Spy(monkeypatch)
         panel = _panel(rig)
         panel._on_nudge_clicked("left", MountAxis.AXIS1, AxisDirection.POSITIVE)
@@ -374,7 +374,7 @@ class TestDiagnosticsTimeline:
     def test_every_capture_leaves_reference_pulse_and_frame_timing_evidence(
         self, qapp: object, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        rig = _Rig(FakeMountAdapter())
+        rig = _Rig(FakeEquivalentMsMountAdapter())
         _Spy(monkeypatch)
         panel = _panel(rig)
 
@@ -413,7 +413,7 @@ class TestNoMotionIsExplicit:
     def test_a_static_scene_after_commanded_moves_is_reported_and_never_a_matrix(
         self, qapp: object, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        rig = _Rig(FakeMountAdapter(), px_per_ms={"left": 0.0, "right": 0.0})
+        rig = _Rig(FakeEquivalentMsMountAdapter(), px_per_ms={"left": 0.0, "right": 0.0})
         _Spy(monkeypatch)
         panel = _panel(rig)
 
@@ -432,7 +432,7 @@ class TestNoMotionIsExplicit:
     def test_the_mount_is_returned_after_a_no_motion_run(
         self, qapp: object, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        rig = _Rig(FakeMountAdapter(), px_per_ms={"left": 0.0, "right": 0.0})
+        rig = _Rig(FakeEquivalentMsMountAdapter(), px_per_ms={"left": 0.0, "right": 0.0})
         _Spy(monkeypatch)
         panel = _panel(rig)
 
@@ -440,7 +440,7 @@ class TestNoMotionIsExplicit:
 
         net = sum(
             d if direction is AxisDirection.POSITIVE else -d
-            for _a, direction, d in rig.mount.pulse_log
+            for _a, direction, d in rig.mount.equivalent_ms_log
         )
         assert net == 0
         panel.stop()
@@ -451,7 +451,7 @@ class TestNoMotionIsExplicit:
         """RA+/RA-/Dec+ move the image, Dec- is accepted by the driver but moves nothing: the
         two POSITIVE responses alone (all is_degenerate() looks at) would look fine."""
         dead = frozenset({(MountAxis.AXIS2, AxisDirection.NEGATIVE)})
-        rig = _Rig(FakeMountAdapter(), dead_moves=dead)
+        rig = _Rig(FakeEquivalentMsMountAdapter(), dead_moves=dead)
         _Spy(monkeypatch)
         panel = _panel(rig)
 
@@ -470,7 +470,7 @@ class TestNoMotionIsExplicit:
         motion is still detected and reported, now as a WARNING added to the completed move
         (never a confirmed displacement). The check's BEFORE is the verified at-rest
         reference, so the first nudge establishes it and the second is checked."""
-        rig = _Rig(FakeMountAdapter(), px_per_ms={"left": 0.0, "right": 0.0})
+        rig = _Rig(FakeEquivalentMsMountAdapter(), px_per_ms={"left": 0.0, "right": 0.0})
         _Spy(monkeypatch)
         panel = _panel(rig)
         panel._on_nudge_clicked("left", MountAxis.AXIS1, AxisDirection.POSITIVE)
@@ -490,16 +490,18 @@ class TestNoMotionIsExplicit:
     def test_sized_calibration_grows_the_move_before_declaring_no_motion(
         self, qapp: object, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        rig = _Rig(FakeMountAdapter(), px_per_ms={"left": 0.0, "right": 0.0})
+        rig = _Rig(FakeEquivalentMsMountAdapter(), px_per_ms={"left": 0.0, "right": 0.0})
         _Spy(monkeypatch)
         geometry = [CameraGeometry("left", 200, 120, 3.0), CameraGeometry("right", 300, 100, 12.0)]
         panel = _panel(rig, geometry=geometry)
 
         _run(panel)
 
-        durations = [d for _a, _dr, d in rig.mount.pulse_log]
+        durations = [d for _a, _dr, d in rig.mount.equivalent_ms_log]
         assert max(durations) > durations[0]  # #46 adaptive growth tried first ...
-        assert max(durations) <= 3000  # ... within the envelope
+        # ... within the envelope: S6.8d angular moves, widened to the widest camera's band
+        # (30% of 3600" = 1080" = 8976 equivalent ms at the 8x unit)
+        assert max(durations) <= 8976
         assert panel._last_failure_classes["left"] is MeasurementFailureClass.NO_MOTION_DETECTED
         assert panel.calibration_for("left") is None
         panel.stop()

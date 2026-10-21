@@ -2,7 +2,7 @@
 panel unchanged; issue #46, S6.0).
 
 One `CalibrationSizing` per panel holds the CURRENT run's sizing state: whether moves are sized
-from the cameras' optics, the per-axis duration/angle, the rate preset, the probe attempts, the
+from the cameras' optics, the per-axis duration/angle, the probe attempts, the
 per-axis net commanded displacement (so an abort can return the mount) and the sizing log that
 diagnostics report. The mount and the settings are read through injected callables, so a
 caller that swaps either keeps working exactly as before. No Qt.
@@ -30,14 +30,12 @@ from astrotool_core.mount.movement_sizing import (
     StepAction,
     decide_next,
     measured_fraction,
-    measured_rate_arcsec_per_s,
     plan_first_move,
     plan_followup,
 )
 
 from collimation_tool.application.equivalent_duration import angular_unit_rate_arcsec_per_s
 from collimation_tool.application.mount_align_failures import (
-    NO_MOTION_MIN_PX,
     NO_MOTION_WIDTH_FRACTION,
     MeasurementFailureClass,
     bounded_failure_class,
@@ -59,17 +57,17 @@ ExcludeBounded = Callable[[str, MeasurementFailureClass, str], None]
 
 
 def mount_supports_angular(mount: MountPort) -> bool:
-    """The mount can install a measured rate and move by angle (OnStepAdapter >= 0.3.5) -- as
-    REPORTED by the adapter (`MountCapabilities.supports_angular_moves`, S6.6b; was a duck-typed
-    `hasattr` probe, #55 audit C02)."""
+    """The mount moves by angle (OnStepAdapter's `move_angular`) -- as REPORTED by the adapter
+    (`MountCapabilities.supports_angular_moves`, S6.6b; was a duck-typed `hasattr` probe, #55
+    audit C02)."""
     return mount.capabilities().supports_angular_moves
 
 
 def mount_is_angular_only(mount: MountPort) -> bool:
-    """S6.0: angular moves exist but timed pulses do not -- both read from the adapter's one
-    reported `MountCapabilities` (S6.6b)."""
-    capabilities = mount.capabilities()
-    return capabilities.supports_angular_moves and not capabilities.supports_pulse_guiding
+    """S6.0/S6.8d: Mount Align's axis moves are angular moves only. Since S6.8d (R9) there is no
+    timed axis move at all, so this is the reported angular capability; a mount's
+    `supports_pulse_guiding` (the dormant GuideTool's `pulse_axis`) is never used here."""
+    return mount_supports_angular(mount)
 
 
 def angular_unit_rate(settings: MountAlignmentSettings) -> float:
@@ -105,16 +103,14 @@ class CalibrationSizing:
         self.geometry: dict[str, CameraGeometry] = {}
         self.axis_duration_ms: dict[MountAxis, int] = {}
         self.axis_attempt: dict[MountAxis, int] = {MountAxis.AXIS1: 1, MountAxis.AXIS2: 1}
-        self.rate_preset: str | None = ""
-        #: Issue #31/#46 + AGENTS.md: with an angular-capable mount (OnStepAdapter >= 0.3.5) the
-        #: first move per direction is a TIMED bootstrap at the controller's centering rate; the
-        #: measured rate is installed into the adapter and every later move of that direction
-        #: is ANGULAR (`axis_arcsec` = the calculated ~25%-frame size, rescaled from measured
-        #: pixels). Off when the mount lacks the capability or the optics are unknown.
+        #: Issue #31/#46 + AGENTS.md: this run's axis moves are ANGULAR (`axis_arcsec` = the
+        #: calculated ~25%-frame size, rescaled from measured pixels). S6.8d: the same as
+        #: `angular_only` -- the timed bootstrap that measured and installed a centering rate
+        #: first is gone (R9).
         self.angular_active = False
-        #: S6.0 (#46/#31, audit P01): the mount moves ONLY angularly (it reports no timed
-        #: pulses -- OnStepAdapter >= 0.4 over INDI). Every calibration step is then an angular
-        #: move sized up front from the optics; no timed bootstrap, no rate learning needed.
+        #: S6.0 (#46/#31, audit P01): the mount moves ONLY angularly (OnStepAdapter >= 0.4 over
+        #: INDI). Every calibration step is an angular move sized up front from the optics (or
+        #: the fixed fallback size, expressed angularly), never bootstrapped.
         self.angular_only = False
         #: S6.8b: this run moves with guide pulses while tracking (Astronomical mode); every
         #: duration is guide-pulse ms, the first one sized from the ASSUMED guide-rate seed.
@@ -148,26 +144,19 @@ class CalibrationSizing:
         """Decide (per run) whether moves are sized from the cameras' optics.
 
         Sizing is active only with a geometry provider (`cameras` not None) AND at least one
-        camera with a known plate scale; otherwise the legacy fixed `pulse_ms` / `rate_preset`
-        calibration runs unchanged. The seed is only a seed -- `probe` closes the loop on
-        MEASURED pixels."""
+        camera with a known plate scale; otherwise the fixed fallback size runs. The seed is only
+        a seed -- `probe` closes the loop on MEASURED pixels."""
         settings = self._settings()
         self.policy = None
         self.geometry = {}
         self.bounded = {}
         self.log = []
-        self.rate_preset = settings.rate_preset
-        self.angular_active = False
         self.guide_pulse = guide_pulse
         # S6.8b: guide pulses are timed moves in their own unit -- no angular path this run.
         self.angular_only = angular_only and not guide_pulse
-        if guide_pulse:
-            self.rate_preset = None
-        if self.angular_only:
-            # S6.0: no timed primitive exists, so every step -- even without known optics
-            # (then the fixed `pulse_ms` size, expressed angularly) -- is an angular move.
-            self.angular_active = True
-            self.rate_preset = None
+        # S6.0: every axis step -- even without known optics (then the fixed size, expressed
+        # angularly) -- is an angular move.
+        self.angular_active = self.angular_only
         self.axis_arcsec = {}
         self.distance_m = None
         self.axis_duration_ms = {
@@ -202,9 +191,6 @@ class CalibrationSizing:
         self.geometry = {camera.key: camera for camera in cameras}
         self.distance_m = distance_m
         self.angular_active = angular
-        # Angular mode: no rate preset anywhere -- OnStepAdapter's centering rate is the one
-        # rate the timed bootstrap, the installed calibration and the angular moves share.
-        self.rate_preset = None if angular or guide_pulse else policy.rate_preset
         if angular and plan.target_arcsec is not None:
             self.axis_arcsec = {
                 MountAxis.AXIS1: plan.target_arcsec,
@@ -219,7 +205,9 @@ class CalibrationSizing:
             "duration_ms": plan.duration_ms,
             "seed_camera": plan.seed_camera,
             "status": plan.status.value,
-            "rate_preset": self.rate_preset,
+            # S6.8d: kept (diagnostics keys are additive only) -- always None now: no axis move
+            # runs at a rate preset any more.
+            "rate_preset": None,
             "distance_m": distance_m,
             "angular": angular,
             "target_arcsec": plan.target_arcsec,
@@ -324,34 +312,33 @@ class CalibrationSizing:
 
     def rate_for(self, axis: MountAxis, direction: AxisDirection) -> float | None:
         """Arcsec per second used to express this direction's moves as durations: the fixed
-        unit rate on an angular-only mount, else the MEASURED rate installed by a timed
-        bootstrap (None until then, or when angular moves are off)."""
-        if not self.angular_active:
+        unit rate of an angular run (`angular_unit_rate`); None when the run's moves are not
+        angular (guide pulses, or a mount without angular moves). The same for every axis
+        direction since S6.8d (no measured rate is installed any more)."""
+        if not self.angular_only:
             return None
-        if self.angular_only:
-            return self.unit_rate()
-        rate = self._mount().installed_rate(axis, direction)
-        return float(rate) if rate else None
+        return self.unit_rate()
 
-    def installed_rate(self, step: CalibrationStep) -> float | None:
+    def step_rate(self, step: CalibrationStep) -> float | None:
         return self.rate_for(step.axis, step.direction)
 
     def motion_step(
         self, axis: MountAxis, direction: AxisDirection, duration_ms: int
     ) -> MotionStep:
-        """An unmeasured corrective step: angular on an angular-only mount, else timed."""
+        """An unmeasured corrective step: angular on an angular run, else in the run's own
+        duration unit (guide-pulse ms)."""
         if self.angular_only:
             arcsec = self.unit_rate() * duration_ms / 1000.0
             return (axis, direction, duration_ms, arcsec)
         return (axis, direction, duration_ms)
 
     def step_duration_ms(self, step: CalibrationStep) -> int:
-        """The step's size as a duration. With an installed rate an axis-sized step is the
-        calculated angular size expressed in that rate's time (the equivalent duration the
-        response is normalised by and the timed fallback would run), bounded like any move."""
+        """The step's size as a duration. On an angular run an axis-sized step is the calculated
+        angular size expressed in the unit rate's time (the equivalent duration the response is
+        normalised by), bounded like any move."""
         if step.duration_ms is not None:
             return step.duration_ms
-        rate = self.installed_rate(step)
+        rate = self.step_rate(step)
         arcsec = self.axis_arcsec.get(step.axis)
         policy = self.policy
         if rate is not None and arcsec is not None and policy is not None:
@@ -360,10 +347,10 @@ class CalibrationSizing:
         return self.axis_duration_ms[step.axis]
 
     def step_arcsec(self, step: CalibrationStep, duration_ms: int) -> float | None:
-        """Angular size of this step, or None = run it as a timed (bootstrap) move: no
-        angular capability/optics, or no rate installed yet for this direction. Never None on
-        an angular-only mount (S6.0): its first move is sized up front, never bootstrapped."""
-        rate = self.installed_rate(step)
+        """Angular size of this step, or None when the run's moves are not angular (guide
+        pulses, or a mount without angular moves). Never None on an angular run (S6.0): its
+        first move is sized up front, never bootstrapped."""
+        rate = self.step_rate(step)
         if rate is None:
             return None
         return rate * duration_ms / 1000.0
@@ -398,14 +385,13 @@ class CalibrationSizing:
     def account_arcsec(
         self, step: CalibrationStep, duration_ms: int, angular_arcsec: float | None
     ) -> None:
-        """Add this move's sky displacement to the axis net: the commanded angular size, or
-        the installed rate x duration for a timed move (0 while the rate is still unknown --
-        `learn_rate` adds the bootstrap move's own measured size)."""
+        """Add this move's sky displacement to the axis net: the commanded angular size (or the
+        unit rate x duration when none was given)."""
         if not self.angular_active:
             return
         arcsec = angular_arcsec
         if arcsec is None:
-            rate = self.installed_rate(step)
+            rate = self.step_rate(step)
             arcsec = rate * duration_ms / 1000.0 if rate else 0.0
         sign = 1.0 if step.direction is AxisDirection.POSITIVE else -1.0
         self.axis_net_arcsec[step.axis] += sign * arcsec
@@ -440,55 +426,6 @@ class CalibrationSizing:
                 "path": motion_paths[-1] if motion_paths else None,
                 "angular_arcsec": angular_arcsec,
                 "duration_ms": duration_ms,
-            }
-        )
-
-    def learn_rate(
-        self,
-        step: CalibrationStep,
-        *,
-        angular_arcsec: float | None,
-        duration_ms: int,
-        responses: dict[str, AxisResponse],
-    ) -> None:
-        """A TIMED bootstrap move yields this direction's real centering rate (measured image
-        shift x plate scale / duration); it is installed into the mount so every later move
-        of the direction is angular. A move that ran angular (or fell back) never re-derives
-        it, and an unmeasurable camera or a shift below the no-motion floor teaches nothing."""
-        if (
-            not self.angular_active
-            or angular_arcsec is not None
-            or step.role is CalibrationStepRole.RETURN
-            or not responses
-        ):
-            return
-        key = self.smallest_fov_key(list(responses)) or next(iter(responses))
-        geometry = self.geometry.get(key)
-        response = responses[key]
-        if geometry is None or response.magnitude_px < NO_MOTION_MIN_PX:
-            return
-        rate = measured_rate_arcsec_per_s(
-            geometry,
-            response.dx_px,
-            response.dy_px,
-            duration_ms,
-            distance_m=self.distance_m,
-        )
-        if rate is None or rate <= 0:
-            return
-        first_for_direction = self.installed_rate(step) is None
-        self._mount().install_rate(step.axis, step.direction, rate)
-        if first_for_direction:  # the bootstrap move itself was not accounted yet
-            sign = 1.0 if step.direction is AxisDirection.POSITIVE else -1.0
-            self.axis_net_arcsec[step.axis] += sign * rate * duration_ms / 1000.0
-        self.log.append(
-            {
-                "event": "rate_installed",
-                "axis": step.axis.name,
-                "direction": step.direction.name,
-                "camera": key,
-                "arcsec_per_s": round(rate, 4),
-                "from_duration_ms": duration_ms,
             }
         )
 
