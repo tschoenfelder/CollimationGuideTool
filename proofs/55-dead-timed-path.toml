@@ -1,0 +1,106 @@
+# Proof manifest (S6.8d) -- schema in proofs/README.md. Run: python scripts/prove.py 55-dead-timed-path
+issues = [55]
+summary = """S6.8d (movement-paths R9/F9/F11/R11/F13, audit P04/P05): the timed motion path was alive only \
+through fakes that accept timed pulses -- the production OnStep adapter has none. Deleted from Mount \
+Align and recenter (D3/D4/D5: _pulse_with_retry, the timed fallback, MOTION_TIMED*, the timed bootstrap \
+learn_rate -> install_rate, park_after re-park, the len(step) > 3 tracking-gate shape check), and the \
+adapter's unused install_rate/installed_rate; pulse_axis stays only because MountPort still declares it \
+for the dormant GuideTool. The fakes moved to the production contract. Settings pulse_ms, rate_preset, \
+calibration_rate_preset and max_nudge_pulse_ms are removed; an old config.toml keeps loading (each key \
+ignored with one warning naming it; install.md migration note). The nudge cap is the explicit angle \
+max_nudge_arcsec, default numerically equal to the former derived cap. The Astronomical axis-move \
+refusal names its real cause (OnStepAdapter >= 0.5.0 needed / tracking came on before the send / during \
+an axis-move calibration) instead of 'not available yet'; stale texts fixed; rearm_after_stop uses a \
+typed StopLatch port; boundary token list extended and an import-linter contract limits \
+astrotool_core.indi.client to the filter wheel + testing. Deletion proven neutral by a differential \
+characterization (production adapters over the fake OnStep INDI client / #51 simulator; Terrestrial \
+angular + Astronomical guide-pulse calibration, nudges, screen moves, 0.4.1 refusals, angular and \
+guide-pulse reacquisition): byte-identical labels, diagnostics and mount commands after the deletion \
+commit; afterwards only the intended texts differ, plus the uncalibrated nudge's diagnostics movement \
+context no longer carries rate_preset "7" (a preset that never moved the mount)."""
+modules = [
+    "apps/collimation_tool/ui/mount_test_move_runner.py",
+    "apps/collimation_tool/ui/mount_test_move_panel.py",
+    "apps/collimation_tool/application/mount_align_motion.py",
+    "apps/collimation_tool/application/mount_align_sizing.py",
+    "apps/collimation_tool/application/mount_align_positioning.py",
+    "apps/collimation_tool/application/mount_align_messages.py",
+    "apps/collimation_tool/application/recenter_policy.py",
+    "apps/collimation_tool/application/mount_commands.py",
+    "packages/astrotool_core/onstep/mount_pulse_adapter.py",
+    "packages/astrotool_core/config/mount_alignment_settings.py",
+    "packages/astrotool_core/mount/movement_sizing.py",
+    "packages/astrotool_core/mount/operating_mode.py",
+    "packages/astrotool_core/testing/fake_mount.py",
+]
+fix_commits = ["3f708fc", "f572b0c", "1ac3f53", "a8848eb"]
+dataset_uuids = []
+focused_command = """pytest -q \
+tests/core/config/test_mount_alignment_settings.py::TestRemovedTimedSettings \
+tests/core/config/test_mount_alignment_settings.py::test_the_explicit_nudge_cap_default_equals_the_former_derived_cap \
+tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestAstronomicalAxisMoveRefusalsSayWhy \
+tests/collimation/ui/test_mount_test_move_runner.py::TestAxisStepsAreAngularOnly \
+tests/collimation/application/test_mount_align_sizing.py::test_timed_pulses_never_make_mount_align_leave_the_angular_path \
+tests/collimation/application/test_recenter_policy.py \
+tests/collimation/ui/test_calibration_angular.py \
+tests/collimation/test_onstep_boundary.py"""
+broader_tier = "component"
+field_only_assumptions = [
+    "The Pi's real ~/.CollimationGuideTool/config.toml loads with the removed keys (tested with a synthetic old config, not the Pi's file).",
+]
+gaps = [
+    "The differential characterization harness ran outside the repo (scratchpad charac.py + compare.py, run against the base worktree at 90ce80d and this branch); it is evidence of neutrality, not a kept test.",
+    "No panel-level test pins that Mount Align's calibration steps pass calibration=True (the runner-level test does); a panel that dropped it would show the 'retry' text instead of 'Run Calibration again' mid-calibration.",
+    "The import-linter contract is not a pytest node: mutation evidence -- a planted 'from astrotool_core.indi.client import IndiClient' in collimation_tool.ui.mount_park_panel -> lint-imports: 'the generic INDI client serves only the filter wheel ... BROKEN', 'collimation_tool.ui.mount_park_panel -> astrotool_core.indi.client'.",
+    "MountPort.pulse_axis, its rate_preset keyword, AngularMotionPort.install_rate/installed_rate and the MountCapabilities.supports_pulse_guiding docstring (packages/astrotool_core/mount/port.py) are outside the S6.8d contract's allowed files and still describe the timed bootstrap; the OnStep adapter no longer implements install_rate (only cast() uses AngularMotionPort).",
+]
+
+[[regression_tests]]
+node = "tests/core/config/test_mount_alignment_settings.py::TestRemovedTimedSettings::test_an_old_config_keeps_loading_and_warns_once_per_removed_key"
+failed_before_fix = true
+evidence = "Written first, run on the pre-settings commit: tests/core/config/test_mount_alignment_settings.py:350: AttributeError: 'MountAlignmentSettings' object has no attribute 'max_nudge_arcsec'. Mutation (warning loop over no keys): tests/core/config/test_mount_alignment_settings.py:359: AssertionError: ('pulse_ms', [])"
+
+[[regression_tests]]
+node = "tests/core/config/test_mount_alignment_settings.py::test_the_explicit_nudge_cap_default_equals_the_former_derived_cap"
+failed_before_fix = true
+evidence = "Written first, run on the pre-settings commit: tests/core/config/test_mount_alignment_settings.py:379: AttributeError: 'MountAlignmentSettings' object has no attribute 'max_nudge_arcsec'; afterwards exact float equality with 3000 * (48.0 * 15.041) / 1000.0 (F11 behaviour-neutral)"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestAstronomicalAxisMoveRefusalsSayWhy::test_a_mount_without_guide_pulses_needs_onstepadapter_0_5"
+failed_before_fix = true
+evidence = "Written first, run before the text change: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:1514: AssertionError: assert 'not available yet' not in 'astronomical mode with the mount tracking: ... not available yet; nothing was sent, tracking stays on'"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestAstronomicalAxisMoveRefusalsSayWhy::test_tracking_switched_on_before_the_send_says_retry"
+failed_before_fix = true
+evidence = "Same pre-change run: tests/collimation/ui/test_mount_align_real_onstep_adapter.py:1514: AssertionError: 'not available yet' in the refusal"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestAstronomicalAxisMoveRefusalsSayWhy::test_tracking_switched_on_mid_axis_calibration_says_run_it_again"
+failed_before_fix = true
+evidence = "Pre-change run: TypeError (submit_sequence had no calibration keyword). Mutation (runner passes calibration=False): tests/collimation/ui/test_mount_align_real_onstep_adapter.py:1533: AssertionError: 'during this axis-move calibration' not in '... started tracking after this move was planned as an axis move ... retry the move'"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_test_move_runner.py::TestAxisStepsAreAngularOnly"
+failed_before_fix = false
+reason_no_prefix_repro = "Deletion is behaviour-neutral for production (no timed primitive exists there), so there is no defect to revert to; these pin that an at-home refusal is final, an unsized step and a mount without angular moves are refused and never pulsed."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_mount_align_sizing.py::test_timed_pulses_never_make_mount_align_leave_the_angular_path"
+failed_before_fix = false
+reason_no_prefix_repro = "Pins the deletion (a mount that also reports timed pulses is moved angularly; before, it got the timed bootstrap): the pre-deletion code is the removed path itself, not a defect, so no revert-proof was run."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_recenter_policy.py"
+failed_before_fix = false
+reason_no_prefix_repro = "Recenter unit tests migrated to a production-shaped mount (angular only; pulse_axis must never be called) after D5's deletion; neutral for production, no pre-fix failure."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_calibration_angular.py"
+failed_before_fix = false
+reason_no_prefix_repro = "Replaces TestBootstrapThenAngular (deleted timed bootstrap): every calibration move is angular and sized up front, refusals are never worked around; neutral for production."
+
+[[regression_tests]]
+node = "tests/collimation/test_onstep_boundary.py::test_no_source_file_bypasses_onstepadapter"
+failed_before_fix = false
+reason_no_prefix_repro = "Extends an existing guard (no defect): with the new tokens it failed on the three docstrings before they were reworded (indi/client.py, fake_indi_server.py, sim_onstep.py: ABS/REL_FOCUS_POSITION), and on a planted '_PLANT = \"ON_COORD_SET\"' in apps/collimation_tool/ui/mount_park_panel.py (mutation evidence)."
