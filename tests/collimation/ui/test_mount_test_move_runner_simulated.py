@@ -5,10 +5,10 @@ adapters -> OnStepConnection -> simulated OnStep controller.
 Since S3b (#53) the runner waits on the SAME FakeClock as the simulated
 controller: its park polls and settles advance the
 one simulated timeline instead of costing real seconds (~5.5 s per run before).
-The test still drains the worker thread with a bounded real-time poll (a thread
-barrier, not a policy wait). Frames are stamped with `time.monotonic()` because
-the panel itself still measures its capture references on the real clock
-(panel clock injection: S6.6).
+The panel takes an injected clock since S6.6, but this test gives it none, so it
+runs on its production default (SYSTEM_CLOCK) -- that is why frames are stamped
+with `time.monotonic()`. Draining the worker thread is a thread barrier, not a
+policy wait: a short sleep loop bounded by a 120 s real-time safety deadline.
 """
 
 from __future__ import annotations
@@ -98,7 +98,7 @@ class TestMountAlignWorkflow:
 
         def waiter(key: str):  # type: ignore[no-untyped-def]  # noqa: ANN202
             def wait(_reference: float, _timeout: float) -> FrameAcquisitionResult:
-                # real-clock stamp: the panel's capture reference is still real time (S6.6)
+                # real-clock stamp: this panel runs on its default SYSTEM_CLOCK (no clock injected)
                 return FrameAcquisitionResult(
                     FrameAcquisitionStatus.OK,
                     DeliveredFrame(frame(key), time.monotonic(), 0.01),
