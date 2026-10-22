@@ -42,9 +42,9 @@ Status: `todo` · `in-progress` · `done` · `field-only` (only real hardware ca
 | ID | Issue | Task | Owner | Review | Status | Commit | Proof command |
 |----|-------|------|-------|--------|--------|--------|---------------|
 | S0 | #50–#55 | Tracker + CONTRIBUTING.md / AGENTS.md aligned with the audit | coordinator | — | done | | docs only |
-| S1 | #50 | Test tier markers, fast/changed gate, coverage split, CI jobs, timing report | issue agent | APPROVE-WITH-FIXES → 4 fixes applied, re-verified | done | (this commit) | `scripts/check.ps1` (default mode) · `pytest tests/core/testing` |
-| S2 | #54 | Proof manifests, `scripts/prove.py`, CI validation, 6 backfills (5 revert-proven) | issue agent | APPROVE-WITH-FIXES → 10 fixes (flag whitelist, tier/skip check, evidence format, fetch-depth 0) | done | (this commit) | `python scripts/prove.py <issue>` · `--validate-all` |
-| S3a | #53, #13 | `astrotool_core.timing` (Clock/FakeClock/Deadline/poll_until); acquisition, autofocus, tracking_mode, guide controller migrated; sleep guard | issue agent | APPROVE-WITH-FIXES → 9 fixes, mutation-proven | done | (this commit) | `pytest tests/core/timing tests/core/acquisition tests/core/mount tests/core/testing tests/guide tests/collimation/application` |
+| S1 | #50 | Test tier markers, fast/changed gate, coverage split, CI jobs, timing report | issue agent | APPROVE-WITH-FIXES → 4 fixes applied, re-verified | done | 54db82c | `scripts/check.ps1` (default mode) · `pytest tests/core/testing` |
+| S2 | #54 | Proof manifests, `scripts/prove.py`, CI validation, 6 backfills (5 revert-proven) | issue agent | APPROVE-WITH-FIXES → 10 fixes (flag whitelist, tier/skip check, evidence format, fetch-depth 0) | done | 4f1e393 | `python scripts/prove.py <issue>` · `--validate-all` |
+| S3a | #53, #13 | `astrotool_core.timing` (Clock/FakeClock/Deadline/poll_until); acquisition, autofocus, tracking_mode, guide controller migrated; sleep guard | issue agent | APPROVE-WITH-FIXES → 9 fixes, mutation-proven | done | 645846e | `pytest tests/core/timing tests/core/acquisition tests/core/mount tests/core/testing tests/guide tests/collimation/application` |
 | S3b | #53 | Migrate `mount_test_move_runner.py`, `recenter_policy.py` (after S6.0); panel wall-clock polling; interruptible waits | issue agent | APPROVE-WITH-FIXES (xfail raises, guard gaps) → fixed | done | c55b9c6 | `python scripts/prove.py 53-part-b` |
 | S4 | #51 | Scenario simulators (OnStep mount, focuser, filter wheel, ToupTek camera) on FakeClock; 5 defect reproductions | issue agent | 2 rounds: APPROVE-WITH-FIXES (fidelity) → APPROVE-WITH-FIXES (2 minor) → fixed | done | 0fdf781 | `python scripts/prove.py 51` |
 | S5 | #55, #52 | Duplication inventory + size/dependency baseline (`docs/quality/duplication-audit.md`) | analysis agent | coordinator spot-check (P01 confirmed in code) | done | (this commit) | docs only |
@@ -67,6 +67,7 @@ Status: `todo` · `in-progress` · `done` · `field-only` (only real hardware ca
 | S6.8b | #31, #46, #39, user decisions | Astronomical Mount Align moves with 0.5.0 guide pulses while tracking (calibration/returns/nudge/screen move in guide-ms, split ≤5000 ms, executor claim); matrices tagged by primitive, mismatch refused both ways; guide-rate seed `guide_rate_seed_x` (1.0×, labelled assumption); partial steps returned exactly; Stop = emergency stop reported as NOT tracking (user decision 2026-10-21) | issue agent | APPROVE-WITH-FIXES (Stop turned tracking off unreported → user decision; partial-step under-return; cap at measured rate) → fixed, revert-proven | done | f63374c…5097372 (rebased: 20c17ad, d3782c3, df7561a, a4b0c4f, 5097372) | `python scripts/prove.py 31-astro-guide-pulse-mount-align` |
 | S6.8c | #49, #55 | Focuser: S6.0c pattern (lock-free Stop, jog off the GUI thread) (R7); global "Stop mount" button enabled while any mount motion is in flight, park slew included, via `executor.abort_in_flight()`; pulse adapter `abort()` stops through the shared connection; park/unpark report "stopped by the user" (errors kept) (R5) | issue agent | R7: APPROVE-WITH-FIXES → fixed; R5: coordinator rework (adapter, not MainWindow borrow) + APPROVE-WITH-FIXES (surviving mutant, hidden errors, check-then-act) → fixed, mutation-proven | done | e028cc5, 436b312, ff6754e, f00007f, 9eb03dd | `python scripts/prove.py 49-focuser-stop` · `55-global-mount-stop` |
 | S6.8d | #55 (P04/P05), #31, #46 | Dead timed-motion path deleted (runner retries/fallback/presets/bootstrap/`park_after`, recenter D5, `install_rate`); settings `pulse_ms`/`rate_preset`/`calibration_rate_preset`/`max_nudge_pulse_ms` removed (old config loads, one warning per key — verified on the Pi's real config.toml); explicit `max_nudge_arcsec` (= old cap 2165.904″); accurate Astronomical refusal texts; `AngularMotionPort` conformance test; boundary tokens + import-linter contract on `astrotool_core.indi` | issue agent | APPROVE-WITH-FIXES (import-linter bypass via package, calibration=True unpinned, port drift, stale texts) → fixed, mutation-proven; differential harness byte-identical (31 expected diffs) | done | 3f708fc, f572b0c, 1ac3f53, a8848eb, e2ee56c | `python scripts/prove.py 55-dead-timed-path` |
+| S6.9 | #55, #50, #52 | Last single-owner defaults (D05 train ids, D06 10 km seed, D07 0.2 s sample interval, D08 25 % target, K04 excepthook) + after-measurements in test-tier-timings.md and duplication-audit.md | | | todo | | |
 | S7 | #15 #21 #29–#33 #35 #37 #39 #43 #44 #46 #49 | Proof manifests + missing low-tier tests; field-only assumptions listed | issue agent | coordinator verification (worktree, all proofs PASS) | done | 5f7c689 | `python scripts/prove.py <issue>` |
 | S8 | all | Release gate green, issue evidence comments, ask user before Pi sync | coordinator | — | todo | | |
 
@@ -601,6 +602,22 @@ OnStepAdapter 0.5.0 `guide_pulse` while tracking; tracking is never turned off b
 - **Proof:** manifest(s); differential characterization evidence; `prove.py` for every 31/39/43/44/46/49/52/55 manifest PASS.
 
 R9/F11/R11. Contract written before start. Also (S6.8b review #3): `ASTRONOMICAL_TRACKING_AXIS_MOVE_REFUSED` ("...not available yet") is now wrong in three cases -- a 0.4.1 mount (should say: needs OnStepAdapter >= 0.5.0), a stale-reading race (tracking turned on between the panel's primitive choice and the send: retry), and tracking switched on mid axis-calibration (star calibration's tracking-ON verify); `mount_motion.py` module docstring line 18 ("until guide-pulse Mount Align, S6.8b") is stale. Also (S6.8a review #4): the runner's tracking gate is keyed on the step tuple shape (`len(step) > 3`), not on the primitive actually used — legacy timed path only; remove with the timed path. Stale docs (F13): panel docstring "Stop / duck-typed", `park_adapter.stop_tracking` docstring, `mount_park_panel.py:186`; `mount_commands.rearm_after_stop` getattr `clear_abort` probe.
+
+### S6.9 — last single-owner defaults + after-measurements (S8 finding)
+
+**Contract (2026-10-22).**
+- **Allowed:** the files holding D05–D08/K04 (`ui/main_window.py`, `ui/mount_test_move_panel.py`,
+  `astrotool_core/config/mount_alignment_settings.py`, `astrotool_core/mount/movement_sizing.py`,
+  `astrotool_core/acquisition/motion_aware_acquisition.py`, `apps/*/main.py`, a new small owner module if needed),
+  `tests/contracts/test_config_source_contract.py`, their tests, `docs/quality/test-tier-timings.md`,
+  `docs/quality/duplication-audit.md`, the stale docstring in `tests/collimation/ui/test_mount_test_move_runner_simulated.py`,
+  a new manifest.
+- **Behaviour changed:** none (values identical). One owner per value; the config-source contract fails on a second
+  contradictory literal for D06/D07/D08 (mutation evidence); an injected alternate value reaches every consumer.
+- **Docs:** test-tier-timings.md gets an "after" section (local tier wall times on main now + CI job times
+  S1 → now); duplication-audit.md gets an "after" section (status per item, sizes/function lengths before → now).
+- **Frozen:** every public API, diagnostics keys, all manifest assertions. **Non-goals:** anything else.
+- **Proof:** manifest `55-last-single-owner-defaults`; gates; `prove.py 55` PASS.
 
 ### S5 — #55 + #52 duplication inventory (analysis only)
 
