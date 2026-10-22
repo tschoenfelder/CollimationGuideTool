@@ -1,0 +1,95 @@
+# Proof manifest -- schema in proofs/README.md. Run: python scripts/prove.py 55-last-single-owner-defaults
+issues = [55]
+summary = """S6.9 (#55 audit D05-D08, K04): the last low-risk defaults with more than one source. \
+D06 the 10 km terrestrial (and 30 m artificial-star) sizing seed was stated in main_window.py \
+and again as mount_test_move_panel.py's fallback; D07 the stability-window defaults (0.2 s, 3 \
+samples) in MountAlignmentSettings and twice in motion_aware_acquisition.py; D08 the 25 % \
+calibration target in MountAlignmentSettings, SizingPolicy and (found by the new scan) \
+star_acquisition.py's step fraction; D05 the train names/matching rule inline in main_window.py \
+and filter_wheel/config.py; K04 the excepthook body copied in both apps' main.py. One owner \
+each now: collimation_tool.domain.target_mode (D06), config.mount_alignment_settings (D07/D08), \
+astrotool_core.optics.train (D05), astrotool_core.diagnostics.excepthook (K04, toolkit-free). \
+Values identical (behaviour-neutral). The config-source contract scans for a re-stated \
+D06/D07/D08 numeric literal (value on a line or in a function naming its subject) and checks \
+that every default consumer holds the owner's value and that an injected value reaches the \
+consumers."""
+modules = [
+    "apps/collimation_tool/domain/target_mode.py",
+    "apps/collimation_tool/ui/main_window.py",
+    "apps/collimation_tool/ui/mount_test_move_panel.py",
+    "apps/collimation_tool/application/star_acquisition.py",
+    "apps/collimation_tool/main.py",
+    "apps/guide_tool/main.py",
+    "packages/astrotool_core/config/mount_alignment_settings.py",
+    "packages/astrotool_core/mount/movement_sizing.py",
+    "packages/astrotool_core/acquisition/motion_aware_acquisition.py",
+    "packages/astrotool_core/optics/train.py",
+    "packages/astrotool_core/filter_wheel/config.py",
+    "packages/astrotool_core/diagnostics/excepthook.py",
+]
+fix_commits = ["45012da"]
+dataset_uuids = []
+focused_command = """pytest -q \
+tests/contracts/test_config_source_contract.py \
+tests/core/diagnostics/test_excepthook.py \
+tests/core/optics/test_train.py \
+tests/collimation/ui/test_shared_filter_wheel.py \
+tests/collimation/ui/test_main_window_target_owner.py"""
+broader_tier = "component"
+field_only_assumptions = []
+gaps = [
+    "The numeric scan is keyword-based (value on a line or in a function whose name mentions distance/terrestrial, interval or fraction): a copy of 10000.0/0.2/0.25 under an unrelated name is not caught. A contradictory value (e.g. 0.3) is caught only at the default consumers the reach/injection tests name, not anywhere in the tree.",
+    "D05 is not a full TrainId enum: the config-role keys 'main'/'guide' (camera settings, pixel scale) and the 'left'/'right' panel keys stay plain strings, and train names are not scanned (too common).",
+    "D07 sample count 3 moved to the owner too, but only the 0.2 s interval is scanned (a bare 3 is too common); the reach test covers both defaults.",
+    "Audit T02 (runner's own 5 s unpark re-confirmation) and T04 (Mount Align 1000/500 ms vs reacquisition 750 ms settle) remain open (low, no contradiction); P03 stays dormant until GuideTool wires a mount.",
+]
+
+[[regression_tests]]
+node = "tests/contracts/test_config_source_contract.py::test_each_numeric_default_has_one_owner"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-22, separate worktree at 805d567 with only target_mode.py, mount_alignment_settings.py and this contract test copied in: tests/contracts/test_config_source_contract.py:428: AssertionError for all three items -- D06 main_window.py:724 and mount_test_move_panel.py:1757; D07 motion_aware_acquisition.py:136 and :245; D08 movement_sizing.py:81 and star_acquisition.py:90. Mutation on the fixed branch: planting `return 10_000.0` (panel), `stability_sample_interval_s: float = 0.2` (motion_aware_acquisition) or `target_fraction: float = 0.25` (SizingPolicy) each fails this test again."
+
+[[regression_tests]]
+node = "tests/contracts/test_config_source_contract.py::test_every_consumer_observes_injected_seed_distances"
+failed_before_fix = true
+evidence = "Same revert-proof: tests/contracts/test_config_source_contract.py:478: AssertionError: assert 10000.0 == 12345.0 (MainWindow ignored the owner). Mutation: a contradictory `return 9_000.0` in the panel fails it at :482 (assert 9000.0 == 12345.0)."
+
+[[regression_tests]]
+node = "tests/contracts/test_config_source_contract.py::test_the_stability_and_fraction_defaults_reach_every_default_consumer"
+failed_before_fix = false
+reason_no_prefix_repro = "Before S6.9 the copies held the same values (no live contradiction), so equality held. Mutation evidence instead: a contradictory `stability_sample_interval_s: float = 0.3` in motion_aware_acquisition fails it (assert 0.3 == 0.2), and `target_fraction: float = 0.3` in SizingPolicy fails it (assert 0.3 == 0.25)."
+
+[[regression_tests]]
+node = "tests/contracts/test_config_source_contract.py::test_an_injected_mount_align_configuration_reaches_sizing_and_capture"
+failed_before_fix = false
+reason_no_prefix_repro = "Characterization: production already passed MountAlignmentSettings explicitly to SizingPolicy and acquire_verified_frames; this pins that an alternate configuration (0.4 / 0.37 s / 5 samples) reaches both."
+
+[[regression_tests]]
+node = "tests/contracts/test_config_source_contract.py::test_each_numeric_owner_holds_its_value_once"
+failed_before_fix = false
+reason_no_prefix_repro = "Anti-vacuity guard for the scan (owner moved or keyword lost); independent of the fix."
+
+[[regression_tests]]
+node = "tests/contracts/test_config_source_contract.py::test_the_owned_numeric_values_are_unchanged"
+failed_before_fix = false
+reason_no_prefix_repro = "Behaviour-neutrality pin: the owners hold exactly the values the copies held (10 km, 30 m, 0.2 s, 3, 0.25)."
+
+[[regression_tests]]
+node = "tests/contracts/test_config_source_contract.py::test_the_numeric_scanner_catches_each_kind_of_restatement"
+failed_before_fix = false
+reason_no_prefix_repro = "Scanner self-test on synthetic source (line keyword, enclosing-function keyword, near-miss values, negated literal, docstring); independent of the production fix."
+
+[[regression_tests]]
+node = "tests/core/diagnostics/test_excepthook.py"
+failed_before_fix = false
+reason_no_prefix_repro = "K04 was a duplicate, not a defect: both copies behaved identically. These pin the shared helper's behaviour (bundle id shown, previous hook always called) and that both main.py use it."
+
+[[regression_tests]]
+node = "tests/core/optics/test_train.py"
+failed_before_fix = false
+reason_no_prefix_repro = "D05 was a duplicate, not a defect: pins the owner's names and case-insensitive rule (unchanged values)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_shared_filter_wheel.py"
+failed_before_fix = false
+reason_no_prefix_repro = "Existing coverage of the train matching in MainWindow (audit D05's listed test); unchanged and still green after the move to optics.train."
