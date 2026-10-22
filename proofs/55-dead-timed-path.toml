@@ -52,7 +52,7 @@ tests/collimation/test_onstep_boundary.py \
 tests/contracts/test_mount_contract.py::test_the_production_adapter_and_its_fake_conform_to_the_motion_ports"""
 broader_tier = "component"
 field_only_assumptions = [
-    "The Pi's real ~/.CollimationGuideTool/config.toml loads with the removed keys (tested with a synthetic old config, not the Pi's file).",
+    "The Pi's real ~/.CollimationGuideTool/config.toml (it has [mount_alignment] pulse_ms = 500) was read off the rig on 2026-10-22 and loaded with this code: one warning for pulse_ms, max_nudge_arcsec 2165.904. Still to see on the rig: the same single warning in the Pi log at app start.",
 ]
 gaps = [
     "The differential characterization harness ran outside the repo (scratchpad charac.py + compare.py, run against the base worktree at 90ce80d and this branch); it is evidence of neutrality, not a kept test.",

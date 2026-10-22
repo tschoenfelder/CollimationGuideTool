@@ -26,7 +26,7 @@ field_only_assumptions = [
     "RA/Dec-to-image orientation and signs on the rig (tested synthetically for 0/10/35 degrees and inverted signs only).",
     "A degree GOTO plus settle_ms leaves the mount at rest before the AFTER frame.",
     "The 30\" floor taken from OnStepAdapter's own constant is the real bound on the rig.",
-    "Stop during a blocking angular GOTO is not yet characterized (operation_lock held for the whole move) -- tracked as S6.0c.",
+    "Stop during a blocking angular GOTO is characterized since S6.0c (proofs/49-stop-during-angular-goto.toml); whether the real OnStep honours the ABORT mid-GOTO is field-only there.",
 ]
 
 [[regression_tests]]

@@ -34,7 +34,7 @@ tests/collimation/ui/test_mount_test_move_runner_timing.py::TestGateDelayAndRetr
 broader_tier = "component"
 field_only_assumptions = [
     "Mount Align motion has not run on the rig since 0.4.0: that OnStepAdapter 0.5.0's unpark() leaves tracking off (so Terrestrial moves are not refused after an automatic unpark) is proven on the fake/simulated client only.",
-    "In Astronomical mode Mount Align calibration/nudge/screen moves are now refused while the mount tracks (user decision; S6.8b brings guide-pulse moves) -- operators will see the refusal on the rig.",
+    "Superseded by S6.8b (proofs/31-astro-guide-pulse-mount-align.toml): Astronomical Mount Align now moves with guide pulses while tracking; the refusal remains only for a mount without OnStepAdapter 0.5.0 guide pulses.",
 ]
 gaps = [
     "The end-to-end Cancel test drives MainWindow's reacquirer synchronously and presses the panel's Cancel from inside the simulated GOTO; it does not run the FineCollimationRunner thread.",
