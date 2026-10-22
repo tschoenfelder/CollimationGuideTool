@@ -501,6 +501,10 @@ def test_the_stability_and_fraction_defaults_reach_every_default_consumer() -> N
         assert count == owner.DEFAULT_STABILITY_SAMPLE_COUNT
     fraction = SizingPolicy(center_rate_x=8.0).target_fraction
     assert fraction == owner.DEFAULT_CALIBRATION_TARGET_FRACTION
+    from collimation_tool.application import star_acquisition
+
+    step_fraction = star_acquisition._STEP_FRAME_FRACTION
+    assert step_fraction == owner.DEFAULT_CALIBRATION_TARGET_FRACTION
 
 
 def test_an_injected_mount_align_configuration_reaches_sizing_and_capture(

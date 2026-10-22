@@ -27,7 +27,7 @@ modules = [
     "packages/astrotool_core/filter_wheel/config.py",
     "packages/astrotool_core/diagnostics/excepthook.py",
 ]
-fix_commits = ["45012da"]
+fix_commits = ["45012da"]  # the S6.9 review follow-up commit adds a test assert only, no production change
 dataset_uuids = []
 focused_command = """pytest -q \
 tests/contracts/test_config_source_contract.py \
@@ -39,7 +39,9 @@ broader_tier = "component"
 field_only_assumptions = []
 gaps = [
     "The numeric scan is keyword-based (value on a line or in a function whose name mentions distance/terrestrial, interval or fraction): a copy of 10000.0/0.2/0.25 under an unrelated name is not caught. A contradictory value (e.g. 0.3) is caught only at the default consumers the reach/injection tests name, not anywhere in the tree.",
-    "D05 is not a full TrainId enum: the config-role keys 'main'/'guide' (camera settings, pixel scale) and the 'left'/'right' panel keys stay plain strings, and train names are not scanned (too common).",
+    "D05 is not a full TrainId enum: the config-role keys 'main'/'guide' (camera settings, pixel scale) and the 'left'/'right' panel keys stay plain strings, and train names are not scanned (too common). Display-label copies of 'Main'/'Guide' remain (not migrated): mount_align_messages.py:86, focuser_panel.py:143, main_window.py:282/289/314; optics/smarttscope_config.py:97 compares case-sensitively (== 'main') instead of using train_key.",
+    "Computed forms of an owned value (e.g. 1 / 4, 1 / 5, 10 * 1000.0) are not literals, so the scan misses them, and the reach test cannot catch them because the values are equal.",
+    "The 30 m artificial-star seed (ARTIFICIAL_STAR_SEED_DISTANCE_M) has one owner but is not scanned (30.0 is too common); only the injected-value test covers its two consumers.",
     "D07 sample count 3 moved to the owner too, but only the 0.2 s interval is scanned (a bare 3 is too common); the reach test covers both defaults.",
     "Audit T02 (runner's own 5 s unpark re-confirmation) and T04 (Mount Align 1000/500 ms vs reacquisition 750 ms settle) remain open (low, no contradiction); P03 stays dormant until GuideTool wires a mount.",
 ]
@@ -57,7 +59,7 @@ evidence = "Same revert-proof: tests/contracts/test_config_source_contract.py:47
 [[regression_tests]]
 node = "tests/contracts/test_config_source_contract.py::test_the_stability_and_fraction_defaults_reach_every_default_consumer"
 failed_before_fix = false
-reason_no_prefix_repro = "Before S6.9 the copies held the same values (no live contradiction), so equality held. Mutation evidence instead: a contradictory `stability_sample_interval_s: float = 0.3` in motion_aware_acquisition fails it (assert 0.3 == 0.2), and `target_fraction: float = 0.3` in SizingPolicy fails it (assert 0.3 == 0.25)."
+reason_no_prefix_repro = "Before S6.9 the copies held the same values (no live contradiction), so equality held. Mutation evidence instead: a contradictory `stability_sample_interval_s: float = 0.3` in motion_aware_acquisition fails it (assert 0.3 == 0.2), `target_fraction: float = 0.3` in SizingPolicy fails it (assert 0.3 == 0.25), and `_STEP_FRAME_FRACTION = 0.3` in star_acquisition fails it (assert 0.3 == 0.25)."
 
 [[regression_tests]]
 node = "tests/contracts/test_config_source_contract.py::test_an_injected_mount_align_configuration_reaches_sizing_and_capture"
