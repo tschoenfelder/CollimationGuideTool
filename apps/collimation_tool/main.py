@@ -12,11 +12,11 @@ from __future__ import annotations
 
 import logging
 import sys
-from types import TracebackType
 
 from astrotool_core.camera.port import CameraPort
 from astrotool_core.camera.replay_camera import ReplayCamera
 from astrotool_core.diagnostics import DiagnosticService, RecentLogHandler
+from astrotool_core.diagnostics.excepthook import install_excepthook
 from astrotool_core.filter_wheel.registry import (
     FilterWheelAssignment,
     build_filter_wheels,
@@ -114,36 +114,9 @@ def _default_pulse_mount(connection: OnStepConnection) -> MountPort:
 
 
 def _install_excepthook(diagnostics: DiagnosticService) -> None:
-    """Automatic-capture boundary for issue #10.
-
-    Wraps whatever excepthook is already installed (PySide6 routes
-    exceptions raised inside Qt slots through sys.excepthook) so the
-    original traceback is still printed exactly as before — diagnostic
-    capture only adds a bundle, it never hides or replaces the failure.
-    Enriched with whatever the active MainWindow last registered via
-    `set_context_provider`/`set_frame_provider` (see its docstring).
-    """
-    previous_hook = sys.excepthook
-
-    def _hook(
-        exc_type: type[BaseException], exc_value: BaseException, exc_tb: TracebackType | None
-    ) -> None:
-        bundle = diagnostics.capture_exception(exc_value)
-        if bundle is not None:
-            _log.error(
-                "Unhandled exception captured as diagnostic incident %s at %s",
-                bundle.incident_id,
-                bundle.path,
-            )
-            window = QApplication.activeWindow()
-            status_label = getattr(window, "_diagnostics_status_label", None)
-            if status_label is not None:
-                # Raw UUID only — the field is a read-only, selectable/copyable
-                # QLineEdit (issue #11); the log line above carries the framing.
-                status_label.setText(bundle.incident_id)
-        previous_hook(exc_type, exc_value, exc_tb)
-
-    sys.excepthook = _hook
+    """Automatic-capture boundary for issue #10 -- one shared helper (#55 K04):
+    `astrotool_core.diagnostics.excepthook.install_excepthook`."""
+    install_excepthook(diagnostics, active_window=QApplication.activeWindow)
 
 
 def main() -> None:

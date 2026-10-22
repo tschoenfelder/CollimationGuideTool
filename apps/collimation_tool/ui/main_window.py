@@ -156,6 +156,7 @@ from astrotool_core.mount.operating_mode import OperatingMode, TrackingEnforcer
 from astrotool_core.mount.park_port import MountParkPort
 from astrotool_core.mount.port import MountPort
 from astrotool_core.optics import load_pixel_scale_arcsec
+from astrotool_core.optics.train import GUIDE_TRAIN, MAIN_TRAIN, train_key
 from astrotool_core.registration.alignment import derive_alignment_guidance
 from astrotool_core.registration.astap_adapter import AstapCliSolver, AstapSolver
 from astrotool_core.registration.optical_prior import OpticalPrior
@@ -188,7 +189,7 @@ from collimation_tool.application.star_acquisition import (
     AcquisitionStatus,
     FocusedStarAcquisition,
 )
-from collimation_tool.domain.target_mode import CollimationTargetMode
+from collimation_tool.domain.target_mode import CollimationTargetMode, sizing_seed_distance_m
 from collimation_tool.ui.camera_panel import CameraPanel, default_camera_factory
 from collimation_tool.ui.filter_wheel_panel import FilterWheelPanel
 from collimation_tool.ui.fine_collimation_panel import FineCollimationPanel
@@ -222,7 +223,7 @@ _log = logging.getLogger(__name__)
 #: this app -- a wheel assignment naming any other train (e.g. "oag", which
 #: this app has no panel for) never gets a selector, only ever a status
 #: display; see the panel-construction loop below.
-_REAL_TRAINS = {"main", "guide"}
+_REAL_TRAINS = {train_key(MAIN_TRAIN), train_key(GUIDE_TRAIN)}
 
 
 class MainWindow(QMainWindow):
@@ -380,18 +381,18 @@ class MainWindow(QMainWindow):
             if main_filter_wheel is not None:
                 assignments.append(
                     FilterWheelAssignment(
-                        "main", "Main Filter Wheel", ("Main",), main_filter_wheel
+                        "main", "Main Filter Wheel", (MAIN_TRAIN,), main_filter_wheel
                     )
                 )
             if guide_filter_wheel is not None:
                 assignments.append(
                     FilterWheelAssignment(
-                        "guide", "Guide Filter Wheel", ("Guide",), guide_filter_wheel
+                        "guide", "Guide Filter Wheel", (GUIDE_TRAIN,), guide_filter_wheel
                     )
                 )
         self._filter_wheel_panels: list[FilterWheelPanel] = []
         for a in assignments:
-            selectable = any(t.lower() in _REAL_TRAINS for t in a.trains)
+            selectable = any(train_key(t) in _REAL_TRAINS for t in a.trains)
             if not selectable:
                 _log.warning(
                     "filter wheel %r is assigned to train(s) %s, none of which has a real "
@@ -718,26 +719,26 @@ class MainWindow(QMainWindow):
     def _calibration_distance_m(self, mode: str) -> float | None:
         """Issue #46: nominal target distance, only a first-move seed (measured
         pixels stay authoritative): stars = infinity, terrestrial ~10 km, an
-        artificial star ~30 m."""
+        artificial star ~30 m (values owned by `domain.target_mode`, #55 D06)."""
         if mode == "star":
             return None
-        return 30.0 if self._artificial_star_selected() else 10_000.0
+        return sizing_seed_distance_m(artificial_star=self._artificial_star_selected())
 
     def _panel_for_train(self, train: str) -> FilterWheelPanel | None:
         for panel in self._filter_wheel_panels:
-            if any(t.lower() == train.lower() for t in panel.used_by):
+            if any(train_key(t) == train_key(train) for t in panel.used_by):
                 return panel
         return None
 
     @property
     def _main_filter_wheel_panel(self) -> FilterWheelPanel | None:
         """The wheel used by the Main train (compatibility alias, issue #41)."""
-        return self._panel_for_train("Main")
+        return self._panel_for_train(MAIN_TRAIN)
 
     @property
     def _guide_filter_wheel_panel(self) -> FilterWheelPanel | None:
         """The wheel used by the Guide train, or None when Guide has no wheel."""
-        return self._panel_for_train("Guide")
+        return self._panel_for_train(GUIDE_TRAIN)
 
     def _filter_wheel_diagnostics(self) -> dict[str, dict[str, Any]]:
         """Issue #41: one entry per PHYSICAL wheel (never per train)."""
@@ -757,13 +758,13 @@ class MainWindow(QMainWindow):
         """`<train>_filter_wheel` keys: every train observes the SAME shared wheel
         state; a train without a wheel says so explicitly. `main`/`guide` always
         appear (existing bundle consumers)."""
-        trains = {"Main", "Guide"}
+        trains = {MAIN_TRAIN, GUIDE_TRAIN}
         for wheel_panel in self._filter_wheel_panels:
             trains.update(wheel_panel.used_by)
         result: dict[str, dict[str, Any]] = {}
         for train in sorted(trains):
             panel = self._panel_for_train(train)
-            result[f"{train.lower()}_filter_wheel"] = (
+            result[f"{train_key(train)}_filter_wheel"] = (
                 panel.diagnostic_context()
                 if panel is not None
                 else {

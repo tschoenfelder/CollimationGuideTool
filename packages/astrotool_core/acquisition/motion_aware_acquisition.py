@@ -46,6 +46,10 @@ import numpy as np
 
 from astrotool_core.acquisition.image_stability import StabilityCheckResult, check_image_stability
 from astrotool_core.acquisition.stable_frame_acquisition import StableFrameWaiter
+from astrotool_core.config.mount_alignment_settings import (
+    DEFAULT_STABILITY_SAMPLE_COUNT,
+    DEFAULT_STABILITY_SAMPLE_INTERVAL_S,
+)
 from astrotool_core.timing import SYSTEM_CLOCK, Clock
 
 
@@ -132,8 +136,8 @@ def acquire_verified_frame(
     reference_monotonic: float,
     timeout_s: float,
     stability_tolerance_px: float,
-    stability_sample_count: int = 3,
-    stability_sample_interval_s: float = 0.2,
+    stability_sample_count: int = DEFAULT_STABILITY_SAMPLE_COUNT,
+    stability_sample_interval_s: float = DEFAULT_STABILITY_SAMPLE_INTERVAL_S,
     movement_context: CommandedMovementContext | None = None,
     cancelled: Callable[[], bool] | None = None,
     sleep: Callable[[float], object] | None = None,
@@ -241,8 +245,8 @@ def acquire_verified_frames(
     reference_monotonic: float,
     timeout_s: float,
     stability_tolerance_px: float,
-    stability_sample_count: int = 3,
-    stability_sample_interval_s: float = 0.2,
+    stability_sample_count: int = DEFAULT_STABILITY_SAMPLE_COUNT,
+    stability_sample_interval_s: float = DEFAULT_STABILITY_SAMPLE_INTERVAL_S,
     movement_context: CommandedMovementContext | None = None,
     cancelled: Callable[[], bool] | None = None,
     sleep: Callable[[float], object] | None = None,

@@ -363,6 +363,7 @@ from collimation_tool.application.mount_motion import (
     MountMotionExecutor,
     choose_mount_align_primitive,
 )
+from collimation_tool.domain.target_mode import sizing_seed_distance_m
 from collimation_tool.ui.flow_layout import FlowLayout
 from collimation_tool.ui.mount_test_move_runner import MountTestMoveRunner
 
@@ -1754,7 +1755,9 @@ class MountTestMovePanel(QWidget):
     def _sizing_distance_for(self, mode: TargetMode) -> float | None:
         if self._calibration_distance_m is not None:
             return self._calibration_distance_m(mode)
-        return 10_000.0 if mode == "terrestrial" else None
+        if mode == "terrestrial":
+            return sizing_seed_distance_m(artificial_star=False)  # #55 D06: one owner
+        return None
 
     # ---- S6.0: manual moves on a mount without timed pulses ------------------
     def _nudge_cap_arcsec(self) -> float:

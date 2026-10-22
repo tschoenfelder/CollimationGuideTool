@@ -21,13 +21,21 @@ reason, and an exception that no longer matches anything fails too.
 from __future__ import annotations
 
 import ast
+import inspect
 import re
 from collections.abc import Iterator
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from astrotool_core.config import camera_settings, device_defaults, paths
+from astrotool_core.config import (
+    camera_settings,
+    device_defaults,
+    mount_alignment_settings,
+    paths,
+)
+from collimation_tool.domain import target_mode
 
 _REPO = Path(__file__).resolve().parents[2]
 _PRODUCTION_ROOTS = (_REPO / "packages", _REPO / "apps", _REPO / "scripts")
@@ -340,3 +348,223 @@ def test_every_consumer_observes_an_injected_cooling_default(
         assert panel._target_temp_spin.value() == -7.5
     finally:
         panel.deleteLater()
+
+
+# -- D06/D07/D08: the last single-owner numeric defaults (S6.9) ------------------------------
+#
+# Like D04, the numbers alone are too common to scan for. A re-statement is a numeric literal
+# equal to the owned value on a source line -- or inside a function whose name -- mentions the
+# value's subject ("distance"/"terrestrial", "interval", "fraction").
+
+_MOUNT_ALIGN_OWNER = "packages/astrotool_core/config/mount_alignment_settings.py"
+_TARGET_MODE_OWNER = "apps/collimation_tool/domain/target_mode.py"
+
+#: item -> (owner module, owned value, subject keywords).
+_NUMERIC_DEFAULTS: dict[str, tuple[str, float, tuple[str, ...]]] = {
+    "D06 terrestrial seed distance (m)": (
+        _TARGET_MODE_OWNER,
+        target_mode.TERRESTRIAL_SEED_DISTANCE_M,
+        ("distance", "terrestrial"),
+    ),
+    "D07 stability sample interval (s)": (
+        _MOUNT_ALIGN_OWNER,
+        mount_alignment_settings.DEFAULT_STABILITY_SAMPLE_INTERVAL_S,
+        ("interval",),
+    ),
+    "D08 calibration target fraction": (
+        _MOUNT_ALIGN_OWNER,
+        mount_alignment_settings.DEFAULT_CALIBRATION_TARGET_FRACTION,
+        ("fraction",),
+    ),
+}
+
+
+def numeric_default_lines(source: str, owned: float, keywords: tuple[str, ...]) -> list[int]:
+    """Lines of `source` with a numeric literal equal to `owned` (sign included) where the line
+    or the enclosing function's name mentions one of `keywords`."""
+    lines = source.splitlines()
+    hits: list[int] = []
+
+    def visit(node: ast.AST, scope: str) -> None:
+        if isinstance(node, ast.FunctionDef | ast.AsyncFunctionDef):
+            scope = node.name
+        value: object = None
+        if (
+            isinstance(node, ast.UnaryOp)
+            and isinstance(node.op, ast.USub)
+            and isinstance(node.operand, ast.Constant)
+        ):
+            operand = node.operand.value
+            value = -operand if isinstance(operand, int | float) else None
+        elif isinstance(node, ast.Constant):
+            value = node.value
+        if isinstance(node, ast.UnaryOp | ast.Constant):
+            if not isinstance(value, bool) and isinstance(value, int | float) and value == owned:
+                line = node.lineno
+                context = (lines[line - 1] + " " + scope).lower()
+                if any(k in context for k in keywords) and line not in hits:
+                    hits.append(line)
+            if isinstance(node, ast.UnaryOp) and isinstance(node.operand, ast.Constant):
+                return  # a negated literal's operand is not a second literal
+        for child in ast.iter_child_nodes(node):
+            visit(child, scope)
+
+    visit(ast.parse(source), "")
+    return hits
+
+
+def _numeric_findings(owner: str, owned: float, keywords: tuple[str, ...]) -> list[str]:
+    return [
+        f"{rel}:{line}"
+        for rel, path in _production_modules()
+        if rel != owner
+        for line in numeric_default_lines(path.read_text(encoding="utf-8"), owned, keywords)
+    ]
+
+
+@pytest.mark.parametrize("item", sorted(_NUMERIC_DEFAULTS))
+def test_each_numeric_default_has_one_owner(item: str) -> None:
+    owner, owned, keywords = _NUMERIC_DEFAULTS[item]
+    assert _numeric_findings(owner, owned, keywords) == [], (
+        f"re-stated {item} -- import it from {owner}"
+    )
+
+
+@pytest.mark.parametrize("item", sorted(_NUMERIC_DEFAULTS))
+def test_each_numeric_owner_holds_its_value_once(item: str) -> None:
+    """Guards against the scan passing vacuously (owner moved, keyword no longer on the line)."""
+    owner, owned, keywords = _NUMERIC_DEFAULTS[item]
+    source = (_REPO / owner).read_text(encoding="utf-8")
+    assert len(numeric_default_lines(source, owned, keywords)) == 1
+
+
+def test_the_owned_numeric_values_are_unchanged() -> None:
+    """S6.9 is behaviour-neutral: the owners hold exactly the values the copies held."""
+    assert target_mode.TERRESTRIAL_SEED_DISTANCE_M == 10_000.0
+    assert target_mode.ARTIFICIAL_STAR_SEED_DISTANCE_M == 30.0
+    assert mount_alignment_settings.DEFAULT_STABILITY_SAMPLE_INTERVAL_S == 0.2
+    assert mount_alignment_settings.DEFAULT_STABILITY_SAMPLE_COUNT == 3
+    assert mount_alignment_settings.DEFAULT_CALIBRATION_TARGET_FRACTION == 0.25
+
+
+def test_the_numeric_scanner_catches_each_kind_of_restatement() -> None:
+    source = '''
+"""Docstring: 0.25 of the frame, a 10 km target, 0.2 s apart."""
+TARGET_FRACTION = 0.25
+_MIN_SCALE = 0.25
+def _sizing_distance_for(mode):
+    return 10_000.0 if mode == "terrestrial" else None
+def other():
+    return 10000
+def f(stability_sample_interval_s: float = 0.2, band_low: float = 0.20):
+    return -0.25  # fraction, but a different (negative) value
+'''
+    assert numeric_default_lines(source, 0.25, ("fraction",)) == [3]
+    assert numeric_default_lines(source, 10_000.0, ("distance", "terrestrial")) == [6]
+    assert numeric_default_lines(source, 0.2, ("interval",)) == [9]
+
+
+def test_every_consumer_observes_injected_seed_distances(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D06: change the owner, and both sizing consumers follow (read at call time)."""
+    from collimation_tool.ui.main_window import MainWindow
+    from collimation_tool.ui.mount_test_move_panel import MountTestMovePanel
+
+    monkeypatch.setattr(target_mode, "TERRESTRIAL_SEED_DISTANCE_M", 12_345.0)
+    monkeypatch.setattr(target_mode, "ARTIFICIAL_STAR_SEED_DISTANCE_M", 42.0)
+    natural: Any = SimpleNamespace(_artificial_star_selected=lambda: False)
+    artificial: Any = SimpleNamespace(_artificial_star_selected=lambda: True)
+    assert MainWindow._calibration_distance_m(natural, "terrestrial") == 12_345.0
+    assert MainWindow._calibration_distance_m(natural, "star") is None
+    assert MainWindow._calibration_distance_m(artificial, "terrestrial") == 42.0
+    panel: Any = SimpleNamespace(_calibration_distance_m=None)
+    assert MountTestMovePanel._sizing_distance_for(panel, "terrestrial") == 12_345.0
+    assert MountTestMovePanel._sizing_distance_for(panel, "star") is None
+
+
+def test_the_stability_and_fraction_defaults_reach_every_default_consumer() -> None:
+    """D07/D08: every built-in default is the owner's value (no second literal to drift)."""
+    from astrotool_core.acquisition import motion_aware_acquisition as maa
+    from astrotool_core.mount.movement_sizing import SizingPolicy
+
+    owner = mount_alignment_settings
+    settings = owner.MountAlignmentSettings()
+    assert settings.stability_sample_interval_s == owner.DEFAULT_STABILITY_SAMPLE_INTERVAL_S
+    assert settings.stability_sample_count == owner.DEFAULT_STABILITY_SAMPLE_COUNT
+    assert settings.calibration_target_fraction == owner.DEFAULT_CALIBRATION_TARGET_FRACTION
+    for function in (maa.acquire_verified_frame, maa.acquire_verified_frames):
+        parameters = inspect.signature(function).parameters
+        interval = parameters["stability_sample_interval_s"].default
+        assert interval == owner.DEFAULT_STABILITY_SAMPLE_INTERVAL_S
+        count = parameters["stability_sample_count"].default
+        assert count == owner.DEFAULT_STABILITY_SAMPLE_COUNT
+    fraction = SizingPolicy(center_rate_x=8.0).target_fraction
+    assert fraction == owner.DEFAULT_CALIBRATION_TARGET_FRACTION
+
+
+def test_an_injected_mount_align_configuration_reaches_sizing_and_capture(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """D07/D08: an alternate `MountAlignmentSettings` is what calibration sizing and the
+    stability-verified capture use (production never relies on the function defaults)."""
+    from astrotool_core.mount import MountCapabilities, TrackingMode
+    from astrotool_core.mount.movement_sizing import CameraGeometry
+    from astrotool_core.timing.fake_clock import FakeClock
+    from collimation_tool.application import mount_align_capture
+    from collimation_tool.application.mount_align_sizing import CalibrationSizing
+
+    alternate = mount_alignment_settings.MountAlignmentSettings(
+        calibration_target_fraction=0.4,
+        stability_sample_interval_s=0.37,
+        stability_sample_count=5,
+    )
+
+    class _AngularMount:
+        def capabilities(self) -> MountCapabilities:
+            return MountCapabilities(
+                supports_pulse_guiding=False,
+                min_pulse_ms=0,
+                max_pulse_ms=0,
+                supports_angular_moves=True,
+                min_angular_arcsec=30.0,
+            )
+
+    sizing = CalibrationSizing(mount=_AngularMount, settings=lambda: alternate)
+    sizing.start(
+        angular_only=True, cameras=[CameraGeometry("left", 1000, 800, 1.0)], distance_m=None
+    )
+    assert sizing.policy is not None
+    assert sizing.policy.target_fraction == 0.4
+
+    seen: dict[str, Any] = {}
+
+    def recorder(sources: dict[str, Any], **kwargs: Any) -> dict[str, Any]:  # noqa: ANN401
+        seen.update(kwargs)
+        return {key: SimpleNamespace(frame=None) for key in sources}
+
+    monkeypatch.setattr(mount_align_capture, "acquire_verified_frames", recorder)
+    request = mount_align_capture.CaptureRequest(
+        mode="star",
+        label="nudge_before",
+        after_monotonic=None,
+        verify_stability=True,
+        timeout_s=5.0,
+        required_tracking=TrackingMode.OFF,
+        movement_context=None,
+        left_state=None,
+        right_state=None,
+    )
+    no_wait: Any = None
+    mount_align_capture.capture_blocking(
+        request,
+        tracking_failure=lambda _required, _mode: None,
+        get_left_frame=lambda: None,
+        get_right_frame=lambda: None,
+        wait_for_left_frame=no_wait,
+        wait_for_right_frame=no_wait,
+        settings=alternate,
+        clock=FakeClock(start=100.0),
+    )
+    assert seen["stability_sample_interval_s"] == 0.37
+    assert seen["stability_sample_count"] == 5

@@ -45,6 +45,7 @@ from astrotool_core.acquisition import (
     FreshFrameSource,
     StableFrameWaiter,
 )
+from astrotool_core.config.mount_alignment_settings import DEFAULT_CALIBRATION_TARGET_FRACTION
 from astrotool_core.mount.axis_calibration import CalibrationMatrix
 from astrotool_core.mount.operating_mode import OperatingMode
 from astrotool_core.mount.port import MountPort
@@ -87,7 +88,7 @@ from collimation_tool.application.recenter_policy import (
 #: cap (~60" at 8x) applies. OnStepAdapter's 10 degree maximum is far above either bound (a
 #: refusal beyond it would be reported, not hidden).
 _STEP_TRACKER_RADIUS_FRACTION = 0.35
-_STEP_FRAME_FRACTION = 0.25
+_STEP_FRAME_FRACTION = DEFAULT_CALIBRATION_TARGET_FRACTION  # #55 D08: the one owner (S6.9)
 
 #: S6.7: every reacquisition measurement after a move uses a guide frame whose exposure started
 #: after the move ended plus the policy's settle (`fresh_frame_after_motion`, the rule's one

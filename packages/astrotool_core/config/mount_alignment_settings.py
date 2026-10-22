@@ -51,7 +51,8 @@ REMOVED_KEYS: tuple[str, ...] = (
 
 #: Issue #46: calibration moves are sized to ~25% of the frame (not a fixed
 #: move), capped and never below a minimum -- see astrotool_core.mount.movement_sizing.
-_DEFAULT_CALIBRATION_TARGET_FRACTION = 0.25
+#: S6.9 (#55 D08): the ONE owner -- `SizingPolicy.target_fraction` defaults to it.
+DEFAULT_CALIBRATION_TARGET_FRACTION = 0.25
 #: The unit of an angular calibration's equivalent durations, and the seed of its first move:
 #: the controller's centering rate as a multiple of sidereal (`equivalent_duration`). ONLY a
 #: seed -- the measured displacement is authoritative.
@@ -148,10 +149,10 @@ _DEFAULT_MAX_NUDGE_ARCSEC = 2165.904
 #: tuning against a live "Run Calibration" attempt before being trusted,
 #: same as every other real-hardware-facing constant in this module.
 _DEFAULT_STABILITY_TOLERANCE_PX = 3.0
-#: Matches `acquisition.motion_aware_acquisition.acquire_verified_frame`'s
-#: own kwarg default -- no evidence yet to diverge from it.
-_DEFAULT_STABILITY_SAMPLE_COUNT = 3
-_DEFAULT_STABILITY_SAMPLE_INTERVAL_S = 0.2
+#: S6.9 (#55 D07): the ONE owner of the stability-window defaults --
+#: `acquisition.motion_aware_acquisition.acquire_verified_frame(s)` default to them.
+DEFAULT_STABILITY_SAMPLE_COUNT = 3
+DEFAULT_STABILITY_SAMPLE_INTERVAL_S = 0.2
 #: Issue #30 open question #4 ("max allowed wait for stability, bounded,
 #: cancellable"). Large enough to cover frame_settle_ms (1s default) plus
 #: several stability-window retries at typical short exposures; small
@@ -221,15 +222,15 @@ class MountAlignmentSettings:
     frame_settle_ms: int = _DEFAULT_FRAME_SETTLE_MS
     max_nudge_arcsec: float = _DEFAULT_MAX_NUDGE_ARCSEC
     stability_tolerance_px: float = _DEFAULT_STABILITY_TOLERANCE_PX
-    stability_sample_count: int = _DEFAULT_STABILITY_SAMPLE_COUNT
-    stability_sample_interval_s: float = _DEFAULT_STABILITY_SAMPLE_INTERVAL_S
+    stability_sample_count: int = DEFAULT_STABILITY_SAMPLE_COUNT
+    stability_sample_interval_s: float = DEFAULT_STABILITY_SAMPLE_INTERVAL_S
     stability_timeout_s: float = _DEFAULT_STABILITY_TIMEOUT_S
     screen_move_small_fraction: float = _DEFAULT_SCREEN_MOVE_SMALL_FRACTION
     screen_move_medium_fraction: float = _DEFAULT_SCREEN_MOVE_MEDIUM_FRACTION
     screen_move_large_fraction: float = _DEFAULT_SCREEN_MOVE_LARGE_FRACTION
     #: Issue #46: adaptive calibration move sizing (only active when camera
     #: optics are known; otherwise the fixed fallback size applies).
-    calibration_target_fraction: float = _DEFAULT_CALIBRATION_TARGET_FRACTION
+    calibration_target_fraction: float = DEFAULT_CALIBRATION_TARGET_FRACTION
     calibration_center_rate_x: float = _DEFAULT_CALIBRATION_CENTER_RATE_X
     guide_rate_seed_x: float = _DEFAULT_GUIDE_RATE_SEED_X
     max_calibration_pulse_ms: int = _DEFAULT_MAX_CALIBRATION_PULSE_MS

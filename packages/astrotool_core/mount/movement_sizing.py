@@ -24,6 +24,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 
+from astrotool_core.config.mount_alignment_settings import DEFAULT_CALIBRATION_TARGET_FRACTION
+
 #: Sidereal rate, arcsec per second.
 SIDEREAL_ARCSEC_PER_S = 15.041
 
@@ -78,7 +80,8 @@ class SizingPolicy:
     #: the assumed guide rate for guide pulses) -- a SEED only, the measured displacement is
     #: authoritative. S6.8d: required (the OnStep slew-rate preset fallback is gone).
     center_rate_x: float
-    target_fraction: float = 0.25
+    #: S6.9 (#55 D08): owned by `config.mount_alignment_settings` (no second literal here).
+    target_fraction: float = DEFAULT_CALIBRATION_TARGET_FRACTION
     band_low: float = 0.20
     band_high: float = 0.30
     #: A camera must see at least this fraction of its frame to be measurable.

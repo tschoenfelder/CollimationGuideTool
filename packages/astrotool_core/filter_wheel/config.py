@@ -36,6 +36,7 @@ from typing import Any
 
 from astrotool_core.config import paths
 from astrotool_core.config.device_defaults import EFW_DEVICE_NAME
+from astrotool_core.optics.train import MAIN_TRAIN, train_key
 
 #: Compatibility aliases of `astrotool_core.config.paths`' real locations (kept for
 #: compatibility); the loaders below resolve the owner at call time.
@@ -59,7 +60,7 @@ _FILTER_NAME_ABBREVIATIONS: dict[str, str] = {
 #: carries an explicit INDI `device` name -- owned by
 #: `astrotool_core.config.device_defaults` (#47 correction history there).
 _BUILT_IN_DEVICE_NAME = EFW_DEVICE_NAME
-_BUILT_IN_ACTIVE_TRAIN = "main"
+_BUILT_IN_ACTIVE_TRAIN = train_key(MAIN_TRAIN)  # "main" (#55 D05: one owner)
 #: This rig's physical wheel (user-confirmed 2026-09-25): L, R, G, B, SII, Ha, OIII, empty.
 _BUILT_IN_FILTER_NAMES: dict[int, str] = {
     1: "L", 2: "R", 3: "G", 4: "B", 5: "S", 6: "H", 7: "O", 8: "NONE",
