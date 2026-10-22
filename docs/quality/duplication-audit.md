@@ -502,7 +502,7 @@ Commits are the fix commits, from the tracker done log and the proof manifests.
 | D02 | resolved | `config/device_defaults.py` (`INDI_HOST`, `INDI_PORT`); config-source contract | `37db9f0` |
 | D03 | resolved | `config/paths.py`; config-source contract | `37db9f0` |
 | D04 | resolved | `config/camera_settings.py` (`DEFAULT_TARGET_TEMPERATURE_C`); test doubles migrated; cooling scan in the contract | `5f38a4c`, `1a89844` |
-| D05 | resolved for the names and the matching rule | `astrotool_core/optics/train.py` (`MAIN_TRAIN`, `GUIDE_TRAIN`, `train_key`). Not a full `TrainId` enum: the config-role keys `"main"`/`"guide"` (camera settings, pixel scale) and the `"left"`/`"right"` panel keys are still plain strings. Not scanned (the words are too common) | S6.9 `45012da` |
+| D05 | resolved for the names and the matching rule | `astrotool_core/optics/train.py` (`MAIN_TRAIN`, `GUIDE_TRAIN`, `train_key`). Not a full `TrainId` enum: the config-role keys `"main"`/`"guide"` (camera settings, pixel scale) and the `"left"`/`"right"` panel keys are still plain strings. Display-label copies of "Main"/"Guide" remain (not migrated): `mount_align_messages.py:86`, `focuser_panel.py:143`, `main_window.py:282/289/314`; `optics/smarttscope_config.py:97` compares case-sensitively (`== "main"`) instead of using `train_key`. Not scanned (the words are too common) | S6.9 `45012da` |
 | D06 | resolved | `collimation_tool/domain/target_mode.py` (`TERRESTRIAL_SEED_DISTANCE_M`, `ARTIFICIAL_STAR_SEED_DISTANCE_M`, `sizing_seed_distance_m`); numeric scan in the contract + injected-value test | S6.9 `45012da` (artificial-star identity part: M05, `1a89844`) |
 | D07 | resolved | `config/mount_alignment_settings.py` (`DEFAULT_STABILITY_SAMPLE_COUNT`, `DEFAULT_STABILITY_SAMPLE_INTERVAL_S`); the acquisition functions default to them; numeric scan + default-reach test | S6.9 `45012da` |
 | D08 | resolved | `config/mount_alignment_settings.py` (`DEFAULT_CALIBRATION_TARGET_FRACTION`); `SizingPolicy` and `star_acquisition._STEP_FRAME_FRACTION` (a third copy the new scan found) read it; numeric scan + default-reach test | S6.9 `45012da` |
@@ -513,7 +513,7 @@ Commits are the fix commits, from the tracker done log and the proof manifests.
 | T05 | resolved (LIVE latent fixed) | `acquisition/fresh_frame_after_motion.py` | `9fc3fa2` |
 | T06 | resolved (deleted with the timed path) | — | `3f708fc`…`e2ee56c` |
 | C01 | resolved | one capability table in `camera/touptek_adapter.py` | `5f38a4c` |
-| C02 | resolved | `MountCapabilities` (`mount/port.py`); `hasattr` probes gone | `5f38a4c`, `1a89844` |
+| C02 | **partially resolved** | `MountCapabilities` (`mount/port.py`) replaced the Mount Align/runner/recenter "angular" probes and the duck-typed `min_angular_arcsec`. Still probing: `mount_park_panel.py:110` `hasattr(mount, "confirm_home")`, `:205` `long_running_actions`, `:254` `home_confirmed`; `focuser_panel.py:575` `hasattr(self._focuser, "blockers")`; `mount_motion.py:118` `getattr(mount, "abort")`. The audit's `MountParkCapabilities` does not exist | `5f38a4c`, `1a89844` |
 | K01 | resolved (LIVE fixed) | `session/device_connection.py` (`DeviceConnectionService`); Mount Align's copy removed later | `80220a6`, `1a89844` |
 | K02 | resolved | one OnStep error set (`astrotool_core/onstep`) | `80220a6`, `b22b871` |
 | K03 | resolved | `DeviceConnectionService` | `80220a6` |
@@ -534,8 +534,8 @@ Commits are the fix commits, from the tracker done log and the proof manifests.
 | P03 | **open, dormant** | GuideTool pulse guiding still relies on `MountPort.pulse_axis`; no mount is wired into GuideTool (movement-paths.md R10) | — |
 | P04 | resolved (deleted, config-migration warning) | — | `3f708fc`…`e2ee56c` |
 
-All 9 live contradictions are fixed. Open: T02, T04 (low, no contradiction today) and P03
-(dormant until a mount is wired into GuideTool).
+All 9 live contradictions are fixed. Open: T02, T04 and the remaining C02 probes (low, no
+contradiction today), and P03 (dormant until a mount is wired into GuideTool).
 
 **Guard.** `tests/contracts/test_config_source_contract.py` fails on a re-stated D01–D04, D06,
 D07 or D08 value (a second literal), and on a contradictory D06/D07/D08 value at a default
@@ -547,7 +547,7 @@ consumer (the injected-value and default-reach tests). Mutation evidence is in
 Git blob bytes (LF). "Before S6.6a" is the peak just before the Mount Align extraction.
 "Now" is the S6.9 branch.
 
-| | `615f44f` | before S6.6a | `6642a04` | now (S6.9) |
+| | `615f44f` | before S6.6a (`1534d6d`) | `6642a04` | now (S6.9) |
 |---|---:|---:|---:|---:|
 | `ui/mount_test_move_panel.py` | 171,391 | 189,898 | 125,605 | 125,758 |
 | `ui/main_window.py` | 55,451 | — | 67,411 | 67,642 |
