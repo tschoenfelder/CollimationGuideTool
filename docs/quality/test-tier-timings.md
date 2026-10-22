@@ -53,6 +53,33 @@ excluded.
 The domain run touches no UI or guide suite. The adapter run needs no Pi,
 indiserver or device (fakes only).
 
+## After (2026-10-22)
+
+Re-measured after the fake-time (#53), simulator (#51) and Mount Align extraction (#52) work,
+on the same machine (Python 3.13.13, the repo's `.venv`), one run each, other work idle,
+on the S6.9 branch (main `805d567` plus S6.9). The run was in a git worktree without
+`local_test_data/`, as on CI, so the dataset regressions that need it skip.
+
+| Tier / command | Tests | Wall-clock | 2026-09-30/10-01 |
+|----------------|-------|-----------:|-----------------:|
+| `pytest -m unit` | 1021 passed, 2 skipped | 53 s | 33 s (603 tests) |
+| `pytest -m component` | 1830 passed, 1 skipped | 174 s (2.9 min) | 801 s (971 tests) |
+| `pytest -m contract` | 585 passed, 1 skipped | 16 s | 3 s (83 tests) |
+| `pytest -m "integration or acceptance"` | 66 passed, 139 skipped (`local_test_data/` absent) | 7 s | 119 s (190 passed) |
+
+The component tier has almost twice as many tests and runs 4.6× faster: the 15 slow Mount
+Align panel tests that took 459 s of real settle/wait time now run on a fake clock
+(`TestMountTestMovePanel` 517 s → 17 s, S6.7). Unit and contract grew with the suite (the
+contract tier now holds the config-source, boundary and proof-manifest scans).
+
+CI job times (wall clock, including install and lint), from the #50 evidence:
+
+| CI job | S1 `54db82c` (1,715 tests) | `6642a04` (3,495 tests) |
+|---|---|---|
+| fast tier | 15 min 14 s | 5 min 06 s |
+| slow tier | 1 min 08 s | 1 min 09 s |
+| release gate + coverage | 15 min 11 s | 5 min 04 s |
+
 ## What the numbers say
 
 - **Coverage costs almost nothing here.** The default gate with coverage

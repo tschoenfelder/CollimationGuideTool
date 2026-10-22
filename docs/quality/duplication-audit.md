@@ -489,6 +489,90 @@ construction/lifecycle).
 
 ---
 
+## 6. After (2026-10-22, S6.9)
+
+### 6.1 Status per "must centralize" item
+
+"Resolved" means one owner in the code today. Where a test enforces it, the test is named.
+Commits are the fix commits, from the tracker done log and the proof manifests.
+
+| ID | Status | Owner today | Commit(s) |
+|----|--------|-------------|-----------|
+| D01 | resolved (LIVE contradiction fixed) | `astrotool_core/config/device_defaults.py` (`EFW_DEVICE_NAME`); config-source contract | `37db9f0`, `61d1e27` |
+| D02 | resolved | `config/device_defaults.py` (`INDI_HOST`, `INDI_PORT`); config-source contract | `37db9f0` |
+| D03 | resolved | `config/paths.py`; config-source contract | `37db9f0` |
+| D04 | resolved | `config/camera_settings.py` (`DEFAULT_TARGET_TEMPERATURE_C`); test doubles migrated; cooling scan in the contract | `5f38a4c`, `1a89844` |
+| D05 | resolved for the names and the matching rule | `astrotool_core/optics/train.py` (`MAIN_TRAIN`, `GUIDE_TRAIN`, `train_key`). Not a full `TrainId` enum: the config-role keys `"main"`/`"guide"` (camera settings, pixel scale) and the `"left"`/`"right"` panel keys are still plain strings. Not scanned (the words are too common) | S6.9 `45012da` |
+| D06 | resolved | `collimation_tool/domain/target_mode.py` (`TERRESTRIAL_SEED_DISTANCE_M`, `ARTIFICIAL_STAR_SEED_DISTANCE_M`, `sizing_seed_distance_m`); numeric scan in the contract + injected-value test | S6.9 `45012da` (artificial-star identity part: M05, `1a89844`) |
+| D07 | resolved | `config/mount_alignment_settings.py` (`DEFAULT_STABILITY_SAMPLE_COUNT`, `DEFAULT_STABILITY_SAMPLE_INTERVAL_S`); the acquisition functions default to them; numeric scan + default-reach test | S6.9 `45012da` |
+| D08 | resolved | `config/mount_alignment_settings.py` (`DEFAULT_CALIBRATION_TARGET_FRACTION`); `SizingPolicy` and `star_acquisition._STEP_FRAME_FRACTION` (a third copy the new scan found) read it; numeric scan + default-reach test | S6.9 `45012da` |
+| T01 | resolved (LIVE fixed) | `application/operation_lifecycle.py` (bounded completion per device) | `b22b871` |
+| T02 | **open (low)** | The runner still re-confirms unpark itself (`_UNPARK_TIMEOUT_S = 5.0`, `mount_test_move_runner.py`) after the adapter confirmed it; the park panel uses its own 30 s | — |
+| T03 | resolved | `TrackingEnforcer` (`mount/operating_mode.py`); `apps/` no longer calls `ensure_tracking_mode` | `be7353e` |
+| T04 | **open (low)** | Mount Align `settle_ms` 1000 / `frame_settle_ms` 500 (`MountAlignmentSettings`) vs reacquisition `RecenterConfig.settle_ms = 750`; both now feed the one fresh-frame rule, but the settle values are still separate | — |
+| T05 | resolved (LIVE latent fixed) | `acquisition/fresh_frame_after_motion.py` | `9fc3fa2` |
+| T06 | resolved (deleted with the timed path) | — | `3f708fc`…`e2ee56c` |
+| C01 | resolved | one capability table in `camera/touptek_adapter.py` | `5f38a4c` |
+| C02 | resolved | `MountCapabilities` (`mount/port.py`); `hasattr` probes gone | `5f38a4c`, `1a89844` |
+| K01 | resolved (LIVE fixed) | `session/device_connection.py` (`DeviceConnectionService`); Mount Align's copy removed later | `80220a6`, `1a89844` |
+| K02 | resolved | one OnStep error set (`astrotool_core/onstep`) | `80220a6`, `b22b871` |
+| K03 | resolved | `DeviceConnectionService` | `80220a6` |
+| K04 | resolved | `astrotool_core/diagnostics/excepthook.py` (`install_excepthook(diagnostics, active_window=...)`, toolkit-free); both `main.py` call it | S6.9 `45012da` |
+| M01 | resolved | `OperatingMode`/`TrackingEnforcer` | `be7353e` |
+| M02 | resolved | `TrackingEnforcer` only | `be7353e`, `1a89844` |
+| M03 | resolved (LIVE fixed) | the mount-motion executor asks the enforcer; no move stops tracking on its own | `85f6bca` |
+| M04 | decided and resolved (user decision: metric follows the global mode) | `OperatingMode` | `be7353e` |
+| M05 | resolved (LIVE fixed) | `CollimationTargetMode` | `1a89844` |
+| L01 | resolved (LIVE fixed) | `OperationLifecycle` | `b22b871` |
+| L02 | resolved (LIVE fixed) | `OperationLifecycle` | `b22b871` |
+| L04 | resolved | `OperationLifecycle` (guarded polls) | `b22b871` |
+| L05 | resolved | the fresh-frame service owns the measurement window | `9fc3fa2` |
+| G01 | resolved (moved out of the panel) | ms↔arcsec in `application/equivalent_duration.py` / `mount/movement_sizing.py` | `f24a523`, `6b6d899` |
+| G02 | resolved (moved out of the panel) | `mount/axis_calibration.py` + `application/mount_align_*` | `6b6d899` |
+| P01 | resolved (LIVE fixed) | `application/mount_motion.py` (one executor) | `85f6bca` |
+| P02 | resolved (deleted) | — | `85f6bca`, `3f708fc`…`e2ee56c` |
+| P03 | **open, dormant** | GuideTool pulse guiding still relies on `MountPort.pulse_axis`; no mount is wired into GuideTool (movement-paths.md R10) | — |
+| P04 | resolved (deleted, config-migration warning) | — | `3f708fc`…`e2ee56c` |
+
+All 9 live contradictions are fixed. Open: T02, T04 (low, no contradiction today) and P03
+(dormant until a mount is wired into GuideTool).
+
+**Guard.** `tests/contracts/test_config_source_contract.py` fails on a re-stated D01–D04, D06,
+D07 or D08 value (a second literal), and on a contradictory D06/D07/D08 value at a default
+consumer (the injected-value and default-reach tests). Mutation evidence is in
+`proofs/55-last-single-owner-defaults.toml`.
+
+### 6.2 Sizes and function lengths, before → now
+
+Git blob bytes (LF). "Before S6.6a" is the peak just before the Mount Align extraction.
+"Now" is the S6.9 branch.
+
+| | `615f44f` | before S6.6a | `6642a04` | now (S6.9) |
+|---|---:|---:|---:|---:|
+| `ui/mount_test_move_panel.py` | 171,391 | 189,898 | 125,605 | 125,758 |
+| `ui/main_window.py` | 55,451 | — | 67,411 | 67,642 |
+| `ui/focuser_panel.py` | 25,377 | — | 31,192 | 31,192 |
+| `ui/mount_park_panel.py` | 12,471 | — | 17,665 | 17,665 |
+| all `apps/*/ui` | 424,056 | 470,730 | 420,398 | 420,782 |
+| all `apps/*/application` | 93,340 | 164,672 | 298,526 | 298,685 |
+
+Function lengths in lines (AST `end_lineno − lineno + 1`):
+
+| Function | `615f44f` | now |
+|---|---:|---:|
+| `MountTestMovePanel.__init__` | 345 | 318 |
+| `MountTestMovePanel._begin_nudge` | 122 | 79 |
+| `MountTestMovePanel._finish_calibration` | 81 | 16 |
+| `MainWindow.__init__` | 397 | 456 |
+
+**Honest note: `main_window.py` grew** (55 → 68 kB; `MainWindow.__init__` 397 → 456 lines),
+mainly from the mount-motion executor and the global-Stop wiring. `focuser_panel.py` and
+`mount_park_panel.py` grew with new features too. The panel's policy moved out
+(`apps/*/application` tripled), but MainWindow is still the place where everything is wired.
+`camera_panel.py` and `main_window.py` still build `TouptekCameraAdapter`/`AstapCliSolver` as
+defaults. Possible follow-up: slim `MainWindow.__init__` and move default adapter construction
+into `main.py`.
+
 ## Discovered dependencies (for the tracker)
 
 - **P01/P02** (Mount Align and #39 reacquisition cannot move the real mount on 0.4.x) is
