@@ -16,8 +16,11 @@ astrotool_core.indi.client to the filter wheel + testing. Deletion proven neutra
 characterization (production adapters over the fake OnStep INDI client / #51 simulator; Terrestrial \
 angular + Astronomical guide-pulse calibration, nudges, screen moves, 0.4.1 refusals, angular and \
 guide-pulse reacquisition): byte-identical labels, diagnostics and mount commands after the deletion \
-commit; afterwards only the intended texts differ, plus the uncalibrated nudge's diagnostics movement \
-context no longer carries rate_preset "7" (a preset that never moved the mount)."""
+commit; afterwards only the intended texts differ, plus the uncalibrated nudge's diagnostics no longer \
+carry rate_preset "7" (a preset that never moved the mount) -- the key leaves the movement context and \
+with it stability.<cam> and timeline[].cameras.<cam> (CommandedMovementContext.as_dict drops None). \
+Review fixes: astrotool_core.indi no longer re-exports the client (the contract forbids the whole \
+package), AngularMotionPort lost install_rate/installed_rate, and a panel test pins calibration=True."""
 modules = [
     "apps/collimation_tool/ui/mount_test_move_runner.py",
     "apps/collimation_tool/ui/mount_test_move_panel.py",
@@ -32,8 +35,10 @@ modules = [
     "packages/astrotool_core/mount/movement_sizing.py",
     "packages/astrotool_core/mount/operating_mode.py",
     "packages/astrotool_core/testing/fake_mount.py",
+    "packages/astrotool_core/mount/port.py",
+    "packages/astrotool_core/indi/__init__.py",
 ]
-fix_commits = ["3f708fc", "f572b0c", "1ac3f53", "a8848eb"]
+fix_commits = ["3f708fc", "f572b0c", "1ac3f53", "a8848eb", "e2ee56c"]
 dataset_uuids = []
 focused_command = """pytest -q \
 tests/core/config/test_mount_alignment_settings.py::TestRemovedTimedSettings \
@@ -43,16 +48,17 @@ tests/collimation/ui/test_mount_test_move_runner.py::TestAxisStepsAreAngularOnly
 tests/collimation/application/test_mount_align_sizing.py::test_timed_pulses_never_make_mount_align_leave_the_angular_path \
 tests/collimation/application/test_recenter_policy.py \
 tests/collimation/ui/test_calibration_angular.py \
-tests/collimation/test_onstep_boundary.py"""
+tests/collimation/test_onstep_boundary.py \
+tests/contracts/test_mount_contract.py::test_the_production_adapter_and_its_fake_conform_to_the_motion_ports"""
 broader_tier = "component"
 field_only_assumptions = [
     "The Pi's real ~/.CollimationGuideTool/config.toml loads with the removed keys (tested with a synthetic old config, not the Pi's file).",
 ]
 gaps = [
     "The differential characterization harness ran outside the repo (scratchpad charac.py + compare.py, run against the base worktree at 90ce80d and this branch); it is evidence of neutrality, not a kept test.",
-    "No panel-level test pins that Mount Align's calibration steps pass calibration=True (the runner-level test does); a panel that dropped it would show the 'retry' text instead of 'Run Calibration again' mid-calibration.",
-    "The import-linter contract is not a pytest node: mutation evidence -- a planted 'from astrotool_core.indi.client import IndiClient' in collimation_tool.ui.mount_park_panel -> lint-imports: 'the generic INDI client serves only the filter wheel ... BROKEN', 'collimation_tool.ui.mount_park_panel -> astrotool_core.indi.client'.",
-    "MountPort.pulse_axis, its rate_preset keyword, AngularMotionPort.install_rate/installed_rate and the MountCapabilities.supports_pulse_guiding docstring (packages/astrotool_core/mount/port.py) are outside the S6.8d contract's allowed files and still describe the timed bootstrap; the OnStep adapter no longer implements install_rate (only cast() uses AngularMotionPort).",
+    "The import-linter contract is not a pytest node: mutation evidence (review fix e2ee56c) -- four plants, each BROKEN: 'from astrotool_core.indi.client import IndiClient' and 'from astrotool_core.indi import IndiClient' in collimation_tool.ui.mount_park_panel ('collimation_tool.ui.mount_park_panel -> astrotool_core.indi.client' / '-> astrotool_core.indi') and in astrotool_core.onstep.mount_pulse_adapter (chain via 'collimation_tool.main -> astrotool_core.onstep'). Before the fix the package re-export let the second form through (KEPT).",
+    "MountPort.pulse_axis keeps its rate_preset keyword: the dormant GuideTool's port, not changed by S6.8d.",
+    "The abort-return submit (calibration=True) is not separately mutation-proven; the calibration-step submit is.",
 ]
 
 [[regression_tests]]
@@ -79,6 +85,16 @@ evidence = "Same pre-change run: tests/collimation/ui/test_mount_align_real_onst
 node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestAstronomicalAxisMoveRefusalsSayWhy::test_tracking_switched_on_mid_axis_calibration_says_run_it_again"
 failed_before_fix = true
 evidence = "Pre-change run: TypeError (submit_sequence had no calibration keyword). Mutation (runner passes calibration=False): tests/collimation/ui/test_mount_align_real_onstep_adapter.py:1533: AssertionError: 'during this axis-move calibration' not in '... started tracking after this move was planned as an axis move ... retry the move'"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_mount_align_real_onstep_adapter.py::TestAstronomicalAxisMoveRefusalsSayWhy::test_the_panel_marks_its_calibration_steps"
+failed_before_fix = true
+evidence = "Review fix e2ee56c, mutation (calibration=True removed from _submit_calibration_step): tests/collimation/ui/test_mount_align_real_onstep_adapter.py:1549: AssertionError: 'during this axis-move calibration' not in 'Calibration failed: astronomical mode: the mount started tracking after this move was planned as an axis move ... retry the move'"
+
+[[regression_tests]]
+node = "tests/contracts/test_mount_contract.py::test_the_production_adapter_and_its_fake_conform_to_the_motion_ports"
+failed_before_fix = false
+reason_no_prefix_repro = "A mypy-checked conformance assignment (the proof is mypy, not the runtime assert): before e2ee56c AngularMotionPort still declared install_rate/installed_rate, which the S6.8d adapter no longer has, so mypy would have rejected the assignment; written with the fix."
 
 [[regression_tests]]
 node = "tests/collimation/ui/test_mount_test_move_runner.py::TestAxisStepsAreAngularOnly"
