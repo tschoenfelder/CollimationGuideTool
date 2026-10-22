@@ -89,7 +89,8 @@ Why the INDI CONNECTION timed out (diag-11e564ad); why the EFW stayed Busy (diag
 `move_rejected` is gone with the OnStep serialization (diag-7b21bdf1); why fe91004f saw no image motion (43);
 the GPCMOS02000KPA "camera busy" calibration timeout from 2026-09-24 (51-touptek-noframe-timeout).
 
-## Pending external requests (OnStepAdapter; not filed — ask the user)
+## External requests (OnStepAdapter)
 
-- A bare tracking-off (`TRACK_OFF` without `ABORT`), so turning tracking off is not an emergency stop (S6.8 R2).
-- A cancellable `park()`; today an ABORT stops the slew but the call waits out its 120 s status loop (S6.8c-R5).
+- A cancellable `park()`; today an ABORT stops the slew but the call waits out its 120 s status loop —
+  filed as [OnStepAdapter#26](https://github.com/tschoenfelder/OnStepAdapter/issues/26) (2026-10-23).
+- A bare tracking-off (`TRACK_OFF` without `ABORT`) — not filed (user decision 2026-10-23); recorded in the tracker.
