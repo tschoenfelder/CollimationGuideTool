@@ -42,6 +42,8 @@ where = ["packages", "apps"]
 include = ["astrotool_core*", "collimation_tool*", "guide_tool*"]
 
 [tool.pytest.ini_options]
+# A hanging test dumps every thread's stack after 10 min (a full run once hung for 9 h).
+faulthandler_timeout = 600
 testpaths = ["tests"]
 # No global coverage (issue #50): a targeted run must not measure the whole
 # repository. Coverage runs in the release gate (`scripts/check.ps1 -Release`
@@ -154,11 +156,12 @@ forbidden_modules = ["astrotool_core.mount"]
 name = "the generic INDI client serves only the filter wheel (S6.8d, R11; never the OnStep device)"
 type = "forbidden"
 source_modules = ["astrotool_core", "collimation_tool", "guide_tool"]
-forbidden_modules = ["astrotool_core.indi.client"]
+forbidden_modules = ["astrotool_core.indi"]
 ignore_imports = [
-  "astrotool_core.indi -> astrotool_core.indi.client",
   "astrotool_core.filter_wheel.* -> astrotool_core.indi.client",
+  "astrotool_core.indi.client -> astrotool_core.indi._protocol",
   "astrotool_core.testing.* -> astrotool_core.indi.client",
+  "astrotool_core.testing.* -> astrotool_core.indi._protocol",
 ]
 
 [[tool.importlinter.contracts]]

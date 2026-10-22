@@ -422,7 +422,10 @@ An existing `config.toml` that still contains them keeps loading: each
 removed key is ignored with one warning in the log naming it
 (`[mount_alignment] <key> is no longer used ... -- ignored`). Delete the
 lines to silence the warning. Only if you had changed `max_nudge_pulse_ms`
-from its default: set `max_nudge_arcsec` instead (old ms × 48 × 15.041 / 1000).
+from its default: set `max_nudge_arcsec` instead -- old ms × (your old `rate_preset`'s
+multiple of sidereal) × 15.041 / 1000, i.e. old ms × 48 × 15.041 / 1000 for the default
+preset `"7"`. A changed `pulse_ms` or `rate_preset` has no replacement: the fixed sizes above
+apply.
 
 Before pushing a release from a dev machine, run the full release gate
 (`scripts/check.sh --release` — see `CONTRIBUTING.md`) so the version

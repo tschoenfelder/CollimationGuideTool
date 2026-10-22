@@ -1,10 +1,8 @@
-"""A small, generic INDI protocol client — see `client.py`'s docstring.
+"""A small, generic INDI protocol client -- see `client.py`'s docstring.
 
-Kept separate from `focus/` (rather than folded into a focuser-specific
-module) since the wire protocol itself has nothing to do with focusers —
-an INDI-based mount adapter, if ever wanted, would reuse this unchanged.
+Its only production user is the filter wheel (`astrotool_core.filter_wheel`). It must never
+reach the OnStep device: mount and focuser go through OnStepAdapter only (AGENTS.md), enforced
+by an import-linter contract (only `filter_wheel` and `testing` may import
+`astrotool_core.indi.client`). S6.8d review: nothing is re-exported here, so the contract
+cannot be bypassed through the package.
 """
-
-from astrotool_core.indi.client import IndiClient, VectorState
-
-__all__ = ["IndiClient", "VectorState"]

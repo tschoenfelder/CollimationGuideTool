@@ -14,10 +14,9 @@ pass/fail feedback:
 
 - **Mount Park**: Park/Unpark/Stop Tracking with the live `parked`/`tracking`
   status.
-- **Mount Pulse**: one `pulse_axis()` per click with the exact axis,
-  direction, duration and rate preset sent, and OnStepAdapter's verdict
-  (a parked mount, tracking-mode mismatch or out-of-range duration is
-  reported as rejected with the adapter's reason).
+- **Mount Pulse**: one `pulse_axis()` per click. NOT SUPPORTED on OnStep over INDI: the
+  adapter has no timed primitive, so every click is refused (S6.8d) -- kept only to show
+  that refusal; Mount Align moves by angle / guide pulse instead.
 - **Focuser**: Move In/Out (relative), Move Absolute (accepted/rejected
   shown), Stop, live position/moving status.
 

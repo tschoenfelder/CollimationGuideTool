@@ -13,7 +13,14 @@ import os
 from collections.abc import Callable
 
 import pytest
-from astrotool_core.mount import AxisDirection, MountAxis, MountPort, NoMountAdapter
+from astrotool_core.mount import (
+    AngularMotionPort,
+    AxisDirection,
+    GuidePulsePort,
+    MountAxis,
+    MountPort,
+    NoMountAdapter,
+)
 from astrotool_core.onstep import OnStepConnection, OnStepMountPulseAdapter, load_onstep_indi_config
 from astrotool_core.testing.fake_mount import FakeAngularMountAdapter, FakeMountAdapter
 from astrotool_core.testing.fake_onstep_indi_client import make_fake_onstep_indi_connection
@@ -155,3 +162,16 @@ def test_declared_angular_capability_matches_the_mount(mount_factory: MountFacto
         assert isinstance(mount.status().fresh, bool)
     finally:
         mount.disconnect()
+
+
+def test_the_production_adapter_and_its_fake_conform_to_the_motion_ports() -> None:
+    """S6.8d review: mypy checks these assignments structurally -- `AngularMotionPort` and
+    `GuidePulsePort` describe exactly what the production adapter (and the production-shaped
+    fake) implement; before, `AngularMotionPort` still declared the deleted `install_rate`."""
+    connection, _made = make_fake_onstep_indi_connection()
+    angular: AngularMotionPort = OnStepMountPulseAdapter(connection)
+    guide: GuidePulsePort = OnStepMountPulseAdapter(connection)
+    fake_angular: AngularMotionPort = FakeAngularMountAdapter()
+    fake_guide: GuidePulsePort = FakeAngularMountAdapter()
+    for port in (angular, guide, fake_angular, fake_guide):
+        assert port is not None

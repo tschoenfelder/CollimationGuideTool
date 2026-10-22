@@ -96,8 +96,7 @@ def ensure_tracking_mode(
     persists) reports `REPAIR_FAILED` rather than looping indefinitely;
     the caller decides whether/how to bound further attempts, matching
     this project's existing pattern of bounded, explicit failure over a
-    silent or unbounded wait (see `MountTestMoveRunner`'s own pulse-
-    rejection retries for the analogous existing convention).
+    silent or unbounded wait.
 
     The optional settle poll reads time and waits through `clock` (issue
     #53; default: the real clock), so tests drive it with a `FakeClock`.

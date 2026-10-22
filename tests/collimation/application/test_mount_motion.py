@@ -91,12 +91,6 @@ class _AngularMount:
     def pulse_axis(self, *_args: object, **_kwargs: object) -> CommandResult:
         raise AssertionError("no timed pulses on this mount")
 
-    def installed_rate(self, _axis: MountAxis, _direction: AxisDirection) -> float | None:
-        return None
-
-    def install_rate(self, *_args: object) -> None:
-        pass
-
     def move_angular(
         self, axis: MountAxis, direction: AxisDirection, arcsec: float
     ) -> CommandResult:

@@ -32,8 +32,8 @@ class AxisDirection(Enum):
 
 @dataclass(frozen=True)
 class MountCapabilities:
-    """`supports_pulse_guiding`: `pulse_axis` performs timed moves at an installed rate (Mount
-    Align chooses timed vs angular moves by it).
+    """`supports_pulse_guiding`: `pulse_axis` performs timed moves (only the dormant GuideTool
+    uses it; S6.8d: Mount Align never reads it -- its axis moves are angular).
 
     `supports_guide_pulses_while_tracking` (S6.0d, #39): a SEPARATE capability -- the mount
     implements `GuidePulsePort`: bounded astronomical guide pulses that leave tracking ON
@@ -155,26 +155,18 @@ class GuidePulsePort(Protocol):
 
 
 class AngularMotionPort(Protocol):
-    """Optional capability of a `MountPort`: angular moves with runtime-installed rates.
+    """Optional capability of a `MountPort` (`capabilities().supports_angular_moves`): a
+    bounded angular move of one axis.
 
-    `OnStepMountPulseAdapter` provides it over OnStepAdapter's `move_ra`/`move_dec` +
-    `set_motion_calibration` (>= 0.3.5). The application decides the angular size (image
-    space -> optics -> arcsec) and measures the achieved displacement; rates are
-    established by a timed bootstrap move (`MountPort.pulse_axis` with no rate preset,
-    i.e. OnStep's center rate), measured from camera displacement, then installed here.
-    `direction` is the axis direction, `arcsec` a positive magnitude."""
-
-    def installed_rate(self, axis: MountAxis, direction: AxisDirection) -> float | None:
-        """Installed centering rate (arcsec/s) for this axis direction, or None."""
-        ...
-
-    def install_rate(self, axis: MountAxis, direction: AxisDirection, arcsec_per_s: float) -> None:
-        """Install one MEASURED centering rate; other directions' rates are kept."""
-        ...
+    `OnStepMountPulseAdapter` provides it over OnStepAdapter's verified degree-target axis move
+    (>= 0.4 over INDI). The application decides the angular size (image space -> optics ->
+    arcsec) and measures the achieved displacement; no rate is installed (S6.8d: the timed
+    bootstrap that measured one is gone). `direction` is the axis direction, `arcsec` a
+    positive magnitude."""
 
     def move_angular(
         self, axis: MountAxis, direction: AxisDirection, arcsec: float
     ) -> CommandResult:
         """Move by `arcsec` through OnStepAdapter's angular API; `accepted=False` (with
-        the adapter's reason) if refused or no rate is installed for the direction."""
+        the adapter's reason) if refused."""
         ...

@@ -40,7 +40,7 @@ call. Movement size is frame-relative (Small/Medium/Large,
 
 Its own `MountPort`, which shares the single OnStepAdapter connection with
 `MountParkPanel`'s `MountParkPort` (see `astrotool_core.onstep`): motion goes
-through OnStepAdapter's bounded timed-move API, never raw INDI.
+through OnStepAdapter's bounded angular moves and guide pulses, never raw INDI.
 
 Also takes the *same* `MountParkPort` object `MountParkPanel` uses
 (`mount_park` constructor param — deliberately the shared instance, not
@@ -1490,9 +1490,8 @@ class MountTestMovePanel(QWidget):
         explicitly, and `_poll()` (via `_awaiting_stranded_return`)
         updates it once that correction actually finishes -- to a
         confirmation if it succeeded, or an explicit warning if it
-        didn't (real pulses can still fail -- see MountTestMoveRunner's
-        own retry logic, which already covers transient rejection but
-        not every possible failure).
+        didn't (a real move can still be refused or fail; the runner reports
+        the adapter's reason and never retries it).
         """
         # Issue #43/#46: capped return chunks (see `CalibrationSizing.abort_return`).
         motion, suffix = self._sizing.abort_return(
@@ -1739,8 +1738,8 @@ class MountTestMovePanel(QWidget):
         return mount_supports_angular(self._mount)
 
     def _mount_is_angular_only(self) -> bool:
-        """S6.0: angular moves exist but timed pulses do not (S6.6b: both from the adapter's own
-        reported `MountCapabilities` -- `mount_align_sizing.mount_is_angular_only`)."""
+        """S6.0/S6.8d: Mount Align's axis moves are angular -- the adapter reports angular
+        moves (`MountCapabilities`, S6.6b; `mount_align_sizing.mount_is_angular_only`)."""
         return mount_is_angular_only(self._mount)
 
     def _angular_unit_rate(self) -> float:

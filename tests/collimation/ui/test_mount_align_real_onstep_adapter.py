@@ -1531,3 +1531,22 @@ class TestAstronomicalAxisMoveRefusalsSayWhy:
     ) -> None:
         _rig, error = self._refusal(guide_capable=True, calibration=True, monkeypatch=monkeypatch)
         assert "during this axis-move calibration" in error and "Run Calibration" in error, error
+
+    def test_the_panel_marks_its_calibration_steps(self, qapp: object) -> None:
+        """S6.8d review: an Astronomical calibration started while the mount is NOT tracking
+        runs as axis moves; the star measurement then turns tracking on, and the next axis step
+        is refused -- the panel must say so as a calibration problem (Run Calibration again),
+        which needs its steps submitted with `calibration=True`."""
+        rig = _Rig((_main(780.0), _GUIDE))
+        log = _GuideLog(rig)
+        panel = _astro_panel(rig)
+        rig.client.tracking = False  # not tracking when Run Calibration is clicked -> axis moves
+        panel._run_calibration_button.click()
+        _drain(panel)
+
+        text = panel._result_label.text()
+        assert "Calibration failed" in text, text
+        assert "during this axis-move calibration" in text, text
+        assert log.pulses == [] and log.stops == []
+        assert rig.client.tracking is True  # turned on by the star measurement, never off
+        panel.stop()

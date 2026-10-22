@@ -30,6 +30,7 @@ from collimation_tool.application.mount_align_positioning import (
     uncalibrated_nudge_arcsec,
 )
 from collimation_tool.application.mount_align_sizing import angular_unit_rate
+from collimation_tool.application.mount_motion import MountAlignPrimitive
 
 pytestmark = pytest.mark.unit
 
@@ -200,8 +201,9 @@ def test_every_move_is_one_submitted_sequence() -> None:
     angular = submit_axis_move(port, park, mount, A2, NEG, 300, 45.0, settle_ms=7)
     sequence = submit_motion_sequence(port, park, mount, [(A1, POS, 10)], settle_ms=0)
     assert unsized and angular and sequence
+    axis = {"primitive": MountAlignPrimitive.AXIS, "calibration": False}
     assert runner.calls == [
-        ("submit_sequence", [(A1, POS, 300)], {"settle_ms": 7}),
-        ("submit_sequence", [(A2, NEG, 300, 45.0)], {"settle_ms": 7}),
-        ("submit_sequence", [(A1, POS, 10)], {"settle_ms": 0}),
+        ("submit_sequence", [(A1, POS, 300)], {"settle_ms": 7, **axis}),
+        ("submit_sequence", [(A2, NEG, 300, 45.0)], {"settle_ms": 7, **axis}),
+        ("submit_sequence", [(A1, POS, 10)], {"settle_ms": 0, **axis}),
     ]

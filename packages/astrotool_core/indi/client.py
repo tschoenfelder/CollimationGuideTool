@@ -1,21 +1,20 @@
 """IndiClient — a small, generic INDI protocol client over a raw TCP
 socket to a running indiserver.
 
-Unlike `astrotool_core/mount/indi_adapter.py` (which, despite its name,
-speaks OnStep's native serial protocol directly — see that module's own
-docstring), this one genuinely speaks the INDI wire protocol: XML
-fragments over TCP, no `pyindi-client`/SWIG/libindi dependency. See
+It genuinely speaks the INDI wire protocol: XML fragments over TCP, no
+`pyindi-client`/SWIG/libindi dependency. See
 `astrotool_core.indi._protocol` for why a hand-rolled incremental parser
 is needed at all (INDI's "stream of top-level elements, no wrapping
 root" quirk) and why that's a reasonable scope for this project to
 hand-roll rather than add a new dependency for.
 
-Generic on purpose: this client knows nothing about focusers specifically
+Generic on purpose: this client knows nothing about a specific device type
 — it tracks whatever "vectors" (INDI's term for a named group of
 properties, e.g. a filter wheel's slot vector) a device defines/updates, and lets
 a caller wait for or read the latest known state of any of them by
-name. `astrotool_core/focus/indi_focuser_adapter.py` is the focuser-
-specific layer built on top of this.
+name. Its only production user is the filter wheel
+(`astrotool_core/filter_wheel/indi_filter_wheel_adapter.py`); the OnStep mount and focuser
+never use it (OnStepAdapter only, AGENTS.md).
 """
 
 from __future__ import annotations

@@ -88,6 +88,8 @@ def astronomical_axis_refusal(*, guide_pulses_supported: bool, calibration: bool
     if calibration:
         return ASTRONOMICAL_TRACKING_ON_DURING_AXIS_CALIBRATION
     return ASTRONOMICAL_TRACKING_STARTED_BEFORE_THE_MOVE
+
+
 TERRESTRIAL_TRACKING_AXIS_MOVE_REFUSED = (
     "terrestrial operating mode, but the mount reports tracking ON -- the tracking policy has "
     "not turned it off (see the Mount panel); nothing was sent and no emergency stop was issued"

@@ -37,17 +37,6 @@ class MotionRunner(Protocol):
     ) -> bool: ...
 
 
-def _extra_kwargs(primitive: MountAlignPrimitive, calibration: bool) -> dict[str, object]:
-    """S6.8b: an axis move is submitted exactly as before (no `primitive` argument); only a
-    guide-pulse move names its primitive. S6.8d: only a calibration step says so."""
-    extra: dict[str, object] = {}
-    if primitive is not MountAlignPrimitive.AXIS:
-        extra["primitive"] = primitive
-    if calibration:
-        extra["calibration"] = True
-    return extra
-
-
 def submit_axis_move(
     runner: MotionRunner,
     mount_park: MountParkPort,
@@ -98,5 +87,6 @@ def submit_motion_sequence(
         mount,
         steps,
         settle_ms=settle_ms,
-        **_extra_kwargs(primitive, calibration),  # type: ignore[arg-type]
+        primitive=primitive,
+        calibration=calibration,
     )
