@@ -1,0 +1,69 @@
+2026-10-25 16:36:46,376 WARNING  astrotool_core.config.mount_alignment_settings: [mount_alignment] pulse_ms is no longer used (S6.8d: Mount Align has no timed move) -- ignored; see install.md 'Config migration notes'
+2026-10-25 16:36:46,638 INFO     astrotool_core.camera.touptek_adapter: TouptekCameraAdapter(ATR585M): opened model=ATR585M model.flag=0x488876B84D9 -> mono, USB3-capable=yes, USB3-over-USB2-link=no, TEC=yes
+2026-10-25 16:36:47,613 INFO     astrotool_core.camera.touptek_adapter: TouptekCameraAdapter(GPCMOS02000KPA): opened model=GPCMOS02000KPA model.flag=0x85682209 -> colour, USB3-capable=no, USB3-over-USB2-link=no, TEC=no
+2026-10-25 16:36:48,789 INFO     astrotool_core.camera.touptek_adapter: TouptekCameraAdapter(GPCMOS02000KPA): temperature not implemented by this camera (SDK E_NOTIMPL) -- treated as unsupported until the next connect
+2026-10-25 17:06:45,817 WARNING  astrotool_core.session.device_connection: Main Focuser: connect failed (TimeoutError): INDI property LX200 OnStep.CONNECTION did not update
+Traceback (most recent call last):
+  File "/home/astro/astro_sw/CollimationGuideTool/packages/astrotool_core/session/device_connection.py", line 147, in run_phase
+    step()
+    ~~~~^^
+  File "/home/astro/astro_sw/CollimationGuideTool/packages/astrotool_core/onstep/focuser_adapter.py", line 82, in connect
+    self._connection.acquire()
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/astro/astro_sw/CollimationGuideTool/packages/astrotool_core/onstep/connection.py", line 112, in acquire
+    client.connect(timeout=self._timeout)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/astro/astro_sw/CollimationGuideTool/.venv/lib/python3.13/site-packages/onstep_adapter/indi_client.py", line 144, in connect
+    connected = self._transport.wait_property(self.device, "CONNECTION", timeout=timeout)
+  File "/home/astro/astro_sw/CollimationGuideTool/.venv/lib/python3.13/site-packages/onstep_adapter/indi_transport.py", line 98, in wait_property
+    raise TimeoutError(f"INDI property {device}.{name} did not update")
+TimeoutError: INDI property LX200 OnStep.CONNECTION did not update
+2026-10-25 17:06:51,188 WARNING  astrotool_core.session.device_connection: Main Focuser: connect failed (TimeoutError): INDI property LX200 OnStep.CONNECTION did not update
+Traceback (most recent call last):
+  File "/home/astro/astro_sw/CollimationGuideTool/packages/astrotool_core/session/device_connection.py", line 147, in run_phase
+    step()
+    ~~~~^^
+  File "/home/astro/astro_sw/CollimationGuideTool/packages/astrotool_core/onstep/focuser_adapter.py", line 82, in connect
+    self._connection.acquire()
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/astro/astro_sw/CollimationGuideTool/packages/astrotool_core/onstep/connection.py", line 112, in acquire
+    client.connect(timeout=self._timeout)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/astro/astro_sw/CollimationGuideTool/.venv/lib/python3.13/site-packages/onstep_adapter/indi_client.py", line 144, in connect
+    connected = self._transport.wait_property(self.device, "CONNECTION", timeout=timeout)
+  File "/home/astro/astro_sw/CollimationGuideTool/.venv/lib/python3.13/site-packages/onstep_adapter/indi_transport.py", line 98, in wait_property
+    raise TimeoutError(f"INDI property {device}.{name} did not update")
+TimeoutError: INDI property LX200 OnStep.CONNECTION did not update
+2026-10-25 17:06:59,200 WARNING  astrotool_core.session.device_connection: Main Focuser: connect failed (TimeoutError): INDI property LX200 OnStep.CONNECTION did not update
+Traceback (most recent call last):
+  File "/home/astro/astro_sw/CollimationGuideTool/packages/astrotool_core/session/device_connection.py", line 147, in run_phase
+    step()
+    ~~~~^^
+  File "/home/astro/astro_sw/CollimationGuideTool/packages/astrotool_core/onstep/focuser_adapter.py", line 82, in connect
+    self._connection.acquire()
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/astro/astro_sw/CollimationGuideTool/packages/astrotool_core/onstep/connection.py", line 112, in acquire
+    client.connect(timeout=self._timeout)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/astro/astro_sw/CollimationGuideTool/.venv/lib/python3.13/site-packages/onstep_adapter/indi_client.py", line 144, in connect
+    connected = self._transport.wait_property(self.device, "CONNECTION", timeout=timeout)
+  File "/home/astro/astro_sw/CollimationGuideTool/.venv/lib/python3.13/site-packages/onstep_adapter/indi_transport.py", line 98, in wait_property
+    raise TimeoutError(f"INDI property {device}.{name} did not update")
+TimeoutError: INDI property LX200 OnStep.CONNECTION did not update
+2026-10-25 17:15:59,382 WARNING  astrotool_core.session.device_connection: Mount: connect failed (TimeoutError): INDI property LX200 OnStep.CONNECTION did not update
+Traceback (most recent call last):
+  File "/home/astro/astro_sw/CollimationGuideTool/packages/astrotool_core/session/device_connection.py", line 147, in run_phase
+    step()
+    ~~~~^^
+  File "/home/astro/astro_sw/CollimationGuideTool/packages/astrotool_core/onstep/mount_park_adapter.py", line 39, in connect
+    self._connection.acquire()
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^
+  File "/home/astro/astro_sw/CollimationGuideTool/packages/astrotool_core/onstep/connection.py", line 112, in acquire
+    client.connect(timeout=self._timeout)
+    ~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/astro/astro_sw/CollimationGuideTool/.venv/lib/python3.13/site-packages/onstep_adapter/indi_client.py", line 144, in connect
+    connected = self._transport.wait_property(self.device, "CONNECTION", timeout=timeout)
+  File "/home/astro/astro_sw/CollimationGuideTool/.venv/lib/python3.13/site-packages/onstep_adapter/indi_transport.py", line 98, in wait_property
+    raise TimeoutError(f"INDI property {device}.{name} did not update")
+TimeoutError: INDI property LX200 OnStep.CONNECTION did not update
+2026-10-25 17:39:01,524 ERROR    astrotool_core.diagnostics.service: Diagnostic incident 402eabde-d730-43b0-823d-a7f47c61f944 captured at /home/astro/.CollimationGuideTool/diagnostics/402eabde-d730-43b0-823d-a7f47c61f944

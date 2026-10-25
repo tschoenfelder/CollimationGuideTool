@@ -1,0 +1,308 @@
+{
+  "uuid": "f0bc314b-a889-4e18-ac9b-74971f42f014",
+  "timestamp": "2026-10-25T16:55:37.156190+00:00",
+  "sequence": 1,
+  "app": "CollimationTool",
+  "version": "0.1.0",
+  "git_commit": "daefd76adedb",
+  "trigger": "manual",
+  "reason": "Manual capture from UI (no note given)",
+  "exception": null,
+  "context": {
+    "left": {
+      "camera_descriptor": {
+        "serial_number": "TP250816103905606F851B940A4AA0C",
+        "logical_name": "ATR585M",
+        "capabilities": {
+          "min_gain": 100,
+          "max_gain": 15000,
+          "min_exposure_ms": 0.1,
+          "max_exposure_ms": 3600000.0,
+          "supports_cooling": true,
+          "supports_hcg": true,
+          "supports_lcg": true,
+          "supports_hdr": true,
+          "supports_black_level": true,
+          "bit_depth": 16,
+          "pixel_size_um": 0.0,
+          "sensor_width_px": 3840,
+          "sensor_height_px": 2160,
+          "min_target_temp_c": -50.0,
+          "max_target_temp_c": 40.0,
+          "supports_temperature": true,
+          "supports_raw16": true
+        }
+      },
+      "exposure_ms": 2000.0,
+      "gain": 154,
+      "streaming": true,
+      "auto_exposure_enabled": true,
+      "updates_paused": false,
+      "auto_exposure_paused": true,
+      "camera_switch": {
+        "requested_camera_id": "tp-4-1-3-0547-157c",
+        "previous_camera_id": null,
+        "actual_camera_id": "tp-4-1-3-0547-157c",
+        "actual_serial": "TP250816103905606F851B940A4AA0C",
+        "actual_name": "ATR585M",
+        "last_result": "ok",
+        "last_error": null
+      },
+      "current_temperature_c": 20.3,
+      "target_temperature_c": -10.0,
+      "cooling_enabled": false,
+      "measurement_result": {
+        "measurement": {
+          "outer_ring": {
+            "center_x": 1396.382172744593,
+            "center_y": 1140.1511357877782,
+            "radius_x": 408.8256756601082,
+            "radius_y": 408.8256756601082,
+            "angle_deg": 0.0,
+            "confidence": 0.7803148145383939
+          },
+          "inner_hole": {
+            "center_x": 1380.079583767421,
+            "center_y": 1080.8618385793377,
+            "radius_x": 210.55883526856272,
+            "radius_y": 210.55883526856272,
+            "angle_deg": 0.0,
+            "confidence": 0.6435740589375125
+          },
+          "error_x_px": -16.302588977172036,
+          "error_y_px": -59.28929720844053,
+          "error_magnitude_px": 61.48979729052134,
+          "error_angle_deg": -105.3744833386941,
+          "confidence": 0.7119444367379533
+        },
+        "reason": "ok"
+      }
+    },
+    "right": {
+      "camera_descriptor": {
+        "serial_number": "TP251206125548080EAB05B2D44FC85",
+        "logical_name": "GPCMOS02000KPA",
+        "capabilities": {
+          "min_gain": 100,
+          "max_gain": 5000,
+          "min_exposure_ms": 0.105,
+          "max_exposure_ms": 1000000.0,
+          "supports_cooling": false,
+          "supports_hcg": true,
+          "supports_lcg": true,
+          "supports_hdr": false,
+          "supports_black_level": true,
+          "bit_depth": 12,
+          "pixel_size_um": 0.0,
+          "sensor_width_px": 1920,
+          "sensor_height_px": 1080,
+          "min_target_temp_c": null,
+          "max_target_temp_c": null,
+          "supports_temperature": false,
+          "supports_raw16": false
+        }
+      },
+      "exposure_ms": 1154.364,
+      "gain": 100,
+      "streaming": true,
+      "auto_exposure_enabled": true,
+      "updates_paused": false,
+      "auto_exposure_paused": false,
+      "camera_switch": {
+        "requested_camera_id": "tp-3-2-5-0547-1367",
+        "previous_camera_id": null,
+        "actual_camera_id": "tp-3-2-5-0547-1367",
+        "actual_serial": "TP251206125548080EAB05B2D44FC85",
+        "actual_name": "GPCMOS02000KPA",
+        "last_result": "ok",
+        "last_error": null
+      },
+      "current_temperature_c": null,
+      "target_temperature_c": -10.0,
+      "cooling_enabled": false,
+      "measurement_result": {
+        "measurement": null,
+        "reason": "no_signal"
+      }
+    },
+    "focuser": {
+      "available": true,
+      "position": 14521,
+      "max_position": 100000,
+      "moving": false,
+      "last_connect_error": null,
+      "connection": {
+        "connected": true,
+        "last_connect_error": null,
+        "last_connection_failure": {
+          "device": "Main Focuser",
+          "phase": "connect",
+          "error_type": "TimeoutError",
+          "message": "INDI property LX200 OnStep.CONNECTION did not update",
+          "internal": false
+        }
+      },
+      "autofocus_mode": "terrestrial",
+      "blockers": []
+    },
+    "filter_wheels": {
+      "efw1": {
+        "available": false,
+        "current_slot": null,
+        "filter_name": null,
+        "moving": false,
+        "reason": "not connected",
+        "requested_slot": null,
+        "last_connect_error": null,
+        "connection": {
+          "connected": false,
+          "last_connect_error": null,
+          "last_connection_failure": null
+        },
+        "device": "ToupTek EFW 2",
+        "used_by": [
+          "main"
+        ],
+        "connected": false
+      }
+    },
+    "guide_filter_wheel": {
+      "available": false,
+      "current_slot": null,
+      "filter_name": null,
+      "moving": false,
+      "reason": "no filter wheel assigned to this optical train"
+    },
+    "main_filter_wheel": {
+      "available": false,
+      "current_slot": null,
+      "filter_name": null,
+      "moving": false,
+      "reason": "not connected",
+      "requested_slot": null,
+      "last_connect_error": null,
+      "connection": {
+        "connected": false,
+        "last_connect_error": null,
+        "last_connection_failure": null
+      }
+    },
+    "mount": {
+      "available": false,
+      "parked": false,
+      "tracking": false,
+      "last_connect_error": "INDI property LX200 OnStep.CONNECTION did not update",
+      "connection": {
+        "connected": false,
+        "last_connect_error": "INDI property LX200 OnStep.CONNECTION did not update",
+        "last_connection_failure": {
+          "device": "Mount",
+          "phase": "connect",
+          "error_type": "TimeoutError",
+          "message": "INDI property LX200 OnStep.CONNECTION did not update",
+          "internal": false
+        }
+      }
+    },
+    "mount_test_move": {
+      "operating_mode": "terrestrial",
+      "measurement_mode": "terrestrial",
+      "activity": {
+        "state": "idle",
+        "threaded_captures": true,
+        "capture_in_flight": false,
+        "capture_label": null,
+        "nudge_check_in_flight": false,
+        "capture_elapsed_s": 0.0,
+        "runner_busy": false,
+        "poll_timer_active": false,
+        "calibration_queue_len": 0,
+        "last_cleanup_ok": null,
+        "last_internal_error": null
+      },
+      "mount_interface": {
+        "available": false,
+        "code": "not_connected",
+        "detail": "Mount Align is not connected.",
+        "connected": false,
+        "park_available": false,
+        "pulse_connected": false,
+        "park_adapter": "OnStepMountParkAdapter",
+        "pulse_adapter": "OnStepMountPulseAdapter",
+        "last_connect_error": null
+      },
+      "calibration": {},
+      "last_result": null,
+      "last_failure_classes": {}
+    },
+    "operating_mode": "terrestrial",
+    "tracking_policy": {
+      "operating_mode": "terrestrial",
+      "measurement_allowed": true,
+      "last_reason": "mount unavailable: no tracking to enforce",
+      "transitions": [
+        {
+          "at": 1792945064.6320589,
+          "operating_mode": "terrestrial",
+          "context": "autofocus",
+          "tracking_before": null,
+          "command": null,
+          "tracking_after": null,
+          "allowed": true,
+          "reason": "mount unavailable: no tracking to enforce"
+        },
+        {
+          "at": 1792947251.9063008,
+          "operating_mode": "terrestrial",
+          "context": "autofocus",
+          "tracking_before": null,
+          "command": null,
+          "tracking_after": null,
+          "allowed": true,
+          "reason": "mount unavailable: no tracking to enforce"
+        }
+      ]
+    },
+    "fine_collimation": {
+      "running": false,
+      "collimated": false,
+      "target_mode": "natural_star"
+    },
+    "target_mode": "natural_star",
+    "mount_test_move_backlash": {
+      "left": {},
+      "right": {}
+    },
+    "autofocus": {
+      "status": "no_usable_evidence",
+      "mode": "artificial_star",
+      "camera_label": "Main",
+      "optical_train": "Main",
+      "focuser_label": "Main",
+      "start_position": 14461,
+      "best_position": null,
+      "search_min": 13461,
+      "search_max": 15461,
+      "confidence": 0.0,
+      "final_value": null,
+      "failure_reason": "multiple_candidates",
+      "tracked_target": null,
+      "start_value": null,
+      "exposure_attempts": [
+        [
+          18.575,
+          100
+        ]
+      ],
+      "samples": [
+        {
+          "position": 14461,
+          "value": NaN,
+          "confidence": 0.0,
+          "valid": false,
+          "reason": "multiple_candidates"
+        }
+      ]
+    }
+  }
+}
