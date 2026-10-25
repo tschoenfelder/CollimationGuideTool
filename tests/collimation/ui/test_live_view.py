@@ -1,6 +1,9 @@
 import numpy as np
+from collimation_tool.domain.collimation_measurement import CircleEllipseFit, DonutMeasurement
 from collimation_tool.ui.fov_overlay import FovOverlayRect
 from collimation_tool.ui.live_view import LiveViewLabel, stretch_rgb_to_uint8, stretch_to_uint8
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QImage
 from PySide6.QtWidgets import QApplication
 
 
@@ -329,3 +332,135 @@ class TestSetStretchedFrame:
         label_b.set_stretched_frame(stretch_to_uint8(_frame(100, 200)), measurement=None)
 
         assert label_a.pixmap().size() == label_b.pixmap().size()
+
+
+def _rgb_array(image: QImage) -> np.ndarray:
+    """(H, W, 3) uint8 RGB copy of *image* (any format)."""
+    rgb = image.convertToFormat(QImage.Format.Format_RGB888)
+    height, width = rgb.height(), rgb.width()
+    raw = np.frombuffer(rgb.constBits(), dtype=np.uint8, count=rgb.sizeInBytes())
+    rows = raw.reshape(height, rgb.bytesPerLine())
+    return rows[:, : width * 3].reshape(height, width, 3).copy()
+
+
+def _green_mask(rgb: np.ndarray) -> np.ndarray:
+    """Pixels exactly the cross colour (pure green, 0/255/0)."""
+    return (rgb[..., 0] == 0) & (rgb[..., 1] == 255) & (rgb[..., 2] == 0)
+
+
+def _ring_measurement() -> DonutMeasurement:
+    outer = CircleEllipseFit(center_x=60.0, center_y=40.0, radius_x=25.0, radius_y=25.0)
+    inner = CircleEllipseFit(center_x=63.0, center_y=42.0, radius_x=8.0, radius_y=8.0)
+    return DonutMeasurement(
+        outer_ring=outer,
+        inner_hole=inner,
+        error_x_px=3.0,
+        error_y_px=2.0,
+        error_magnitude_px=3.6,
+        error_angle_deg=33.7,
+        confidence=0.9,
+    )
+
+
+class TestCentreCross:
+    """Issue #57: every displayed frame shows a green cross through the
+    centre of the displayed (scaled, aspect-kept) image -- full-length
+    lines, exactly 2 screen px thick at any widget size, drawn on the
+    scaled pixmap only (the native base pixmap, which the diagnostic
+    display snapshot saves, is unchanged)."""
+
+    # (widget size, frame shape (h, w), expected displayed size (w, h)).
+    # The second widget's aspect (640x260) differs from the frame's 2:1,
+    # so the image is height-limited and narrower than the widget.
+    _CASES = [
+        ((400, 400), (100, 200), (400, 200)),
+        ((640, 260), (100, 200), (520, 260)),
+    ]
+
+    @staticmethod
+    def _shown(label: LiveViewLabel) -> np.ndarray:
+        return _rgb_array(label.pixmap().toImage())
+
+    def _show(
+        self, size: tuple[int, int], frame_shape: tuple[int, int], **overlays: object
+    ) -> LiveViewLabel:
+        label = LiveViewLabel()
+        label.resize(*size)
+        label.set_frame(_frame(*frame_shape), measurement=None, **overlays)  # type: ignore[arg-type]
+        return label
+
+    def test_cross_is_two_px_thick_full_length_and_centred(self, qapp: object) -> None:
+        for size, frame_shape, (exp_w, exp_h) in self._CASES:
+            rgb = self._shown(self._show(size, frame_shape))
+            height, width, _ = rgb.shape
+            assert (width, height) == (exp_w, exp_h)
+            green = _green_mask(rgb)
+
+            # Even sizes: the 2 px pair sits symmetric around the centre.
+            rows = [height // 2 - 1, height // 2]
+            cols = [width // 2 - 1, width // 2]
+            for r in rows:
+                assert green[r, :].all(), f"row {r} not fully green at {size}"
+            for c in cols:
+                assert green[:, c].all(), f"column {c} not fully green at {size}"
+
+            # Exactly 2 px: only those rows / columns contain green at all.
+            green_rows = np.flatnonzero(green.all(axis=1))
+            green_cols = np.flatnonzero(green.all(axis=0))
+            assert list(green_rows) == rows
+            assert list(green_cols) == cols
+            off_cross = green.copy()
+            off_cross[rows, :] = False
+            off_cross[:, cols] = False
+            assert not off_cross.any(), f"green outside the cross at {size}"
+
+    def test_cross_follows_a_resize(self, qapp: object) -> None:
+        label = LiveViewLabel()
+        label.show()
+        label.resize(400, 400)
+        QApplication.processEvents()
+        label.set_frame(_frame(100, 200), measurement=None)
+        label.resize(640, 260)
+        QApplication.processEvents()
+
+        green = _green_mask(self._shown(label))
+        assert green.shape == (260, 520)
+        assert list(np.flatnonzero(green.all(axis=1))) == [129, 130]
+        assert list(np.flatnonzero(green.all(axis=0))) == [259, 260]
+
+    def test_base_pixmap_has_no_green(self, qapp: object) -> None:
+        label = self._show((640, 260), (100, 200))
+        assert label._base_pixmap is not None
+        assert not _green_mask(_rgb_array(label._base_pixmap.toImage())).any()
+
+    def test_existing_overlays_are_unchanged_off_the_cross(self, qapp: object) -> None:
+        overlays = {
+            "fov_rect": FovOverlayRect(x=0.2, y=0.2, width=0.6, height=0.6),
+            "matched_point": (150.0, 70.0),
+        }
+        for size, frame_shape, _ in self._CASES:
+            label = LiveViewLabel()
+            label.resize(*size)
+            label.set_frame(_frame(*frame_shape), measurement=_ring_measurement(), **overlays)  # type: ignore[arg-type]
+            assert label._base_pixmap is not None
+            base = _rgb_array(label._base_pixmap.toImage())
+            # Rings, FOV rect and matched point are still in the native frame.
+            assert ((base[..., 0] < 120) & (base[..., 1] > 180) & (base[..., 2] > 220)).any()
+            assert base[20, 100, 2] < 100  # yellow FOV top edge (centre of edge)
+            assert base[70, 150, 0] > 200 and base[70, 150, 1] < 50  # red marker
+
+            shown = self._shown(label)
+            expected = _rgb_array(
+                label._base_pixmap.scaled(
+                    label.pixmap().size(),
+                    Qt.AspectRatioMode.KeepAspectRatio,
+                    Qt.TransformationMode.SmoothTransformation,
+                ).toImage()
+            )
+            height, width, _ = shown.shape
+            keep = np.ones((height, width), dtype=bool)
+            keep[[height // 2 - 1, height // 2], :] = False
+            keep[:, [width // 2 - 1, width // 2]] = False
+            # Off the cross the displayed image is exactly the scaled frame
+            # with its overlays -- nothing else changed.
+            assert np.array_equal(shown[keep], expected[keep])

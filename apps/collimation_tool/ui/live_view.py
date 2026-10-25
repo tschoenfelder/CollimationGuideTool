@@ -29,6 +29,34 @@ _FOV_COLOR = QColor(255, 255, 0)
 #: associated with the Main-frame artificial star, not merely a
 #: brightest/arbitrary point.
 _MATCHED_POINT_COLOR = QColor(255, 0, 0)
+#: Issue #57: the centre cross through the displayed image -- pure green.
+_CENTRE_CROSS_COLOR = QColor(0, 255, 0)
+#: Thickness of each centre-cross line in *screen* pixels.
+_CENTRE_CROSS_WIDTH_PX = 2
+
+
+def _draw_centre_cross(pixmap: QPixmap) -> None:
+    """Draw the issue-#57 centre cross onto the already-scaled *pixmap*:
+    full-length horizontal and vertical lines, `_CENTRE_CROSS_WIDTH_PX`
+    pixels thick. For an even size the line pair sits symmetric around
+    the centre (rows h/2-1 and h/2); for an odd size it covers the
+    centre pixel and the one after it.
+
+    Drawn with `fillRect` on whole pixels (no pen, no antialiasing), so
+    the lines are exactly that thick and pure colour. It goes on the
+    scaled pixmap, not the native frame: a 2 px line in a 3840x2160
+    frame would shrink below 1 px once scaled to the widget.
+    """
+    width, height = pixmap.width(), pixmap.height()
+    thickness = _CENTRE_CROSS_WIDTH_PX
+    x0 = (width - thickness + 1) // 2
+    y0 = (height - thickness + 1) // 2
+    painter = QPainter(pixmap)
+    try:
+        painter.fillRect(0, y0, width, thickness, _CENTRE_CROSS_COLOR)
+        painter.fillRect(x0, 0, thickness, height, _CENTRE_CROSS_COLOR)
+    finally:
+        painter.end()
 
 
 def _stretch_bounds(
@@ -275,6 +303,9 @@ class LiveViewLabel(QLabel):
             Qt.AspectRatioMode.KeepAspectRatio,
             Qt.TransformationMode.SmoothTransformation,
         )
+        # `scaled()` returns a new pixmap, so the cross never reaches
+        # `_base_pixmap` (the native frame the diagnostic snapshot saves).
+        _draw_centre_cross(scaled)
         self.setPixmap(scaled)
 
     def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802 — Qt override
