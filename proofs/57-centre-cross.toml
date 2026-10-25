@@ -6,7 +6,9 @@ cross through the centre of the displayed image -- full-length horizontal and ve
 screen px thick at any widget size and aspect ratio. It is drawn with whole-pixel fillRect on the scaled \
 pixmap in LiveViewLabel._update_scaled_pixmap (a 2 px line in the native 3840x2160 frame would shrink \
 below 1 px when shown), never on _base_pixmap, so analysed frames, FITS, the existing overlays and the \
-diagnostic display snapshot (CameraPanel.displayed_image_png reads _base_pixmap) are unchanged."""
+diagnostic display snapshot (CameraPanel.displayed_image_png reads _base_pixmap) are unchanged. Review \
+hardening: a null pixmap is skipped (no QPainter warnings); the tests cover an odd displayed width, an \
+RGB frame and the rows/columns next to the cross."""
 modules = [
     "apps/collimation_tool/ui/live_view.py",
 ]
@@ -21,17 +23,32 @@ field_only_assumptions = [
 [[regression_tests]]
 node = "tests/collimation/ui/test_live_view.py::TestCentreCross::test_cross_is_two_px_thick_full_length_and_centred"
 failed_before_fix = true
-evidence = "Revert-proof 2026-10-25 in the F57 worktree, the 0db0b72 live_view.py hunk reverse-applied, today's tests kept: tests/collimation/ui/test_live_view.py:404: AssertionError: row 99 not fully green at (400, 400)"
+evidence = "Revert-proof 2026-10-25 in the F57 worktree: live_view.py from 31c26ba plus a no-op _draw_centre_cross stub (so the test module imports), today's tests kept: tests/collimation/ui/test_live_view.py:451: AssertionError: row 99 not fully green at (400, 400). Mutation (cross drawn on _base_pixmap before scaling) also fails it: tests/collimation/ui/test_live_view.py:459 (odd 401-wide case, 3 green columns)."
 
 [[regression_tests]]
 node = "tests/collimation/ui/test_live_view.py::TestCentreCross::test_cross_follows_a_resize"
 failed_before_fix = true
-evidence = "Revert-proof 2026-10-25 in the F57 worktree, the 0db0b72 live_view.py hunk reverse-applied, today's tests kept: tests/collimation/ui/test_live_view.py:429: assert [] == [129, 130]"
+evidence = "Revert-proof 2026-10-25, same setup: tests/collimation/ui/test_live_view.py:476: assert [] == [129, 130]"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_live_view.py::TestCentreCross::test_a_color_frame_gets_the_cross_too"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-25, same setup: tests/collimation/ui/test_live_view.py:492: assert [] == [129, 130]. Mutation (cross on _base_pixmap before scaling) fails it at tests/collimation/ui/test_live_view.py:498 (blended green fringe beside the cross)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_live_view.py::TestCentreCross::test_rows_and_columns_next_to_the_cross_are_the_scaled_frame"
+failed_before_fix = false
+reason_no_prefix_repro = "Guard for the fix's own rule (cross only on the scaled pixmap); with no cross at all it passes by construction. Mutation-proven instead: drawing the cross on _base_pixmap before scaling fails it at tests/collimation/ui/test_live_view.py:430 (neighbour pixels not neutral gray)."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_live_view.py::TestCentreCross::test_a_null_pixmap_is_left_alone_without_qpainter_warnings"
+failed_before_fix = false
+reason_no_prefix_repro = "Guards the review hardening (null-pixmap early return); _draw_centre_cross did not exist before the fix. Mutation-proven: removing the isNull() guard fails it at tests/collimation/ui/test_live_view.py:514 (QPainter::begin warnings recorded)."
 
 [[regression_tests]]
 node = "tests/collimation/ui/test_live_view.py::TestCentreCross::test_base_pixmap_has_no_green"
 failed_before_fix = false
-reason_no_prefix_repro = "Guard for the fix's own rule (cross only on the scaled pixmap); without the fix there is no cross anywhere, so it passes pre-fix by construction."
+reason_no_prefix_repro = "Guard for the fix's own rule (cross only on the scaled pixmap); without the fix there is no cross anywhere, so it passes pre-fix by construction. Mutation-proven: cross on _base_pixmap fails it at tests/collimation/ui/test_live_view.py:519."
 
 [[regression_tests]]
 node = "tests/collimation/ui/test_live_view.py::TestCentreCross::test_existing_overlays_are_unchanged_off_the_cross"

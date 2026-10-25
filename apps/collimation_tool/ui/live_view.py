@@ -47,6 +47,8 @@ def _draw_centre_cross(pixmap: QPixmap) -> None:
     scaled pixmap, not the native frame: a 2 px line in a 3840x2160
     frame would shrink below 1 px once scaled to the widget.
     """
+    if pixmap.isNull():
+        return  # nothing to draw on; a QPainter on it would only warn
     width, height = pixmap.width(), pixmap.height()
     thickness = _CENTRE_CROSS_WIDTH_PX
     x0 = (width - thickness + 1) // 2

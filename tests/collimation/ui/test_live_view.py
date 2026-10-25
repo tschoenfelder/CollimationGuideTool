@@ -1,9 +1,14 @@
 import numpy as np
 from collimation_tool.domain.collimation_measurement import CircleEllipseFit, DonutMeasurement
 from collimation_tool.ui.fov_overlay import FovOverlayRect
-from collimation_tool.ui.live_view import LiveViewLabel, stretch_rgb_to_uint8, stretch_to_uint8
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QImage
+from collimation_tool.ui.live_view import (
+    LiveViewLabel,
+    _draw_centre_cross,
+    stretch_rgb_to_uint8,
+    stretch_to_uint8,
+)
+from PySide6.QtCore import Qt, qInstallMessageHandler
+from PySide6.QtGui import QImage, QPixmap
 from PySide6.QtWidgets import QApplication
 
 
@@ -372,15 +377,58 @@ class TestCentreCross:
 
     # (widget size, frame shape (h, w), expected displayed size (w, h)).
     # The second widget's aspect (640x260) differs from the frame's 2:1,
-    # so the image is height-limited and narrower than the widget.
+    # so the image is height-limited and narrower than the widget; the
+    # third gives an odd displayed width (401).
     _CASES = [
         ((400, 400), (100, 200), (400, 200)),
         ((640, 260), (100, 200), (520, 260)),
+        ((401, 400), (100, 200), (401, 200)),
     ]
+
+    @staticmethod
+    def _cross_lines(n: int) -> list[int]:
+        """The 2 line indices for a displayed size *n*: symmetric around
+        the centre when even (n/2-1, n/2), centre pixel + next when odd."""
+        first = (n - 1) // 2
+        return [first, first + 1]
 
     @staticmethod
     def _shown(label: LiveViewLabel) -> np.ndarray:
         return _rgb_array(label.pixmap().toImage())
+
+    @staticmethod
+    def _scaled_base(label: LiveViewLabel) -> np.ndarray:
+        """The base pixmap scaled the way the label scales it, without
+        the cross -- what the displayed image must equal off the cross."""
+        assert label._base_pixmap is not None
+        return _rgb_array(
+            label._base_pixmap.scaled(
+                label.size(),  # what the label itself scales to
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            ).toImage()
+        )
+
+    def _assert_neighbours_untouched(self, label: LiveViewLabel, *, gray: bool) -> None:
+        """Rows/columns right next to the cross equal the scaled base and
+        carry no green tint (a cross drawn on the base before scaling
+        leaves blended green fringes there)."""
+        shown = self._shown(label)
+        expected = self._scaled_base(label)
+        height, width, _ = shown.shape
+        rows = self._cross_lines(height)
+        cols = self._cross_lines(width)
+        mask = np.zeros((height, width), dtype=bool)
+        mask[[rows[0] - 1, rows[1] + 1], :] = True
+        mask[:, [cols[0] - 1, cols[1] + 1]] = True
+        mask[rows, :] = False
+        mask[:, cols] = False
+        assert np.array_equal(shown[mask], expected[mask])
+        pixels = shown[mask].astype(int)
+        if gray:
+            # A mono frame: every neighbour pixel is neutral gray.
+            assert (pixels[:, 0] == pixels[:, 1]).all() and (pixels[:, 1] == pixels[:, 2]).all()
+        assert not _green_mask(shown[mask]).any()
 
     def _show(
         self, size: tuple[int, int], frame_shape: tuple[int, int], **overlays: object
@@ -397,9 +445,8 @@ class TestCentreCross:
             assert (width, height) == (exp_w, exp_h)
             green = _green_mask(rgb)
 
-            # Even sizes: the 2 px pair sits symmetric around the centre.
-            rows = [height // 2 - 1, height // 2]
-            cols = [width // 2 - 1, width // 2]
+            rows = self._cross_lines(height)
+            cols = self._cross_lines(width)
             for r in rows:
                 assert green[r, :].all(), f"row {r} not fully green at {size}"
             for c in cols:
@@ -429,6 +476,43 @@ class TestCentreCross:
         assert list(np.flatnonzero(green.all(axis=1))) == [129, 130]
         assert list(np.flatnonzero(green.all(axis=0))) == [259, 260]
 
+    def test_rows_and_columns_next_to_the_cross_are_the_scaled_frame(self, qapp: object) -> None:
+        for size, frame_shape, _ in self._CASES:
+            self._assert_neighbours_untouched(self._show(size, frame_shape), gray=True)
+
+    def test_a_color_frame_gets_the_cross_too(self, qapp: object) -> None:
+        rgb = np.zeros((100, 200, 3), dtype=np.uint8)
+        rgb[..., 0], rgb[..., 1], rgb[..., 2] = 200, 60, 30
+        label = LiveViewLabel()
+        label.resize(640, 260)
+        label.set_stretched_frame(rgb, measurement=None)
+
+        green = _green_mask(self._shown(label))
+        assert green.shape == (260, 520)
+        assert list(np.flatnonzero(green.all(axis=1))) == [129, 130]
+        assert list(np.flatnonzero(green.all(axis=0))) == [259, 260]
+        self._assert_neighbours_untouched(label, gray=False)
+        # A uniform frame scales to itself: the pixels beside the cross
+        # keep the frame's own colour exactly (no blended green fringe).
+        shown = self._shown(label)
+        assert (shown[[128, 131], :][:, :258] == [200, 60, 30]).all()
+        assert (shown[:128, [258, 261]] == [200, 60, 30]).all()
+
+    def test_a_null_pixmap_is_left_alone_without_qpainter_warnings(self, qapp: object) -> None:
+        messages: list[str] = []
+
+        def _record(_mode: object, _context: object, message: str) -> None:
+            messages.append(message)
+
+        previous = qInstallMessageHandler(_record)
+        try:
+            pixmap = QPixmap()
+            _draw_centre_cross(pixmap)
+        finally:
+            qInstallMessageHandler(previous)
+        assert pixmap.isNull()
+        assert messages == []
+
     def test_base_pixmap_has_no_green(self, qapp: object) -> None:
         label = self._show((640, 260), (100, 200))
         assert label._base_pixmap is not None
@@ -451,17 +535,11 @@ class TestCentreCross:
             assert base[70, 150, 0] > 200 and base[70, 150, 1] < 50  # red marker
 
             shown = self._shown(label)
-            expected = _rgb_array(
-                label._base_pixmap.scaled(
-                    label.pixmap().size(),
-                    Qt.AspectRatioMode.KeepAspectRatio,
-                    Qt.TransformationMode.SmoothTransformation,
-                ).toImage()
-            )
+            expected = self._scaled_base(label)
             height, width, _ = shown.shape
             keep = np.ones((height, width), dtype=bool)
-            keep[[height // 2 - 1, height // 2], :] = False
-            keep[:, [width // 2 - 1, width // 2]] = False
+            keep[self._cross_lines(height), :] = False
+            keep[:, self._cross_lines(width)] = False
             # Off the cross the displayed image is exactly the scaled frame
             # with its overlays -- nothing else changed.
             assert np.array_equal(shown[keep], expected[keep])
