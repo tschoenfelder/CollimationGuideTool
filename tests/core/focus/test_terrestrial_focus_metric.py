@@ -455,3 +455,44 @@ class TestNonFinite:
             measurement = measure_terrestrial_focus([frame], tile_size_px=_LOW_TEXTURE_TILE)
             assert measurement.sharpness is None
             assert measurement.confidence == 0.0
+
+
+class TestAirShimmer:
+    """Review F1, synthetic (CI has no real frames): air shimmer shifts a strong static edge
+    between samples. It is not motion -- the content is the same, its gradient energy is
+    shift-invariant -- so neither the rejected set nor the score may depend on which of the
+    samples were measured."""
+
+    @staticmethod
+    def _shimmering_samples() -> list[np.ndarray]:
+        rng = np.random.default_rng(80)
+        sharp = _gaussian_blur(_mast_scene(), 1.0)
+        fx = np.fft.rfftfreq(sharp.shape[1])[None, :]
+        samples = []
+        # Whole 4x4 bins: the binned content is identical up to noise, only displaced.
+        for shift_px in (0.0, 4.0, -4.0):
+            shifted = np.fft.irfft2(
+                np.fft.rfft2(sharp) * np.exp(-2j * np.pi * shift_px * fx), s=sharp.shape
+            )
+            samples.append(shifted + rng.normal(0.0, _NOISE_SIGMA, sharp.shape))
+        return samples
+
+    def test_a_shimmering_edge_is_not_rejected_as_motion(self) -> None:
+        measurement = measure_terrestrial_focus(
+            self._shimmering_samples(), tile_size_px=_LOW_TEXTURE_TILE
+        )
+
+        assert measurement.rejected_moving_tile_count == 0
+
+    def test_the_score_does_not_depend_on_which_shimmering_samples_were_measured(
+        self,
+    ) -> None:
+        a, b, c = self._shimmering_samples()
+        scores = [
+            measure_terrestrial_focus(subset, tile_size_px=_LOW_TEXTURE_TILE).sharpness
+            for subset in ([a], [b], [c], [a, b], [b, c], [a, b, c])
+        ]
+
+        assert all(score is not None for score in scores)
+        values = [float(score) for score in scores if score is not None]
+        assert max(values) / min(values) - 1.0 < 0.05, values
