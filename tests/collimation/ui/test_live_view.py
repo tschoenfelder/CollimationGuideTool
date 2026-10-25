@@ -345,7 +345,8 @@ def _rgb_array(image: QImage) -> np.ndarray:
 
 def _green_mask(rgb: np.ndarray) -> np.ndarray:
     """Pixels exactly the cross colour (pure green, 0/255/0)."""
-    return (rgb[..., 0] == 0) & (rgb[..., 1] == 255) & (rgb[..., 2] == 0)
+    mask: np.ndarray = (rgb[..., 0] == 0) & (rgb[..., 1] == 255) & (rgb[..., 2] == 0)
+    return mask
 
 
 def _ring_measurement() -> DonutMeasurement:
