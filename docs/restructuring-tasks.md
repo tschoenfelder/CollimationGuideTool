@@ -70,6 +70,7 @@ Status: `todo` · `in-progress` · `done` · `field-only` (only real hardware ca
 | S6.9 | #55, #50, #52 | Last single-owner defaults: D06 seed (`domain/target_mode.py`), D07/D08 (`config/mount_alignment_settings.py`, incl. a 3rd 25 % copy in star_acquisition), D05 train ids (`optics/train.py`), K04 excepthook (`diagnostics/excepthook.py`); config-source contract extended (mutation-proven); after-measurements in test-tier-timings.md + duplication-audit.md §6 | issue agent | APPROVE-WITH-FIXES (C02 overclaim, D05 label copies, star_acquisition unguarded, scanner gaps) → fixed | done | 45012da, 052f68b | `python scripts/prove.py 55-last-single-owner-defaults` |
 | S7 | #15 #21 #29–#33 #35 #37 #39 #43 #44 #46 #49 | Proof manifests + missing low-tier tests; field-only assumptions listed | issue agent | coordinator verification (worktree, all proofs PASS) | done | 5f7c689 | `python scripts/prove.py <issue>` |
 | F56 | #56 (field, diag 402eabde) | Terrestrial autofocus on a real low-texture scene: (A) the focuser panel's hand-toggleable "Artificial star" button is a second owner of the autofocus target type → display only, following the collimation target mode; (B) the terrestrial metric is noise-dominated (noise flags 89 % of tiles as moving; score flat under 32 px blur) → noise-calibrated motion test + strongest-detail score | issue agent | — | in-progress | — | `python scripts/prove.py 56-terrestrial-autofocus` |
+| F57 | #57 (user request) | Green centre cross on both camera screens, 2 px thick on screen, drawn on the displayed (scaled) pixmap | issue agent | — | in-progress | — | `python scripts/prove.py 57-centre-cross` |
 | S8 | all | Release gate green (local 3495 passed, cov 96.23 %; CI `0be2dfb`); flake fixed (`64a06d3`); evidence comments posted, #48 #50 #51 #52 #53 #54 #55 (+#13) closed; field checklist `docs/field-verify-checklist.md`; HIGH issues stay open (field-verify). **Pi synced 2026-10-23** (user go-ahead): rasppi3 at `e422976`, published OnStepAdapter 0.5.0 force-reinstalled (sha256 ok, build check `0.5.0 True True True`), headless import + real config load ok. OnStepAdapter#26 (cancellable park) filed; bare tracking-off not filed (user decision) | coordinator | — | done | 0be2dfb | `scripts/check.ps1 -Release` |
 
 ## Task contracts
@@ -641,6 +642,21 @@ R9/F11/R11. Contract written before start. Also (S6.8b review #3): `ASTRONOMICAL
 - **Non-goals:** search-range / fine-step changes (the ±1000 envelope and 250-step accuracy are recorded as follow-ups,
   not fixed here), autofocus on the Guide camera, ROI selection UI.
 - **Proof:** manifest `56-terrestrial-autofocus` (revert-proven); changed-module gate; CI green.
+
+### F57 — green centre cross on both camera screens (#57)
+
+**Contract (2026-10-25).**
+- **Allowed:** `apps/collimation_tool/ui/live_view.py` (`LiveViewLabel`, used by both CameraPanels), its tests
+  (`tests/collimation/ui/`), a new manifest. Not `camera_panel.py` unless strictly needed (say why).
+- **Behaviour changed:** every frame shown in a collimation-tool camera screen gets a green cross through the centre of
+  the displayed image (full-length horizontal + vertical lines), 2 screen px thick at any widget size/aspect, drawn on
+  the scaled pixmap in `_update_scaled_pixmap` (never on `_base_pixmap`).
+- **Frozen:** analysed frames, FITS, measurements, `show_frame`-style public API, existing overlays (donut rings, FOV
+  rect/polygon, matched point), the diagnostic display snapshot's content (unless it reads the scaled pixmap — report).
+  `apps/guide_tool` is a different app: untouched.
+- **Non-goals:** a toggle, configurable colour/size, F56's files (focuser_panel, focus metric — another agent owns them).
+- **Proof:** widget component test checking rendered pixels (green on the centre row/column, 2 px wide, at two widget
+  sizes incl. a non-matching aspect ratio; base pixmap unchanged); manifest `57-centre-cross`; changed-module gate.
 
 ### S5 — #55 + #52 duplication inventory (analysis only)
 
