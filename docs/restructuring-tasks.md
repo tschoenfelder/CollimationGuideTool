@@ -643,6 +643,21 @@ R9/F11/R11. Contract written before start. Also (S6.8b review #3): `ASTRONOMICAL
   not fixed here), autofocus on the Guide camera, ROI selection UI.
 - **Proof:** manifest `56-terrestrial-autofocus` (revert-proven); changed-module gate; CI green.
 
+**Contract amendment (2026-10-25, after review APPROVE-WITH-FIXES F1–F9).**
+- **Allowed additionally:** `autofocus_controller.py` for the terrestrial sampling and exposure path (searcher still
+  frozen), the wiring that passes `ExposureControl` (`main_window.py`/`focuser_panel.py`, only if needed), and
+  `datasets/regressions/56-dusk/`.
+- **F1:** the score at one focuser position must not depend on sample order or on duplicates beyond the searcher's 5 %
+  margin (order-independent motion reference, energy from all static samples); real-frame stability test.
+- **F2:** the extra terrestrial samples are distinct fresh frames (the fresh-frame source, not `get_frame()` re-reads),
+  so motion rejection and the noise floor act in production; identical samples are deduplicated.
+- **F3:** terrestrial uses the existing exposure step-down: when clipped tiles carry the score, lower the exposure and
+  measure again before searching (restored afterwards). If it is still clipping-dominated at the end, the result says
+  so explicitly (`failure_reason`/status text), never a bare SUCCESS.
+- **F4–F9:** a foliage test (distinct samples); mutation-sensitive tests for clipped share, floor value, duplicates and
+  the ratio clause; non-finite sharpness → None; datasets slimmed (Guide frames dropped, Main frames lossless uint16) in a
+  separate commit; README 3 %, dusk provenance note (its incident's autofocus record is the stale artificial-star run).
+
 ### F57 — green centre cross on both camera screens (#57)
 
 **Contract (2026-10-25).**
