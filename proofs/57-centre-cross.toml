@@ -1,0 +1,39 @@
+# Proof manifest -- schema in proofs/README.md.
+# Run: python scripts/prove.py 57-centre-cross
+issues = [57]
+summary = """F57: both collimation-tool camera screens (CameraPanel's LiveViewLabel) now show a pure-green \
+cross through the centre of the displayed image -- full-length horizontal and vertical lines, exactly 2 \
+screen px thick at any widget size and aspect ratio. It is drawn with whole-pixel fillRect on the scaled \
+pixmap in LiveViewLabel._update_scaled_pixmap (a 2 px line in the native 3840x2160 frame would shrink \
+below 1 px when shown), never on _base_pixmap, so analysed frames, FITS, the existing overlays and the \
+diagnostic display snapshot (CameraPanel.displayed_image_png reads _base_pixmap) are unchanged."""
+modules = [
+    "apps/collimation_tool/ui/live_view.py",
+]
+fix_commits = ["0db0b72"]
+dataset_uuids = []
+focused_command = "pytest -q tests/collimation/ui/test_live_view.py::TestCentreCross"
+broader_tier = "component"
+field_only_assumptions = [
+    "On the Pi screen (device pixel ratio 1) a 2 px pixmap line is 2 physical px; on a scaled desktop display (DPR > 1) Qt upscales the whole label pixmap, so the lines are 2 logical px (2 x DPR physical).",
+]
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_live_view.py::TestCentreCross::test_cross_is_two_px_thick_full_length_and_centred"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-25 in the F57 worktree, the 0db0b72 live_view.py hunk reverse-applied, today's tests kept: tests/collimation/ui/test_live_view.py:404: AssertionError: row 99 not fully green at (400, 400)"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_live_view.py::TestCentreCross::test_cross_follows_a_resize"
+failed_before_fix = true
+evidence = "Revert-proof 2026-10-25 in the F57 worktree, the 0db0b72 live_view.py hunk reverse-applied, today's tests kept: tests/collimation/ui/test_live_view.py:429: assert [] == [129, 130]"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_live_view.py::TestCentreCross::test_base_pixmap_has_no_green"
+failed_before_fix = false
+reason_no_prefix_repro = "Guard for the fix's own rule (cross only on the scaled pixmap); without the fix there is no cross anywhere, so it passes pre-fix by construction."
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_live_view.py::TestCentreCross::test_existing_overlays_are_unchanged_off_the_cross"
+failed_before_fix = false
+reason_no_prefix_repro = "Guard that the cross changes nothing else (rings, FOV rect, matched point, scaled image off the cross rows/columns); it pins behaviour that already held before the fix."
