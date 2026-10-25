@@ -627,3 +627,23 @@ class TestQuitWaitsForTheJog:
         assert not panel._jog.is_busy
         assert focuser.order[:2] == ["stop", "move ended"]
         assert focuser.order[-1] == "disconnect"
+
+
+def test_a_clipping_dominated_terrestrial_result_tells_the_user_to_lower_exposure() -> None:
+    """Issue #56 review F3: never a bare result text for highlights_clipped."""
+    from collimation_tool.application.autofocus_controller import (
+        HIGHLIGHTS_CLIPPED,
+        AutofocusResult,
+    )
+    from collimation_tool.ui.focuser_panel import _format_autofocus_status
+
+    text = _format_autofocus_status(
+        AutofocusResult(
+            status=AutofocusStatus.INSUFFICIENT_EVIDENCE, mode=AutofocusMode.TERRESTRIAL,
+            start_position=100, best_position=350, search_min=0, search_max=1100,
+            optical_train="Main", failure_reason=HIGHLIGHTS_CLIPPED,
+        )
+    )
+
+    assert "highlights clipped" in text
+    assert "lower exposure" in text

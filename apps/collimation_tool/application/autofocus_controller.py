@@ -46,12 +46,16 @@ from astrotool_core.acquisition.stable_frame_acquisition import (
 from astrotool_core.focus.port import FocuserPort
 from astrotool_core.focus.search_bounds import DEFAULT_ENVELOPE_STEPS
 from astrotool_core.focus.star_focus_metric import StarTargetTracker, measure_star_focus
-from astrotool_core.focus.terrestrial_focus_metric import measure_terrestrial_focus
+from astrotool_core.focus.terrestrial_focus_metric import (
+    TerrestrialFocusEvidence,
+    analyze_terrestrial_focus,
+)
 from astrotool_core.timing import SYSTEM_CLOCK, Clock, poll_until
 
 from collimation_tool.application.autofocus_search import (
     AutofocusStatus,
     BoundedFocusSearcher,
+    BoundedSearchResult,
     FocusCurvePoint,
     FocusSample,
     InvalidSample,
@@ -69,6 +73,17 @@ _RETURN_POLL_INTERVAL_S = 0.05
 #: S6.7 (T05): the fresh-frame budget while the exposure is still unknown assumes 2 s
 #: (2 x 2 s + 1 s = the previous fixed 5 s); see the module docstring.
 AUTOFOCUS_FRESH_FRAME_BUDGET = FreshFrameBudget(assumed_exposure_s=2.0)
+
+#: Issue #56 review F3: a terrestrial score is "clipping-dominated" when tiles with clipped
+#: pixels carry more than this share of it. Above one half the clipped highlights -- whose
+#: response to focus depends on how far above full scale they really are (unknowable from
+#: clipped data; a highlight far above it can make the score RISE with defocus) -- outweigh
+#: all unclipped detail together, so the curve can no longer be trusted. Measured on the real
+#: frames: 0.75-0.80 (diagnostic 402eabde), 0.91-0.93 (f0bc314b) -- both stepped down.
+CLIPPED_SHARE_LIMIT = 0.5
+#: `failure_reason` of a terrestrial run whose result is still clipping-dominated after the
+#: exposure step-down (status INSUFFICIENT_EVIDENCE, never a bare SUCCESS).
+HIGHLIGHTS_CLIPPED = "highlights_clipped"
 
 
 class AutofocusMode(Enum):
@@ -173,6 +188,8 @@ class AutofocusController:
             clock=self._clock,
         )
         self._terrestrial_sample_count = max(1, terrestrial_sample_count)
+        #: Issue #56 review F3: clipped share of each terrestrial score of the current run.
+        self._clipped_shares: dict[float, float] = {}
         self._star_edge_margin_px = star_edge_margin_px
         self._terrestrial_tile_size_px = terrestrial_tile_size_px
         self._coarse_step = coarse_step
@@ -199,13 +216,20 @@ class AutofocusController:
         self._cancel_check = cancel_check
         self._set_auto_exposure_paused(True)
         artificial = mode is AutofocusMode.ARTIFICIAL_STAR
-        control = self._exposure_control if artificial else None
+        terrestrial = mode is AutofocusMode.TERRESTRIAL
+        control = self._exposure_control if (artificial or terrestrial) else None
         original = control.get() if control is not None else None
         attempts: list[tuple[float, int]] = [original] if original is not None else []
         tracker = StarTargetTracker(max_shift_px=self._tracker_max_shift_px)
         override: tuple[AutofocusStatus, str | None] | None = None
+        self._clipped_shares = {}
         try:
-            for attempt in range(self._max_exposure_attempts if control is not None else 1):
+            if terrestrial and control is not None:
+                # Issue #56 review F3: clipped highlights carrying the score can drive the
+                # search off focus -- step the exposure down at the start position first.
+                self._terrestrial_exposure_precheck(control, attempts, cancel_event)
+            steps_left = self._max_exposure_attempts - len(attempts)
+            for _attempt in range(1 + max(0, steps_left) if control is not None else 1):
                 tracker = StarTargetTracker(max_shift_px=self._tracker_max_shift_px)
                 searcher = BoundedFocusSearcher(
                     self._focuser, higher_is_better=(mode is AutofocusMode.TERRESTRIAL),
@@ -220,31 +244,36 @@ class AutofocusController:
                 )
                 measure = self._build_measurer(mode, tracker)
                 search_result = searcher.search(measure, cancel_check=cancel_check)
-                saturated = any(
-                    point.reason == "saturated" for point in search_result.samples
-                )
+                if artificial:
+                    retry = any(point.reason == "saturated" for point in search_result.samples)
+                else:
+                    retry = terrestrial and self._clipping_dominated(search_result)
                 if (
                     control is None
-                    or not saturated
+                    or not retry
                     or search_result.status is AutofocusStatus.CANCELLED
-                    or attempt + 1 >= self._max_exposure_attempts
+                    or len(attempts) >= self._max_exposure_attempts
                 ):
                     break
-                # Saturated at (or on the way to) focus: lower the exposure,
-                # return to the original P0 (so the +-envelope is unchanged)
-                # and search again with the star's peak back below full scale.
-                exposure_ms, gain = control.get()
-                control.set(exposure_ms * control.factor, gain)
-                if not self._clock.sleep(control.settle_s, cancel_event):
-                    # S6.3: Stop during the settle -- nothing further is searched.
-                    override = (AutofocusStatus.CANCELLED, None)
+                # Saturated (artificial star) / clipping-dominated (terrestrial) at or on the
+                # way to focus: lower the exposure, return to the original P0 (so the
+                # +-envelope is unchanged) and search again below full scale.
+                lowered = self._lower_exposure(control, attempts, cancel_event)
+                if lowered is not None:
+                    if lowered == "cancelled":
+                        override = (AutofocusStatus.CANCELLED, None)
+                    elif artificial:
+                        override = (AutofocusStatus.NO_USABLE_EVIDENCE, "saturated_at_min_exposure")
                     break
-                new_ms, new_gain = control.get()
-                if new_ms >= exposure_ms * 0.999:
-                    override = (AutofocusStatus.NO_USABLE_EVIDENCE, "saturated_at_min_exposure")
-                    break
-                attempts.append((new_ms, new_gain))
                 self._return_to(search_result.start_position)
+            if (
+                override is None
+                and terrestrial
+                and search_result.status is not AutofocusStatus.CANCELLED
+                and self._clipping_dominated(search_result)
+            ):
+                # Never a bare SUCCESS on a curve the clipped highlights drew (review F3).
+                override = (AutofocusStatus.INSUFFICIENT_EVIDENCE, HIGHLIGHTS_CLIPPED)
         finally:
             if control is not None and original is not None and control.get() != original:
                 control.set(*original)
@@ -354,16 +383,85 @@ class AutofocusController:
             return None
         return FocusSample(value=measurement.fwhm_px, confidence=measurement.confidence)
 
-    def _measure_terrestrial(self) -> FocusSample | None:
+    def _terrestrial_samples(self) -> list[np.ndarray] | None:
+        """Issue #56 review F2: `terrestrial_sample_count` DISTINCT fresh frames -- each one
+        exposed after the previous arrived (the fresh-frame source, not a `get_frame()`
+        re-read of the same latest frame), so the metric's motion test and noise floor see
+        real independent samples. A re-delivered identical frame is dropped; a failed extra
+        wait just ends the series (the first frame alone is still a measurement)."""
         first = self._acquire_fresh_frame()
         if first is None:
             return None
         frames: list[np.ndarray] = [first]
         for _ in range(self._terrestrial_sample_count - 1):
-            extra = self._get_frame()
-            if extra is not None:
+            extra = self._acquire_fresh_frame()
+            if extra is None:
+                last = self._frames.last_result
+                if last is not None and last.status is FrameAcquisitionStatus.CANCELLED:
+                    return None
+                break
+            if not any(np.array_equal(extra, seen) for seen in frames):
                 frames.append(extra)
-        measurement = measure_terrestrial_focus(frames, tile_size_px=self._terrestrial_tile_size_px)
+        return frames
+
+    def _terrestrial_evidence(self) -> TerrestrialFocusEvidence | None:
+        frames = self._terrestrial_samples()
+        if frames is None:
+            return None
+        return analyze_terrestrial_focus(frames, tile_size_px=self._terrestrial_tile_size_px)
+
+    def _measure_terrestrial(self) -> FocusSample | None:
+        evidence = self._terrestrial_evidence()
+        if evidence is None:
+            return None
+        measurement = evidence.measurement
         if measurement.sharpness is None:
             return None
+        self._clipped_shares[measurement.sharpness] = evidence.clipped_share
         return FocusSample(value=measurement.sharpness, confidence=measurement.confidence)
+
+    def _clipping_dominated(self, search_result: BoundedSearchResult) -> bool:
+        """The score at the result's final/best sample is carried mostly by clipped tiles."""
+        key = search_result.final_value
+        if key is None or key not in self._clipped_shares:
+            values = [point.value for point in search_result.samples if point.valid]
+            key = max(values) if values else None
+        if key is None:
+            return False
+        return self._clipped_shares.get(key, 0.0) > CLIPPED_SHARE_LIMIT
+
+    def _lower_exposure(
+        self,
+        control: ExposureControl,
+        attempts: list[tuple[float, int]],
+        cancel_event: threading.Event | None,
+    ) -> str | None:
+        """One exposure step-down: None when applied (recorded in `attempts`), else
+        'cancelled' (Stop during the settle) or 'at_min_exposure' (the camera clamped it)."""
+        exposure_ms, gain = control.get()
+        control.set(exposure_ms * control.factor, gain)
+        if not self._clock.sleep(control.settle_s, cancel_event):
+            return "cancelled"  # S6.3: Stop during the settle -- nothing further is searched.
+        new_ms, new_gain = control.get()
+        if new_ms >= exposure_ms * 0.999:
+            return "at_min_exposure"
+        attempts.append((new_ms, new_gain))
+        return None
+
+    def _terrestrial_exposure_precheck(
+        self,
+        control: ExposureControl,
+        attempts: list[tuple[float, int]],
+        cancel_event: threading.Event | None,
+    ) -> None:
+        """Before searching: while clipped tiles carry the score at the start position, lower
+        the exposure (up to `max_exposure_attempts` in total). A Stop or the camera's minimum
+        ends the step-down; the search then runs (and reports cancellation / clipping)."""
+        while len(attempts) < self._max_exposure_attempts:
+            if self._cancel_check is not None and self._cancel_check():
+                return
+            evidence = self._terrestrial_evidence()
+            if evidence is None or evidence.clipped_share <= CLIPPED_SHARE_LIMIT:
+                return
+            if self._lower_exposure(control, attempts, cancel_event) is not None:
+                return

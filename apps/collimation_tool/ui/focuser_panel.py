@@ -67,6 +67,7 @@ from PySide6.QtWidgets import (
 )
 
 from collimation_tool.application.autofocus_controller import (
+    HIGHLIGHTS_CLIPPED,
     AutofocusController,
     AutofocusMode,
     AutofocusResult,
@@ -115,6 +116,9 @@ def _format_autofocus_status(result: AutofocusResult) -> str:
     text = f"{prefix}: {result.status.value} ({mode_text})"
     if result.failure_reason in ("saturated", "saturated_at_min_exposure"):
         return f"{text} -- star saturated: lower exposure/gain and retry"
+    if result.failure_reason == HIGHLIGHTS_CLIPPED:
+        # Issue #56 review F3: still clipping-dominated after the exposure step-down.
+        return f"{text} -- highlights clipped: lower exposure/gain and retry"
     if result.failure_reason:
         return f"{text} -- {result.failure_reason}"
     return text
