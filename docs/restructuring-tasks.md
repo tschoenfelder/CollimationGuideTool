@@ -69,6 +69,7 @@ Status: `todo` · `in-progress` · `done` · `field-only` (only real hardware ca
 | S6.8d | #55 (P04/P05), #31, #46 | Dead timed-motion path deleted (runner retries/fallback/presets/bootstrap/`park_after`, recenter D5, `install_rate`); settings `pulse_ms`/`rate_preset`/`calibration_rate_preset`/`max_nudge_pulse_ms` removed (old config loads, one warning per key — verified on the Pi's real config.toml); explicit `max_nudge_arcsec` (= old cap 2165.904″); accurate Astronomical refusal texts; `AngularMotionPort` conformance test; boundary tokens + import-linter contract on `astrotool_core.indi` | issue agent | APPROVE-WITH-FIXES (import-linter bypass via package, calibration=True unpinned, port drift, stale texts) → fixed, mutation-proven; differential harness byte-identical (31 expected diffs) | done | 3f708fc, f572b0c, 1ac3f53, a8848eb, e2ee56c | `python scripts/prove.py 55-dead-timed-path` |
 | S6.9 | #55, #50, #52 | Last single-owner defaults: D06 seed (`domain/target_mode.py`), D07/D08 (`config/mount_alignment_settings.py`, incl. a 3rd 25 % copy in star_acquisition), D05 train ids (`optics/train.py`), K04 excepthook (`diagnostics/excepthook.py`); config-source contract extended (mutation-proven); after-measurements in test-tier-timings.md + duplication-audit.md §6 | issue agent | APPROVE-WITH-FIXES (C02 overclaim, D05 label copies, star_acquisition unguarded, scanner gaps) → fixed | done | 45012da, 052f68b | `python scripts/prove.py 55-last-single-owner-defaults` |
 | S7 | #15 #21 #29–#33 #35 #37 #39 #43 #44 #46 #49 | Proof manifests + missing low-tier tests; field-only assumptions listed | issue agent | coordinator verification (worktree, all proofs PASS) | done | 5f7c689 | `python scripts/prove.py <issue>` |
+| F56 | #56 (field, diag 402eabde) | Terrestrial autofocus on a real low-texture scene: (A) the focuser panel's hand-toggleable "Artificial star" button is a second owner of the autofocus target type → display only, following the collimation target mode; (B) the terrestrial metric is noise-dominated (noise flags 89 % of tiles as moving; score flat under 32 px blur) → noise-calibrated motion test + strongest-detail score | issue agent | — | in-progress | — | `python scripts/prove.py 56-terrestrial-autofocus` |
 | S8 | all | Release gate green (local 3495 passed, cov 96.23 %; CI `0be2dfb`); flake fixed (`64a06d3`); evidence comments posted, #48 #50 #51 #52 #53 #54 #55 (+#13) closed; field checklist `docs/field-verify-checklist.md`; HIGH issues stay open (field-verify). **Pi synced 2026-10-23** (user go-ahead): rasppi3 at `e422976`, published OnStepAdapter 0.5.0 force-reinstalled (sha256 ok, build check `0.5.0 True True True`), headless import + real config load ok. OnStepAdapter#26 (cancellable park) filed; bare tracking-off not filed (user decision) | coordinator | — | done | 0be2dfb | `scripts/check.ps1 -Release` |
 
 ## Task contracts
@@ -618,6 +619,28 @@ R9/F11/R11. Contract written before start. Also (S6.8b review #3): `ASTRONOMICAL
   S1 → now); duplication-audit.md gets an "after" section (status per item, sizes/function lengths before → now).
 - **Frozen:** every public API, diagnostics keys, all manifest assertions. **Non-goals:** anything else.
 - **Proof:** manifest `55-last-single-owner-defaults`; gates; `prove.py 55` PASS.
+
+### F56 — terrestrial autofocus on a real low-texture scene (#56, diag 402eabde)
+
+**Contract (2026-10-25).**
+- **Allowed:** `apps/collimation_tool/ui/focuser_panel.py` (the "Artificial star" button only),
+  `packages/astrotool_core/focus/terrestrial_focus_metric.py`, `apps/collimation_tool/application/autofocus_controller.py`
+  (only if the metric's call needs it), their tests, a new regression dataset `datasets/regressions/56/` (from the bundle
+  in `~/.CollimationGuideTool/diagnostics/402eabde-…`, via `scripts/regression_dataset.py`) + its test, a new manifest.
+- **Behaviour changed:** (A) the focuser panel only *shows* the artificial-star target type; it is set solely by the
+  collimation target mode (`select_artificial_star_mode`) — no user toggle, no second owner. (B) Terrestrial metric:
+  a tile counts as moving only when its frame-to-frame change clearly exceeds the frame's own noise-only change (noise
+  alone never rejects); the score is noise-robust (e.g. binning) and follows the strongest-detail static tiles above the
+  frame's noise floor, so a mostly featureless scene still gives a monotone focus curve.
+- **Tests:** failing-first regressions: (A) clicking the button cannot change `_autofocus_mode()`; (B) on the 402eabde
+  real Main frames + added blur, the score falls monotonically and ≥ 5 % per step from 4 px on; noise-only frames reject
+  no tile as moving; a really changing tile is still rejected. Existing `35-terrestrial-metric-inversion` (real sweep
+  frames 14985/15485) and #35 regressions must still pass unchanged.
+- **Frozen:** `TerrestrialFocusMeasurement` fields, `AutofocusController`/`BoundedFocusSearcher` APIs and search
+  algorithm (envelope, steps), diagnostics keys, star/artificial-star metrics.
+- **Non-goals:** search-range / fine-step changes (the ±1000 envelope and 250-step accuracy are recorded as follow-ups,
+  not fixed here), autofocus on the Guide camera, ROI selection UI.
+- **Proof:** manifest `56-terrestrial-autofocus` (revert-proven); changed-module gate; CI green.
 
 ### S5 — #55 + #52 duplication inventory (analysis only)
 
