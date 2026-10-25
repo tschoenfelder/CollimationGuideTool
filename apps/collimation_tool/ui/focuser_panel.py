@@ -56,7 +56,7 @@ from astrotool_core.focus.port import FocuserPort
 from astrotool_core.mount.operating_mode import OperatingMode
 from astrotool_core.session import ConnectionFailure, DeviceConnectionService
 from astrotool_core.timing import SYSTEM_CLOCK, Clock
-from PySide6.QtCore import QTimer, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
     QHBoxLayout,
@@ -235,9 +235,19 @@ class FocuserPanel(QWidget):
         # Issue #33 enhancement: ONE artificial star, star-specific metric,
         # same target through the sweep -- a TARGET TYPE (orthogonal to the
         # operating mode, AGENTS.md), set from the collimation target mode.
+        # Issue #56 (diag 402eabde): ONE owner -- the collimation target mode
+        # (`select_artificial_star_mode`). The panel keeps the selection in
+        # `_artificial_star_selected`; the button is a read-only indicator
+        # (disabled, never read back), so a click cannot put Auto Focus into
+        # artificial-star mode behind the target mode's back.
+        self._artificial_star_selected = False
         self._af_artificial_button = QPushButton("Artificial star")
         self._af_artificial_button.setCheckable(True)
-        self._af_artificial_button.toggled.connect(lambda _checked: self._show_af_metric())
+        self._af_artificial_button.setEnabled(False)
+        self._af_artificial_button.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self._af_artificial_button.setToolTip(
+            "Shows the Auto Focus target type -- set by the collimation target mode"
+        )
 
         self._auto_focus_button = QPushButton("Auto Focus")
         self._auto_focus_button.clicked.connect(self._on_auto_focus_clicked)
@@ -457,7 +467,7 @@ class FocuserPanel(QWidget):
     def _autofocus_mode(self) -> AutofocusMode:
         """Issue #48 / M04: the artificial-star target type when selected, otherwise the
         metric the global operating mode selects (Terrestrial -> Tenengrad, else star/FWHM)."""
-        if self._af_artificial_button.isChecked():
+        if self._artificial_star_selected:
             return AutofocusMode.ARTIFICIAL_STAR
         mode = self._operating_mode() if self._operating_mode is not None else None
         if mode is OperatingMode.TERRESTRIAL:
@@ -467,7 +477,9 @@ class FocuserPanel(QWidget):
     def _show_af_metric(self) -> None:
         mode = self._autofocus_mode()
         if mode is AutofocusMode.ARTIFICIAL_STAR:
-            text = "Metric: artificial star (single star, FWHM)"
+            text = (
+                "Metric: artificial star (single star, FWHM) -- set by the collimation target mode"
+            )
         elif mode is AutofocusMode.TERRESTRIAL:
             text = "Metric: Tenengrad (terrestrial scene) -- follows the Operating mode"
         else:
@@ -486,8 +498,11 @@ class FocuserPanel(QWidget):
         """Select (or leave) the artificial-star autofocus target type -- called
         by MainWindow when the collimation target mode changes (issue #39/#33:
         the mode is inferred, not left for the user to work out). Leaving it
-        falls back to the metric the global operating mode selects (#48/M04)."""
+        falls back to the metric the global operating mode selects (#48/M04).
+        Issue #56: the only way to set it -- the button merely shows it."""
+        self._artificial_star_selected = selected
         self._af_artificial_button.setChecked(selected)
+        self._show_af_metric()
 
     def _poll_status(self) -> None:
         """One QTimer tick. S6.3 (#52 L04): never raises into Qt -- a failing status read is

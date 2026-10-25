@@ -354,7 +354,7 @@ class TestArtificialStarMode:
         panel = _artificial_panel()
         panel._connect_button.setChecked(True)
         try:
-            panel._af_artificial_button.setChecked(True)
+            panel.select_artificial_star_mode(True)  # #56: the one owner, not the indicator
             panel._on_auto_focus_clicked()
             _run_autofocus_to_completion(panel)
 
@@ -369,7 +369,7 @@ class TestArtificialStarMode:
         panel = _artificial_panel(wait_for_frame=_saturated_frame_result)
         panel._connect_button.setChecked(True)
         try:
-            panel._af_artificial_button.setChecked(True)
+            panel.select_artificial_star_mode(True)  # #56: the one owner, not the indicator
             panel._on_auto_focus_clicked()
             _run_autofocus_to_completion(panel)
 
@@ -385,7 +385,7 @@ class TestArtificialStarMode:
         panel = _artificial_panel()
         panel._connect_button.setChecked(True)
         try:
-            panel._af_artificial_button.setChecked(True)
+            panel.select_artificial_star_mode(True)  # #56: the one owner, not the indicator
             panel._on_auto_focus_clicked()
             _run_autofocus_to_completion(panel)
 
@@ -431,12 +431,64 @@ class TestArtificialStarMode:
         panel = _artificial_panel(exposure_control=control)
         panel._connect_button.setChecked(True)
         try:
-            panel._af_artificial_button.setChecked(True)
+            panel.select_artificial_star_mode(True)  # #56: the one owner, not the indicator
             panel._on_auto_focus_clicked()
             _run_autofocus_to_completion(panel)
         finally:
             panel._connect_button.setChecked(False)
         assert panel._exposure_control is control
+
+
+class TestTheTargetTypeHasOneOwner:
+    """Issue #56 (diag 402eabde): the run used `artificial_star` while the collimation target
+    mode was `natural_star` -- the panel's checkable button was a second owner of the target
+    type. The panel only SHOWS it; the collimation target mode (`select_artificial_star_mode`,
+    called by MainWindow) is the one owner."""
+
+    def test_clicking_the_indicator_cannot_select_artificial_star(self, qapp: object) -> None:
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+
+        panel = _artificial_panel(operating_mode=lambda: OperatingMode.TERRESTRIAL)
+
+        QTest.mouseClick(panel._af_artificial_button, Qt.MouseButton.LeftButton)
+        assert panel._autofocus_mode() is AutofocusMode.TERRESTRIAL
+        panel._af_artificial_button.click()
+        assert panel._autofocus_mode() is AutofocusMode.TERRESTRIAL
+        assert panel.diagnostic_context()["autofocus_mode"] == "terrestrial"
+
+    def test_clicking_the_indicator_cannot_leave_artificial_star(self, qapp: object) -> None:
+        from PySide6.QtCore import Qt
+        from PySide6.QtTest import QTest
+
+        panel = _artificial_panel(operating_mode=lambda: OperatingMode.TERRESTRIAL)
+        panel.select_artificial_star_mode(True)
+
+        QTest.mouseClick(panel._af_artificial_button, Qt.MouseButton.LeftButton)
+        assert panel._autofocus_mode() is AutofocusMode.ARTIFICIAL_STAR
+        panel._af_artificial_button.click()
+        assert panel._autofocus_mode() is AutofocusMode.ARTIFICIAL_STAR
+
+    def test_toggling_the_indicator_widget_itself_does_not_change_the_mode(
+        self, qapp: object
+    ) -> None:
+        panel = _artificial_panel(operating_mode=lambda: OperatingMode.TERRESTRIAL)
+
+        panel._af_artificial_button.toggle()
+
+        assert panel._autofocus_mode() is AutofocusMode.TERRESTRIAL
+
+    def test_the_indicator_follows_the_owner_and_is_not_user_editable(
+        self, qapp: object
+    ) -> None:
+        panel = _artificial_panel()
+
+        assert not panel._af_artificial_button.isEnabled()
+        panel.select_artificial_star_mode(True)
+        assert panel._af_artificial_button.isChecked()
+        assert "artificial star" in panel._af_metric_label.text().lower()
+        panel.select_artificial_star_mode(False)
+        assert not panel._af_artificial_button.isChecked()
 
 
 class _FocuserWithBlockers(FakeFocuser):
