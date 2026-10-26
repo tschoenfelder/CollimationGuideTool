@@ -84,6 +84,15 @@ CLIPPED_SHARE_LIMIT = 0.5
 #: `failure_reason` of a terrestrial run whose result is still clipping-dominated after the
 #: exposure step-down (status INSUFFICIENT_EVIDENCE, never a bare SUCCESS).
 HIGHLIGHTS_CLIPPED = "highlights_clipped"
+#: The search statuses that report a focus curve -- the only ones clipped highlights can have
+#: drawn; every other status (a refused move, a dead stream, ...) is reported unchanged.
+_CURVE_STATUSES = frozenset(
+    {
+        AutofocusStatus.SUCCESS,
+        AutofocusStatus.BEST_AT_SEARCH_LIMIT,
+        AutofocusStatus.INCONSISTENT_CURVE,
+    }
+)
 
 
 class AutofocusMode(Enum):
@@ -190,6 +199,8 @@ class AutofocusController:
         self._terrestrial_sample_count = max(1, terrestrial_sample_count)
         #: Issue #56 review F3: clipped share of each terrestrial score of the current run.
         self._clipped_shares: dict[float, float] = {}
+        #: Review 2 #5: an exposure lowering was issued this run -> always restore.
+        self._exposure_lowered = False
         self._star_edge_margin_px = star_edge_margin_px
         self._terrestrial_tile_size_px = terrestrial_tile_size_px
         self._coarse_step = coarse_step
@@ -223,6 +234,7 @@ class AutofocusController:
         tracker = StarTargetTracker(max_shift_px=self._tracker_max_shift_px)
         override: tuple[AutofocusStatus, str | None] | None = None
         self._clipped_shares = {}
+        self._exposure_lowered = False
         try:
             if terrestrial and control is not None:
                 # Issue #56 review F3: clipped highlights carrying the score can drive the
@@ -247,7 +259,13 @@ class AutofocusController:
                 if artificial:
                     retry = any(point.reason == "saturated" for point in search_result.samples)
                 else:
-                    retry = terrestrial and self._clipping_dominated(search_result)
+                    # Review 2 #1: only a search that drew a curve can have been drawn by
+                    # clipped highlights -- a refused move or a dead stream is reported as is.
+                    retry = (
+                        terrestrial
+                        and search_result.status in _CURVE_STATUSES
+                        and self._clipping_dominated(search_result)
+                    )
                 if (
                     control is None
                     or not retry
@@ -269,13 +287,20 @@ class AutofocusController:
             if (
                 override is None
                 and terrestrial
-                and search_result.status is not AutofocusStatus.CANCELLED
+                and search_result.status in _CURVE_STATUSES
                 and self._clipping_dominated(search_result)
             ):
-                # Never a bare SUCCESS on a curve the clipped highlights drew (review F3).
+                # Never a bare SUCCESS on a curve the clipped highlights drew (review F3);
+                # never replacing a failure status (review 2 #1). The best position is not
+                # trusted: go back to where the run started, as the searcher does for its own
+                # insufficient evidence (review 2 #4).
                 override = (AutofocusStatus.INSUFFICIENT_EVIDENCE, HIGHLIGHTS_CLIPPED)
+                self._return_to(search_result.start_position)
         finally:
-            if control is not None and original is not None and control.get() != original:
+            # Review 2 #5: restore whenever a lowering was ISSUED -- the camera may apply it
+            # later (queued to the UI thread), so reading the value back can still show the
+            # original and skip the restore.
+            if control is not None and original is not None and self._exposure_lowered:
                 control.set(*original)
             self._set_auto_exposure_paused(False)
 
@@ -421,14 +446,23 @@ class AutofocusController:
         return FocusSample(value=measurement.sharpness, confidence=measurement.confidence)
 
     def _clipping_dominated(self, search_result: BoundedSearchResult) -> bool:
-        """The score at the result's final/best sample is carried mostly by clipped tiles."""
-        key = search_result.final_value
-        if key is None or key not in self._clipped_shares:
-            values = [point.value for point in search_result.samples if point.valid]
-            key = max(values) if values else None
-        if key is None:
+        """Clipped tiles carry the score of a sample that competed for best focus: any valid
+        sample scoring within the improvement margin of the best, or measured within one
+        coarse step of the best position (review 2 #2: the true focus can be the clipped
+        sample a just-unclipped neighbour narrowly outscores)."""
+        valid = [point for point in search_result.samples if point.valid]
+        if not valid:
             return False
-        return self._clipped_shares.get(key, 0.0) > CLIPPED_SHARE_LIMIT
+        best_value = max(point.value for point in valid)
+        best_position = search_result.best_position
+        for point in valid:
+            competing = point.value >= best_value * (1.0 - self._improvement_fraction) or (
+                best_position is not None
+                and abs(point.position - best_position) <= self._coarse_step
+            )
+            if competing and self._clipped_shares.get(point.value, 0.0) > CLIPPED_SHARE_LIMIT:
+                return True
+        return False
 
     def _lower_exposure(
         self,
@@ -439,6 +473,7 @@ class AutofocusController:
         """One exposure step-down: None when applied (recorded in `attempts`), else
         'cancelled' (Stop during the settle) or 'at_min_exposure' (the camera clamped it)."""
         exposure_ms, gain = control.get()
+        self._exposure_lowered = True  # before the call: a queued setter may apply it later
         control.set(exposure_ms * control.factor, gain)
         if not self._clock.sleep(control.settle_s, cancel_event):
             return "cancelled"  # S6.3: Stop during the settle -- nothing further is searched.

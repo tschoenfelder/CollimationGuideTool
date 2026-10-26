@@ -496,3 +496,17 @@ class TestAirShimmer:
         assert all(score is not None for score in scores)
         values = [float(score) for score in scores if score is not None]
         assert max(values) / min(values) - 1.0 < 0.05, values
+
+
+class TestModerateMotion:
+    def test_a_tile_changing_by_about_4x_the_noise_change_is_rejected(self) -> None:
+        # Review 2 #6 (pins _MOTION_NOISE_FACTOR = 3): a cloud shadow brightens one sky tile by
+        # 1000 ADU in one sample. Binned, the noise-only change is ~2/sqrt(pi) x 211 ~ 240 ADU,
+        # so this change is ~4x it: above the 3x noise clause, far above the tile's own std.
+        rng = np.random.default_rng(81)
+        samples = _noisy_samples(_mast_scene(), rng)
+        samples[1][0:64, 448:512] += 1000.0
+
+        measurement = measure_terrestrial_focus(samples, tile_size_px=_LOW_TEXTURE_TILE)
+
+        assert measurement.rejected_moving_tile_count == 1
