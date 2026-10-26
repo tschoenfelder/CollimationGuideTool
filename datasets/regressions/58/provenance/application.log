@@ -1,0 +1,5 @@
+2026-10-25 19:02:47,020 WARNING  astrotool_core.config.mount_alignment_settings: [mount_alignment] pulse_ms is no longer used (S6.8d: Mount Align has no timed move) -- ignored; see install.md 'Config migration notes'
+2026-10-25 19:02:47,268 INFO     astrotool_core.camera.touptek_adapter: TouptekCameraAdapter(ATR585M): opened model=ATR585M model.flag=0x488876B84D9 -> mono, USB3-capable=yes, USB3-over-USB2-link=no, TEC=yes
+2026-10-25 19:02:48,204 INFO     astrotool_core.camera.touptek_adapter: TouptekCameraAdapter(GPCMOS02000KPA): opened model=GPCMOS02000KPA model.flag=0x85682209 -> colour, USB3-capable=no, USB3-over-USB2-link=no, TEC=no
+2026-10-25 19:02:49,377 INFO     astrotool_core.camera.touptek_adapter: TouptekCameraAdapter(GPCMOS02000KPA): temperature not implemented by this camera (SDK E_NOTIMPL) -- treated as unsupported until the next connect
+2026-10-25 19:02:55,102 INFO     astrotool_core.filter_wheel.indi_filter_wheel_adapter: IndiFilterWheelAdapter: connected to 'ToupTek EFW 2'

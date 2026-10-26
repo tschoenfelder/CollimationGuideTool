@@ -1,0 +1,60 @@
+{
+  "issue": 58,
+  "diagnostic_uuids": [
+    "4c5677d0-c97a-4a5a-9a10-86d8f71c95dd"
+  ],
+  "git_commit_at_capture": "daefd76adedb",
+  "user_report": "Artificial-star Auto Focus fails at once (no_usable_evidence / multiple_candidates on the first frame, the focuser never moves) with 4 artificial stars visible on Main. (Bundle reason field: 'Manual capture from UI (no note given)'.)",
+  "optical_setup": "Main optical train, ATR585M (mono, 16-bit, 3840x2160), 2000 ms, gain 460 for the autofocus run (470 at capture), OnStep focuser, four artificial stars; the three Main frames are NOT committed (large data stays local): local_test_data/58/frames/frame_0..2.fits, lossless uint16, made by scripts/slim_regression_frames.py from the diagnostic bundle -- see README.md",
+  "boundary": "artificial_star_target_acquisition",
+  "cases": [
+    {
+      "name": "frame_0_four_candidates_nearest_centre_followed",
+      "inputs": {
+        "frame": "local_test_data/58/frames/frame_0.fits"
+      },
+      "expect": {
+        "candidates": 4,
+        "plateau_centres": [[1450.6, 1005.5], [1415.7, 1165.4], [1542.3, 700.6], [941.9, 930.8]],
+        "target": [1450.6, 1005.5],
+        "target_saturated": true
+      },
+      "tolerances": {
+        "centre_px": 5.0
+      },
+      "rationale": "Hand measurement independent of the grouping code: the connected regions of pixels >= 65000 (the clipped plateaus) of the frame were flood-filled by a separate script -- exactly four regions of 13384-14103 px each, visibly four round over-exposed stars in a stretched view, two of them (lower right) with touching halos. Their pixel-mean centres are listed nearest-first to the image centre (1919.5, 1079.5): 474.7, 511.1, 534.6, 988.8 px, so the target is the first one, 36 px nearer than the next. Every star is clipped, so the acquired target must report saturated."
+    },
+    {
+      "name": "frame_1_four_candidates_nearest_centre_followed",
+      "inputs": {
+        "frame": "local_test_data/58/frames/frame_1.fits"
+      },
+      "expect": {
+        "candidates": 4,
+        "plateau_centres": [[1451.2, 1002.3], [1415.9, 1162.8], [1542.7, 696.7], [939.4, 926.3]],
+        "target": [1451.2, 1002.3],
+        "target_saturated": true
+      },
+      "tolerances": {
+        "centre_px": 5.0
+      },
+      "rationale": "Same hand measurement as frame_0 (connected clipped plateaus >= 65000, pixel-mean centres): four regions of 13606-13981 px; distances to the image centre 474.6, 510.5, 537.1, 992.0 px."
+    },
+    {
+      "name": "frame_2_four_candidates_nearest_centre_followed",
+      "inputs": {
+        "frame": "local_test_data/58/frames/frame_2.fits"
+      },
+      "expect": {
+        "candidates": 4,
+        "plateau_centres": [[1451.3, 1002.8], [1415.5, 1162.9], [1542.0, 697.3], [941.1, 927.9]],
+        "target": [1451.3, 1002.8],
+        "target_saturated": true
+      },
+      "tolerances": {
+        "centre_px": 5.0
+      },
+      "rationale": "Same hand measurement as frame_0 (connected clipped plateaus >= 65000, pixel-mean centres): four regions of 13430-13975 px; distances to the image centre 474.4, 510.8, 537.2, 990.1 px."
+    }
+  ]
+}
