@@ -71,7 +71,7 @@ Status: `todo` · `in-progress` · `done` · `field-only` (only real hardware ca
 | S7 | #15 #21 #29–#33 #35 #37 #39 #43 #44 #46 #49 | Proof manifests + missing low-tier tests; field-only assumptions listed | issue agent | coordinator verification (worktree, all proofs PASS) | done | 5f7c689 | `python scripts/prove.py <issue>` |
 | F56 | #56 (field, diag 402eabde) | Terrestrial autofocus on a real low-texture scene: (A) the focuser panel's hand-toggleable "Artificial star" button is a second owner of the autofocus target type → display only, following the collimation target mode; (B) the terrestrial metric is noise-dominated (noise flags 89 % of tiles as moving; score flat under 32 px blur) → noise-calibrated motion test + strongest-detail score | issue agent | review 1 APPROVE-WITH-FIXES (F1 order-dependent score, F2 duplicate samples, F3 clipped highlights off focus, F4–F9) → contract amended; re-review APPROVE-WITH-FIXES (failure masking, clipped focus next to neighbour, untrusted best kept, restore race) → final APPROVE (all real-frame sweeps on focus) | done (field-verify pending) | 666b027, a2901e8, a0e0dcc, 7702304 | `python scripts/prove.py 56-terrestrial-autofocus` |
 | F57 | #57 (user request) | Green centre cross on both camera screens, 2 px thick on screen, drawn on the displayed (scaled) pixmap | issue agent | APPROVE (optional hardenings done: null guard, neighbour/odd-size/RGB tests, mutation-proven) | done | 0db0b72, a2adf5a | `python scripts/prove.py 57-centre-cross` |
-| F58 | #58 (field, diag 4c5677d0) | Artificial-star autofocus with several / over-exposed stars: one source per blob (detector split 4 blobs into 785 sources), follow the star nearest the image centre (reported), exposure step-down at acquisition until unclipped | issue agent | — | todo (after F56: same controller exposure path) | — | `python scripts/prove.py 58-artificial-star-acquisition` |
+| F58 | #58 (field, diag 4c5677d0) | Artificial-star autofocus with several / over-exposed stars: one source per blob (detector split 4 blobs into 785 sources), follow the star nearest the image centre (reported), exposure step-down at acquisition until unclipped | issue agent | — | in-progress | — | `python scripts/prove.py 58-artificial-star-acquisition` |
 | S8 | all | Release gate green (local 3495 passed, cov 96.23 %; CI `0be2dfb`); flake fixed (`64a06d3`); evidence comments posted, #48 #50 #51 #52 #53 #54 #55 (+#13) closed; field checklist `docs/field-verify-checklist.md`; HIGH issues stay open (field-verify). **Pi synced 2026-10-23** (user go-ahead): rasppi3 at `e422976`, published OnStepAdapter 0.5.0 force-reinstalled (sha256 ok, build check `0.5.0 True True True`), headless import + real config load ok. OnStepAdapter#26 (cancellable park) filed; bare tracking-off not filed (user decision) | coordinator | — | done | 0be2dfb | `scripts/check.ps1 -Release` |
 
 ## Task contracts
@@ -673,6 +673,37 @@ R9/F11/R11. Contract written before start. Also (S6.8b review #3): `ASTRONOMICAL
 - **Non-goals:** a toggle, configurable colour/size, F56's files (focuser_panel, focus metric — another agent owns them).
 - **Proof:** widget component test checking rendered pixels (green on the centre row/column, 2 px wide, at two widget
   sizes incl. a non-matching aspect ratio; base pixmap unchanged); manifest `57-centre-cross`; changed-module gate.
+
+### F58 — artificial-star autofocus with several / over-exposed stars (#58, diag 4c5677d0)
+
+**Contract (2026-10-27).**
+- **Allowed:** `packages/astrotool_core/focus/star_focus_metric.py` (`StarTargetTracker`), the source grouping it needs
+  (in `star_focus_metric.py`, or a small new helper next to it; `target/detector.py` only if strictly needed: say why,
+  as other features use it), `apps/collimation_tool/application/autofocus_controller.py` (artificial-star acquisition
+  and exposure step-down only), `focuser_panel.py` (status text only), their tests, `datasets/regressions/58/`
+  (README / expected.json / provenance only), a new manifest.
+- **Behaviour changed:**
+  1. One bright blob, including its saturated plateau and halo, is ONE candidate for acquisition and tracking.
+  2. With several stars, the one nearest the image centre (the green cross, #57) is followed. This is explicit: it
+     appears in `tracked_target` and in the status text, e.g. "following the star nearest the centre (4 found)".
+  3. An over-exposed target at acquisition steps the exposure down until the chosen star is unclipped, bounded by the
+     camera's minimum exposure and a sane attempt cap. The exposure is always restored (the F56 restore flag).
+     Otherwise the result is `saturated_at_min_exposure`.
+- **Tests:** failing-first, with revert proof.
+  - The real 4c5677d0 frame gives 4 candidates (not 785), and the target is the one nearest the centre. This test
+    uses the real frame in `local_test_data/58/` and skips when it is absent.
+  - Synthetic tests with the same logic run in CI.
+  - A single over-exposed blob is one source.
+  - A simulated sweep (several stars, over-exposed start) converges on the chosen star at a lowered exposure, and the
+    exposure is restored.
+- **Frozen:** `autofocus_search.py`, the terrestrial path (F56), `detect_sources` behaviour for its other callers,
+  diagnostics keys, #33/#37 behaviour for a single well-exposed star.
+- **Rules:**
+  - Real frames go only to the git-ignored `local_test_data/58/` (uint16 via `scripts/slim_regression_frames.py`);
+    no FITS in git.
+  - No mutation testing unless the user asks.
+- **Non-goals:** the ±1000 search envelope and fine stepping; terrestrial autofocus; a UI to pick a star by click.
+- **Proof:** manifest `58-artificial-star-acquisition`, revert-proven; changed-module gate; CI green.
 
 ### S5 — #55 + #52 duplication inventory (analysis only)
 
