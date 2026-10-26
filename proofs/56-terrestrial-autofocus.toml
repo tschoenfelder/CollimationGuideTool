@@ -1,0 +1,154 @@
+# Proof manifest (F56) -- schema in proofs/README.md. Run: python scripts/prove.py 56-terrestrial-autofocus
+issues = [56]
+summary = """Terrestrial autofocus failed on a real low-texture scene (diagnostics 402eabde daytime, f0bc314b \
+dusk: antenna mast against a bright sky, noise sigma ~840 ADU). (A) FocuserPanel's checkable 'Artificial \
+star' button was a second owner of the autofocus target type (the run used artificial_star while the \
+collimation target mode was natural_star): the panel now only shows it. (B) measure_terrestrial_focus \
+compared a tile's change with the tile's own std -- the noise, for a featureless tile -- so 1760/1839 of \
+1980 real tiles were rejected as moving, and its median score was flat/non-monotone under blur, so the \
+search returned to the start. Now: 4x4 binning, identical samples once, moving = largest pairwise change \
+> 3x the median tile change AND > 1.0x the tile std, per-tile energy = mean of per-sample energies (order \
+independent: one position's score within 4.4 % over every ordering/subset/duplicate, was 27-58 %), score \
+= strongest 3 % static tiles minus the measured one-sample noise energy; rejected_low_texture_tile_count \
+now means 'static tiles below the top-detail selection'. (C, review F2/F3) the extra samples were \
+get_frame() re-reads of one frame -- now distinct fresh frames; clipped glints carry 72-93 % of the real \
+scores and, far above full scale, drove the search off focus -- terrestrial now uses the ExposureControl \
+step-down while clipped tiles carry > 50 % of the score (exposure restored afterwards) and reports \
+INSUFFICIENT_EVIDENCE / highlights_clipped if that does not help, never a bare SUCCESS. Test-fixture \
+change: _box_blur in test_terrestrial_focus_metric.py is edge-padded (its zero padding manufactured a \
+frame-border edge that grows with blur). The dusk bundle's incident autofocus record is the stale \
+artificial-star run (start 14461, 18.575 ms); the terrestrial run was still in progress at capture."""
+modules = [
+    "apps/collimation_tool/ui/focuser_panel.py",
+    "packages/astrotool_core/focus/terrestrial_focus_metric.py",
+    "apps/collimation_tool/application/autofocus_controller.py",
+]
+fix_commits = ["666b027", "a2901e8", "a0e0dcc"]
+dataset_uuids = ["402eabde-d730-43b0-823d-a7f47c61f944", "f0bc314b-a889-4e18-ac9b-74971f42f014"]
+focused_command = """pytest -q \
+tests/collimation/ui/test_focuser_panel.py::TestTheTargetTypeHasOneOwner \
+tests/collimation/ui/test_focuser_panel.py::test_a_clipping_dominated_terrestrial_result_tells_the_user_to_lower_exposure \
+tests/core/focus/test_terrestrial_focus_metric.py \
+tests/collimation/application/test_autofocus_controller_terrestrial.py \
+tests/regressions/test_issue_56_terrestrial_autofocus_regression.py \
+tests/regressions/test_regression_datasets.py \
+tests/regressions/test_issue_35_autofocus_search_regression.py"""
+broader_tier = "integration"
+field_only_assumptions = [
+    "A real terrestrial Auto Focus sweep on the rig converges on visibly best focus (the regressions prove the metric's slope on added blur of the real frames and the controller+searcher on a simulated defocus, not the focuser's real defocus/backlash).",
+    "A real sweep with clipped glints: the exposure step-down (factor 0.5, up to 3 attempts) brings the clipped share below one half and the run lands on focus, or it reports highlights_clipped. How far above full scale the real glints are is unknowable from the clipped bundles (simulated K = 1/3/10).",
+    "Three distinct fresh frames per position multiply the per-position time by about 3 exposures (2 s at dusk -> ~6-10 s per position); acceptable on the rig is a field judgement.",
+]
+gaps = [
+    "LOCAL-ONLY proofs (user decision: large test data is never committed): every real-frame test in tests/regressions/test_issue_56_terrestrial_autofocus_regression.py (blur sweep, noise-only, replaced tile, one-position stability, K-simulation) needs local_test_data/56*/frames/ (git-ignored, recreate with scripts/pull_diagnostic_bundle.py + scripts/slim_regression_frames.py, see the datasets' READMEs) and skips with that reason without them -- on CI and in any checkout without the frames. Without the frames the logic is still proven by the synthetic, mutation-proven tests: tests/core/focus/test_terrestrial_focus_metric.py (noise, motion/ratio clause, order and duplicates, air shimmer, foliage, floor value, confidence + clipped share, non-finite) and tests/collimation/application/test_autofocus_controller_terrestrial.py (distinct fresh samples, dedupe, exposure step-down/restore/highlights_clipped); all 15 mutations of the review's list (plus dedupe, pair and controller mutations) are killed with the frames ABSENT too (mutation run without local_test_data: 15/15 caught).",
+    "The motion-test threshold separates real-frame mast shimmer (change <= 0.80 x std) from fully replaced content (~1.13 x std) with a thin margin; defocused foliage (sigma >= 4 px) is often not rejected -- it then carries little energy and the curve stays monotone (TestFoliage), but a strongly textured, sharp, partly-moving scene was not available as real data.",
+    "The one-position stability bound (< 5 %) is close to the real frames' own frame-to-frame variation (4.3 % between single frames of 402eabde).",
+    "The K-simulation models defocus as a Gaussian of the frames' mean and the glints as K x full scale; the C8's real defocus PSF is closer to an annulus.",
+    "max_exposure_attempts (3) bounds the step-down to 1/4 of the start exposure; K = 10 glints stay clipped and are reported, not focused.",
+    "test_regression_datasets.py (#35 real-sweep pair 14985 vs 15485) and test_issue_35_autofocus_search_regression.py did not fail before the fix; listed to pin that they still pass (#35 pair ratio 1.09 -> 8.35).",
+]
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_focuser_panel.py::TestTheTargetTypeHasOneOwner"
+failed_before_fix = true
+evidence = "revert-proof (separate worktree at 5ab615c, local frames copied in, fix A's focuser_panel.py hunks reverted, scripts/prove.py 56-terrestrial-autofocus): tests/collimation/ui/test_focuser_panel.py:455: AssertionError: assert <AutofocusMode.ARTIFICIAL_STAR> is <AutofocusMode.TERRESTRIAL> (a click selected artificial star); also :468, :479, :486"
+
+[[regression_tests]]
+node = "tests/core/focus/test_terrestrial_focus_metric.py::TestLowTextureSceneUnderNoise"
+failed_before_fix = true
+evidence = "revert-proof (separate worktree at 5ab615c, local frames copied in, fixes B+C reverted -- pre-fix metric and controller, names-only import shims): tests/core/focus/test_terrestrial_focus_metric.py:184: assert 64 == 0 (noise alone rejected every tile); also :192 (50 == 0), :204 (50 == 1), :224 (jitter: 50 == 0)"
+
+[[regression_tests]]
+node = "tests/core/focus/test_terrestrial_focus_metric.py::TestOneScorePerPosition"
+failed_before_fix = true
+evidence = "revert-proof (separate worktree at 5ab615c, local frames copied in, fixes B+C reverted -- pre-fix metric and controller, names-only import shims): tests/core/focus/test_terrestrial_focus_metric.py:312: AssertionError: sharpness 180104217.6 != 179754711.9 (the order of the samples changed the score)"
+
+[[regression_tests]]
+node = "tests/core/focus/test_terrestrial_focus_metric.py::TestNoiseFloor"
+failed_before_fix = true
+evidence = "revert-proof (separate worktree at 5ab615c, local frames copied in, fixes B+C reverted -- pre-fix metric and controller, names-only import shims): tests/core/focus/test_terrestrial_focus_metric.py:390: assert 50 == 0 (a brighter, noisier region rejected as moving)"
+
+[[regression_tests]]
+node = "tests/core/focus/test_terrestrial_focus_metric.py::TestConfidence"
+failed_before_fix = true
+evidence = "revert-proof (separate worktree at 5ab615c, local frames copied in, fixes B+C reverted -- pre-fix metric and controller, names-only import shims): tests/core/focus/test_terrestrial_focus_metric.py:431: assert 0.333 == 1.0; :445: assert 1 >= 3"
+
+[[regression_tests]]
+node = "tests/core/focus/test_terrestrial_focus_metric.py::TestNonFinite"
+failed_before_fix = true
+evidence = "revert-proof (separate worktree at 5ab615c, local frames copied in, fixes B+C reverted -- pre-fix metric and controller, names-only import shims): tests/core/focus/test_terrestrial_focus_metric.py:456: assert nan is None"
+
+[[regression_tests]]
+node = "tests/core/focus/test_terrestrial_focus_metric.py::TestFoliage"
+failed_before_fix = true
+evidence = "revert-proof (separate worktree at 5ab615c, local frames copied in, fixes B+C reverted -- pre-fix metric and controller, names-only import shims): tests/core/focus/test_terrestrial_focus_metric.py:348: assert 54 == 16 (pre-fix: noise rejected 54 of 64 tiles, not the 16 foliage tiles)"
+
+[[regression_tests]]
+node = "tests/core/focus/test_terrestrial_focus_metric.py::TestAirShimmer"
+failed_before_fix = true
+evidence = "revert-proof (separate worktree at 5ab615c, fixes B+C reverted -- pre-fix metric and controller, names-only import shims): tests/core/focus/test_terrestrial_focus_metric.py:485: rejected_moving_tile_count != 0 (shimmer rejected as motion); :498: score spread over sample subsets >= 5 %. Synthetic CI twin of the local-only real-frame stability test: kills the ratio-threshold-0, ratio-clause-removed and energy-of-the-averaged-frame mutations without the frames."
+
+[[regression_tests]]
+node = "tests/core/focus/test_terrestrial_focus_metric.py::TestHotPixels"
+failed_before_fix = false
+reason_no_prefix_repro = "Passes on the pre-fix metric too (its median aggregate ignored the hot-pixel tiles); pins that the new strongest-detail selection is not taken over by fixed single-pixel detail. Not killed by the _BIN_FACTOR = 1 mutation either -- that one is caught by TestConfidence, TestFoliage, TestNoiseFloor and the real-frame stability test."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_autofocus_controller_terrestrial.py::TestDistinctFreshSamples"
+failed_before_fix = true
+evidence = "revert-proof (separate worktree at 5ab615c, local frames copied in, fix C's autofocus_controller.py/focuser_panel.py hunks reverted, names-only import shim): tests/collimation/application/test_autofocus_controller_terrestrial.py:122: assert 14 == 0 (get_frame() re-reads); :154 (identical frames not deduplicated)"
+
+[[regression_tests]]
+node = "tests/collimation/application/test_autofocus_controller_terrestrial.py::TestClippedHighlightsStepDown"
+failed_before_fix = true
+evidence = "revert-proof (separate worktree at 5ab615c, local frames copied in, fix C's autofocus_controller.py/focuser_panel.py hunks reverted, names-only import shim): tests/collimation/application/test_autofocus_controller_terrestrial.py:201: assert () == ((100.0, 100), (50.0, 100)) (no step-down); :221/:231/:240: SUCCESS is not INSUFFICIENT_EVIDENCE; :250: 0.5 not in clock.sleeps; :263: SUCCESS is not CANCELLED"
+
+[[regression_tests]]
+node = "tests/collimation/ui/test_focuser_panel.py::test_a_clipping_dominated_terrestrial_result_tells_the_user_to_lower_exposure"
+failed_before_fix = true
+evidence = "revert-proof (separate worktree at 5ab615c, local frames copied in, fix C's autofocus_controller.py/focuser_panel.py hunks reverted, names-only import shim): tests/collimation/ui/test_focuser_panel.py:648: assert 'highlights clipped' in '... insufficient_evidence (terrestrial) -- highlights_clipped'"
+
+[[regression_tests]]
+node = "tests/regressions/test_issue_56_terrestrial_autofocus_regression.py::test_added_defocus_lowers_the_score_monotonically_and_by_at_least_5_percent"
+failed_before_fix = true
+evidence = "revert-proof (separate worktree at 5ab615c, local frames copied in, fixes B+C reverted -- pre-fix metric and controller, names-only import shims): tests/regressions/test_issue_56_terrestrial_autofocus_regression.py:131: AssertionError: 56: not monotone at 0.0->2.0 px: {0: 1.71e7, 2: 2.02e7, 4: 2.02e7, 8: 2.01e7, 16: 1.98e7, 32: 1.90e7} (56-dusk likewise)"
+
+[[regression_tests]]
+node = "tests/regressions/test_issue_56_terrestrial_autofocus_regression.py::test_the_bundles_own_noise_alone_marks_no_tile_as_moving"
+failed_before_fix = true
+evidence = "revert-proof (separate worktree at 5ab615c, local frames copied in, fixes B+C reverted -- pre-fix metric and controller, names-only import shims): tests/regressions/test_issue_56_terrestrial_autofocus_regression.py:150: assert 1980 == 0 (both datasets)"
+
+[[regression_tests]]
+node = "tests/regressions/test_issue_56_terrestrial_autofocus_regression.py::test_a_really_changing_tile_in_the_real_frames_is_still_rejected"
+failed_before_fix = true
+evidence = "revert-proof (separate worktree at 5ab615c, local frames copied in, fixes B+C reverted -- pre-fix metric and controller, names-only import shims): tests/regressions/test_issue_56_terrestrial_autofocus_regression.py:166: assert (1760 - 1760) == 1 (56-dusk: 1839 - 1839)"
+
+[[regression_tests]]
+node = "tests/regressions/test_issue_56_terrestrial_autofocus_regression.py::test_the_score_at_one_position_does_not_depend_on_the_sample_set"
+failed_before_fix = true
+evidence = "revert-proof (separate worktree at 5ab615c, local frames copied in, fixes B+C reverted -- pre-fix metric and controller, names-only import shims): tests/regressions/test_issue_56_terrestrial_autofocus_regression.py:209: spread over orderings/subsets/duplicates >= 5 % (both datasets)"
+
+[[regression_tests]]
+node = "tests/regressions/test_issue_56_terrestrial_autofocus_regression.py::test_glints_up_to_3x_full_scale_are_stepped_down_and_focus_is_found"
+failed_before_fix = true
+evidence = "revert-proof (separate worktree at 5ab615c, local frames copied in, fix C's autofocus_controller.py/focuser_panel.py hunks reverted, names-only import shim): tests/regressions/test_issue_56_terrestrial_autofocus_regression.py:297: assert len(exposure_attempts) >= 2 (no step-down) -- all 8 parametrizations"
+
+[[regression_tests]]
+node = "tests/regressions/test_issue_56_terrestrial_autofocus_regression.py::test_glints_still_clipping_after_the_step_down_are_reported_never_success"
+failed_before_fix = true
+evidence = "revert-proof (separate worktree at 5ab615c, local frames copied in, fix C's autofocus_controller.py/focuser_panel.py hunks reverted, names-only import shim): tests/regressions/test_issue_56_terrestrial_autofocus_regression.py:309: assert SUCCESS is not SUCCESS (K = 10 reported as a bare SUCCESS), both datasets"
+
+[[regression_tests]]
+node = "tests/regressions/test_issue_56_terrestrial_autofocus_regression.py::test_without_exposure_control_a_clipping_dominated_run_is_never_success"
+failed_before_fix = true
+evidence = "revert-proof (separate worktree at 5ab615c, local frames copied in, fix C's autofocus_controller.py/focuser_panel.py hunks reverted, names-only import shim): tests/regressions/test_issue_56_terrestrial_autofocus_regression.py:322: assert SUCCESS is not SUCCESS, both datasets"
+
+[[regression_tests]]
+node = "tests/regressions/test_regression_datasets.py::test_regression_case"
+failed_before_fix = false
+reason_no_prefix_repro = "Issue #35's real sweep pair (14985 true focus vs 15485): must keep passing unchanged; it passed before and after (score ratio 1.09 -> 8.35)."
+
+[[regression_tests]]
+node = "tests/regressions/test_issue_35_autofocus_search_regression.py"
+failed_before_fix = false
+reason_no_prefix_repro = "Issue #35's search-boundary regression (recorded curve replay): unaffected by F56, listed to pin that it still passes."
