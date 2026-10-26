@@ -189,15 +189,24 @@ class TestOneArtificialStarSweep:
 
 
 class TestTargetIdentity:
-    def test_two_candidates_at_the_start_are_reported_not_guessed(self) -> None:
+    def test_of_two_candidates_at_the_start_the_one_nearest_the_centre_is_followed(
+        self,
+    ) -> None:
+        # Issue #58 (changed from #33's "two candidates -> multiple_candidates"): the star
+        # nearest the image centre is the target, explicitly reported -- never the brighter
+        # distractor in the corner.
         focuser = FakeFocuser()
         focuser.move_absolute(700)
         rig = _Rig(focuser, distractor=True)
 
         result = _controller(focuser, rig).run(AutofocusMode.ARTIFICIAL_STAR)
 
-        assert result.status is AutofocusStatus.NO_USABLE_EVIDENCE
-        assert result.failure_reason == "multiple_candidates"
+        assert result.status is AutofocusStatus.SUCCESS
+        assert result.best_position is not None
+        assert abs(result.best_position - _BEST) <= 10
+        assert result.tracked_target is not None
+        assert abs(result.tracked_target[0] - 80.0) < 2.0
+        assert result.target_candidates == 2
 
     def test_a_bright_point_that_appears_when_the_target_is_lost_is_never_measured(
         self,

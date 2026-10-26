@@ -23,8 +23,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from astrotool_core.focus.star_candidates import StarCandidate, group_star_candidates
 from astrotool_core.target.detector import detect_sources
-from astrotool_core.target.point_source import PointSource
 
 #: Usable-star count at which aggregate confidence reaches 1.0 -- issue
 #: #33's own "continue to work when only one suitable star is available,
@@ -115,35 +115,51 @@ class TrackedStarMeasurement:
     centroid: tuple[float, float] | None = None
 
 
+#: Issue #58: two candidates whose distances to the image centre differ by less than this
+#: are equally near -- picking one would be a guess, so acquisition reports
+#: `multiple_candidates` instead.
+CENTRE_TIE_PX = 2.0
+
+
 class StarTargetTracker:
-    """Issue #33 (single artificial star): keeps ONE target's identity
-    through a focus sweep. `acquire()` requires exactly one candidate
-    (never silently picking between several); `measure()` only ever looks at
-    the source nearest the last tracked position within `max_shift_px` --
-    a different bright point elsewhere in the frame is ignored, never
-    substituted. A sample that cannot be measured says why (see
-    `TrackedStarMeasurement`) instead of being replaced by something else.
+    """Issue #33 (artificial star): keeps ONE target's identity
+    through a focus sweep. Issue #58: the fragments of one blob (a saturated
+    plateau and its halo) are one candidate (`group_star_candidates`); with
+    several candidates `acquire()` follows the one nearest the image centre
+    (the green centre cross) and says so via `candidate_count` -- only two
+    equally near candidates are refused as `multiple_candidates`, never guessed.
+    `measure()` only ever looks at the candidate nearest the last tracked
+    position within `max_shift_px` -- a different bright point elsewhere in the
+    frame is ignored, never substituted. A sample that cannot be measured says
+    why (see `TrackedStarMeasurement`) instead of being replaced by something else.
     """
 
     def __init__(self, *, edge_margin_px: int = 16, max_shift_px: float = 40.0) -> None:
         self._edge_margin_px = edge_margin_px
         self._max_shift_px = max_shift_px
         self._target: tuple[float, float] | None = None
+        self._candidate_count = 0
 
     @property
     def target(self) -> tuple[float, float] | None:
         return self._target
+
+    @property
+    def candidate_count(self) -> int:
+        """How many star candidates the last `acquire()` saw (0 before it)."""
+        return self._candidate_count
 
     def _near_edge(self, x: float, y: float, shape: tuple[int, int]) -> bool:
         height, width = shape
         margin = self._edge_margin_px
         return x < margin or x > width - margin or y < margin or y > height - margin
 
-    def _classify(self, source: PointSource, shape: tuple[int, int]) -> TrackedStarMeasurement:
-        centroid = (source.x, source.y)
-        if self._near_edge(source.x, source.y, shape):
+    def _classify(self, candidate: StarCandidate, shape: tuple[int, int]) -> TrackedStarMeasurement:
+        source = candidate.source
+        centroid = (candidate.x, candidate.y)
+        if self._near_edge(candidate.x, candidate.y, shape):
             return TrackedStarMeasurement(None, "edge_clipped", centroid)
-        if source.saturated:
+        if candidate.saturated:
             return TrackedStarMeasurement(None, "saturated", centroid)
         if source.donut_like:
             return TrackedStarMeasurement(None, "donut_like", centroid)
@@ -151,13 +167,25 @@ class StarTargetTracker:
             return TrackedStarMeasurement(None, "no_width", centroid)
         return TrackedStarMeasurement((source.fwhm_x + source.fwhm_y) / 2.0, None, centroid)
 
+    @staticmethod
+    def _candidates(frame: np.ndarray) -> tuple[StarCandidate, ...]:
+        return group_star_candidates(frame, detect_sources(frame).sources)
+
     def acquire(self, frame: np.ndarray) -> TrackedStarMeasurement:
-        sources = detect_sources(frame).sources
-        if not sources:
+        candidates = self._candidates(frame)
+        self._candidate_count = len(candidates)
+        if not candidates:
             return TrackedStarMeasurement(None, "no_star")
-        if len(sources) > 1:
+        height, width = frame.shape
+        cx, cy = (width - 1) / 2.0, (height - 1) / 2.0
+        ranked = sorted(candidates, key=lambda c: math.hypot(c.x - cx, c.y - cy))
+        if len(ranked) > 1 and (
+            math.hypot(ranked[1].x - cx, ranked[1].y - cy)
+            - math.hypot(ranked[0].x - cx, ranked[0].y - cy)
+            < CENTRE_TIE_PX
+        ):
             return TrackedStarMeasurement(None, "multiple_candidates")
-        result = self._classify(sources[0], frame.shape)
+        result = self._classify(ranked[0], frame.shape)
         if result.reason in (None, "saturated", "donut_like"):
             # Identity is fixed even if this first sample isn't usable
             # (e.g. saturated): later samples must follow the SAME source.
@@ -169,14 +197,14 @@ class StarTargetTracker:
             return TrackedStarMeasurement(None, "no_star")
         tx, ty = self._target
         nearby = [
-            s
-            for s in detect_sources(frame).sources
-            if math.hypot(s.x - tx, s.y - ty) <= self._max_shift_px
+            c
+            for c in self._candidates(frame)
+            if math.hypot(c.x - tx, c.y - ty) <= self._max_shift_px
         ]
         if not nearby:
             return TrackedStarMeasurement(None, "not_found_at_tracked_position")
-        source = min(nearby, key=lambda s: math.hypot(s.x - tx, s.y - ty))
-        result = self._classify(source, frame.shape)
+        candidate = min(nearby, key=lambda c: math.hypot(c.x - tx, c.y - ty))
+        result = self._classify(candidate, frame.shape)
         if result.centroid is not None and result.reason != "edge_clipped":
             self._target = result.centroid
         return result

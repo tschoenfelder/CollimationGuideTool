@@ -137,6 +137,99 @@ class TestMeasureFollowsTheSameTarget:
         assert sharp.fwhm_px < blurry.fwhm_px
 
 
+def _over_exposed(
+    shape: tuple[int, int], centres: list[tuple[float, float]], *, sigma: float = 16.0
+) -> np.ndarray:
+    """Issue #58: blobs far above full scale, clipped at 65520, on a noisy background --
+    `detect_sources` fragments each into dozens of sources (as on diagnostic 4c5677d0)."""
+    rng = np.random.default_rng(58)
+    image = star_field_image(
+        shape, [StarSpec(x=x, y=y, peak=2.0e6, sigma=sigma) for x, y in centres],
+        background=1000.0,
+    ).astype(np.float64)
+    image += rng.normal(0.0, 30.0, shape)
+    return np.clip(np.round(image), 0.0, 65520.0)
+
+
+class TestSeveralOrOverExposedStars:
+    """Issue #58: one blob is one candidate; with several, the one nearest the image centre
+    (the green centre cross) is followed and the count is reported."""
+
+    def test_a_single_over_exposed_blob_is_acquired_as_one_saturated_target(self) -> None:
+        tracker = StarTargetTracker()
+
+        result = tracker.acquire(_over_exposed((400, 400), [(210.0, 190.0)], sigma=25.0))
+
+        assert result.reason == "saturated"  # not multiple_candidates
+        assert tracker.target is not None
+        assert abs(tracker.target[0] - 210.0) < 3.0 and abs(tracker.target[1] - 190.0) < 3.0
+        assert tracker.candidate_count == 1
+
+    def test_of_several_stars_the_one_nearest_the_centre_is_acquired(self) -> None:
+        image = star_field_image(
+            (240, 320),
+            [StarSpec(x=60.0, y=50.0, peak=9000.0), StarSpec(x=175.0, y=110.0, peak=2000.0),
+             StarSpec(x=270.0, y=200.0, peak=5000.0)],
+            background=100.0,
+        )
+        tracker = StarTargetTracker()
+
+        result = tracker.acquire(image)
+
+        assert result.reason is None
+        assert result.fwhm_px is not None
+        assert tracker.target is not None
+        assert abs(tracker.target[0] - 175.0) < 1.0 and abs(tracker.target[1] - 110.0) < 1.0
+        assert tracker.candidate_count == 3
+
+    def test_of_several_over_exposed_blobs_the_one_nearest_the_centre_is_followed(
+        self,
+    ) -> None:
+        centres = [(120.0, 110.0), (330.0, 120.0), (230.0, 230.0), (240.0, 330.0)]
+        tracker = StarTargetTracker()
+
+        result = tracker.acquire(_over_exposed((440, 440), centres))
+
+        assert result.reason == "saturated"
+        assert tracker.candidate_count == 4
+        assert tracker.target is not None
+        assert abs(tracker.target[0] - 230.0) < 3.0 and abs(tracker.target[1] - 230.0) < 3.0
+        # The next frame, same scene: the same blob is measured, not a fragment of it.
+        again = tracker.measure(_over_exposed((440, 440), centres))
+        assert again.reason == "saturated"
+        assert again.centroid is not None and abs(again.centroid[0] - 230.0) < 3.0
+
+    def test_a_target_that_drops_below_full_scale_is_measured_as_one_star(self) -> None:
+        tracker = StarTargetTracker()
+        tracker.acquire(_over_exposed((440, 440), [(120.0, 110.0), (230.0, 230.0)]))
+        lower = star_field_image(
+            (440, 440),
+            [StarSpec(x=120.0, y=110.0, peak=40000.0, sigma=3.0),
+             StarSpec(x=231.0, y=229.0, peak=20000.0, sigma=3.0)],
+            background=1000.0,
+        )
+
+        result = tracker.measure(lower)
+
+        assert result.reason is None
+        assert result.fwhm_px is not None
+        assert result.centroid is not None and abs(result.centroid[0] - 231.0) < 1.0
+
+    def test_two_candidates_equally_near_the_centre_are_not_guessed(self) -> None:
+        image = star_field_image(
+            _SHAPE,
+            [StarSpec(x=40.0, y=79.5, peak=3000.0), StarSpec(x=119.0, y=79.5, peak=3000.0)],
+            background=100.0,
+        )
+        tracker = StarTargetTracker()
+
+        result = tracker.acquire(image)
+
+        assert result.reason == "multiple_candidates"
+        assert tracker.target is None
+        assert tracker.candidate_count == 2
+
+
 def test_the_tracker_needs_no_plate_solver() -> None:
     import astrotool_core.focus.star_focus_metric as module
 

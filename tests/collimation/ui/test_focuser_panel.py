@@ -647,3 +647,54 @@ def test_a_clipping_dominated_terrestrial_result_tells_the_user_to_lower_exposur
 
     assert "highlights clipped" in text
     assert "lower exposure" in text
+
+
+def test_several_artificial_stars_say_which_one_was_followed() -> None:
+    """Issue #58: with several stars the status says the one nearest the centre was
+    followed and how many were found -- explicit, never silent."""
+    from collimation_tool.application.autofocus_controller import AutofocusResult
+    from collimation_tool.ui.focuser_panel import _format_autofocus_status
+
+    text = _format_autofocus_status(
+        AutofocusResult(
+            status=AutofocusStatus.SUCCESS, mode=AutofocusMode.ARTIFICIAL_STAR,
+            start_position=700, best_position=500, search_min=0, search_max=1700,
+            optical_train="Main", tracked_target=(1450.0, 1005.0), target_candidates=4,
+        )
+    )
+
+    assert "following the star nearest the centre (4 found)" in text
+    assert "best 500" in text
+
+
+def test_a_saturated_run_on_several_stars_still_says_which_one() -> None:
+    from collimation_tool.application.autofocus_controller import AutofocusResult
+    from collimation_tool.ui.focuser_panel import _format_autofocus_status
+
+    text = _format_autofocus_status(
+        AutofocusResult(
+            status=AutofocusStatus.NO_USABLE_EVIDENCE, mode=AutofocusMode.ARTIFICIAL_STAR,
+            start_position=700, best_position=None, search_min=0, search_max=1700,
+            optical_train="Main", failure_reason="saturated_at_min_exposure",
+            tracked_target=(1450.0, 1005.0), target_candidates=4,
+        )
+    )
+
+    assert "star saturated" in text
+    assert "following the star nearest the centre (4 found)" in text
+
+
+def test_a_single_artificial_star_status_text_is_unchanged() -> None:
+    from collimation_tool.application.autofocus_controller import AutofocusResult
+    from collimation_tool.ui.focuser_panel import _format_autofocus_status
+
+    text = _format_autofocus_status(
+        AutofocusResult(
+            status=AutofocusStatus.SUCCESS, mode=AutofocusMode.ARTIFICIAL_STAR,
+            start_position=700, best_position=500, search_min=0, search_max=1700,
+            optical_train="Main", confidence=1.0 / 3.0, tracked_target=(80.0, 80.0),
+            target_candidates=1,
+        )
+    )
+
+    assert text == "Auto focus (Main): artificial star best 500 (confidence 0.33)"

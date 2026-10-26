@@ -100,28 +100,37 @@ _QUIT_JOG_WAIT_S = 3.0
 _log = logging.getLogger(__name__)
 
 
+def _target_choice_text(result: AutofocusResult) -> str:
+    """Issue #58: with several artificial stars the run follows the one nearest the image
+    centre -- said explicitly, never silently. Empty for a single star."""
+    if result.target_candidates > 1 and result.tracked_target is not None:
+        return f" -- following the star nearest the centre ({result.target_candidates} found)"
+    return ""
+
+
 def _format_autofocus_status(result: AutofocusResult) -> str:
     mode_text = result.mode.value.replace("_", " ")
     prefix = f"Auto focus ({result.optical_train})"
+    choice = _target_choice_text(result)
     if result.status is AutofocusStatus.SUCCESS:
         return (
             f"{prefix}: {mode_text} best {result.best_position} "
-            f"(confidence {result.confidence:.2f})"
+            f"(confidence {result.confidence:.2f}){choice}"
         )
     if result.status is AutofocusStatus.ALREADY_FOCUSED:
         return (
             f"{prefix}: {mode_text} -- already focused at {result.best_position} "
-            f"(validated on a fresh frame)"
+            f"(validated on a fresh frame){choice}"
         )
     text = f"{prefix}: {result.status.value} ({mode_text})"
     if result.failure_reason in ("saturated", "saturated_at_min_exposure"):
-        return f"{text} -- star saturated: lower exposure/gain and retry"
+        return f"{text} -- star saturated: lower exposure/gain and retry{choice}"
     if result.failure_reason == HIGHLIGHTS_CLIPPED:
         # Issue #56 review F3: still clipping-dominated after the exposure step-down.
         return f"{text} -- highlights clipped: lower exposure/gain and retry"
     if result.failure_reason:
-        return f"{text} -- {result.failure_reason}"
-    return text
+        return f"{text} -- {result.failure_reason}{choice}"
+    return f"{text}{choice}"
 
 
 class FocuserPanel(QWidget):

@@ -45,7 +45,11 @@ from astrotool_core.acquisition.stable_frame_acquisition import (
 )
 from astrotool_core.focus.port import FocuserPort
 from astrotool_core.focus.search_bounds import DEFAULT_ENVELOPE_STEPS
-from astrotool_core.focus.star_focus_metric import StarTargetTracker, measure_star_focus
+from astrotool_core.focus.star_focus_metric import (
+    StarTargetTracker,
+    TrackedStarMeasurement,
+    measure_star_focus,
+)
 from astrotool_core.focus.terrestrial_focus_metric import (
     TerrestrialFocusEvidence,
     analyze_terrestrial_focus,
@@ -93,6 +97,12 @@ _CURVE_STATUSES = frozenset(
         AutofocusStatus.INCONSISTENT_CURVE,
     }
 )
+#: `failure_reason` of an artificial-star run whose target is still clipped at the camera's
+#: minimum exposure or after the step cap.
+SATURATED_AT_MIN_EXPOSURE = "saturated_at_min_exposure"
+#: Issue #58: how often the exposure may be halved at acquisition until the chosen
+#: artificial star is unclipped (2000 ms -> ~0.5 ms); the camera's minimum ends it earlier.
+DEFAULT_MAX_ACQUISITION_EXPOSURE_STEPS = 12
 
 
 class AutofocusMode(Enum):
@@ -146,6 +156,9 @@ class AutofocusResult:
     tracked_target: tuple[float, float] | None = None
     start_value: float | None = None
     exposure_attempts: tuple[tuple[float, int], ...] = ()
+    #: Issue #58: how many star candidates the artificial-star acquisition saw; with more
+    #: than one, `tracked_target` is the one nearest the image centre.
+    target_candidates: int = 0
 
 
 class AutofocusController:
@@ -174,6 +187,7 @@ class AutofocusController:
         tracker_max_shift_px: float = 40.0,
         clock: Clock | None = None,
         exposure_hint: Callable[[], float | None] | None = None,
+        max_acquisition_exposure_steps: int = DEFAULT_MAX_ACQUISITION_EXPOSURE_STEPS,
     ) -> None:
         #: Issue #53: every settle wait, move-completion poll and frame
         #: reference time goes through this clock (default: the real one).
@@ -201,6 +215,13 @@ class AutofocusController:
         self._clipped_shares: dict[float, float] = {}
         #: Review 2 #5: an exposure lowering was issued this run -> always restore.
         self._exposure_lowered = False
+        #: Issue #58: the artificial-star acquisition step-down of the current run.
+        self._max_acquisition_exposure_steps = max(0, max_acquisition_exposure_steps)
+        self._acquisition_control: ExposureControl | None = None
+        self._attempts: list[tuple[float, int]] = []
+        self._cancel_event: threading.Event | None = None
+        self._acquisition_steps = 0
+        self._acquisition_cancelled = False
         self._star_edge_margin_px = star_edge_margin_px
         self._terrestrial_tile_size_px = terrestrial_tile_size_px
         self._coarse_step = coarse_step
@@ -235,6 +256,12 @@ class AutofocusController:
         override: tuple[AutofocusStatus, str | None] | None = None
         self._clipped_shares = {}
         self._exposure_lowered = False
+        self._acquisition_control = control if artificial else None
+        self._attempts = attempts
+        self._cancel_event = cancel_event
+        self._acquisition_steps = 0
+        self._acquisition_cancelled = False
+        candidates = 0
         try:
             if terrestrial and control is not None:
                 # Issue #56 review F3: clipped highlights carrying the score can drive the
@@ -256,21 +283,16 @@ class AutofocusController:
                 )
                 measure = self._build_measurer(mode, tracker)
                 search_result = searcher.search(measure, cancel_check=cancel_check)
-                if artificial:
-                    retry = any(point.reason == "saturated" for point in search_result.samples)
-                else:
-                    # Review 2 #1: only a search that drew a curve can have been drawn by
-                    # clipped highlights -- a refused move or a dead stream is reported as is.
-                    retry = (
-                        terrestrial
-                        and search_result.status in _CURVE_STATUSES
-                        and self._clipping_dominated(search_result)
-                    )
+                candidates = tracker.candidate_count or candidates
+                if self._acquisition_cancelled:
+                    override = (AutofocusStatus.CANCELLED, None)
+                    break
                 if (
                     control is None
-                    or not retry
+                    or not self._wants_exposure_retry(mode, search_result)
                     or search_result.status is AutofocusStatus.CANCELLED
-                    or len(attempts) >= self._max_exposure_attempts
+                    # Issue #58: the acquisition step-down does not use up the retries.
+                    or len(attempts) - self._acquisition_steps >= self._max_exposure_attempts
                 ):
                     break
                 # Saturated (artificial star) / clipping-dominated (terrestrial) at or on the
@@ -281,7 +303,7 @@ class AutofocusController:
                     if lowered == "cancelled":
                         override = (AutofocusStatus.CANCELLED, None)
                     elif artificial:
-                        override = (AutofocusStatus.NO_USABLE_EVIDENCE, "saturated_at_min_exposure")
+                        override = (AutofocusStatus.NO_USABLE_EVIDENCE, SATURATED_AT_MIN_EXPOSURE)
                     break
                 self._return_to(search_result.start_position)
             if (
@@ -345,6 +367,22 @@ class AutofocusController:
             tracked_target=tracker.target if artificial else None,
             start_value=search_result.start_value,
             exposure_attempts=tuple(attempts),
+            target_candidates=candidates if artificial else 0,
+        )
+
+    def _wants_exposure_retry(
+        self, mode: AutofocusMode, search_result: BoundedSearchResult
+    ) -> bool:
+        """Saturated (artificial star) / clipping-dominated (terrestrial) search -> lower the
+        exposure and search again (unchanged rule, extracted from `run` for issue #58)."""
+        if mode is AutofocusMode.ARTIFICIAL_STAR:
+            return any(point.reason == "saturated" for point in search_result.samples)
+        # Review 2 #1: only a search that drew a curve can have been drawn by
+        # clipped highlights -- a refused move or a dead stream is reported as is.
+        return (
+            mode is AutofocusMode.TERRESTRIAL
+            and search_result.status in _CURVE_STATUSES
+            and self._clipping_dominated(search_result)
         )
 
     def _frame_failure_reason(self) -> str | None:
@@ -383,14 +421,53 @@ class AutofocusController:
         frame = self._acquire_fresh_frame()
         if frame is None:
             return None  # frame acquisition failed -- still aborts the run
-        measurement = (
-            tracker.acquire(frame) if tracker.target is None else tracker.measure(frame)
-        )
+        if tracker.target is None:
+            measurement = tracker.acquire(frame)
+            if measurement.reason == "saturated" and self._acquisition_control is not None:
+                stepped = self._step_down_until_unclipped(tracker, self._acquisition_control)
+                if stepped is None or isinstance(stepped, InvalidSample):
+                    return stepped
+                measurement = stepped
+        else:
+            measurement = tracker.measure(frame)
         if measurement.fwhm_px is None:
             return InvalidSample(measurement.reason or "no_star")
         # A single star is a usable but reduced-confidence measurement
         # (issue #33: one suitable star => appropriately reduced confidence).
         return FocusSample(value=measurement.fwhm_px, confidence=1.0 / 3.0)
+
+    def _step_down_until_unclipped(
+        self, tracker: StarTargetTracker, control: ExposureControl
+    ) -> TrackedStarMeasurement | InvalidSample | None:
+        """Issue #58: the chosen star is clipped at acquisition -- lower the exposure (the
+        shared `_lower_exposure` step, restored at the end of the run) and measure the SAME
+        target again, until it is no longer clipped, at most `max_acquisition_exposure_steps`
+        times. A star not found right after a lowering is stepped further too: lowering a
+        clipped star leaves it at >= half full scale, so it has not faded -- `detect_sources`
+        skips a bright component larger than 5000 px, as a big halo still is on the way down.
+        Returns the first unclipped measurement; `None` when no frame arrived; an
+        `InvalidSample` -- `saturated_at_min_exposure` (camera minimum or step cap reached,
+        still clipped), `cancelled`, or the last reason -- otherwise."""
+        reason = "saturated"
+        for _ in range(self._max_acquisition_exposure_steps):
+            if self._cancel_check is not None and self._cancel_check():
+                self._acquisition_cancelled = True
+                return InvalidSample("cancelled")
+            lowered = self._lower_exposure(control, self._attempts, self._cancel_event)
+            if lowered == "cancelled":
+                self._acquisition_cancelled = True
+                return InvalidSample("cancelled")
+            if lowered is not None:
+                break  # the camera's minimum exposure
+            self._acquisition_steps += 1
+            frame = self._acquire_fresh_frame()
+            if frame is None:
+                return None
+            measurement = tracker.measure(frame)
+            if measurement.reason not in ("saturated", "not_found_at_tracked_position"):
+                return measurement
+            reason = measurement.reason
+        return InvalidSample(SATURATED_AT_MIN_EXPOSURE if reason == "saturated" else reason)
 
     def _acquire_fresh_frame(self) -> np.ndarray | None:
         # The searcher has already waited for the focuser move to complete: it ended now.
