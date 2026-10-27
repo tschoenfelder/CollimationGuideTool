@@ -1,4 +1,4 @@
-# 58 â€” artificial-star autofocus with several / over-exposed stars
+# 58 — artificial-star autofocus with several / over-exposed stars
 
 Real captured frames from diagnostic `4c5677d0-c97a-4a5a-9a10-86d8f71c95dd`
 (git commit `daefd76adedb`, Pi field report 2026-10-25).
@@ -14,11 +14,11 @@ Real captured frames from diagnostic `4c5677d0-c97a-4a5a-9a10-86d8f71c95dd`
 - Git commit at capture: daefd76adedb
 - Optical setup: Main optical train, ATR585M (mono, 16-bit, 3840x2160), 2000 ms,
   gain 460 for the autofocus run (470 at capture), OnStep focuser at 14780.
-- **Frames are local-only (not committed â€” large test data stays local).** The
+- **Frames are local-only (not committed — large test data stays local).** The
   bundle's three Main frames live in the git-ignored
   `local_test_data/58/frames/frame_0..2.fits`, full resolution, not cropped,
   lossless **uint16** (the bundle wrote float32; every value is an integer up to
-  65520 â€” round trip verified bit-exact). To recreate them:
+  65520 — round trip verified bit-exact). To recreate them:
 
   ```
   python scripts/pull_diagnostic_bundle.py --uuid 4c5677d0-c97a-4a5a-9a10-86d8f71c95dd   # only if not on this PC
