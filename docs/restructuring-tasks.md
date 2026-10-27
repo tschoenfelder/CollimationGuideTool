@@ -718,6 +718,10 @@ R9/F11/R11. Contract written before start. Also (S6.8b review #3): `ASTRONOMICAL
 - **F4:** the per-sample cost stays practical on a Pi 5. `measure()` works on a crop around the target, and Stop
   latency is bounded. Report measured numbers in the manifest.
 - **Still frozen:** `detect_sources` for its other callers, `autofocus_search.py`, the terrestrial path, STAR mode.
+- **Round 2 (2026-10-27, review APPROVE-WITH-FIXES N1–N3):** hot or warm single pixels are never candidates and never
+  count as clipped (N1). `acquire()` and `measure()` measure on one scale (N2). Full scale comes from the camera's bit
+  depth where known, and stays the same across retry attempts (N3). For N3, the minimal wiring of
+  `capabilities.bit_depth` through `main_window.py` / `focuser_panel.py` into the controller is allowed.
 
 ### S5 — #55 + #52 duplication inventory (analysis only)
 
