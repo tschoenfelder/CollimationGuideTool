@@ -5,6 +5,7 @@ cannot measure -- it never measures a different bright point instead."""
 from __future__ import annotations
 
 import numpy as np
+import pytest
 from astrotool_core.focus.star_focus_metric import StarTargetTracker
 from astrotool_core.testing.frame_factory import (
     StarSpec,
@@ -218,6 +219,18 @@ class TestSeveralOrOverExposedStars:
         assert result.reason is None
         assert result.size_px is not None
         assert result.centroid is not None and abs(result.centroid[0] - 231.0) < 1.0
+
+    @pytest.mark.parametrize("sigma", [12.0, 16.0, 20.0])
+    def test_a_big_clipped_star_is_acquired_as_saturated_not_missed(self, sigma: float) -> None:
+        # Review F1: detect_sources drops this blob (component mode, > 5000 px) -> no_star,
+        # and the exposure step-down never started.
+        tracker = StarTargetTracker()
+
+        result = tracker.acquire(_over_exposed((1080, 1440), [(700.0, 520.0)], sigma=sigma))
+
+        assert result.reason == "saturated"
+        assert tracker.target is not None
+        assert abs(tracker.target[0] - 700.0) < 2.0 and abs(tracker.target[1] - 520.0) < 2.0
 
     def test_two_candidates_equally_near_the_centre_are_not_guessed(self) -> None:
         image = star_field_image(
