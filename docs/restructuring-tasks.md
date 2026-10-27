@@ -705,6 +705,20 @@ R9/F11/R11. Contract written before start. Also (S6.8b review #3): `ASTRONOMICAL
 - **Non-goals:** the ±1000 search envelope and fine stepping; terrestrial autofocus; a UI to pick a star by click.
 - **Proof:** manifest `58-artificial-star-acquisition`, revert-proven; changed-module gate; CI green.
 
+**Contract amendment (2026-10-27, after review APPROVE-WITH-FIXES F1–F4).**
+- **F1:** a clipped frame with no detectable target (`detect_sources` drops components over 5000 px in component mode)
+  steps the exposure down too, and re-acquires after each step.
+- **F2 (scope widened):** the artificial-star metric becomes a blob-level size that is monotone for large, bloated
+  stars, e.g. half-flux diameter over the candidate region. The current moment FWHM saturates at about 24 px
+  (37x37 window); the real stars are larger, so the sweep could never focus them and could report a false
+  ALREADY_FOCUSED. The artificial-star mode uses one metric for the whole sweep. STAR (natural-star) mode is unchanged.
+  The #33 single-star semantics (ALREADY_FOCUSED, require-improvement) keep their meaning.
+- **F3:** neighbours merged while clipped must not lead to a guessed target. Re-acquire (nearest centre, tie rule) on
+  the first unclipped frame.
+- **F4:** the per-sample cost stays practical on a Pi 5. `measure()` works on a crop around the target, and Stop
+  latency is bounded. Report measured numbers in the manifest.
+- **Still frozen:** `detect_sources` for its other callers, `autofocus_search.py`, the terrestrial path, STAR mode.
+
 ### S5 — #55 + #52 duplication inventory (analysis only)
 
 - **Allowed files:** new `docs/quality/duplication-audit.md` only.
