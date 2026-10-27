@@ -1,4 +1,4 @@
-"""Star-mode autofocus analyzer â€” issue #33's own "Mode A" requirement: a
+"""Star-mode autofocus analyzer — issue #33's own "Mode A" requirement: a
 star-specific metric/detector, separate from the terrestrial implementation,
 that rejects unsuitable stars and aggregates robustly across multiple
 usable ones.
@@ -130,9 +130,6 @@ CENTRE_TIE_PX = 2.0
 #: around the target instead of the whole frame.
 _CROP_RADII = 3.0
 _CROP_MARGIN_PX = 32
-#: A frame counts as clipped with at least this many pixels at >= 98 % of full scale (a few
-#: hot pixels do not make a frame clipped).
-_CLIPPED_FRAME_MIN_PX = 25
 
 
 class StarTargetTracker:
@@ -151,15 +148,32 @@ class StarTargetTracker:
     `TrackedStarMeasurement`) instead of being replaced by something else.
     """
 
-    def __init__(self, *, edge_margin_px: int = 16, max_shift_px: float = 40.0) -> None:
+    def __init__(
+        self,
+        *,
+        edge_margin_px: int = 16,
+        max_shift_px: float = 40.0,
+        full_scale: float | None = None,
+        full_scale_floor: float = 0.0,
+    ) -> None:
+        """`full_scale` (review N3): the camera's full scale (`2**bit_depth - 1`); when None,
+        it is inferred from the frames (`detect_sources`' rule) and the largest value seen --
+        at least `full_scale_floor`, the one an earlier tracker of the run inferred -- is kept;
+        read it back via `full_scale`."""
+        self._known_full_scale = full_scale
         self._edge_margin_px = edge_margin_px
         self._max_shift_px = max_shift_px
         self._target: tuple[float, float] | None = None
         self._radius_px = 0.0
         self._candidate_count = 0
         self._binning: int | None = None
-        self._full_scale = 0.0
+        self._full_scale = full_scale or full_scale_floor
         self._last_clipped = False
+
+    @property
+    def full_scale(self) -> float:
+        """The full scale in use (0 before the first frame when it is inferred)."""
+        return self._full_scale
 
     @property
     def target(self) -> tuple[float, float] | None:
@@ -184,12 +198,13 @@ class StarTargetTracker:
     def _statistics(self, frame: np.ndarray) -> FrameStatistics:
         if self._binning is None:
             self._binning = binning_for(frame.shape)
-        stats = frame_statistics(frame, self._binning)
-        # A frame lowered far enough can lose every value above 4096; the full scale of the
-        # camera does not change within a sweep, so the largest one seen is kept.
-        self._full_scale = max(self._full_scale, stats.full_scale)
-        stats = replace(stats, full_scale=self._full_scale)
-        self._last_clipped = is_clipped(frame, self._full_scale, min_pixels=_CLIPPED_FRAME_MIN_PX)
+        stats = frame_statistics(frame, self._binning, full_scale=self._known_full_scale)
+        if self._known_full_scale is None:
+            # Inferred: a frame lowered far enough can lose every value above 4096; the full
+            # scale of the camera does not change within a sweep, so the largest one is kept.
+            self._full_scale = max(self._full_scale, stats.full_scale)
+            stats = replace(stats, full_scale=self._full_scale)
+        self._last_clipped = is_clipped(frame, self._full_scale)
         return stats
 
     def _near_edge(self, x: float, y: float, shape: tuple[int, int]) -> bool:

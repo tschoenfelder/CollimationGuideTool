@@ -188,6 +188,7 @@ class AutofocusController:
         clock: Clock | None = None,
         exposure_hint: Callable[[], float | None] | None = None,
         max_acquisition_exposure_steps: int = DEFAULT_MAX_ACQUISITION_EXPOSURE_STEPS,
+        camera_bit_depth: int | None = None,
     ) -> None:
         #: Issue #53: every settle wait, move-completion poll and frame
         #: reference time goes through this clock (default: the real one).
@@ -217,6 +218,12 @@ class AutofocusController:
         self._exposure_lowered = False
         #: Issue #58: the artificial-star acquisition step-down of the current run.
         self._max_acquisition_exposure_steps = max(0, max_acquisition_exposure_steps)
+        #: Review N3: the camera's full scale for the artificial-star clipping test (None:
+        #: inferred from the frames); kept across the retry attempts of a run.
+        self._camera_full_scale = (
+            float(2**camera_bit_depth - 1) if camera_bit_depth else None
+        )
+        self._run_full_scale = 0.0
         self._acquisition_control: ExposureControl | None = None
         self._attempts: list[tuple[float, int]] = []
         self._cancel_event: threading.Event | None = None
@@ -252,7 +259,8 @@ class AutofocusController:
         control = self._exposure_control if (artificial or terrestrial) else None
         original = control.get() if control is not None else None
         attempts: list[tuple[float, int]] = [original] if original is not None else []
-        tracker = StarTargetTracker(max_shift_px=self._tracker_max_shift_px)
+        self._run_full_scale = 0.0
+        tracker = self._new_tracker()
         override: tuple[AutofocusStatus, str | None] | None = None
         self._clipped_shares = {}
         self._exposure_lowered = False
@@ -269,7 +277,7 @@ class AutofocusController:
                 self._terrestrial_exposure_precheck(control, attempts, cancel_event)
             steps_left = self._max_exposure_attempts - len(attempts)
             for _attempt in range(1 + max(0, steps_left) if control is not None else 1):
-                tracker = StarTargetTracker(max_shift_px=self._tracker_max_shift_px)
+                tracker = self._new_tracker()
                 searcher = BoundedFocusSearcher(
                     self._focuser, higher_is_better=(mode is AutofocusMode.TERRESTRIAL),
                     coarse_step=self._coarse_step, fine_step=self._fine_step,
@@ -283,7 +291,7 @@ class AutofocusController:
                 )
                 measure = self._build_measurer(mode, tracker)
                 search_result = searcher.search(measure, cancel_check=cancel_check)
-                candidates = tracker.candidate_count or candidates
+                candidates = self._after_attempt(tracker, candidates)
                 if self._acquisition_cancelled:
                     override = (AutofocusStatus.CANCELLED, None)
                     break
@@ -368,6 +376,21 @@ class AutofocusController:
             start_value=search_result.start_value,
             exposure_attempts=tuple(attempts),
             target_candidates=candidates if artificial else 0,
+        )
+
+    def _after_attempt(self, tracker: StarTargetTracker, candidates: int) -> int:
+        """Keep what one attempt's tracker learned for the next: the full scale it inferred
+        (review N3) and the candidate count of its acquisition (0: keep the earlier one)."""
+        self._run_full_scale = max(self._run_full_scale, tracker.full_scale)
+        return tracker.candidate_count or candidates
+
+    def _new_tracker(self) -> StarTargetTracker:
+        """A tracker for one search attempt, with the run's full scale (review N3: the camera's,
+        or the largest inferred so far -- never re-inferred from a lowered frame)."""
+        return StarTargetTracker(
+            max_shift_px=self._tracker_max_shift_px,
+            full_scale=self._camera_full_scale,
+            full_scale_floor=self._run_full_scale,
         )
 
     def _wants_exposure_retry(

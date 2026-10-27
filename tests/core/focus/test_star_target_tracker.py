@@ -247,6 +247,49 @@ class TestSeveralOrOverExposedStars:
         assert tracker.candidate_count == 2
 
 
+class TestReviewRound2:
+    def test_a_warm_pixel_at_the_centre_is_not_followed_instead_of_the_star(self) -> None:
+        # Review N1: the warm pixel was the candidate nearest the centre (HFD 0).
+        frame = _over_exposed((400, 400), [(300.0, 120.0)], sigma=3.0)
+        frame = np.minimum(frame, 20000.0)  # an unclipped star
+        frame[200, 200] = 8000.0  # warm pixel exactly at the centre
+        tracker = StarTargetTracker()
+
+        result = tracker.acquire(frame)
+
+        assert result.reason is None
+        assert tracker.target is not None
+        assert abs(tracker.target[0] - 300.0) < 1.0 and abs(tracker.target[1] - 120.0) < 1.0
+        assert tracker.candidate_count == 1
+
+    def test_acquire_and_measure_give_the_same_size_beside_a_bright_distant_star(self) -> None:
+        # Review N2: start_value (acquire, whole frame) and the later samples (measure, crop)
+        # must be on one scale.
+        rng = np.random.default_rng(5)
+        frame = star_field_image(
+            (600, 800),
+            [StarSpec(x=650.0, y=150.0, peak=2.0e6, sigma=5.0),
+             StarSpec(x=400.0, y=300.0, peak=600.0, sigma=12.0)],
+            background=1000.0,
+        ).astype(np.float64)
+        frame = np.clip(np.round(frame + rng.normal(0.0, 30.0, frame.shape)), 0.0, 65520.0)
+        tracker = StarTargetTracker()
+
+        acquired = tracker.acquire(frame)
+        measured = tracker.measure(frame)
+
+        assert acquired.size_px is not None and measured.size_px is not None
+        assert measured.size_px == pytest.approx(acquired.size_px, rel=1e-9)
+
+    def test_a_known_full_scale_is_kept_and_an_inferred_one_never_shrinks(self) -> None:
+        # Review N3: the controller hands the run's full scale to the next attempt's tracker.
+        dim = np.minimum(_over_exposed((300, 300), [(150.0, 150.0)], sigma=3.0), 4060.0)
+
+        assert StarTargetTracker().acquire(dim).reason == "saturated"  # inferred 4095
+        assert StarTargetTracker(full_scale=65535.0).acquire(dim).reason is None
+        assert StarTargetTracker(full_scale_floor=65535.0).acquire(dim).reason is None
+
+
 def test_the_tracker_needs_no_plate_solver() -> None:
     import astrotool_core.focus.star_focus_metric as module
 

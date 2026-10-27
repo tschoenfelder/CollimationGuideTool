@@ -321,6 +321,8 @@ class MainWindow(QMainWindow):
             measurement_gate=self._measurement_gate,
             # Issue #48 / M04: the autofocus metric follows the global mode's single owner.
             operating_mode=lambda: self._tracking_enforcer.mode,
+            # Issue #58 review N3: Main's full scale for the artificial-star clipping test.
+            camera_bit_depth=lambda: self._left_panel.camera_descriptor().capabilities.bit_depth,
         )
         # The focuser lives on the main optical train only (see
         # FocuserPanel's own docstring) -- pause just the Main camera's

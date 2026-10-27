@@ -21,6 +21,7 @@ from astrotool_core.acquisition.stable_frame_acquisition import (
 )
 from astrotool_core.focus.fake_focuser import FakeFocuser
 from astrotool_core.focus.star_candidates import find_star_candidates
+from astrotool_core.focus.star_focus_metric import StarTargetTracker
 from astrotool_core.testing.frame_factory import StarSpec, star_field_image
 from astrotool_core.timing import FakeClock
 from collimation_tool.application.autofocus_controller import (
@@ -52,30 +53,45 @@ class _Rig:
         focuser: FakeFocuser,
         clock: FakeClock,
         stars: tuple[tuple[float, float, float], ...] = _FOUR_STARS,
+        *,
+        sigma_at_focus: float = _SIGMA_AT_FOCUS,
+        sigma_per_step: float = 0.016,
+        peak_at_focus: float = _PEAK_AT_FOCUS,
+        background: float = _BACKGROUND,
+        clip: float = _FULL_SCALE,
+        hot_pixels: int = 0,
     ) -> None:
         self.focuser = focuser
         self.clock = clock
         self.stars = stars
+        self.sigma_at_focus = sigma_at_focus
+        self.sigma_per_step = sigma_per_step
+        self.peak_at_focus = peak_at_focus
+        self.background = background
+        self.clip = clip
         self.exposure_ms = _START_EXPOSURE_MS
         self.gain = 460
         self.min_exposure_ms = 0.1
         self.frames_served = 0
         self._rng = np.random.default_rng(58)
+        hot = np.random.default_rng(7)
+        self._hot = (hot.integers(0, _SHAPE[0], hot_pixels), hot.integers(0, _SHAPE[1], hot_pixels))
 
     def sigma(self) -> float:
-        return _SIGMA_AT_FOCUS + 0.016 * abs(self.focuser.get_position() - _BEST)
+        return self.sigma_at_focus + self.sigma_per_step * abs(self.focuser.get_position() - _BEST)
 
     def peak(self, brightness: float = 1.0) -> float:
         """The star's true peak above the background (before clipping)."""
-        scale = (self.exposure_ms / _START_EXPOSURE_MS) * (_SIGMA_AT_FOCUS / self.sigma()) ** 2
-        return _PEAK_AT_FOCUS * brightness * scale
+        scale = (self.exposure_ms / _START_EXPOSURE_MS) * (self.sigma_at_focus / self.sigma()) ** 2
+        return self.peak_at_focus * brightness * scale
 
     def image(self) -> np.ndarray:
         sigma = self.sigma()
         stars = [StarSpec(x=x, y=y, peak=self.peak(b), sigma=sigma) for x, y, b in self.stars]
-        image = star_field_image(_SHAPE, stars, background=_BACKGROUND).astype(np.float64)
+        image = star_field_image(_SHAPE, stars, background=self.background).astype(np.float64)
         image += self._rng.normal(0.0, 30.0, _SHAPE)
-        return np.clip(np.round(image), 0.0, _FULL_SCALE)
+        image[self._hot] = self.clip  # hot pixels: clipped whatever the exposure
+        return np.clip(np.round(image), 0.0, self.clip)
 
     def wait_for_frame(
         self, reference_monotonic: float, timeout_s: float
@@ -103,16 +119,15 @@ class _Rig:
 def _controller(
     rig: _Rig, focuser: FakeFocuser, clock: FakeClock, **kwargs: object
 ) -> AutofocusController:
+    options: dict[str, object] = {"coarse_step": 100, "fine_step": 10, **kwargs}
     return AutofocusController(
         focuser,
         get_frame=rig.image,
         wait_for_frame=rig.wait_for_frame,
         set_auto_exposure_paused=lambda paused: None,
-        coarse_step=100,
-        fine_step=10,
         exposure_control=rig.exposure_control(),
         clock=clock,
-        **kwargs,  # type: ignore[arg-type]
+        **options,  # type: ignore[arg-type]
     )
 
 
@@ -121,13 +136,16 @@ def _run(
     start: int = _START,
     min_exposure_ms: float = 0.1,
     stars: tuple[tuple[float, float, float], ...] = _FOUR_STARS,
+    rig_options: dict[str, float] | None = None,
+    start_exposure_ms: float = _START_EXPOSURE_MS,
     **controller_kwargs: object,
 ) -> tuple[_Rig, FakeFocuser, FakeClock, AutofocusResult]:
     clock = FakeClock()
     focuser = FakeFocuser()
     focuser.move_absolute(start)
-    rig = _Rig(focuser, clock, stars)
+    rig = _Rig(focuser, clock, stars, **(rig_options or {}))  # type: ignore[arg-type]
     rig.min_exposure_ms = min_exposure_ms
+    rig.exposure_ms = start_exposure_ms
     result = _controller(rig, focuser, clock, **controller_kwargs).run(
         AutofocusMode.ARTIFICIAL_STAR
     )
@@ -270,3 +288,108 @@ class TestAnUnclippedStartTakesNoStepDown:
         assert result.exposure_attempts == ((15.625, 460),)
         assert 0.5 not in clock.sleeps
         assert rig.frames_served == len(result.samples)  # no step-down frame
+
+
+class TestHotPixels:
+    """Review N1: hot pixels are never stars and never make a frame clipped."""
+
+    def test_a_frame_of_clipped_hot_pixels_and_no_star_is_no_star_without_a_step_down(
+        self,
+    ) -> None:
+        rig, focuser, clock, result = _run(stars=(), rig_options={"hot_pixels": 300})
+
+        assert result.status is AutofocusStatus.NO_USABLE_EVIDENCE
+        assert result.failure_reason == "no_star"
+        assert result.exposure_attempts == ((_START_EXPOSURE_MS, 460),)  # no step-down
+        assert 0.5 not in clock.sleeps
+        assert focuser.get_position() == _START
+
+    def test_the_sweep_ignores_hot_pixels(self) -> None:
+        rig, _focuser, _clock, result = _run(rig_options={"hot_pixels": 300})
+
+        assert result.status is AutofocusStatus.SUCCESS, result
+        assert result.best_position is not None
+        assert abs(result.best_position - _BEST) <= 10
+        assert result.tracked_target is not None
+        assert abs(result.tracked_target[0] - _TARGET[0]) < 3.0
+        assert result.target_candidates == 4
+
+
+class TestCameraFullScale:
+    """Review N3: the clipping test uses the camera's full scale, not a guess from the frame."""
+
+    #: A dim scene on a 16-bit camera: one star whose top reaches ~4060 ADU at focus, no
+    #: pixel above 4090 -- far below the camera's full scale (65535).
+    _DIM = {"peak_at_focus": 3060.0, "background": 1000.0, "clip": 4090.0}
+    _ONE_STAR = ((350.0, 256.0, 1.0),)
+
+    def test_a_dim_star_of_a_16_bit_camera_is_not_saturated(self) -> None:
+        _rig, _focuser, clock, result = _run(
+            stars=self._ONE_STAR, rig_options=self._DIM, camera_bit_depth=16
+        )
+
+        assert result.status is AutofocusStatus.SUCCESS, result
+        assert result.best_position is not None
+        assert abs(result.best_position - _BEST) <= 10
+        assert result.exposure_attempts == ((_START_EXPOSURE_MS, 460),)
+        assert 0.5 not in clock.sleeps
+
+    def test_without_the_bit_depth_a_dim_16_bit_frame_reads_as_12_bit(self) -> None:
+        # The documented fallback hazard (frame maximum < 4096 -> full scale 4095): the dim
+        # star is taken for clipped and stepped down -- what the bit depth wiring prevents.
+        _rig, _focuser, _clock, result = _run(stars=self._ONE_STAR, rig_options=self._DIM)
+
+        assert len(result.exposure_attempts) > 1
+
+    def test_a_12_bit_camera_clipped_at_4095_is_stepped_down(self) -> None:
+        twelve_bit = {"peak_at_focus": 2.0e5, "background": 100.0, "clip": 4095.0}
+
+        rig, _focuser, _clock, result = _run(rig_options=twelve_bit, camera_bit_depth=12)
+
+        assert result.status is AutofocusStatus.SUCCESS, result
+        assert result.best_position is not None
+        assert abs(result.best_position - _BEST) <= 10
+        assert len(_assert_halvings_from_the_start(result)) >= 3
+        assert (rig.exposure_ms, rig.gain) == (_START_EXPOSURE_MS, 460)
+
+
+class TestProductionSteps:
+    """Review L2: a small, noisy star near focus at the production steps (250 / 25)."""
+
+    _SMALL = {"sigma_at_focus": 1.5, "sigma_per_step": 0.01, "peak_at_focus": 4.0e5}
+
+    def test_the_size_is_a_clean_v_at_the_production_fine_step(self) -> None:
+        # The old centre-radius HFD jumped in steps for small stars (4.0 at both 495 and 520);
+        # now every 25-step move changes it by more than the searcher's 5 % margin, and
+        # repeated noisy frames at one position agree within 1 %.
+        focuser = FakeFocuser()
+        rig = _Rig(focuser, FakeClock(), **self._SMALL)  # type: ignore[arg-type]
+        rig.exposure_ms = _START_EXPOSURE_MS / 16
+        sizes = {}
+        for position in (450, 475, 500, 525, 550):
+            focuser.move_absolute(position)
+            samples = []
+            for _ in range(3):
+                result = StarTargetTracker().acquire(rig.image())
+                assert result.size_px is not None, result
+                samples.append(result.size_px)
+            assert max(samples) / min(samples) < 1.01, (position, samples)
+            sizes[position] = sum(samples) / 3
+        assert sizes[475] > 1.05 * sizes[500] and sizes[525] > 1.05 * sizes[500]
+        assert sizes[450] > 1.05 * sizes[475] and sizes[550] > 1.05 * sizes[525]
+
+    @pytest.mark.parametrize("start", [300, 450, 700])
+    def test_a_production_step_sweep_lands_near_focus(self, start: int) -> None:
+        # Within two fine steps: the frozen searcher (autofocus_search.py) does not refine
+        # below its coarse probes when both neighbours are worse -- a recorded follow-up.
+        _rig, _focuser, _clock, result = _run(
+            start=start,
+            rig_options=self._SMALL,
+            coarse_step=250,
+            fine_step=25,
+            start_exposure_ms=_START_EXPOSURE_MS / 16,
+        )
+
+        assert result.status in (AutofocusStatus.SUCCESS, AutofocusStatus.ALREADY_FOCUSED), result
+        assert result.best_position is not None
+        assert abs(result.best_position - _BEST) <= 50

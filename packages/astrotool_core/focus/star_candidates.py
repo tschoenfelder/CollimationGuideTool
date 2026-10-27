@@ -58,6 +58,19 @@ _MAX_BINNED_PX = 600_000
 _STAT_SAMPLE_PX = 250_000
 #: Width (binned px) of the ring outside a blob whose median is its local background.
 _RING_CELLS = 3
+#: Review N1: a candidate needs at least this many full-resolution pixels above
+#: `_SUPPORT_SIGMA` pixel-noise sigmas (`detect_sources`' MIN_STAR_SUPPORT_PIXELS is 5 too) ...
+MIN_SUPPORT_PIXELS = 5
+_SUPPORT_SIGMA = 5.0
+#: ... and a half-flux diameter of at least this (a hot 2x2 cluster has ~1.4 px).
+MIN_HFD_PX = 1.5
+#: A single pixel brighter than `_HOT_PIXEL_FACTOR` x its brightest neighbour (above the
+#: background, + 5 pixel-noise sigmas) is a hot/warm pixel and is replaced by that neighbour.
+#: A real star's peak is at most ~2x its neighbours even at FWHM 2 px.
+_HOT_PIXEL_FACTOR = 3.0
+#: A frame counts as clipped from this many clipped pixels that each have >= 4 clipped
+#: neighbours (the inside of a clipped blob -- hot pixels and 2x2 clusters never count).
+CLIPPED_FRAME_MIN_PX = 25
 _NEIGHBOURS = ((-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1))
 
 
@@ -85,15 +98,22 @@ class StarCandidate:
 
 @dataclass(frozen=True)
 class FrameStatistics:
-    """Whole-frame statistics at one `binning`: `background` (median) and `noise` (MAD sigma)
-    of the binned, box-smoothed frame -- measured, so correlated noise and background
-    structure count too -- and `full_scale` as `detect_sources` infers it from the frame's
-    maximum (65535 above 4096, 4095 above 255, else 255)."""
+    """Whole-frame statistics at one `binning`, after hot pixels are removed:
+    `background` (median) and `noise` (MAD sigma) of the binned, box-smoothed frame --
+    measured, so correlated noise and background structure count too; `brightest`: the
+    frame's brightest smoothed amplitude above `background` (review N2: a crop is segmented
+    with the whole frame's threshold, so `acquire()` and `measure()` measure on one scale);
+    `pixel_background` / `pixel_noise`: median and MAD sigma of single pixels; `full_scale`:
+    the camera's (`2**bit_depth - 1`) when given, else inferred like `detect_sources` from
+    the frame's maximum (65535 above 4096, 4095 above 255, else 255)."""
 
     background: float
     noise: float
     full_scale: float
     binning: int
+    brightest: float = 0.0
+    pixel_background: float = 0.0
+    pixel_noise: float = 0.0
 
 
 def _bin(image: np.ndarray, b: int) -> np.ndarray:
@@ -103,16 +123,66 @@ def _bin(image: np.ndarray, b: int) -> np.ndarray:
     )
 
 
-def frame_statistics(frame: np.ndarray, binning: int | None = None) -> FrameStatistics:
+def _pixel_statistics(frame: np.ndarray) -> tuple[float, float]:
+    step = max(1, int(np.ceil((frame.size / _STAT_SAMPLE_PX) ** 0.5)))
+    sample = np.asarray(frame[::step, ::step], dtype=np.float64)
+    background = float(np.median(sample))
+    return background, 1.4826 * float(np.median(np.abs(sample - background)))
+
+
+def inferred_full_scale(frame: np.ndarray) -> float:
+    """`detect_sources`' rule from the frame's maximum -- only a fallback for an unknown
+    camera bit depth (a dim 16-bit frame below 4096 would read as 12-bit)."""
+    peak = float(np.max(frame))
+    return 65535.0 if peak > 4096 else 4095.0 if peak > 255 else 255.0
+
+
+def remove_hot_pixels(frame: np.ndarray, background: float, pixel_noise: float) -> np.ndarray:
+    """Review N1: `frame` (as float64) with every single hot/warm pixel -- brighter above
+    `background` than `_HOT_PIXEL_FACTOR` x its brightest 8-neighbour + 5 pixel-noise
+    sigmas -- replaced by that neighbour. Returns `frame` itself (as float64, not a copy)
+    when there is none; never modifies the caller's array."""
+    image = np.asarray(frame, dtype=np.float64)
+    height, width = image.shape
+    rows, cols = np.nonzero(image[1:-1, 1:-1] > background + _SUPPORT_SIGMA * pixel_noise)
+    if rows.size == 0:
+        return image
+    rows += 1
+    cols += 1
+    neighbour_max = np.full(rows.size, -np.inf)
+    for dy, dx in _NEIGHBOURS:
+        neighbour_max = np.maximum(neighbour_max, image[rows + dy, cols + dx])
+    amplitude = image[rows, cols] - background
+    hot = amplitude > _HOT_PIXEL_FACTOR * np.maximum(neighbour_max - background, 0.0) + (
+        _SUPPORT_SIGMA * pixel_noise
+    )
+    if not hot.any():
+        return image
+    cleaned = image.copy() if image is frame else image
+    cleaned[rows[hot], cols[hot]] = neighbour_max[hot]
+    return cleaned
+
+
+def frame_statistics(
+    frame: np.ndarray, binning: int | None = None, *, full_scale: float | None = None
+) -> FrameStatistics:
     b = binning or binning_for(frame.shape)
-    smoothed = _box_smooth(_bin(np.asarray(frame, dtype=np.float64), b), _SMOOTH_BOX)
+    pixel_background, pixel_noise = _pixel_statistics(frame)
+    cleaned = remove_hot_pixels(frame, pixel_background, pixel_noise)
+    smoothed = _box_smooth(_bin(cleaned, b), _SMOOTH_BOX)
     step = max(1, int(np.ceil((smoothed.size / _STAT_SAMPLE_PX) ** 0.5)))
     sample = smoothed[::step, ::step]
     background = float(np.median(sample))
     noise = 1.4826 * float(np.median(np.abs(sample - background)))
-    peak = float(np.max(frame))
-    full_scale = 65535.0 if peak > 4096 else 4095.0 if peak > 255 else 255.0
-    return FrameStatistics(background, noise, full_scale, b)
+    return FrameStatistics(
+        background=background,
+        noise=noise,
+        full_scale=full_scale if full_scale is not None else inferred_full_scale(frame),
+        binning=b,
+        brightest=float(smoothed.max()) - background,
+        pixel_background=pixel_background,
+        pixel_noise=pixel_noise,
+    )
 
 
 def binning_for(shape: tuple[int, int]) -> int:
@@ -120,10 +190,28 @@ def binning_for(shape: tuple[int, int]) -> int:
     return max(1, int(np.ceil(np.sqrt(shape[0] * shape[1] / _MAX_BINNED_PX))))
 
 
-def is_clipped(frame: np.ndarray, full_scale: float, *, min_pixels: int = 4) -> bool:
-    """At least `min_pixels` pixels at >= 98 % of `full_scale`."""
-    limit = SATURATION_FRACTION * full_scale
-    return int(np.count_nonzero(np.asarray(frame) >= limit)) >= min_pixels
+def _clipped_inside(clipped: np.ndarray) -> np.ndarray:
+    """Clipped pixels with >= 4 clipped 8-neighbours (the inside of a clipped blob)."""
+    padded = np.pad(clipped, 1).astype(np.int8)
+    height, width = clipped.shape
+    count = np.zeros(clipped.shape, dtype=np.int8)
+    for dy, dx in _NEIGHBOURS:
+        count += padded[1 + dy : 1 + dy + height, 1 + dx : 1 + dx + width]
+    return np.asarray(clipped & (count >= 4))
+
+
+def is_clipped(
+    frame: np.ndarray, full_scale: float, *, min_pixels: int = CLIPPED_FRAME_MIN_PX
+) -> bool:
+    """At least `min_pixels` pixels at >= 98 % of `full_scale` inside clipped blobs (review
+    N1: scattered hot pixels and small hot clusters never make a frame clipped)."""
+    clipped = np.asarray(frame) >= SATURATION_FRACTION * full_scale
+    if int(np.count_nonzero(clipped)) < min_pixels:
+        return False
+    rows, cols = np.nonzero(clipped)
+    y0, y1 = max(0, rows.min() - 1), rows.max() + 2
+    x0, x1 = max(0, cols.min() - 1), cols.max() + 2
+    return int(np.count_nonzero(_clipped_inside(clipped[y0:y1, x0:x1]))) >= min_pixels
 
 
 def _box_smooth(image: np.ndarray, size: int) -> np.ndarray:
@@ -209,10 +297,10 @@ def find_star_candidates(
     """One `StarCandidate` per star blob of `frame` (see the module docstring). `frame` may be
     a crop: `origin` = its (x0, y0) in the full frame, `frame_shape` = the full frame's shape,
     `stats` = the full frame's statistics (a crop's own median is the star)."""
-    image = np.asarray(frame, dtype=np.float64)
-    b = binning or (stats.binning if stats is not None else binning_for(image.shape))
+    b = binning or (stats.binning if stats is not None else binning_for(frame.shape))
     if stats is None or stats.binning != b:
-        stats = frame_statistics(image, b)
+        stats = frame_statistics(frame, b)
+    image = remove_hot_pixels(frame, stats.pixel_background, stats.pixel_noise)
     full_height, full_width = frame_shape or image.shape
     height, width = image.shape[0] // b, image.shape[1] // b
     if height < 3 or width < 3:
@@ -222,7 +310,8 @@ def find_star_candidates(
     binned_max = blocks.max(axis=(1, 3))
     smoothed = _box_smooth(binned, _SMOOTH_BOX)
     noise = stats.noise
-    brightest = float(smoothed.max()) - stats.background
+    # Review N2: the WHOLE frame's brightest amplitude, also for a crop.
+    brightest = stats.brightest
     if brightest <= 0.0:
         return ()
     threshold = stats.background + max(_DETECTION_SIGMA * noise, _DETECTION_FRACTION * brightest)
@@ -259,7 +348,7 @@ def find_star_candidates(
         return ()
     seg.fill()
     labels = seg.owner.reshape(height, width)
-    return tuple(
+    described = (
         _describe(
             image,
             binned,
@@ -273,6 +362,7 @@ def find_star_candidates(
         )
         for label in range(1, cores + 1)
     )
+    return tuple(candidate for candidate in described if candidate is not None)
 
 
 def _describe(
@@ -285,7 +375,7 @@ def _describe(
     stats: FrameStatistics,
     origin: tuple[int, int],
     full_shape: tuple[int, int],
-) -> StarCandidate:
+) -> StarCandidate | None:
     height, width = owner.shape
     region = owner == label
     rows, cols = np.nonzero(region)
@@ -318,6 +408,12 @@ def _describe(
     else:
         cx, cy = float(xs.mean()), float(ys.mean())
     hfd = _half_flux_diameter(xs - cx, ys - cy, flux)
+    # Review N1: a star covers several pixels clearly above the noise; a hot cluster does not.
+    support = int(
+        np.count_nonzero(flux > max(_SUPPORT_SIGMA * stats.pixel_noise, _DETECTION_FRACTION * peak))
+    )
+    if support < MIN_SUPPORT_PIXELS or (hfd is not None and hfd < MIN_HFD_PX):
+        return None
 
     on_border = bool(
         rows.min() == 0 or cols.min() == 0 or rows.max() == height - 1 or cols.max() == width - 1
@@ -340,19 +436,22 @@ def _describe(
 
 
 def _half_flux_diameter(dx: np.ndarray, dy: np.ndarray, flux: np.ndarray) -> float | None:
+    """Twice the radius holding half the flux. Each pixel's flux is spread evenly over the
+    radii [r - 0.5, r + 0.5] it covers (review L2: counting it at its centre radius alone made
+    the value jump in steps for small, pixel-centred stars), so the enclosed flux is a
+    continuous function of the radius; its half point is found by bisection."""
     total = float(flux.sum())
     if total <= 0.0:
         return None
     radius = np.hypot(dx, dy)
-    order = np.argsort(radius, kind="stable")
-    cumulative = np.cumsum(flux[order])
-    index = int(np.searchsorted(cumulative, 0.5 * total))
-    index = min(index, radius.size - 1)
-    sorted_radius = radius[order]
-    if index == 0:
-        return float(2.0 * sorted_radius[0])
-    # Linear interpolation between the two pixels straddling half the flux.
-    below, above = float(cumulative[index - 1]), float(cumulative[index])
-    share = 0.0 if above == below else (0.5 * total - below) / (above - below)
-    r_half = sorted_radius[index - 1] + share * (sorted_radius[index] - sorted_radius[index - 1])
-    return float(2.0 * r_half)
+    inner = np.maximum(radius - 0.5, 0.0)
+    span = radius + 0.5 - inner
+    low, high = 0.0, float(radius.max()) + 0.5
+    for _ in range(40):
+        middle = 0.5 * (low + high)
+        enclosed = float((flux * np.clip((middle - inner) / span, 0.0, 1.0)).sum())
+        if enclosed < 0.5 * total:
+            low = middle
+        else:
+            high = middle
+    return float(low + high)

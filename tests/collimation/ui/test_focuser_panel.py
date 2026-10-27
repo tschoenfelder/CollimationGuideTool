@@ -698,3 +698,15 @@ def test_a_single_artificial_star_status_text_is_unchanged() -> None:
     )
 
     assert text == "Auto focus (Main): artificial star best 500 (confidence 0.33)"
+
+
+def test_the_camera_bit_depth_is_read_for_auto_focus(qapp: object) -> None:
+    """Issue #58 review N3: the paired camera's bit depth reaches the controller (its full
+    scale); a camera that cannot say is "unknown" (the controller infers), never an error."""
+
+    def broken() -> int:
+        raise RuntimeError("no camera")
+
+    assert FocuserPanel(FakeFocuser(), camera_bit_depth=lambda: 12)._snapshot_bit_depth() == 12
+    assert FocuserPanel(FakeFocuser(), camera_bit_depth=broken)._snapshot_bit_depth() is None
+    assert FocuserPanel(FakeFocuser())._snapshot_bit_depth() is None

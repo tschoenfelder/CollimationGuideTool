@@ -158,8 +158,12 @@ class FocuserPanel(QWidget):
         measurement_gate: Callable[[str], str | None] | None = None,
         clock: Clock | None = None,
         operating_mode: Callable[[], OperatingMode] | None = None,
+        camera_bit_depth: Callable[[], int | None] | None = None,
     ) -> None:
         super().__init__()
+        #: Issue #58 review N3: the paired camera's bit depth (its full scale for the
+        #: artificial-star clipping test), read on the GUI thread when a run starts.
+        self._camera_bit_depth = camera_bit_depth
         #: Issue #48 / user decision M04: the global operating mode's single owner (read live).
         #: It selects the autofocus metric -- Terrestrial -> Tenengrad, Astronomical ->
         #: star/FWHM; this panel has no Star/Terrestrial selector of its own. None (standalone,
@@ -449,6 +453,7 @@ class FocuserPanel(QWidget):
             # independent per-train focuser yet (see module docstring).
             camera_label=self._optical_train_label,
             focuser_label=self._optical_train_label,
+            camera_bit_depth=self._snapshot_bit_depth(),
         )
         started = self._autofocus_runner.submit(controller, self._autofocus_mode())
         if not started:
@@ -458,6 +463,17 @@ class FocuserPanel(QWidget):
         self._auto_focus_status_label.setText(f"Auto focusing ({self._optical_train_label})…")
         self._update_move_buttons_enabled()
         self._autofocus_poll_timer.start()
+
+    def _snapshot_bit_depth(self) -> int | None:
+        """Issue #58 review N3: the camera's bit depth, or None (unknown: the controller then
+        infers the full scale from the frames) when not wired or not readable."""
+        if self._camera_bit_depth is None:
+            return None
+        try:
+            return self._camera_bit_depth()
+        except Exception:  # noqa: BLE001 -- a camera that cannot say just means "unknown"
+            _log.warning("camera bit depth unavailable for auto focus", exc_info=True)
+            return None
 
     def _on_auto_focus_cancel_clicked(self) -> None:
         self._autofocus_runner.cancel()

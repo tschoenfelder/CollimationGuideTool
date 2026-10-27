@@ -14,6 +14,7 @@ from astrotool_core.focus.star_candidates import (
     StarCandidate,
     find_star_candidates,
     frame_statistics,
+    is_clipped,
 )
 from astrotool_core.target.detector import detect_sources
 from astrotool_core.testing.frame_factory import StarSpec, single_star_image, star_field_image
@@ -211,3 +212,99 @@ class TestCrops:
         assert crop[0].x == pytest.approx(target.x, abs=0.05)
         assert crop[0].hfd_px == pytest.approx(target.hfd_px, rel=0.01)
         assert not crop[0].truncated
+
+
+class TestHotPixels:
+    """Review N1: single hot/warm pixels and small hot clusters are never candidates and never
+    make a frame clipped."""
+
+    @pytest.mark.parametrize("value", [3000.0, 20000.0, 65520.0])
+    def test_a_warm_or_hot_pixel_is_not_a_candidate(self, value: float) -> None:
+        frame = over_exposed((400, 400), [], amplitude=0.0)
+        frame[200, 200] = value
+
+        assert find_star_candidates(frame) == ()
+
+    def test_a_hot_2x2_cluster_is_not_a_candidate(self) -> None:
+        frame = over_exposed((400, 400), [], amplitude=0.0)
+        frame[200:202, 200:202] = _FULL_SCALE
+
+        assert find_star_candidates(frame) == ()
+
+    def test_300_hot_pixels_are_no_candidates_and_do_not_make_the_frame_clipped(self) -> None:
+        frame = over_exposed((600, 800), [], amplitude=0.0)
+        rng = np.random.default_rng(3)
+        frame[rng.integers(0, 600, 300), rng.integers(0, 800, 300)] = _FULL_SCALE
+
+        assert find_star_candidates(frame) == ()
+        assert not is_clipped(frame, 65535.0)
+
+    def test_a_clipped_star_still_makes_the_frame_clipped(self) -> None:
+        assert is_clipped(over_exposed((400, 400), [(200.0, 200.0)], sigma=6.0), 65535.0)
+
+    def test_a_hot_pixel_beside_a_star_leaves_the_star_unsaturated(self) -> None:
+        frame = over_exposed((400, 400), [(200.0, 200.0)], amplitude=20000.0, sigma=4.0)
+        frame[230, 200] = _FULL_SCALE
+
+        star = _only(frame)
+
+        assert not star.saturated
+        assert abs(star.x - 200.0) < 0.5 and abs(star.y - 200.0) < 0.5
+
+
+class TestOneScaleForFrameAndCrop:
+    def test_a_crop_uses_the_whole_frames_threshold_beside_a_bright_distant_star(
+        self,
+    ) -> None:
+        # Review N2: the detection threshold's 0.1 %-of-brightest term came from the analysed
+        # area -- the whole frame in acquire(), the crop in measure() -- so one frame gave two
+        # sizes (+4.8 % for a faint wide star, close to the searcher's 5 % margin).
+        frame = over_exposed((600, 800), [(650.0, 150.0)], amplitude=2.0e6, sigma=5.0)
+        frame += over_exposed((600, 800), [(250.0, 350.0)], amplitude=600.0, sigma=12.0, seed=9)
+        frame -= 1000.0  # one background
+        stats = frame_statistics(frame, binning=1)
+        whole = min(find_star_candidates(frame, stats=stats), key=lambda c: abs(c.x - 250.0))
+
+        crop = find_star_candidates(
+            frame[200:500, 100:400], stats=stats, origin=(100, 200), frame_shape=frame.shape
+        )
+
+        assert len(crop) == 1
+        assert crop[0].hfd_px == pytest.approx(whole.hfd_px, rel=1e-9)
+
+
+class TestCameraFullScale:
+    def test_a_known_16_bit_full_scale_keeps_a_dim_star_unsaturated(self) -> None:
+        # Review N3: frame maximum < 4096 -> the inferred full scale is 4095.
+        frame = np.minimum(
+            over_exposed((300, 300), [(150.0, 150.0)], amplitude=3060.0, sigma=3.0), 4090.0
+        )
+
+        assert _only(frame).saturated  # inferred: a 16-bit frame read as 12-bit
+        known = frame_statistics(frame, full_scale=65535.0)
+        assert not find_star_candidates(frame, stats=known)[0].saturated
+
+    def test_a_12_bit_camera_clipped_at_4095_is_saturated(self) -> None:
+        frame = over_exposed(
+            (300, 300), [(150.0, 150.0)], amplitude=2.0e4, sigma=6.0, background=100.0
+        )
+        frame = np.minimum(frame, 4095.0)
+
+        stats = frame_statistics(frame, full_scale=4095.0)
+
+        assert find_star_candidates(frame, stats=stats)[0].saturated
+        assert is_clipped(frame, 4095.0)
+
+
+class TestHalfFluxDiameterIsContinuous:
+    def test_small_pixel_centred_stars_grow_smoothly(self) -> None:
+        # Review L2: counting each pixel at its centre radius gave steps (the same 4.0 for
+        # different widths); every 0.05 px of width must now show.
+        sizes = [
+            _only(single_star_image((64, 64), x=32.0, y=32.0, peak=5000.0, sigma=s)).hfd_px
+            for s in np.arange(0.9, 2.0, 0.05)
+        ]
+        assert all(
+            b is not None and a is not None and b > a
+            for a, b in zip(sizes, sizes[1:], strict=False)
+        ), sizes
