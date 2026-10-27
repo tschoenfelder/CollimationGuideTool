@@ -2,24 +2,30 @@
 issues = [58]
 summary = """Artificial-star autofocus failed at once with several heavily over-exposed stars (diagnostic \
 4c5677d0: four clipped blobs at 2000 ms, no_usable_evidence / multiple_candidates on the first frame, focuser \
-never moved). detect_sources (unchanged, shared) splits each clipped plateau + halo into dozens of local maxima \
-(785 sources for 4 stars) and StarTargetTracker.acquire refused anything but exactly one source. Fix: \
-group_star_candidates (new star_candidates.py) makes one candidate per blob by topographic prominence on a 5x5 \
-box-smoothed image (a source founds a candidate only if its region above 'level - max(8 smoothed-noise sigma, \
-5 % of amplitude)' reaches no brighter candidate) -- 785/769/774 -> 4/4/4 on the real frames; one source is \
-returned unchanged. The tracker acquires the candidate nearest the image centre (green cross, #57) and reports \
-the count (two equally near < 2 px: still multiple_candidates). The controller steps a clipped target down at \
-acquisition (shared _lower_exposure + _exposure_lowered restore, halving, at most 12 steps or the camera minimum, \
-else saturated_at_min_exposure; a target not found right after a lowering is stepped further, as detect_sources \
-skips components > 5000 px); those steps do not use up max_exposure_attempts. AutofocusResult.target_candidates; \
-the focuser panel says 'following the star nearest the centre (N found)'."""
+never moved): detect_sources (shared, unchanged) split each clipped plateau + halo into dozens of local maxima \
+(785 sources for 4 stars) and StarTargetTracker.acquire refused anything but exactly one. Review (APPROVE-WITH-\
+FIXES, contract amendment 2026-10-27) found that detect_sources also drops components > 5000 px (F1: a big \
+clipped star is 'no_star', no step-down) and that its 37x37 moment FWHM tops out at ~24 px (F2: big stars \
+cannot be focused, false ALREADY_FOCUSED). Fix: the artificial-star mode no longer uses detect_sources. \
+find_star_candidates (star_candidates.py) bins the frame to <= ~600k px, box-smooths 3x3, takes star pixels \
+above 5 measured smoothed-noise sigmas and makes one candidate per blob by topographic prominence (9 sigma / 5 %); \
+the sample value is the blob's half-flux diameter after a local-background subtraction (monotone 3..150 px, \
+clipped and donut included). The tracker acquires the candidate nearest the image centre (tie < 2 px -> \
+multiple_candidates) and reports the count; measure() analyses a crop around the target (F4). The controller \
+steps a clipped target -- or a clipped frame without a star (F1) -- down at acquisition (shared _lower_exposure + \
+_exposure_lowered restore, halving, <= 12 steps or the camera minimum, else saturated_at_min_exposure) and \
+re-acquires after every step (F3: stars merged while clipped are told apart, not guessed); those steps do not use \
+up max_exposure_attempts. AutofocusResult.target_candidates; focuser panel: 'following the star nearest the \
+centre (N found)'. Measured (dev PC, i.e. Windows 11 desktop): find_star_candidates 0.18 s per 3840x2160 real \
+frame (detect_sources 9.7 s); acquire 0.14-0.18 s; measure (crop) 0.04-0.05 s for an in-focus or sigma-20 star, \
+0.22 s for a clipped 4c5677d0 blob."""
 modules = [
     "packages/astrotool_core/focus/star_candidates.py",
     "packages/astrotool_core/focus/star_focus_metric.py",
     "apps/collimation_tool/application/autofocus_controller.py",
     "apps/collimation_tool/ui/focuser_panel.py",
 ]
-fix_commits = ["3784aeb"]
+fix_commits = ["ed24d34", "52ab560"]
 dataset_uuids = ["4c5677d0-c97a-4a5a-9a10-86d8f71c95dd"]
 focused_command = """pytest -q \
 tests/core/focus/test_star_candidates.py \
@@ -30,47 +36,70 @@ tests/collimation/ui/test_focuser_panel.py \
 tests/regressions/test_issue_58_artificial_star_acquisition_regression.py"""
 broader_tier = "integration"
 field_only_assumptions = [
-    "A real artificial-star Auto Focus sweep on the rig with several stars: the star nearest the centre cross is followed, the exposure is stepped down until it is unclipped, the run converges on visibly best focus and the exposure/gain are restored afterwards. The clipped bundle frames cannot be re-exposed off-rig; the step-down and the sweep are proven only on the simulated rig (tests/collimation/application/test_autofocus_controller_artificial_star.py).",
-    "How far above full scale the real stars are at 2000 ms / gain 460 (how many halvings they need) is unknowable from clipped data; the cap of 12 halvings reaches ~0.5 ms (ATR585M minimum 0.1 ms). The gain is never lowered.",
-    "Unclipped at the defocused start is not unclipped at focus: a star that sharpens gets brighter, so the in-search saturation retry (max_exposure_attempts = 3) may still be needed near focus.",
-    "Grouping cost: ~0.3-0.8 s per full 3840x2160 frame on the dev PC on top of detect_sources' ~10 s for these fragmented frames; per-sample time on the Pi 5 is not measured.",
+    "A real artificial-star Auto Focus sweep on the rig with several stars: the star nearest the centre cross is followed, the exposure is stepped down until it is unclipped, the run converges on visibly best focus and the exposure/gain are restored afterwards. The clipped bundle frames cannot be re-exposed off-rig; step-down and sweep are proven only on the simulated rig (Gaussian stars, flux conserved).",
+    "The C8's real defocus PSF (an annulus with spider vanes, seeing, halos from scattering) is only approximated by the Gaussian and soft-annulus tests; the half-flux diameter was shown monotone on those, not on a real through-focus series.",
+    "How far above full scale the real stars are at 2000 ms / gain 460 is unknowable from clipped data; the cap of 12 halvings reaches ~0.5 ms (ATR585M minimum 0.1 ms). The gain is never lowered.",
+    "Unclipped at the defocused start is not unclipped at focus: a sharpening star gets brighter, so the in-search saturation retry (max_exposure_attempts = 3, i.e. 2 more halvings) may still be needed near focus.",
+    "Pi 5 timing is NOT measured: from the dev-PC numbers above and a Pi 5 typically 3-5x slower in numpy, an estimated 0.5-1 s per full-frame acquisition and 0.1-1 s per crop measurement; Stop latency is then bounded by one exposure + about 1 s of analysis (was one detect_sources call, ~10 s PC / an estimated 20-50 s Pi).",
 ]
 gaps = [
-    "LOCAL-ONLY (user decision: large test data is never committed): every test in tests/regressions/test_issue_58_artificial_star_acquisition_regression.py needs local_test_data/58/frames/ (git-ignored; recreate with scripts/pull_diagnostic_bundle.py + scripts/slim_regression_frames.py, see datasets/regressions/58/README.md) and skips with that reason without them (CI). The same logic is proven on CI by the synthetic tests in test_star_candidates.py (four clipped blobs incl. two with merged halos), test_star_target_tracker.py and test_autofocus_controller_artificial_star.py.",
-    "Out of scope (detect_sources is frozen for its other callers): in component mode (< 25000 bright pixels) detect_sources silently drops any component larger than 5000 px, so a single big defocused/over-exposed blob can be invisible ('no_star') -- at acquisition this ends the run as no_star with no step-down; during the step-down it is handled by stepping further (simulated: no source at 1000-250 ms in the test rig). Worth an issue against target/detector.py.",
-    "The real-frame grouping test (test_the_four_blobs_are_four_candidates) and the unit tests of group_star_candidates exercise the new helper itself; before the fix there was no grouping, so their pre-fix counterpart is the tracker/controller failure (multiple_candidates) recorded below.",
-    "The prominence tolerance (8 smoothed sigmas, 5 %) was chosen on the three real frames: 3..30 sigmas all give 4, 2 sigmas leaves halo pieces as extra candidates, a 20 % fraction merges the two touching stars on frame_0 (their saddle is 15-20 % of the amplitude down). Other scenes (strong halos with structure, uneven donuts) may need a different value.",
+    "LOCAL-ONLY (user decision: large test data is never committed): every test in tests/regressions/test_issue_58_artificial_star_acquisition_regression.py needs local_test_data/58/frames/ (git-ignored; recreate with scripts/pull_diagnostic_bundle.py + scripts/slim_regression_frames.py, see datasets/regressions/58/README.md) and skips with that reason without them (CI). The same logic is proven on CI by the synthetic tests in test_star_candidates.py, test_star_target_tracker.py and test_autofocus_controller_artificial_star.py.",
+    "Changed #33 behaviour (contract amendment F2): a defocused donut is now measured (larger HFD), not rejected as donut_like; tests/core/focus/test_star_target_tracker.py::TestMeasureFollowsTheSameTarget::test_a_defocused_donut_is_measured_as_a_larger_star and the two changed tests in test_autofocus_artificial_star.py say so. TrackedStarMeasurement.fwhm_px was renamed size_px (the HFD). #33's former '2 candidates -> multiple_candidates' controller test now follows the star nearest the centre.",
+    "The half-flux diameter is cut at the blob's border (detection threshold, saddle to a touching neighbour): a star barely above the noise reads small (flux 2e6 in the monotonicity sweep: FWHM 96 -> 60.5, 128 -> 61.0, 150 -> not detected) and a crowded star's centre can be pulled by a few px (sigma-25 pair 70 px apart: within 6 px; the touching 4c5677d0 target: 3 px). After the step-down a star is at 0.49-0.98 of full scale, far from that regime.",
+    "The prominence tolerance (9 smoothed sigmas, 5 %) was chosen on the three real frames: 6..14 sigmas give exactly 4 on all three, 4 leaves a halo piece as a fifth candidate on frame_2, 16 merges the touching pair on frame_0 (their saddle is 15-20 % of the amplitude down). Other scenes may need a different value.",
+    "The full scale is inferred like detect_sources (65535 above 4096 ...); the tracker keeps the largest seen in a sweep, so a deeply lowered 16-bit frame is not mistaken for 12-bit. No camera bit depth is plumbed in.",
+    "tests/core/focus/test_star_candidates.py tests the new finder itself; its pre-fix counterparts are the tracker/controller failures below (multiple_candidates, no_star, false ALREADY_FOCUSED).",
 ]
 
 [[regression_tests]]
 node = "tests/core/focus/test_star_target_tracker.py::TestSeveralOrOverExposedStars"
 failed_before_fix = true
-evidence = "revert-proof (separate worktree at 00813f7, star_focus_metric.py / autofocus_controller.py / focuser_panel.py from b39daed, star_candidates.py left as dead code, names-only shim SATURATED_AT_MIN_EXPOSURE): tests/core/focus/test_star_target_tracker.py:163: AssertionError: assert 'multiple_candidates' == 'saturated' (one over-exposed blob); :179: assert 'multiple_candidates' is None (3 stars); :193: assert 'multiple_candidates' == 'saturated' (4 blobs); :214: assert 'no_star' is None; :230: AttributeError: no attribute 'candidate_count'"
+evidence = "revert-proof (separate worktree at 01fc019 with star_focus_metric.py / autofocus_controller.py / focuser_panel.py from b39daed, names-only shim SATURATED_AT_MIN_EXPOSURE): tests/core/focus/test_star_target_tracker.py:168: AssertionError: assert 'multiple_candidates' == 'saturated' (one over-exposed blob); :184 (3 stars); :198 (4 blobs); :219: assert 'no_star' is None; :231: assert 'no_star' == 'saturated' (F1, sigma 12/16/20 -- also against the first fix ed24d34: separate worktree at cef1b1f with the three files from a02fc44, same line); :247: no attribute 'candidate_count'"
+
+[[regression_tests]]
+node = "tests/core/focus/test_star_target_tracker.py::TestMeasureFollowsTheSameTarget::test_a_defocused_donut_is_measured_as_a_larger_star"
+failed_before_fix = true
+evidence = "revert-proof (b39daed worktree as above; also against ed24d34): tests/core/focus/test_star_target_tracker.py:122: AssertionError: assert 'donut_like' is None (review F2: a donut was rejected, so the sweep had no slope there)"
 
 [[regression_tests]]
 node = "tests/collimation/application/test_autofocus_controller_artificial_star.py::TestSeveralOverExposedStars"
 failed_before_fix = true
-evidence = "revert-proof (same worktree): tests/collimation/application/test_autofocus_controller_artificial_star.py:124: AssertionError: AutofocusResult(status=NO_USABLE_EVIDENCE, failure_reason='multiple_candidates', exposure_attempts=((2000.0, 460),)) (the simulated 4-star sweep); :151: assert 'multiple_candidates' == 'saturated_at_min_exposure'; :201: assert NO_USABLE_EVIDENCE is CANCELLED; :103: TypeError: unexpected keyword argument 'max_acquisition_exposure_steps' (cap tests)"
+evidence = "revert-proof (b39daed worktree): tests/collimation/application/test_autofocus_controller_artificial_star.py:150: NO_USABLE_EVIDENCE / multiple_candidates (4-star sweep); :174 (starts 900/1100/1300); :185: assert 'multiple_candidates' == 'saturated_at_min_exposure'; :106: TypeError max_acquisition_exposure_steps; :219: NO_USABLE_EVIDENCE is not CANCELLED. Against the first fix ed24d34 (cef1b1f worktree with a02fc44's three files + names-only find_star_candidates/frame_statistics shim): :174: ALREADY_FOCUSED at 900/1100/1300 (review F2, the flat 37x37 moment FWHM; true focus 500); :185 and :196: assert 'not_found_at_tracked_position' == 'saturated_at_min_exposure'"
 
 [[regression_tests]]
-node = "tests/collimation/application/test_autofocus_controller_artificial_star.py::TestAWellExposedStarIsUnchanged"
+node = "tests/collimation/application/test_autofocus_controller_artificial_star.py::TestStarsMergedWhileClipped"
 failed_before_fix = true
-evidence = "revert-proof (same worktree): tests/collimation/application/test_autofocus_controller_artificial_star.py:226: assert NO_USABLE_EVIDENCE is SUCCESS (four unclipped stars were multiple_candidates before). Also pins that an unclipped target takes no step-down frame and no exposure change."
+evidence = "revert-proof against the first fix ed24d34 (cef1b1f worktree as above): tests/collimation/application/test_autofocus_controller_artificial_star.py:240: NO_USABLE_EVIDENCE, failure_reason 'no_star' (the merged clipped pair is not found by detect_sources); :254: assert 'no_star' == 'multiple_candidates'. Against b39daed: same lines."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_autofocus_controller_artificial_star.py::TestAnUnclippedStartTakesNoStepDown"
+failed_before_fix = true
+evidence = "revert-proof (b39daed worktree): tests/collimation/application/test_autofocus_controller_artificial_star.py:269: assert NO_USABLE_EVIDENCE is SUCCESS (four unclipped stars were multiple_candidates). Also pins that an unclipped target takes no step-down frame and no exposure change."
 
 [[regression_tests]]
 node = "tests/collimation/application/test_autofocus_artificial_star.py::TestTargetIdentity::test_of_two_candidates_at_the_start_the_one_nearest_the_centre_is_followed"
 failed_before_fix = true
-evidence = "revert-proof (same worktree): tests/collimation/application/test_autofocus_artificial_star.py:204: assert NO_USABLE_EVIDENCE is SUCCESS. This is #33's former 'two candidates -> multiple_candidates' test, changed to the behaviour issue #58 requires."
+evidence = "revert-proof (b39daed worktree): tests/collimation/application/test_autofocus_artificial_star.py:208: assert NO_USABLE_EVIDENCE is SUCCESS. #33's former 'two candidates -> multiple_candidates' test, changed to the behaviour issue #58 requires."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_autofocus_artificial_star.py::TestOneArtificialStarSweep::test_donut_wings_are_measured_and_the_sweep_still_converges"
+failed_before_fix = true
+evidence = "revert-proof (b39daed worktree; also against ed24d34): tests/collimation/application/test_autofocus_artificial_star.py:167: assert NO_USABLE_EVIDENCE is SUCCESS (a donut start was donut_like, no evidence). Replaces #33's 'donut wings are invalid' test (review F2)."
+
+[[regression_tests]]
+node = "tests/collimation/application/test_autofocus_artificial_star.py::TestTargetIdentity::test_a_bright_point_that_appears_when_the_target_is_lost_is_never_measured"
+failed_before_fix = true
+evidence = "revert-proof (b39daed worktree; also against ed24d34): tests/collimation/application/test_autofocus_artificial_star.py:229: assert NO_USABLE_EVIDENCE is SUCCESS (start moved from 520 to 880 where the target is a donut). Still pins that the stray point at 980 is never substituted."
 
 [[regression_tests]]
 node = "tests/collimation/ui/test_focuser_panel.py::test_several_artificial_stars_say_which_one_was_followed"
 failed_before_fix = true
-evidence = "revert-proof (same worktree): tests/collimation/ui/test_focuser_panel.py:659: TypeError: AutofocusResult.__init__() got an unexpected keyword argument 'target_candidates' (the choice was never reported)"
+evidence = "revert-proof (b39daed worktree): tests/collimation/ui/test_focuser_panel.py:659: TypeError: AutofocusResult.__init__() got an unexpected keyword argument 'target_candidates' (the choice was never reported)"
 
 [[regression_tests]]
 node = "tests/collimation/ui/test_focuser_panel.py::test_a_saturated_run_on_several_stars_still_says_which_one"
 failed_before_fix = true
-evidence = "revert-proof (same worktree): tests/collimation/ui/test_focuser_panel.py:675: TypeError: AutofocusResult.__init__() got an unexpected keyword argument 'target_candidates'"
+evidence = "revert-proof (b39daed worktree): tests/collimation/ui/test_focuser_panel.py:675: TypeError: AutofocusResult.__init__() got an unexpected keyword argument 'target_candidates'"
 
 [[regression_tests]]
 node = "tests/collimation/ui/test_focuser_panel.py::test_a_single_artificial_star_status_text_is_unchanged"
@@ -80,19 +109,29 @@ reason_no_prefix_repro = "Pins that a single star's status text is exactly the p
 [[regression_tests]]
 node = "tests/core/focus/test_star_candidates.py"
 failed_before_fix = false
-reason_no_prefix_repro = "Unit tests of the new helper group_star_candidates (one over-exposed blob = one candidate, a single star unchanged, four clipped blobs with two merged halos = four); the module did not exist before the fix. Its pre-fix counterpart is TestSeveralOrOverExposedStars above (multiple_candidates)."
+reason_no_prefix_repro = "Unit tests of the new finder find_star_candidates (one over-exposed blob = one candidate; F1 sigma 12/16/20 blobs detect_sources returns nothing for are found; four clipped blobs with merged halos = four; F3 a pair merged while clipped separates once unclipped; F2 half-flux diameter strictly increasing over FWHM 3..150 px unclipped and clipped, C8 donuts D 6..150 px at two fluxes; L4 donut centre; crop == whole frame). The module did not exist before the fix; its pre-fix counterparts are the tracker/controller failures above."
 
 [[regression_tests]]
 node = "tests/regressions/test_issue_58_artificial_star_acquisition_regression.py::test_the_star_nearest_the_centre_is_acquired_and_reported"
 failed_before_fix = true
-evidence = "revert-proof (same worktree, local frames copied in): tests/regressions/test_issue_58_artificial_star_acquisition_regression.py:102: AssertionError: assert 'multiple_candidates' == 'saturated' -- all three real frames (785/769/774 sources). LOCAL-ONLY: skips without local_test_data/58/frames/."
+evidence = "revert-proof (b39daed worktree, local frames copied in): tests/regressions/test_issue_58_artificial_star_acquisition_regression.py:89: AssertionError: assert 'multiple_candidates' == 'saturated' -- all three real frames (785/769/774 sources). LOCAL-ONLY: skips without local_test_data/58/frames/."
 
 [[regression_tests]]
 node = "tests/regressions/test_issue_58_artificial_star_acquisition_regression.py::test_the_run_on_the_real_frame_follows_the_centre_star_and_says_it_is_clipped"
 failed_before_fix = true
-evidence = "revert-proof (same worktree, local frames copied in): tests/regressions/test_issue_58_artificial_star_acquisition_regression.py:150: AssertionError: assert 'multiple_candidates' == 'saturated_at_min_exposure' (the field run's own result). LOCAL-ONLY: skips without local_test_data/58/frames/."
+evidence = "revert-proof (b39daed worktree, local frames copied in): tests/regressions/test_issue_58_artificial_star_acquisition_regression.py:130: AssertionError: assert 'multiple_candidates' == 'saturated_at_min_exposure' (the field run's own result). LOCAL-ONLY."
+
+[[regression_tests]]
+node = "tests/regressions/test_issue_58_artificial_star_acquisition_regression.py::test_measuring_the_tracked_star_on_a_crop_matches_the_whole_frame"
+failed_before_fix = true
+evidence = "revert-proof (b39daed worktree, local frames copied in): tests/regressions/test_issue_58_artificial_star_acquisition_regression.py:148: assert 'no_star' == 'multiple_candidates' (nothing to follow). Pins review F4: measure() on a crop finds the same blob (centre within 0.5 px) as the whole-frame acquisition. LOCAL-ONLY."
 
 [[regression_tests]]
 node = "tests/regressions/test_issue_58_artificial_star_acquisition_regression.py::test_the_four_blobs_are_four_candidates"
 failed_before_fix = false
-reason_no_prefix_repro = "Exercises the new grouping helper on the real frames (785/769/774 sources -> 4/4/4 candidates at the hand-measured plateau centres); there was no grouping before the fix, the pre-fix tracker result is the multiple_candidates failure above. LOCAL-ONLY: skips without local_test_data/58/frames/."
+reason_no_prefix_repro = "Exercises the new finder on the real frames (4/4/4 candidates at the hand-measured plateau centres, all clipped); there was no finder before the fix -- the pre-fix tracker result is the multiple_candidates failure above. LOCAL-ONLY."
+
+[[regression_tests]]
+node = "tests/regressions/test_issue_58_artificial_star_acquisition_regression.py::test_detect_sources_fragments_the_four_stars"
+failed_before_fix = false
+reason_no_prefix_repro = "Characterises the defect's input (detect_sources: > 100 fragments, 785 on frame_0) -- unchanged shared code, passes before and after. LOCAL-ONLY."
