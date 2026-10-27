@@ -259,8 +259,10 @@ class TestOneScaleForFrameAndCrop:
         # Review N2: the detection threshold's 0.1 %-of-brightest term came from the analysed
         # area -- the whole frame in acquire(), the crop in measure() -- so one frame gave two
         # sizes (+4.8 % for a faint wide star, close to the searcher's 5 % margin).
-        frame = over_exposed((600, 800), [(650.0, 150.0)], amplitude=2.0e6, sigma=5.0)
-        frame += over_exposed((600, 800), [(250.0, 350.0)], amplitude=600.0, sigma=12.0, seed=9)
+        frame = over_exposed((600, 800), [(650.0, 150.0)], amplitude=2.0e6, sigma=5.0, noise=5.0)
+        frame += over_exposed(
+            (600, 800), [(250.0, 350.0)], amplitude=400.0, sigma=15.0, noise=5.0, seed=9
+        )
         frame -= 1000.0  # one background
         stats = frame_statistics(frame, binning=1)
         whole = min(find_star_candidates(frame, stats=stats), key=lambda c: abs(c.x - 250.0))
