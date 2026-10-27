@@ -1,4 +1,4 @@
-"""Star-mode autofocus analyzer — issue #33's own "Mode A" requirement: a
+"""Star-mode autofocus analyzer â€” issue #33's own "Mode A" requirement: a
 star-specific metric/detector, separate from the terrestrial implementation,
 that rejects unsuitable stars and aggregates robustly across multiple
 usable ones.
@@ -19,11 +19,18 @@ from __future__ import annotations
 
 import math
 import statistics
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 import numpy as np
 
-from astrotool_core.focus.star_candidates import StarCandidate, group_star_candidates
+from astrotool_core.focus.star_candidates import (
+    FrameStatistics,
+    StarCandidate,
+    binning_for,
+    find_star_candidates,
+    frame_statistics,
+    is_clipped,
+)
 from astrotool_core.target.detector import detect_sources
 
 #: Usable-star count at which aggregate confidence reaches 1.0 -- issue
@@ -105,40 +112,54 @@ def measure_star_focus(frame: np.ndarray, *, edge_margin_px: int = 16) -> StarFo
 
 @dataclass(frozen=True)
 class TrackedStarMeasurement:
-    """One sample of the tracked target. `fwhm_px` is `None` exactly when
-    `reason` is set -- `reason` is one of `no_star`, `multiple_candidates`,
-    `saturated`, `donut_like`, `edge_clipped`, `not_found_at_tracked_position`,
-    `no_width`."""
+    """One sample of the tracked target. `size_px` is the target's half-flux diameter
+    (issue #58: one blob-level size for the whole sweep, see `star_candidates`); it is `None`
+    exactly when `reason` is set -- `reason` is one of `no_star`, `multiple_candidates`,
+    `saturated`, `edge_clipped`, `not_found_at_tracked_position`, `no_width`."""
 
-    fwhm_px: float | None
+    size_px: float | None
     reason: str | None
     centroid: tuple[float, float] | None = None
 
 
-#: Issue #58: two candidates whose distances to the image centre differ by less than this
-#: are equally near -- picking one would be a guess, so acquisition reports
-#: `multiple_candidates` instead.
+#: Issue #58: two candidates whose distances to the image centre (or to the tracked position)
+#: differ by less than this are equally near -- picking one would be a guess, so the tracker
+#: reports `multiple_candidates` instead.
 CENTRE_TIE_PX = 2.0
+#: Issue #58 (F4): `measure()` analyses a crop of +- (max shift + this many blob radii + 32 px)
+#: around the target instead of the whole frame.
+_CROP_RADII = 3.0
+_CROP_MARGIN_PX = 32
+#: A frame counts as clipped with at least this many pixels at >= 98 % of full scale (a few
+#: hot pixels do not make a frame clipped).
+_CLIPPED_FRAME_MIN_PX = 25
 
 
 class StarTargetTracker:
-    """Issue #33 (artificial star): keeps ONE target's identity
-    through a focus sweep. Issue #58: the fragments of one blob (a saturated
-    plateau and its halo) are one candidate (`group_star_candidates`); with
-    several candidates `acquire()` follows the one nearest the image centre
-    (the green centre cross) and says so via `candidate_count` -- only two
-    equally near candidates are refused as `multiple_candidates`, never guessed.
-    `measure()` only ever looks at the candidate nearest the last tracked
-    position within `max_shift_px` -- a different bright point elsewhere in the
-    frame is ignored, never substituted. A sample that cannot be measured says
-    why (see `TrackedStarMeasurement`) instead of being replaced by something else.
+    """Issue #33 (artificial star): keeps ONE target's identity through a focus sweep.
+
+    Issue #58: candidates are star blobs (`find_star_candidates`: a clipped plateau with its
+    halo is one candidate, a big defocused star or donut is found too) and the sample value is
+    the blob's half-flux diameter, which keeps shrinking towards focus for stars of any size.
+    With several candidates `acquire()` follows the one nearest the image centre (the green
+    centre cross) and says so via `candidate_count` -- two equally near candidates are refused
+    as `multiple_candidates`, never guessed. `measure()` only ever looks at the candidate
+    nearest the last tracked position within `max_shift_px` (or half the blob's radius, if
+    larger) and analyses only a crop around it; a different bright point elsewhere in the frame
+    is ignored, never substituted, and two equally near candidates there are
+    `multiple_candidates`. A sample that cannot be measured says why (see
+    `TrackedStarMeasurement`) instead of being replaced by something else.
     """
 
     def __init__(self, *, edge_margin_px: int = 16, max_shift_px: float = 40.0) -> None:
         self._edge_margin_px = edge_margin_px
         self._max_shift_px = max_shift_px
         self._target: tuple[float, float] | None = None
+        self._radius_px = 0.0
         self._candidate_count = 0
+        self._binning: int | None = None
+        self._full_scale = 0.0
+        self._last_clipped = False
 
     @property
     def target(self) -> tuple[float, float] | None:
@@ -149,30 +170,51 @@ class StarTargetTracker:
         """How many star candidates the last `acquire()` saw (0 before it)."""
         return self._candidate_count
 
+    @property
+    def last_frame_clipped(self) -> bool:
+        """The last analysed frame had clipped pixels (>= 98 % of full scale)."""
+        return self._last_clipped
+
+    def reset(self) -> None:
+        """Forget the target (the next call must be `acquire()`)."""
+        self._target = None
+        self._radius_px = 0.0
+        self._candidate_count = 0
+
+    def _statistics(self, frame: np.ndarray) -> FrameStatistics:
+        if self._binning is None:
+            self._binning = binning_for(frame.shape)
+        stats = frame_statistics(frame, self._binning)
+        # A frame lowered far enough can lose every value above 4096; the full scale of the
+        # camera does not change within a sweep, so the largest one seen is kept.
+        self._full_scale = max(self._full_scale, stats.full_scale)
+        stats = replace(stats, full_scale=self._full_scale)
+        self._last_clipped = is_clipped(frame, self._full_scale, min_pixels=_CLIPPED_FRAME_MIN_PX)
+        return stats
+
     def _near_edge(self, x: float, y: float, shape: tuple[int, int]) -> bool:
         height, width = shape
         margin = self._edge_margin_px
         return x < margin or x > width - margin or y < margin or y > height - margin
 
     def _classify(self, candidate: StarCandidate, shape: tuple[int, int]) -> TrackedStarMeasurement:
-        source = candidate.source
         centroid = (candidate.x, candidate.y)
-        if self._near_edge(candidate.x, candidate.y, shape):
+        if candidate.touches_edge or self._near_edge(candidate.x, candidate.y, shape):
             return TrackedStarMeasurement(None, "edge_clipped", centroid)
         if candidate.saturated:
             return TrackedStarMeasurement(None, "saturated", centroid)
-        if source.donut_like:
-            return TrackedStarMeasurement(None, "donut_like", centroid)
-        if source.fwhm_x is None or source.fwhm_y is None:
+        if candidate.hfd_px is None:
             return TrackedStarMeasurement(None, "no_width", centroid)
-        return TrackedStarMeasurement((source.fwhm_x + source.fwhm_y) / 2.0, None, centroid)
+        return TrackedStarMeasurement(candidate.hfd_px, None, centroid)
 
-    @staticmethod
-    def _candidates(frame: np.ndarray) -> tuple[StarCandidate, ...]:
-        return group_star_candidates(frame, detect_sources(frame).sources)
+    def _follow(self, candidate: StarCandidate, result: TrackedStarMeasurement) -> None:
+        if result.centroid is not None and result.reason != "edge_clipped":
+            self._target = result.centroid
+            self._radius_px = candidate.radius_px
 
     def acquire(self, frame: np.ndarray) -> TrackedStarMeasurement:
-        candidates = self._candidates(frame)
+        stats = self._statistics(frame)
+        candidates = find_star_candidates(frame, stats=stats, binning=self._binning)
         self._candidate_count = len(candidates)
         if not candidates:
             return TrackedStarMeasurement(None, "no_star")
@@ -186,25 +228,53 @@ class StarTargetTracker:
         ):
             return TrackedStarMeasurement(None, "multiple_candidates")
         result = self._classify(ranked[0], frame.shape)
-        if result.reason in (None, "saturated", "donut_like"):
-            # Identity is fixed even if this first sample isn't usable
-            # (e.g. saturated): later samples must follow the SAME source.
-            self._target = result.centroid
+        # Identity is fixed even if this first sample isn't usable (e.g. saturated): later
+        # samples must follow the SAME blob.
+        self._follow(ranked[0], result)
         return result
 
     def measure(self, frame: np.ndarray) -> TrackedStarMeasurement:
         if self._target is None:
             return TrackedStarMeasurement(None, "no_star")
+        stats = self._statistics(frame)
         tx, ty = self._target
-        nearby = [
-            c
-            for c in self._candidates(frame)
-            if math.hypot(c.x - tx, c.y - ty) <= self._max_shift_px
-        ]
+        max_shift = max(self._max_shift_px, 0.5 * self._radius_px)
+        candidates = self._candidates_near(frame, stats, max_shift)
+        nearby = sorted(
+            (c for c in candidates if math.hypot(c.x - tx, c.y - ty) <= max_shift),
+            key=lambda c: math.hypot(c.x - tx, c.y - ty),
+        )
         if not nearby:
             return TrackedStarMeasurement(None, "not_found_at_tracked_position")
-        candidate = min(nearby, key=lambda c: math.hypot(c.x - tx, c.y - ty))
-        result = self._classify(candidate, frame.shape)
-        if result.centroid is not None and result.reason != "edge_clipped":
-            self._target = result.centroid
+        if len(nearby) > 1 and (
+            math.hypot(nearby[1].x - tx, nearby[1].y - ty)
+            - math.hypot(nearby[0].x - tx, nearby[0].y - ty)
+            < CENTRE_TIE_PX
+        ):
+            return TrackedStarMeasurement(None, "multiple_candidates")
+        result = self._classify(nearby[0], frame.shape)
+        self._follow(nearby[0], result)
         return result
+
+    def _candidates_near(
+        self, frame: np.ndarray, stats: FrameStatistics, max_shift: float
+    ) -> tuple[StarCandidate, ...]:
+        """Issue #58 (F4): the candidates of a crop around the target; again on the whole
+        frame when a candidate reaches the crop's border inside the frame."""
+        assert self._target is not None and self._binning is not None
+        b = self._binning
+        half = max_shift + _CROP_RADII * self._radius_px + _CROP_MARGIN_PX
+        height, width = frame.shape
+        tx, ty = self._target
+        # Crop corners on the binning grid, so a crop is binned like the whole frame.
+        x0 = max(0, int((tx - half) // b) * b)
+        y0 = max(0, int((ty - half) // b) * b)
+        x1 = min(width, int(math.ceil((tx + half) / b)) * b)
+        y1 = min(height, int(math.ceil((ty + half) / b)) * b)
+        candidates = find_star_candidates(
+            frame[y0:y1, x0:x1], stats=stats, binning=b, origin=(x0, y0),
+            frame_shape=(height, width),
+        )
+        if any(c.truncated for c in candidates):
+            candidates = find_star_candidates(frame, stats=stats, binning=b)
+        return candidates

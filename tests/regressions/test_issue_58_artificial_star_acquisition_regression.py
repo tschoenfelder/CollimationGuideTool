@@ -11,11 +11,10 @@ tests/collimation/application/test_autofocus_controller_artificial_star.py.
 Before the fix `detect_sources` returned 785 sources for the four blobs and
 `StarTargetTracker.acquire` refused anything but exactly one (`multiple_candidates`), so the
 run ended on the first frame. Expected values (the four plateau centres, by a separate flood
-fill of the clipped pixels) are in expected.json, independent of the grouping code.
+fill of the clipped pixels) are in expected.json, independent of the candidate code.
 
-Bespoke (not the generic `_loader.BOUNDARIES` driver): the cases need the tracker and the
-controller, not a frame-pair boundary. `detect_sources` takes ~10 s per full frame here, so
-it runs once per frame (module-scoped cache).
+Bespoke (not the generic `_loader.BOUNDARIES` driver): the cases need the candidate finder,
+the tracker and the controller, not a frame-pair boundary.
 """
 
 from __future__ import annotations
@@ -33,10 +32,9 @@ from astrotool_core.acquisition.stable_frame_acquisition import (
     FrameAcquisitionStatus,
 )
 from astrotool_core.focus.fake_focuser import FakeFocuser
-from astrotool_core.focus.star_candidates import group_star_candidates
+from astrotool_core.focus.star_candidates import find_star_candidates
 from astrotool_core.focus.star_focus_metric import StarTargetTracker
 from astrotool_core.target.detector import detect_sources
-from astrotool_core.target.point_source import PointSource
 from astrotool_core.timing import FakeClock
 from collimation_tool.application.autofocus_controller import (
     SATURATED_AT_MIN_EXPOSURE,
@@ -61,21 +59,19 @@ def _frame(relative: str) -> np.ndarray:
     return np.asarray(fits.getdata(path), dtype=np.float64)
 
 
-@cache
-def _sources(relative: str) -> tuple[PointSource, ...]:
-    return detect_sources(_frame(relative)).sources
-
-
 def _near(point: tuple[float, float], expected: list[float], tolerance: float) -> bool:
     return math.hypot(point[0] - expected[0], point[1] - expected[1]) <= tolerance
 
 
+def test_detect_sources_fragments_the_four_stars() -> None:
+    """The defect's input, pinned once (~10 s): the shared detector's 785 fragments."""
+    sources = detect_sources(_frame(_CASES[0].inputs["frame"])).sources
+    assert len(sources) > 100
+
+
 @pytest.mark.parametrize("case", _CASES, ids=[case.name for case in _CASES])
 def test_the_four_blobs_are_four_candidates(case: RegressionCase) -> None:
-    sources = _sources(case.inputs["frame"])
-    assert len(sources) > 100  # the detector's fragments (785 on frame_0): the defect's input
-
-    candidates = group_star_candidates(_frame(case.inputs["frame"]), sources)
+    candidates = find_star_candidates(_frame(case.inputs["frame"]))
 
     tolerance = case.tolerances["centre_px"]
     assert len(candidates) == case.expect["candidates"]
@@ -85,19 +81,10 @@ def test_the_four_blobs_are_four_candidates(case: RegressionCase) -> None:
 
 
 @pytest.mark.parametrize("case", _CASES, ids=[case.name for case in _CASES])
-def test_the_star_nearest_the_centre_is_acquired_and_reported(
-    case: RegressionCase, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    frame = _frame(case.inputs["frame"])
-    sources = _sources(case.inputs["frame"])
-    # The tracker's own detect_sources call, served from the per-frame cache (same result).
-    monkeypatch.setattr(
-        "astrotool_core.focus.star_focus_metric.detect_sources",
-        lambda image: type("R", (), {"sources": sources})(),
-    )
+def test_the_star_nearest_the_centre_is_acquired_and_reported(case: RegressionCase) -> None:
     tracker = StarTargetTracker()
 
-    result = tracker.acquire(frame)
+    result = tracker.acquire(_frame(case.inputs["frame"]))
 
     assert result.reason == ("saturated" if case.expect["target_saturated"] else None)
     assert tracker.candidate_count == case.expect["candidates"]
@@ -105,20 +92,13 @@ def test_the_star_nearest_the_centre_is_acquired_and_reported(
     assert _near(tracker.target, case.expect["target"], case.tolerances["centre_px"])
 
 
-def test_the_run_on_the_real_frame_follows_the_centre_star_and_says_it_is_clipped(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_the_run_on_the_real_frame_follows_the_centre_star_and_says_it_is_clipped() -> None:
     """End to end through the real controller + searcher: the camera serves the real frame
     and is already at its minimum exposure (the clipped frame cannot be re-exposed off-rig),
     so the run must end `saturated_at_min_exposure` on the centre star -- not
     `multiple_candidates` -- with the exposure untouched and the focuser not moved."""
     case = _CASES[0]
     frame = _frame(case.inputs["frame"])
-    sources = _sources(case.inputs["frame"])
-    monkeypatch.setattr(
-        "astrotool_core.focus.star_focus_metric.detect_sources",
-        lambda image: type("R", (), {"sources": sources})(),
-    )
     clock = FakeClock()
     focuser = FakeFocuser()
     focuser.move_absolute(14780)
@@ -153,3 +133,18 @@ def test_the_run_on_the_real_frame_follows_the_centre_star_and_says_it_is_clippe
     assert _near(result.tracked_target, case.expect["target"], case.tolerances["centre_px"])
     assert focuser.get_position() == 14780
     assert settings["exposure"] == (2000.0, 460)
+
+
+def test_measuring_the_tracked_star_on_a_crop_matches_the_whole_frame() -> None:
+    """Review F4: `measure()` analyses only a crop around the target; on the real frame it
+    finds the same blob as the whole-frame acquisition."""
+    case = _CASES[0]
+    frame = _frame(case.inputs["frame"])
+    tracker = StarTargetTracker()
+    acquired = tracker.acquire(frame)
+
+    measured = tracker.measure(frame)
+
+    assert measured.reason == acquired.reason == "saturated"
+    assert measured.centroid is not None and acquired.centroid is not None
+    assert _near(measured.centroid, list(acquired.centroid), 0.5)

@@ -29,7 +29,7 @@ class TestAcquire:
         result = tracker.acquire(_star())
 
         assert result.reason is None
-        assert result.fwhm_px is not None
+        assert result.size_px is not None
         assert tracker.target is not None
         assert abs(tracker.target[0] - 80.0) < 1.0
 
@@ -58,7 +58,7 @@ class TestAcquire:
         result = tracker.acquire(_star(peak=70000.0))
 
         assert result.reason == "saturated"
-        assert result.fwhm_px is None
+        assert result.size_px is None
 
     def test_an_edge_clipped_star_is_rejected_with_that_reason(self) -> None:
         tracker = StarTargetTracker(edge_margin_px=16)
@@ -79,7 +79,7 @@ class TestMeasureFollowsTheSameTarget:
         result = tracker.measure(stray)
 
         assert result.reason == "not_found_at_tracked_position"
-        assert result.fwhm_px is None
+        assert result.size_px is None
 
     def test_the_target_is_still_measured_beside_a_brighter_distractor(self) -> None:
         tracker = StarTargetTracker()
@@ -106,9 +106,11 @@ class TestMeasureFollowsTheSameTarget:
 
         assert first.reason is None and second.reason is None
 
-    def test_a_defocused_donut_is_rejected_with_that_reason(self) -> None:
+    def test_a_defocused_donut_is_measured_as_a_larger_star(self) -> None:
+        # Issue #58 (review F2, changed from #33's "donut_like is rejected"): the half-flux
+        # diameter measures a defocused donut too, so the sweep sees it shrink towards focus.
         tracker = StarTargetTracker()
-        tracker.acquire(_star())
+        focused = tracker.acquire(_star())
         donut = donut_image(
             _SHAPE, outer_center=(80.0, 80.0), outer_radius=20.0,
             inner_center=(80.0, 80.0), inner_radius=8.0, peak=2000.0, background=100.0,
@@ -116,7 +118,9 @@ class TestMeasureFollowsTheSameTarget:
 
         result = tracker.measure(donut)
 
-        assert result.reason == "donut_like"
+        assert result.reason is None
+        assert result.size_px is not None and focused.size_px is not None
+        assert result.size_px > 3 * focused.size_px
 
     def test_saturation_at_a_later_position_is_reported_as_saturated(self) -> None:
         tracker = StarTargetTracker()
@@ -133,8 +137,8 @@ class TestMeasureFollowsTheSameTarget:
         sharp = tracker.measure(_star(sigma=1.5))
         blurry = tracker.measure(_star(sigma=4.0))
 
-        assert sharp.fwhm_px is not None and blurry.fwhm_px is not None
-        assert sharp.fwhm_px < blurry.fwhm_px
+        assert sharp.size_px is not None and blurry.size_px is not None
+        assert sharp.size_px < blurry.size_px
 
 
 def _over_exposed(
@@ -177,7 +181,7 @@ class TestSeveralOrOverExposedStars:
         result = tracker.acquire(image)
 
         assert result.reason is None
-        assert result.fwhm_px is not None
+        assert result.size_px is not None
         assert tracker.target is not None
         assert abs(tracker.target[0] - 175.0) < 1.0 and abs(tracker.target[1] - 110.0) < 1.0
         assert tracker.candidate_count == 3
@@ -212,7 +216,7 @@ class TestSeveralOrOverExposedStars:
         result = tracker.measure(lower)
 
         assert result.reason is None
-        assert result.fwhm_px is not None
+        assert result.size_px is not None
         assert result.centroid is not None and abs(result.centroid[0] - 231.0) < 1.0
 
     def test_two_candidates_equally_near_the_centre_are_not_guessed(self) -> None:

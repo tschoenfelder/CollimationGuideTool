@@ -1,18 +1,25 @@
-"""Issue #58: `group_star_candidates` makes ONE candidate of every star blob.
+"""Issue #58: `find_star_candidates` makes ONE candidate of every star blob and measures its
+half-flux diameter (HFD).
 
-`detect_sources` splits a heavily over-exposed star (a clipped plateau with a wide halo)
-into dozens of local maxima once more than 25000 pixels are bright; the synthetic blobs here
-are built like the real ones of diagnostic 4c5677d0 (a Gaussian far above full scale, clipped
-at 65520, on a noisy background), so the fragmentation is the library's own, not staged."""
+The synthetic blobs are built like the real ones of diagnostic 4c5677d0 (a Gaussian far above
+full scale, clipped at 65520, on a noisy background). Expected sizes are known by construction:
+a Gaussian's HFD equals its FWHM, and more defocus (a wider star or donut of the same flux) must
+give a larger HFD."""
 
 from __future__ import annotations
 
 import numpy as np
-from astrotool_core.focus.star_candidates import group_star_candidates
+import pytest
+from astrotool_core.focus.star_candidates import (
+    StarCandidate,
+    find_star_candidates,
+    frame_statistics,
+)
 from astrotool_core.target.detector import detect_sources
 from astrotool_core.testing.frame_factory import StarSpec, single_star_image, star_field_image
 
 _FULL_SCALE = 65520.0
+_SIGMA_PER_FWHM = 1.0 / 2.3548
 
 
 def over_exposed(
@@ -36,30 +43,64 @@ def over_exposed(
     return np.clip(np.round(image), 0.0, _FULL_SCALE)
 
 
+def _gaussian(fwhm: float, flux: float, seed: int = 1) -> np.ndarray:
+    sigma = fwhm * _SIGMA_PER_FWHM
+    size = int(max(64, 8 * sigma + 40))
+    peak = flux / (2.0 * np.pi * sigma**2)
+    centre = (size - 1) / 2.0 + 0.3
+    return over_exposed((size, size), [(centre, centre)], amplitude=peak, sigma=sigma, seed=seed)
+
+
+def _donut(diameter: float, flux: float, seed: int = 1) -> np.ndarray:
+    """A defocused C8 star: a soft-edged annulus, central obstruction 34 % of the diameter."""
+    rng = np.random.default_rng(seed)
+    size = int(diameter + 60)
+    yy, xx = np.indices((size, size), dtype=np.float64)
+    centre = (size - 1) / 2.0 + 0.3
+    radius = np.hypot(xx - centre, yy - centre)
+    outer, inner = diameter / 2.0, 0.34 * diameter / 2.0
+    ring = 1.0 / (1.0 + np.exp((radius - outer) / 1.5))
+    ring *= 1.0 / (1.0 + np.exp((inner - radius) / 1.5))
+    image = 1000.0 + ring * (flux / ring.sum()) + rng.normal(0.0, 30.0, (size, size))
+    return np.clip(np.round(image), 0.0, _FULL_SCALE)
+
+
+def _only(frame: np.ndarray) -> StarCandidate:
+    candidates = find_star_candidates(frame)
+    assert len(candidates) == 1, candidates
+    return candidates[0]
+
+
 class TestOneBlobIsOneCandidate:
     def test_a_single_over_exposed_blob_is_one_saturated_candidate_at_its_centre(self) -> None:
         frame = over_exposed((400, 400), [(210.0, 190.0)])
-        sources = detect_sources(frame).sources
-        assert len(sources) > 10  # the library fragments it (precondition of the defect)
+        assert len(detect_sources(frame).sources) > 10  # the library fragments it
 
-        candidates = group_star_candidates(frame, sources)
+        blob = _only(frame)
 
-        assert len(candidates) == 1
-        (blob,) = candidates
         assert blob.saturated
-        assert blob.member_count == len(sources)
-        assert abs(blob.x - 210.0) < 3.0 and abs(blob.y - 190.0) < 3.0
+        assert abs(blob.x - 210.0) < 2.0 and abs(blob.y - 190.0) < 2.0
 
-    def test_one_well_exposed_star_is_returned_unchanged(self) -> None:
+    @pytest.mark.parametrize("sigma", [12.0, 16.0, 20.0])
+    def test_a_clipped_star_detect_sources_drops_is_found(self, sigma: float) -> None:
+        # Review F1: < 25000 bright pixels -> component mode, which drops components over
+        # 5000 px: detect_sources finds nothing at all.
+        frame = over_exposed((1080, 1440), [(700.0, 520.0)], sigma=sigma)
+        assert detect_sources(frame).sources == ()
+
+        blob = _only(frame)
+
+        assert blob.saturated
+        assert abs(blob.x - 700.0) < 2.0 and abs(blob.y - 520.0) < 2.0
+
+    def test_one_well_exposed_star_is_one_candidate_with_its_fwhm_as_hfd(self) -> None:
         frame = single_star_image((160, 160), x=80.0, y=80.0, peak=3000.0, sigma=2.5)
-        sources = detect_sources(frame).sources
 
-        candidates = group_star_candidates(frame, sources)
+        star = _only(frame)
 
-        assert len(candidates) == 1
-        assert candidates[0].source == sources[0]
-        assert (candidates[0].x, candidates[0].y) == (sources[0].x, sources[0].y)
-        assert candidates[0].member_count == 1
+        assert not star.saturated
+        assert abs(star.x - 80.0) < 0.2 and abs(star.y - 80.0) < 0.2
+        assert star.hfd_px == pytest.approx(2.3548 * 2.5, rel=0.1)
 
 
 class TestSeveralStars:
@@ -68,12 +109,10 @@ class TestSeveralStars:
             (160, 160),
             [StarSpec(x=50.0, y=80.0, peak=3000.0), StarSpec(x=110.0, y=80.0, peak=2000.0)],
         )
-        sources = detect_sources(frame).sources
 
-        candidates = group_star_candidates(frame, sources)
+        candidates = find_star_candidates(frame)
 
-        assert len(candidates) == 2
-        assert {c.source for c in candidates} == set(sources)
+        assert sorted(round(c.x) for c in candidates) == [50, 110]
 
     def test_four_over_exposed_blobs_are_four_candidates_even_when_two_halos_touch(
         self,
@@ -82,22 +121,93 @@ class TestSeveralStars:
         # dip between the plateaus separates them).
         centres = [(120.0, 110.0), (330.0, 120.0), (230.0, 230.0), (240.0, 330.0)]
         frame = over_exposed((440, 440), centres, sigma=16.0)
-        sources = detect_sources(frame).sources
-        assert len(sources) > 4 * 5
 
-        candidates = group_star_candidates(frame, sources)
+        candidates = find_star_candidates(frame)
 
         assert len(candidates) == 4
         assert all(c.saturated for c in candidates)
         for x, y in centres:
-            assert any(abs(c.x - x) < 4.0 and abs(c.y - y) < 4.0 for c in candidates), (x, y)
+            assert sum(abs(c.x - x) < 3.0 and abs(c.y - y) < 3.0 for c in candidates) == 1
 
-    def test_every_source_belongs_to_exactly_one_candidate(self) -> None:
-        frame = over_exposed((440, 440), [(120.0, 110.0), (330.0, 300.0)], sigma=18.0)
-        sources = detect_sources(frame).sources
+    def test_two_stars_merged_while_clipped_separate_once_unclipped(self) -> None:
+        # Review F3: 70 px apart, sigma 25 -- their clipped plateaus overlap.
+        centres = [(200.0, 220.0), (270.0, 220.0)]
+        clipped = find_star_candidates(over_exposed((440, 480), centres))
+        unclipped = find_star_candidates(over_exposed((440, 480), centres, amplitude=40000.0))
 
-        candidates = group_star_candidates(frame, sources)
+        assert len(clipped) == 1 and clipped[0].saturated
+        assert 200.0 < clipped[0].x < 270.0  # one blob between the two stars
+        # Unclipped they are two; each centroid stays within 6 px of its star although the
+        # other's halo overlaps it heavily (sigma 25 at 70 px).
+        xs = sorted(c.x for c in unclipped)
+        assert len(xs) == 2
+        assert abs(xs[0] - 200.0) < 6.0 and abs(xs[1] - 270.0) < 6.0
 
-        assert len(candidates) == 2
-        assert sum(c.member_count for c in candidates) <= len(sources)
-        assert sum(c.member_count for c in candidates) >= 0.9 * len(sources)
+
+class TestHalfFluxDiameterIsMonotone:
+    """Review F2: the size keeps growing with the star from ~3 to ~150 px -- the old moment
+    FWHM in a 37x37 window topped out at ~24 px (true 37.7 -> 16.5, 94.2 -> 24.8)."""
+
+    _FWHMS = [3.0, 5.0, 8.0, 12.0, 18.0, 24.0, 32.0, 48.0, 64.0, 96.0, 128.0, 150.0]
+    _DIAMETERS = [6.0, 10.0, 16.0, 24.0, 40.0, 60.0, 90.0, 120.0, 150.0]
+
+    def test_unclipped_gaussians(self) -> None:
+        sizes = []
+        for fwhm in self._FWHMS:
+            star = _only(_gaussian(fwhm, flux=2.0e7))
+            assert star.hfd_px is not None
+            if fwhm >= 18.0:
+                assert not star.saturated
+            if fwhm <= 64.0 and not star.saturated:
+                assert star.hfd_px == pytest.approx(fwhm, rel=0.1)
+            sizes.append(star.hfd_px)
+        assert all(b > a for a, b in zip(sizes, sizes[1:], strict=False)), sizes
+
+    def test_clipped_tops(self) -> None:
+        sizes = [_only(_gaussian(fwhm, flux=2.0e8)).hfd_px for fwhm in self._FWHMS]
+        assert all(
+            b is not None and a is not None and b > a
+            for a, b in zip(sizes, sizes[1:], strict=False)
+        ), sizes
+
+    @pytest.mark.parametrize("flux", [2.0e7, 2.0e8])
+    def test_donuts_with_a_central_obstruction(self, flux: float) -> None:
+        sizes = [_only(_donut(d, flux)).hfd_px for d in self._DIAMETERS]
+        assert all(
+            b is not None and a is not None and b > a
+            for a, b in zip(sizes, sizes[1:], strict=False)
+        ), sizes
+
+
+class TestDonutCentre:
+    @pytest.mark.parametrize("flux", [2.0e7, 2.0e8])
+    def test_a_donut_is_centred_on_its_ring(self, flux: float) -> None:
+        # Review L4: the centroid came from the first grown region only (a clipped donut
+        # was 4 px off); now it is the bright core of the whole blob.
+        frame = _donut(60.0, flux)
+        centre = (frame.shape[0] - 1) / 2.0 + 0.3
+
+        blob = _only(frame)
+
+        assert abs(blob.x - centre) < 1.0 and abs(blob.y - centre) < 1.0
+
+
+class TestCrops:
+    def test_a_crop_measures_exactly_like_the_whole_frame(self) -> None:
+        frame = over_exposed((600, 800), [(300.0, 260.0), (620.0, 400.0)], amplitude=40000.0)
+        stats = frame_statistics(frame)
+        whole = find_star_candidates(frame, stats=stats, binning=2)
+        target = min(whole, key=lambda c: abs(c.x - 300.0))
+
+        crop = find_star_candidates(
+            frame[100:420, 120:480],
+            stats=stats,
+            binning=2,
+            origin=(120, 100),
+            frame_shape=frame.shape,
+        )
+
+        assert len(crop) == 1
+        assert crop[0].x == pytest.approx(target.x, abs=0.05)
+        assert crop[0].hfd_px == pytest.approx(target.hfd_px, rel=0.01)
+        assert not crop[0].truncated

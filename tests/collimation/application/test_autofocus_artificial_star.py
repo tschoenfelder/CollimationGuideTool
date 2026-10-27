@@ -154,18 +154,22 @@ class TestOneArtificialStarSweep:
         assert result.tracked_target is not None
         assert abs(result.tracked_target[0] - 80.0) < 2.0
 
-    def test_donut_wings_beyond_a_coarse_step_are_invalid_not_fatal(self) -> None:
+    def test_donut_wings_are_measured_and_the_sweep_still_converges(self) -> None:
+        # Issue #58 (review F2, changed from #33's "donut wings are invalid"): the half-flux
+        # diameter measures a defocused donut, larger than the focused star -- the start
+        # sample here is a donut.
         focuser = FakeFocuser()
-        focuser.move_absolute(520)
+        focuser.move_absolute(800)
         rig = _Rig(focuser)
 
-        result = _controller(focuser, rig, coarse_step=250).run(AutofocusMode.ARTIFICIAL_STAR)
+        result = _controller(focuser, rig).run(AutofocusMode.ARTIFICIAL_STAR)
 
         assert result.status is AutofocusStatus.SUCCESS
         assert result.best_position is not None
-        assert abs(result.best_position - _BEST) <= 25
-        reasons = {point.reason for point in result.samples if not point.valid}
-        assert "donut_like" in reasons
+        assert abs(result.best_position - _BEST) <= 10
+        assert result.samples[0].position == 800 and result.samples[0].valid
+        assert result.start_value is not None and result.final_value is not None
+        assert result.start_value > 2 * result.final_value
 
     def test_a_start_that_is_already_at_focus_is_already_focused(self) -> None:
         focuser = FakeFocuser()
@@ -211,17 +215,23 @@ class TestTargetIdentity:
     def test_a_bright_point_that_appears_when_the_target_is_lost_is_never_measured(
         self,
     ) -> None:
+        # Issue #58: from 880 with 100-step probes (was 520 with 250: with donuts now
+        # measured, 520 is already within that resolution of focus) -- the first probe, 980,
+        # loses the target while the stray point is visible.
         focuser = FakeFocuser()
-        focuser.move_absolute(520)
+        focuser.move_absolute(880)
         rig = _Rig(focuser, distractor=True, distractor_only_when_target_gone=True)
 
-        result = _controller(focuser, rig, coarse_step=250).run(AutofocusMode.ARTIFICIAL_STAR)
+        result = _controller(focuser, rig).run(AutofocusMode.ARTIFICIAL_STAR)
 
         # Wherever the target isn't visible the sample is invalid -- the
         # stray 9000-count point is never substituted for it.
         assert result.status is AutofocusStatus.SUCCESS
         assert result.best_position is not None
         assert abs(result.best_position - _BEST) <= 25
+        assert any(p.position == 980 and not p.valid for p in result.samples)
+        assert result.tracked_target is not None
+        assert abs(result.tracked_target[0] - 80.0) < 2.0
 
 
 class TestSaturationAtFocus:

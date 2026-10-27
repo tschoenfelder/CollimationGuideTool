@@ -423,32 +423,31 @@ class AutofocusController:
             return None  # frame acquisition failed -- still aborts the run
         if tracker.target is None:
             measurement = tracker.acquire(frame)
-            if measurement.reason == "saturated" and self._acquisition_control is not None:
+            if self._acquisition_control is not None and _clipped_target(tracker, measurement):
                 stepped = self._step_down_until_unclipped(tracker, self._acquisition_control)
                 if stepped is None or isinstance(stepped, InvalidSample):
                     return stepped
                 measurement = stepped
         else:
             measurement = tracker.measure(frame)
-        if measurement.fwhm_px is None:
+        if measurement.size_px is None:
             return InvalidSample(measurement.reason or "no_star")
         # A single star is a usable but reduced-confidence measurement
         # (issue #33: one suitable star => appropriately reduced confidence).
-        return FocusSample(value=measurement.fwhm_px, confidence=1.0 / 3.0)
+        return FocusSample(value=measurement.size_px, confidence=1.0 / 3.0)
 
     def _step_down_until_unclipped(
         self, tracker: StarTargetTracker, control: ExposureControl
     ) -> TrackedStarMeasurement | InvalidSample | None:
-        """Issue #58: the chosen star is clipped at acquisition -- lower the exposure (the
-        shared `_lower_exposure` step, restored at the end of the run) and measure the SAME
-        target again, until it is no longer clipped, at most `max_acquisition_exposure_steps`
-        times. A star not found right after a lowering is stepped further too: lowering a
-        clipped star leaves it at >= half full scale, so it has not faded -- `detect_sources`
-        skips a bright component larger than 5000 px, as a big halo still is on the way down.
-        Returns the first unclipped measurement; `None` when no frame arrived; an
+        """Issue #58: the chosen star is clipped at acquisition (or the frame is clipped and no
+        star was found) -- lower the exposure (the shared `_lower_exposure` step, restored at
+        the end of the run) and acquire again after every step, at most
+        `max_acquisition_exposure_steps` times. Re-acquiring (nearest the centre, tie rule)
+        rather than following the clipped blob means two stars that were merged while clipped
+        are told apart on the first unclipped frame instead of one being guessed (review F3).
+        Returns the first unclipped acquisition; `None` when no frame arrived; an
         `InvalidSample` -- `saturated_at_min_exposure` (camera minimum or step cap reached,
-        still clipped), `cancelled`, or the last reason -- otherwise."""
-        reason = "saturated"
+        still clipped), `cancelled`, or the acquisition's own reason -- otherwise."""
         for _ in range(self._max_acquisition_exposure_steps):
             if self._cancel_check is not None and self._cancel_check():
                 self._acquisition_cancelled = True
@@ -463,11 +462,11 @@ class AutofocusController:
             frame = self._acquire_fresh_frame()
             if frame is None:
                 return None
-            measurement = tracker.measure(frame)
-            if measurement.reason not in ("saturated", "not_found_at_tracked_position"):
+            tracker.reset()
+            measurement = tracker.acquire(frame)
+            if not _clipped_target(tracker, measurement):
                 return measurement
-            reason = measurement.reason
-        return InvalidSample(SATURATED_AT_MIN_EXPOSURE if reason == "saturated" else reason)
+        return InvalidSample(SATURATED_AT_MIN_EXPOSURE)
 
     def _acquire_fresh_frame(self) -> np.ndarray | None:
         # The searcher has already waited for the focuser move to complete: it ended now.
@@ -577,3 +576,11 @@ class AutofocusController:
                 return
             if self._lower_exposure(control, attempts, cancel_event) is not None:
                 return
+
+
+def _clipped_target(tracker: StarTargetTracker, measurement: TrackedStarMeasurement) -> bool:
+    """Issue #58: the acquired star is clipped, or no star was found in a clipped frame
+    (review F1: then the clipped light is too big or too bright to be told apart)."""
+    return measurement.reason == "saturated" or (
+        measurement.reason == "no_star" and tracker.last_frame_clipped
+    )
