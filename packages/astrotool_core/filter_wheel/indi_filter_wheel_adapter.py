@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import re
 from collections.abc import Callable
 
 from astrotool_core.config.device_defaults import EFW_DEVICE_NAME, INDI_HOST, INDI_PORT
@@ -90,6 +91,9 @@ _DISCOVERY_SETTLE_S = 0.5
 #: libindi `DefaultDevice::FILTER_INTERFACE` (1 << 4) in `DRIVER_INFO`'s
 #: `DRIVER_INTERFACE` bitmask.
 _FILTER_INTERFACE = 1 << 4
+#: Fallback for a device that announces no DRIVER_INFO: a name that says
+#: filter wheel ("ToupTek EFW 1", "ZWO EFW", "QHY CFW", "Filter Wheel", ...).
+_WHEEL_NAME = re.compile(r"\b(?:EFW|CFW|filter\s*wheel|wheel)\b", re.IGNORECASE)
 
 
 class IndiFilterWheelAdapter(FilterWheelPort):
@@ -152,7 +156,10 @@ class IndiFilterWheelAdapter(FilterWheelPort):
             try:
                 is_wheel = bool(int(interface) & _FILTER_INTERFACE)
             except ValueError:
-                is_wheel = False
+                # Field report 2026-11-08: on the Pi, `indi_getprop
+                # "*.DRIVER_INFO.*"` returned nothing -- without an interface
+                # bitmask, fall back to the device's name.
+                is_wheel = info is None and _WHEEL_NAME.search(device) is not None
             if is_wheel or self._client.get_vector(device, "FILTER_SLOT") is not None:
                 wheels.append(device)
         return wheels
@@ -240,11 +247,20 @@ class IndiFilterWheelAdapter(FilterWheelPort):
             predicate=lambda v: v.elements.get("CONNECT") == "On",
         )
         if connection is None:
+            seen = self._client.device_names()
             self._client.close()
+            if not seen:
+                # Field report 2026-11-08: a hung indiserver accepted the
+                # socket but answered nothing; restarting it fixed it.
+                raise ConnectionError(
+                    "IndiFilterWheelAdapter: indiserver sent no devices at all — it may be "
+                    f"hung; restart indiserver ({self._device_name!r} did not confirm "
+                    f"CONNECTION within {self._connect_timeout_s}s)"
+                )
             raise ConnectionError(
                 f"IndiFilterWheelAdapter: {self._device_name!r} did not confirm CONNECTION "
                 f"within {self._connect_timeout_s}s — is indiserver running with this driver? "
-                f"(devices seen: {', '.join(self._client.device_names()) or 'none'})"
+                f"(devices seen: {', '.join(seen)})"
             )
         # The driver only defines the filter-wheel vectors once it has
         # probed for real hardware post-connect (mirrors

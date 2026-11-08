@@ -236,13 +236,13 @@ class TestDisconnectWhileMoving:
 class TestConnectVariants:
     def test_wrong_configured_device_name_times_out_on_fake_time(self) -> None:
         """#47: the adapter configured as "ToupTek EFW 1" against a driver that
-        is really "ToupTek EFW 2" and does NOT announce itself as a filter
-        wheel (no DRIVER_INFO) -- nothing to fall back to: a clean
+        is really a device that announces no DRIVER_INFO and whose name does
+        not say filter wheel -- nothing to fall back to: a clean
         ConnectionError after the discovery wait (2 s) plus exactly the
         configured timeout, with the client closed (no half-open state)."""
         clock = FakeClock()
         adapter, _ = make_simulated_filter_wheel_adapter(
-            FilterWheelScenario(_NAME, slot_names=_SLOTS),
+            FilterWheelScenario("Toup Device 2", slot_names=_SLOTS),
             clock=clock,
             device_name="ToupTek EFW 1",
             connect_timeout_s=10.0,
@@ -349,3 +349,21 @@ class TestPropertyRefreshThrottle:
         clock.advance(0.01)
         adapter.status()
         assert refreshes() == after_connect + 2  # exactly 2 s later: refreshed again
+
+
+class TestHungIndiserver:
+    def test_an_indiserver_that_answers_nothing_is_named_as_probably_hung(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Field report 2026-11-08: indiserver accepted the connection but sent
+        nothing (`indi_getprop` returned nothing either) until restarted."""
+        clock = FakeClock()
+        adapter, wheel = make_simulated_filter_wheel_adapter(
+            FilterWheelScenario("ToupTek EFW 1", slot_names=_SLOTS),
+            clock=clock,
+            connect_timeout_s=5.0,
+        )
+        monkeypatch.setattr(wheel, "receive", lambda _fragment: None)  # hung: never answers
+        with pytest.raises(ConnectionError, match="sent no devices at all .* restart indiserver"):
+            adapter.connect()
+        assert adapter.is_available is False
