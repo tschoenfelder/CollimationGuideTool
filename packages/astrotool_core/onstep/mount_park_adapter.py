@@ -21,6 +21,7 @@ from onstep_adapter import IndiMount
 
 from astrotool_core.mount.park_port import MountParkPort, MountParkStatus
 from astrotool_core.onstep.connection import OnStepConnection
+from astrotool_core.onstep.motion import finish_motion
 
 #: S6.0c: busy connection and nothing read yet -- "not known", never a guessed state.
 _NOT_READ_YET = MountParkStatus(available=False, parked=False, tracking=False, fresh=False)
@@ -96,7 +97,7 @@ class OnStepMountParkAdapter(MountParkPort):
             mount = self._mount()
             if mount is None:
                 return
-            result = mount.park()
+            result = finish_motion(mount.park())
             if not result.confirmed:
                 raise RuntimeError(f"OnStep did not reach the parked state: {result.error}")
 

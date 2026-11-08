@@ -45,22 +45,30 @@ from onstep_adapter.indi_guiding import IndiGuideController, IndiGuidePulseResul
 from onstep_adapter.indi_status import IndiMountSnapshot
 
 _PYPROJECT = Path(__file__).resolve().parents[2] / "pyproject.toml"
-_PINNED_WHEEL = (
-    "https://github.com/tschoenfelder/OnStepAdapter/releases/download/v0.5.0/"
-    "onstep_adapter-0.5.0-py3-none-any.whl"
+_PINNED_SOURCE = (
+    "git+https://github.com/tschoenfelder/OnStepAdapter.git@"
+    "b6172aa393431f584359aec40951ad83fcddba05"
 )
+#: The pinned build still calls itself 0.6.2 (its changes are under "Unreleased"); what tells it
+#: apart from the 0.6.2 release is the MotionHandle API and the shipped mock/capture packages.
+PINNED_ONSTEP_ADAPTER_VERSION = "0.6.2"
 
 
 class TestThePinnedOnStepAdapter:
-    def test_pyproject_pins_the_published_0_5_0_wheel(self) -> None:
+    def test_pyproject_pins_the_onstep_adapter_build_with_the_mock(self) -> None:
         deps = tomllib.loads(_PYPROJECT.read_text(encoding="utf-8"))["project"]["dependencies"]
         onstep = [d for d in deps if d.startswith("onstep-adapter")]
 
-        assert onstep == [f"onstep-adapter @ {_PINNED_WHEEL}"]
+        assert onstep == [f"onstep-adapter @ {_PINNED_SOURCE}"]
 
-    def test_the_installed_package_is_0_5_0_with_the_guide_pulse_facade(self) -> None:
+    def test_the_installed_package_is_the_pin_with_the_guide_pulse_facade(self) -> None:
         """Fails loudly (instead of silently testing 0.4.1) when the venv is not on the pin."""
-        assert onstep_adapter.__version__ == "0.5.0", onstep_adapter.__file__
+        import importlib.util
+
+        assert onstep_adapter.__version__ == PINNED_ONSTEP_ADAPTER_VERSION, onstep_adapter.__file__
+        assert importlib.util.find_spec("onstep_adapter.indi_motion") is not None  # MotionHandle
+        assert importlib.util.find_spec("onstep_adapter.capture") is not None
+        assert importlib.util.find_spec("onstep_mock") is not None
         assert callable(getattr(onstep_adapter.IndiMount, "guide_pulse", None))
         assert callable(getattr(onstep_adapter.IndiMount, "guide", None))
         assert callable(getattr(onstep_adapter.OnStepIndiClient, "guide_pulse", None))
@@ -88,7 +96,7 @@ class TestThePinnedOnStepAdapter:
             assert not hasattr(onstep_adapter, name), name
 
         monkeypatch.undo()
-        assert onstep_adapter.__version__ == "0.5.0"
+        assert onstep_adapter.__version__ == PINNED_ONSTEP_ADAPTER_VERSION
         assert hasattr(onstep_adapter.IndiMount, "guide_pulse")
 
 

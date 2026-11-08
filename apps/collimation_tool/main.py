@@ -10,11 +10,14 @@ change in `_default_camera()`; no other file needs to know.
 
 from __future__ import annotations
 
+import argparse
 import logging
 import sys
+from collections.abc import Sequence
 
 from astrotool_core.camera.port import CameraPort
 from astrotool_core.camera.replay_camera import ReplayCamera
+from astrotool_core.config import paths
 from astrotool_core.diagnostics import DiagnosticService, RecentLogHandler
 from astrotool_core.diagnostics.excepthook import install_excepthook
 from astrotool_core.filter_wheel.registry import (
@@ -26,11 +29,16 @@ from astrotool_core.focus.port import FocuserPort
 from astrotool_core.mount.park_port import MountParkPort
 from astrotool_core.mount.port import MountPort
 from astrotool_core.onstep import (
+    OnStepBackend,
     OnStepConnection,
     OnStepFocuserAdapter,
+    OnStepMode,
     OnStepMountParkAdapter,
     OnStepMountPulseAdapter,
     load_onstep_indi_config,
+    load_onstep_mode,
+    parse_onstep_mode,
+    start_onstep_backend,
 )
 from astrotool_core.testing.frame_factory import donut_image
 from PySide6.QtWidgets import QApplication
@@ -67,7 +75,7 @@ def _default_camera() -> CameraPort:
     return ReplayCamera.from_arrays(arrays, cycle=True)
 
 
-def _default_onstep_connection() -> OnStepConnection:
+def _default_onstep_backend(mode: OnStepMode | None = None) -> OnStepBackend:
     """The ONE OnStep connection this app has: OnStepAdapter's
     `OnStepIndiClient` (>= 0.4.0), talking to the local indiserver
     (`[indi]`/`[observer]`/`[meridian]` in ~/.CollimationGuideTool/config.toml
@@ -76,8 +84,12 @@ def _default_onstep_connection() -> OnStepConnection:
     this deployment (so IndiMonitor keeps working alongside this app); the
     focuser, park/unpark control and Mount Align's axis moves all share this
     one client -- nothing here may reach the OnStep controller any other
-    way."""
-    return OnStepConnection(load_onstep_indi_config())
+    way.
+
+    `mode` (`--onstep`, else `[onstep] mode`, else real device + sniffer) only
+    changes where that client connects: the OnStepX mock, the indiserver, or
+    the traffic sniffer in front of it (`astrotool_core.onstep.backend`)."""
+    return start_onstep_backend(mode or load_onstep_mode(), load_onstep_indi_config())
 
 
 def _default_focuser(connection: OnStepConnection) -> FocuserPort:
@@ -119,8 +131,27 @@ def _install_excepthook(diagnostics: DiagnosticService) -> None:
     install_excepthook(diagnostics, active_window=QApplication.activeWindow)
 
 
+def _parse_args(argv: Sequence[str]) -> tuple[argparse.Namespace, list[str]]:
+    """This app's own options; everything else (Qt's `-platform`, ...) stays for QApplication."""
+    parser = argparse.ArgumentParser(prog="collimation-tool", add_help=True)
+    parser.add_argument(
+        "--onstep",
+        type=parse_onstep_mode,
+        default=None,
+        metavar="{" + ",".join(mode.value for mode in OnStepMode) + "}",
+        help=(
+            "which OnStep to use: the OnStepX mock, the real device, or the real device "
+            f"with the traffic sniffer (default: [onstep] mode in "
+            f"{paths.DEFAULT_OWN_CONFIG_PATH}, else real-sniffer)"
+        ),
+    )
+    args, rest = parser.parse_known_args(list(argv[1:]))
+    return args, [argv[0], *rest] if argv else rest
+
+
 def main() -> None:
-    app = QApplication(sys.argv)
+    args, qt_argv = _parse_args(sys.argv)
+    app = QApplication(qt_argv)
 
     log_handler = RecentLogHandler()
     logging.getLogger().addHandler(log_handler)
@@ -139,7 +170,8 @@ def main() -> None:
     # Two independent ReplayCamera instances — the guide panel's demo
     # camera can't be the same object as the main panel's (see
     # CameraPanel's docstring: each panel owns its own StreamController).
-    onstep = _default_onstep_connection()
+    backend = _default_onstep_backend(args.onstep)
+    onstep = backend.connection
     window = MainWindow(
         _default_camera(),
         guide_camera=_default_camera(),
@@ -150,8 +182,13 @@ def main() -> None:
         threaded_captures=True,  # issue #49: never block the GUI thread on a frame wait
         diagnostics=diagnostics,
     )
+    window.setWindowTitle(f"{window.windowTitle()} - {backend.description}")
     window.show()
-    sys.exit(app.exec())
+    try:
+        exit_code = app.exec()
+    finally:
+        backend.close()
+    sys.exit(exit_code)
 
 
 if __name__ == "__main__":

@@ -8,7 +8,8 @@ Two files are read:
 - the sibling SmartTScope project's shared `~/.SmartTScope/config.toml`
   (observer site, optical trains, filter wheel wiring).
 
-plus the local diagnostic-bundle directory `~/.CollimationGuideTool/diagnostics`.
+plus the local diagnostic-bundle directory `~/.CollimationGuideTool/diagnostics` and the
+OnStep traffic captures `~/.CollimationGuideTool/onstep-traffic` (`onstep.backend`).
 
 Every reader resolves its default location through `own_config_path()` /
 `smarttscope_config_path()` / `diagnostics_dir()` **at call time**, so
@@ -38,12 +39,15 @@ CONFIG_FILE_NAME: Final = "config.toml"
 DEFAULT_OWN_CONFIG_PATH: Final = Path.home() / APP_DIR_NAME / CONFIG_FILE_NAME
 DEFAULT_SMARTTSCOPE_CONFIG_PATH: Final = Path.home() / SMARTTSCOPE_DIR_NAME / CONFIG_FILE_NAME
 DEFAULT_DIAGNOSTICS_DIR: Final = Path.home() / APP_DIR_NAME / "diagnostics"
+DEFAULT_ONSTEP_CAPTURE_DIR: Final = Path.home() / APP_DIR_NAME / "onstep-traffic"
 
 #: The active locations, read at call time by every reader -- redirect these.
 OWN_CONFIG_PATH: Path = DEFAULT_OWN_CONFIG_PATH
 SMARTTSCOPE_CONFIG_PATH: Path = DEFAULT_SMARTTSCOPE_CONFIG_PATH
 #: Local diagnostic bundles (`diagnostics.service`).
 DIAGNOSTICS_DIR: Path = DEFAULT_DIAGNOSTICS_DIR
+#: OnStep traffic captures of the "real-sniffer" connection mode (`onstep.backend`).
+ONSTEP_CAPTURE_DIR: Path = DEFAULT_ONSTEP_CAPTURE_DIR
 
 
 def own_config_path() -> Path:
@@ -59,3 +63,8 @@ def smarttscope_config_path() -> Path:
 def diagnostics_dir() -> Path:
     """`~/.CollimationGuideTool/diagnostics`, read at call time."""
     return DIAGNOSTICS_DIR
+
+
+def onstep_capture_dir() -> Path:
+    """`~/.CollimationGuideTool/onstep-traffic`, read at call time."""
+    return ONSTEP_CAPTURE_DIR

@@ -66,6 +66,7 @@ def _isolate_config_files(
         paths, "SMARTTSCOPE_CONFIG_PATH", tmp_path / "no-smarttscope" / "config.toml"
     )
     monkeypatch.setattr(paths, "DIAGNOSTICS_DIR", tmp_path / "diagnostics")
+    monkeypatch.setattr(paths, "ONSTEP_CAPTURE_DIR", tmp_path / "onstep-traffic")
 
 
 @pytest.fixture(scope="session")
