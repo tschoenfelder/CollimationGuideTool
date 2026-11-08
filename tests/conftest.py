@@ -4,6 +4,7 @@ import, so UI tests run headless on Windows/CI without a display.
 
 from __future__ import annotations
 
+import gc
 import os
 from collections.abc import Iterator, Mapping
 from pathlib import Path
@@ -76,7 +77,7 @@ def qapp() -> Iterator[object]:
 
 
 @pytest.fixture(autouse=True)
-def _flush_qt_events_after_each_test() -> Iterator[None]:
+def _flush_qt_events_after_each_test(request: pytest.FixtureRequest) -> Iterator[None]:
     """Process any pending Qt events after every test, not just the one
     test in this whole suite that happens to call processEvents() itself.
 
@@ -91,8 +92,18 @@ def _flush_qt_events_after_each_test() -> Iterator[None]:
     freed. Flushing incrementally after each test keeps that backlog
     from ever building up. A no-op for tests that never touch Qt (no
     QApplication instance exists yet, so there's nothing to flush).
+
+    Issue #60: a crash inside processEvents() below (SIGSEGV / access
+    violation, depending only on allocation timing) disappears when the
+    cyclic GC is forced after each test. The object is not identified;
+    the hypothesis is unparented, cyclic Qt widgets from earlier tests
+    being destroyed at an arbitrary moment. Collecting here, outside
+    processEvents(), mitigates that; it does not prove the cause.
     """
     yield
+    if "qapp" in request.fixturenames:
+        # TODO(#60): find the real object and release it deterministically.
+        gc.collect()
     try:
         from PySide6.QtWidgets import QApplication
 
