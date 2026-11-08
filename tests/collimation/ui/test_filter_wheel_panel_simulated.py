@@ -106,8 +106,10 @@ class TestEveryConnectionPhaseLeavesThePanelRetryable:
         self, qapp: object, caplog: pytest.LogCaptureFixture
     ) -> None:
         clock = FakeClock()
+        # a device whose name does not say filter wheel and that sends no
+        # DRIVER_INFO: discovery has nothing to fall back to
         adapter, _ = make_simulated_filter_wheel_adapter(
-            FilterWheelScenario("ToupTek EFW 2"), clock=clock, device_name="ToupTek EFW 9"
+            FilterWheelScenario("Toup Device 2"), clock=clock, device_name="ToupTek EFW 9"
         )
         panel = FilterWheelPanel(adapter, selectable=True)
 
