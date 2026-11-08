@@ -164,7 +164,7 @@ class TestSizedCalibration:
 
         # 25% of the narrow camera's 600" width = 150"
         first = rig.mount.angular_log[0]
-        assert first[0] is MountAxis.AXIS1
+        assert first[0] is MountAxis.AXIS2  # Dec first: RA is undefined until Dec has moved
         assert abs(first[2] - 150.0) < 1.0
         assert rig.mount.pulse_log == []  # never a timed pulse
         panel.stop()
@@ -245,9 +245,9 @@ class TestAdaptiveResizing:
 
         _run(panel)
 
-        first_axis1 = _moves(rig, MountAxis.AXIS1)
-        assert abs(first_axis1[0] - 150.0) < 1.0
-        assert first_axis1[1] > 1.8 * first_axis1[0]  # grown after the undershoot
+        first_axis = _moves(rig, MountAxis.AXIS2)  # Dec is calibrated first
+        assert abs(first_axis[0] - 150.0) < 1.0
+        assert first_axis[1] > 1.8 * first_axis[0]  # grown after the undershoot
         matrix = panel.calibration_for("left")
         assert matrix is not None
         fraction = abs(matrix.response_for(MountAxis.AXIS1, AxisDirection.POSITIVE).dx_px) / 200
@@ -261,8 +261,8 @@ class TestAdaptiveResizing:
 
         _run(panel)
 
-        first_axis1 = _moves(rig, MountAxis.AXIS1)
-        assert first_axis1[1] < 0.8 * first_axis1[0]
+        first_axis = _moves(rig, MountAxis.AXIS2)  # Dec is calibrated first
+        assert first_axis[1] < 0.8 * first_axis[0]
         matrix = panel.calibration_for("left")
         assert matrix is not None
         fraction = abs(matrix.response_for(MountAxis.AXIS1, AxisDirection.POSITIVE).dx_px) / 200
@@ -285,10 +285,10 @@ class TestAdaptiveResizing:
 
         _run(panel)
 
-        axis1 = _moves(rig, MountAxis.AXIS1)
-        axis2 = _moves(rig, MountAxis.AXIS2)
-        accepted_axis1 = axis1[1]  # first retry after the undershoot
-        assert abs(axis2[0] - accepted_axis1) <= 1.0  # no repeat of the undershoot
+        first = _moves(rig, MountAxis.AXIS2)  # Dec is calibrated first
+        second = _moves(rig, MountAxis.AXIS1)
+        accepted_first = first[1]  # first retry after the undershoot
+        assert abs(second[0] - accepted_first) <= 1.0  # no repeat of the undershoot
         panel.stop()
 
 
@@ -368,3 +368,4 @@ class TestCalibratedMovesMoveTheRequestedFraction:
         assert len(rig.mount.angular_log) > logged
         assert rig.mount.pulse_log == []
         panel.stop()
+

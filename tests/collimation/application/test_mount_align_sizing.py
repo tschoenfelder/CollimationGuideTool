@@ -38,6 +38,8 @@ pytestmark = pytest.mark.unit
 
 POS, NEG = AxisDirection.POSITIVE, AxisDirection.NEGATIVE
 A1, A2 = MountAxis.AXIS1, MountAxis.AXIS2
+#: The RA-axis group of the calibration (Dec runs first, see `CALIBRATION_STEPS`).
+RA_STEPS = tuple(step for step in CALIBRATION_STEPS if step.axis is A1)
 
 
 class _TimedMount:
@@ -157,8 +159,8 @@ def test_without_optics_the_fixed_size_runs() -> None:
     sizing.start(angular_only=True, cameras=None, distance_m=None)
     assert sizing.policy is None and sizing.log == []
     assert FALLBACK_CALIBRATION_MS == 1000  # the former pulse_ms default (S6.8d)
-    assert sizing.step_duration_ms(CALIBRATION_STEPS[0]) == FALLBACK_CALIBRATION_MS
-    assert sizing.step_arcsec(CALIBRATION_STEPS[0], 1000) == pytest.approx(sizing.unit_rate())
+    assert sizing.step_duration_ms(RA_STEPS[0]) == FALLBACK_CALIBRATION_MS
+    assert sizing.step_arcsec(RA_STEPS[0], 1000) == pytest.approx(sizing.unit_rate())
 
 
 def test_unknown_plate_scales_are_no_optics() -> None:
@@ -180,18 +182,18 @@ def test_optics_seed_a_sized_run_and_log_it() -> None:
         sizing.axis_duration_ms[A1] == sizing.axis_duration_ms[A2] == sizing.log[0]["duration_ms"]
     )
     assert sizing.smallest_fov_key(["right", "left"]) == "left"
-    assert sizing.is_probe(CALIBRATION_STEPS[0])
-    assert not sizing.is_probe(CALIBRATION_STEPS[1])
+    assert sizing.is_probe(RA_STEPS[0])
+    assert not sizing.is_probe(RA_STEPS[1])
 
 
 def test_net_accounting_returns_the_mount() -> None:
     sizing = _sizing(_TimedMount())
     sizing.start(angular_only=False, cameras=None, distance_m=None)
-    sizing.account_pulse(CALIBRATION_STEPS[0], 800)
-    sizing.account_pulse(CALIBRATION_STEPS[1], 800)
-    sizing.account_pulse(CALIBRATION_STEPS[2], 500)
+    sizing.account_pulse(RA_STEPS[0], 800)
+    sizing.account_pulse(RA_STEPS[1], 800)
+    sizing.account_pulse(RA_STEPS[2], 500)
     assert sizing.net_return(A1) == (NEG, 1100)
-    sizing.account_arcsec(CALIBRATION_STEPS[0], 800, None)  # not angular: ignored
+    sizing.account_arcsec(RA_STEPS[0], 800, None)  # not angular: ignored
     assert sizing.axis_net_arcsec[A1] == 0.0
     sizing.reset_net()
     assert sizing.net_return(A1) == (POS, 0)
@@ -203,7 +205,7 @@ def test_angular_only_runs_are_sized_up_front_and_return_by_angle() -> None:
     sizing.start(angular_only=True, cameras=None, distance_m=None)
     unit = sizing.unit_rate()
     assert sizing.angular_active and sizing.angular_only
-    step = CALIBRATION_STEPS[0]
+    step = RA_STEPS[0]
     assert sizing.step_arcsec(step, 1000) == pytest.approx(unit)
     sizing.account_arcsec(step, 1000, unit)
     assert sizing.net_return(A1) == (NEG, 1000)
@@ -239,7 +241,7 @@ def test_a_small_probe_is_resized_and_retried() -> None:
     sizing = _sized()
     before = sizing.axis_duration_ms[A1]
     retry = sizing.probe(
-        CALIBRATION_STEPS[0],
+        RA_STEPS[0],
         before,
         {"left": _response(10.0)},  # 1 % of the frame
         exclude_no_motion=_no_exclusion,
@@ -250,9 +252,12 @@ def test_a_small_probe_is_resized_and_retried() -> None:
     assert sizing.log[-1]["event"] == "probe" and sizing.log[-1]["action"] == "retry"
 
 
-def test_an_in_band_probe_is_accepted_and_seeds_dec() -> None:
+def test_an_in_band_probe_is_accepted_and_seeds_ra() -> None:
+    # Dec is calibrated first (RA is undefined at HOME until Dec has moved): Dec's accepted
+    # size starts RA.
+    assert CALIBRATION_STEPS[0].axis is A2
     sizing = _sized()
-    sizing.axis_duration_ms[A1] = 1234
+    sizing.axis_duration_ms[A2] = 1234
     retry = sizing.probe(
         CALIBRATION_STEPS[0],
         1234,
@@ -260,7 +265,21 @@ def test_an_in_band_probe_is_accepted_and_seeds_dec() -> None:
         exclude_no_motion=_no_exclusion,
         exclude_bounded=_no_exclusion,
     )
-    assert retry is False and sizing.axis_duration_ms[A2] == 1234
+    assert retry is False and sizing.axis_duration_ms[A1] == 1234
+
+
+def test_an_ra_probe_does_not_reseed_dec() -> None:
+    sizing = _sized()
+    sizing.axis_duration_ms[A1] = 1234
+    dec_before = sizing.axis_duration_ms[A2]
+    sizing.probe(
+        RA_STEPS[0],
+        1234,
+        {"left": _response(250.0)},
+        exclude_no_motion=_no_exclusion,
+        exclude_bounded=_no_exclusion,
+    )
+    assert sizing.axis_duration_ms[A2] == dec_before
 
 
 def test_a_probe_that_cannot_move_the_image_is_excluded_as_no_motion() -> None:
@@ -270,7 +289,7 @@ def test_a_probe_that_cannot_move_the_image_is_excluded_as_no_motion() -> None:
     excluded: list[tuple[str, int]] = []
     responses = {"left": _response(0.0)}
     sizing.probe(
-        CALIBRATION_STEPS[0],
+        RA_STEPS[0],
         policy.max_duration_ms,
         responses,
         exclude_no_motion=lambda key, ms: excluded.append((key, ms)),
@@ -285,7 +304,7 @@ def test_a_bounded_probe_is_excluded_with_its_class() -> None:
     assert policy is not None
     excluded: list[tuple[str, MeasurementFailureClass, str]] = []
     sizing.probe(
-        CALIBRATION_STEPS[0],
+        RA_STEPS[0],
         policy.min_duration_ms,
         {"left": _response(900.0)},  # overshoot
         exclude_no_motion=_no_exclusion,
@@ -297,7 +316,7 @@ def test_a_bounded_probe_is_excluded_with_its_class() -> None:
 def test_an_axis_group_returns_discarded_probes_and_queues_a_wide_followup() -> None:
     sizing = _sized()
     sizing.axis_duration_ms[A1] = 500
-    sizing.account_pulse(CALIBRATION_STEPS[0], 400)  # a discarded probe left +400 ms
+    sizing.account_pulse(RA_STEPS[0], 400)  # a discarded probe left +400 ms
     last = CalibrationStep(A1, NEG, CalibrationStepRole.REPEAT)
     partial = {"left": {A1: _response(250.0)}, "right": {A1: _response(80.0)}}  # wide: 8 %
     steps = sizing.axis_group_followups(
@@ -322,7 +341,7 @@ def test_an_axis_group_returns_discarded_probes_and_queues_a_wide_followup() -> 
 
 def test_only_the_end_of_a_sized_group_plans_anything() -> None:
     sizing = _sized()
-    for step in CALIBRATION_STEPS[:3]:
+    for step in RA_STEPS[:3]:
         assert (
             sizing.axis_group_followups(
                 step,
@@ -336,7 +355,7 @@ def test_only_the_end_of_a_sized_group_plans_anything() -> None:
     unsized = _sizing(_TimedMount())
     assert (
         unsized.axis_group_followups(
-            CALIBRATION_STEPS[3],
+            RA_STEPS[3],
             failed_cameras=set(),
             partial={"left": {}, "right": {}},
             exclude_no_motion=_no_exclusion,

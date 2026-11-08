@@ -245,17 +245,47 @@ class TestCalibrationMovesTheRealAdapter:
         self, qapp: object, rig: _Rig
     ) -> None:
         """AGENTS.md "Mount Align movement policy": ~25% of the smallest participating FOV
-        (600" wide -> 150"), commanded angularly -- no timed bootstrap."""
+        (600" wide -> 150"), commanded angularly -- no timed bootstrap. Dec first: at HOME RA
+        is undefined until Dec has moved, and OnStepAdapter refuses an RA move until then."""
         panel = rig.panel()
         panel._run_calibration_button.click()
         _drain(panel)
 
         assert rig.client.axis_move_calls
         axis, offset_deg = rig.client.axis_move_calls[0]
-        assert axis == "ra"
+        assert axis == "dec"
         assert offset_deg > 0
         assert abs(offset_deg * 3600.0 - 150.0) < 1.0
         panel.stop()
+
+    def test_calibration_runs_under_the_adapters_dec_first_rule(
+        self, qapp: object, rig: _Rig
+    ) -> None:
+        """OnStepAdapter refuses an RA-axis move after connecting or at HOME until Dec has
+        moved: calibration starts with Dec, so the whole run succeeds under that rule."""
+        rig.client.enforce_dec_first = True
+        rig.client.ra_axis_defined = False
+        panel = rig.panel()
+        panel._run_calibration_button.click()
+        _drain(panel)
+
+        axes = [axis for axis, _offset in rig.client.axis_move_calls]
+        assert axes and axes[0] == "dec" and "ra" in axes
+        assert panel.calibration_for("left") is not None, panel._result_label.text()
+        panel.stop()
+
+    def test_an_ra_move_before_any_dec_move_is_refused_with_the_adapters_reason(
+        self, qapp: object, rig: _Rig
+    ) -> None:
+        rig.client.enforce_dec_first = True
+        rig.client.ra_axis_defined = False
+        rig.client.parked = False  # the runner unparks before a sequence; a bare move does not
+        result = rig.mount.move_angular(MountAxis.AXIS1, AxisDirection.POSITIVE, 120.0)
+        assert not result.accepted
+        assert "move the DEC axis first" in result.message
+        assert rig.client.axis_move_calls == []
+        assert rig.mount.move_angular(MountAxis.AXIS2, AxisDirection.POSITIVE, 120.0).accepted
+        assert rig.mount.move_angular(MountAxis.AXIS1, AxisDirection.POSITIVE, 120.0).accepted
 
     def test_the_wide_camera_gets_its_own_larger_angular_follow_up(
         self, qapp: object, rig: _Rig
@@ -1383,12 +1413,12 @@ class TestGuidePulseReviewFixes:
         returned = [
             ms
             for axis, direction, ms, ok in calls[3:]
-            if ok and axis is MountAxis.AXIS1 and direction is AxisDirection.NEGATIVE
-        ]
+            if ok and axis is MountAxis.AXIS2 and direction is AxisDirection.NEGATIVE
+        ]  # Dec is calibrated first
         assert len(sent) == 2 and calls[2][3] is False, calls
         assert sum(returned) == sum(sent), (calls, panel._result_label.text())
-        ra, _dec = rig.moved_arcsec()
-        assert abs(ra) < 1.0, ra
+        _ra, dec = rig.moved_arcsec()
+        assert abs(dec) < 1.0, dec
         assert "refused by the test" in panel._result_label.text()
         panel.stop()
 
