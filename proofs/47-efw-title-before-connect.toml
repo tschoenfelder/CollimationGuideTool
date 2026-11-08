@@ -1,0 +1,34 @@
+# Proof manifest -- schema in proofs/README.md.
+# Run: python scripts/prove.py 47-efw-title-before-connect  (or: prove.py 47)
+issues = [47]
+summary = """Field report 2026-11-08 after the discovery fix: the filter wheel panel title still \
+read the stale "ToupTek EFW 2" before Connect, because discovery only ran on connect. Fix: at \
+startup the app probes indiserver (getProperties only, no CONNECT) and names the panel after \
+the wheel indiserver actually publishes."""
+modules = [
+    "packages/astrotool_core/filter_wheel/indi_filter_wheel_adapter.py",
+    "packages/astrotool_core/filter_wheel/registry.py",
+    "apps/collimation_tool/main.py",
+]
+fix_commits = ["1c55749"]
+dataset_uuids = []
+focused_command = """pytest -q \
+tests/core/filter_wheel/test_indi_filter_wheel_adapter.py::TestProbeDeviceName \
+tests/core/filter_wheel/test_registry.py::TestWithPublishedDeviceNames"""
+broader_tier = "component"
+field_only_assumptions = [
+    "The real ToupTek wheel driver announces DRIVER_INFO with FILTER_INTERFACE (16) before CONNECT; confirm on the Pi.",
+]
+gaps = [
+    "main.py's call of with_published_device_names at startup is not itself under test (tests call _default_filter_wheels, which must stay network-free).",
+]
+
+[[regression_tests]]
+node = "tests/core/filter_wheel/test_indi_filter_wheel_adapter.py::TestProbeDeviceName::test_probe_names_the_published_wheel_without_connecting_it"
+failed_before_fix = false
+reason_no_prefix_repro = "New API: before the fix no startup probe existed, so the test cannot exercise pre-fix behaviour (it would only fail with AttributeError)."
+
+[[regression_tests]]
+node = "tests/core/filter_wheel/test_registry.py::TestWithPublishedDeviceNames::test_the_assignment_names_the_wheel_indiserver_publishes"
+failed_before_fix = false
+reason_no_prefix_repro = "Same: with_published_device_names is new; before the fix the assignment always carried the configured name."
