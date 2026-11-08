@@ -5,8 +5,8 @@ measured nudge it always was.
 The motion is OnStepAdapter's jog (`JogPort`, AGENTS.md "Mount movement boundary": no raw
 INDI manual-motion switches here). While the button is down this renews the jog's deadman
 lease every `RENEW_INTERVAL_MS`; on release, or as soon as the button is no longer down
-(disabled, the window lost the mouse), it releases the jog, and OnStepAdapter switches the motion off and
-confirms the stop. If this GUI thread stalls, the lease is not renewed and OnStepAdapter stops
+(disabled, the window lost the mouse), it releases the jog, and OnStepAdapter switches the
+motion off and confirms the stop. If this GUI thread stalls, the lease is not renewed and OnStepAdapter stops
 the axis on its own. A jog runs under one `MotionClaim` of the app's motion executor (one
 mount motion app-wide; its Stop ends the jog at once) and passes the executor's tracking rule
 like any other axis move.
