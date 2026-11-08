@@ -14,7 +14,7 @@ dependencies = [
     "PySide6>=6.7",
     # Unreleased OnStepAdapter (after 0.6.2): the first build whose wheel ships onstep_mock and
     # onstep_adapter.capture, which the OnStep connection modes need (onstep/backend.py).
-    "onstep-adapter @ git+https://github.com/tschoenfelder/OnStepAdapter.git@b6172aa393431f584359aec40951ad83fcddba05",
+    "onstep-adapter @ git+https://github.com/tschoenfelder/OnStepAdapter.git@f9eabb6bd30b701ad0bdb59ebde0d683d9b2bf46",
     "smarttscope-live-analysis @ git+https://github.com/tschoenfelder/SmartTScopeLiveAnalysis.git@v0.1.0",
 ]
 
