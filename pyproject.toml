@@ -7,6 +7,7 @@ name = "astro-tools"
 version = "0.1.0"
 description = "CollimationTool and GuideTool: shared astrotool_core plus two PySide6 desktop apps."
 requires-python = ">=3.13"
+authors = [{name = "Torsten Schoenfelder"}]
 dependencies = [
     "numpy>=1.26",
     "astropy>=6.0",
@@ -16,6 +17,9 @@ dependencies = [
     "onstep-adapter @ git+https://github.com/tschoenfelder/OnStepAdapter.git@b6172aa393431f584359aec40951ad83fcddba05",
     "smarttscope-live-analysis @ git+https://github.com/tschoenfelder/SmartTScopeLiveAnalysis.git@v0.1.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/tschoenfelder/CollimationGuideTool"
 
 [project.optional-dependencies]
 # The ToupTek SDK isn't pip-installable (no public wheel) — it's installed
