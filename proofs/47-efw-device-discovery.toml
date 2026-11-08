@@ -1,0 +1,35 @@
+# Proof manifest -- schema in proofs/README.md.
+# Run: python scripts/prove.py 47-efw-device-discovery  (or: prove.py 47)
+issues = [47]
+summary = """Field report 2026-11-08: the tool connected the filter wheel as the built-in \
+"ToupTek EFW 2" while the Pi's indiserver published only "ToupTek EFW 1", so the wheel could \
+not be connected. Fix: the configured/built-in INDI device name is only a preference; on \
+connect the adapter discovers the published filter wheel (DRIVER_INFO FILTER_INTERFACE) and \
+uses it, and the panel title shows the device actually connected."""
+modules = [
+    "packages/astrotool_core/filter_wheel/indi_filter_wheel_adapter.py",
+    "packages/astrotool_core/indi/client.py",
+    "packages/astrotool_core/filter_wheel/port.py",
+    "apps/collimation_tool/ui/filter_wheel_panel.py",
+]
+fix_commits = ["6a2218a"]
+dataset_uuids = []
+focused_command = """pytest -q \
+tests/core/filter_wheel/test_registry.py::TestDefaultFactoryTargetsTheRealDevice \
+tests/core/filter_wheel/test_indi_filter_wheel_adapter.py::TestDeviceDiscovery \
+tests/core/filter_wheel/test_indi_filter_wheel_adapter_simulated.py::TestConnectVariants \
+tests/collimation/ui/test_filter_wheel_panel.py::TestTitleNamesTheConnectedDevice"""
+broader_tier = "component"
+field_only_assumptions = [
+    "The real ToupTek wheel driver announces DRIVER_INFO with DRIVER_INTERFACE containing FILTER_INTERFACE (16) before CONNECT, as libindi's DefaultDevice does; confirm with indi_getprop on the Pi.",
+]
+
+[[regression_tests]]
+node = "tests/core/filter_wheel/test_registry.py::TestDefaultFactoryTargetsTheRealDevice::test_a_stale_device_name_uses_the_wheel_indiserver_publishes"
+failed_before_fix = true
+evidence = "Revert-proof 2026-11-08, separate worktree at 6a2218a with packages/ and apps/ checked out from 6a2218a~1, tests kept: tests/core/filter_wheel/test_registry.py:160: adapter.connect() -> ConnectionError: 'Filter Wheel' did not confirm CONNECTION within 1.0s"
+
+[[regression_tests]]
+node = "tests/core/filter_wheel/test_indi_filter_wheel_adapter.py::TestDeviceDiscovery::test_a_stale_configured_name_falls_back_to_the_published_wheel"
+failed_before_fix = true
+evidence = "Same revert-proof: tests/core/filter_wheel/test_indi_filter_wheel_adapter.py:371: AttributeError: 'IndiFilterWheelAdapter' object has no attribute 'device_name'"

@@ -236,7 +236,9 @@ class TestDisconnectWhileMoving:
 class TestConnectVariants:
     def test_wrong_configured_device_name_times_out_on_fake_time(self) -> None:
         """#47: the adapter configured as "ToupTek EFW 1" against a driver that
-        is really "ToupTek EFW 2" -- a clean ConnectionError after exactly the
+        is really "ToupTek EFW 2" and does NOT announce itself as a filter
+        wheel (no DRIVER_INFO) -- nothing to fall back to: a clean
+        ConnectionError after the discovery wait (2 s) plus exactly the
         configured timeout, with the client closed (no half-open state)."""
         clock = FakeClock()
         adapter, _ = make_simulated_filter_wheel_adapter(
@@ -247,9 +249,25 @@ class TestConnectVariants:
         )
         with pytest.raises(ConnectionError, match="'ToupTek EFW 1' did not confirm CONNECTION"):
             adapter.connect()
-        assert clock.monotonic() == pytest.approx(10.0, abs=0.06)
+        assert clock.monotonic() == pytest.approx(12.0, abs=0.06)
         assert adapter._client.is_connected is False
         assert adapter.is_available is False
+
+    def test_a_stale_configured_name_falls_back_to_the_announced_wheel(self) -> None:
+        """Real-field report 2026-11-08: configured "ToupTek EFW 2", indiserver
+        publishes only "ToupTek EFW 1" (DRIVER_INFO says filter wheel) -- the
+        adapter connects to that one instead of failing."""
+        clock = FakeClock()
+        adapter, wheel = make_simulated_filter_wheel_adapter(
+            FilterWheelScenario("ToupTek EFW 1", slot_names=_SLOTS, driver_interface=16),
+            clock=clock,
+            device_name="ToupTek EFW 2",
+        )
+        adapter.connect()
+        assert adapter.device_name == "ToupTek EFW 1"
+        assert adapter.is_available is True
+        adapter.set_slot(3)
+        assert wheel.commanded_slots == [3]
 
     def test_a_driver_that_never_confirms_connection_times_out(self) -> None:
         clock = FakeClock()

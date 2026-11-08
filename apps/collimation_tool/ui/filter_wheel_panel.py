@@ -169,6 +169,7 @@ class FilterWheelPanel(QWidget):
                 self._connect_button.blockSignals(False)
                 self._update_selector_enabled()
                 return
+            self._show_connected_device()
             self._set_slot_change_in_flight(False)
             self._combo_signature = None  # force a fresh populate on this connect
             self._connect_button.setText("Disconnect")
@@ -189,6 +190,13 @@ class FilterWheelPanel(QWidget):
                 _filter_text(failures[-1].status_text) if failures else "Filter: not connected"
             )
         self._update_selector_enabled()
+
+    def _show_connected_device(self) -> None:
+        """The title names the device actually connected: the INDI adapter
+        may have discovered a different filter wheel than the configured
+        one (e.g. indiserver publishes "ToupTek EFW 1", config said "EFW 2")."""
+        device = self._filter_wheel.device_name
+        self._title_label.setText(f"<b>{device or self._title}</b>")
 
     def _refresh_combo(self) -> None:
         """(Re)populate the combo from the wheel's own known slot names --

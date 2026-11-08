@@ -132,6 +132,15 @@ class SimulatedIndiClient(IndiClient):
                 return None
             self._clock.sleep(min(self._poll_interval_s, max(deadline.remaining(), 0.0)))
 
+    def wait_until(self, condition: Callable[[], bool], timeout_s: float) -> bool:
+        deadline = Deadline.after(timeout_s, clock=self._clock)
+        while True:
+            if condition():
+                return True
+            if self._sock is None or deadline.expired():
+                return False
+            self._clock.sleep(min(self._poll_interval_s, max(deadline.remaining(), 0.0)))
+
 
 @dataclass(frozen=True)
 class FilterWheelScenario:
@@ -156,6 +165,9 @@ class FilterWheelScenario:
     publishes_names: bool = True
     #: True: FILTER_SLOT shows the target while Busy (libindi keeps the old slot).
     busy_reports_target: bool = False
+    #: DRIVER_INFO's DRIVER_INTERFACE bitmask announced on getProperties
+    #: (libindi FILTER_INTERFACE = 16); None: no DRIVER_INFO at all.
+    driver_interface: int | None = None
 
 
 class SimulatedIndiFilterWheel(SimulatedIndiDevice):
@@ -251,6 +263,14 @@ class SimulatedIndiFilterWheel(SimulatedIndiDevice):
             return  # addressed to another device: no driver of that name here
         name = element.attrs.get("name", "")
         if element.tag == "getProperties":
+            if self.scenario.driver_interface is not None:
+                self._vector(
+                    "def",
+                    "Text",
+                    "DRIVER_INFO",
+                    "Idle",
+                    f'<defText name="DRIVER_INTERFACE">{self.scenario.driver_interface}</defText>',
+                )
             self._send_connection("def")
             self._send_wheel_definitions()
         elif element.tag == "newSwitchVector" and name == "CONNECTION":
