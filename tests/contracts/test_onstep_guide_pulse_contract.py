@@ -47,7 +47,7 @@ from onstep_adapter.indi_status import IndiMountSnapshot
 _PYPROJECT = Path(__file__).resolve().parents[2] / "pyproject.toml"
 _PINNED_SOURCE = (
     "git+https://github.com/tschoenfelder/OnStepAdapter.git@"
-    "b6172aa393431f584359aec40951ad83fcddba05"
+    "f9eabb6bd30b701ad0bdb59ebde0d683d9b2bf46"
 )
 #: The pinned build still calls itself 0.6.2 (its changes are under "Unreleased"); what tells it
 #: apart from the 0.6.2 release is the MotionHandle API and the shipped mock/capture packages.
