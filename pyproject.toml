@@ -16,7 +16,7 @@ dependencies = [
     # onstep_adapter.capture, which the OnStep connection modes need (onstep/backend.py), and
     # refuses an RA-axis move after connecting or at HOME until DEC has moved, and has the
     # hold-to-move jog (jog_ra/jog_dec) behind the Mount Align RA/Dec buttons.
-    "onstep-adapter @ git+https://github.com/tschoenfelder/OnStepAdapter.git@f0f7cc06cb833365ad3024612fe5463ea7c7d563",
+    "onstep-adapter @ git+https://github.com/tschoenfelder/OnStepAdapter.git@e0b32e2a39f921a1d955f3c53d115e19914495dc",
     "smarttscope-live-analysis @ git+https://github.com/tschoenfelder/SmartTScopeLiveAnalysis.git@v0.1.0",
 ]
 
