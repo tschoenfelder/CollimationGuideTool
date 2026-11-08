@@ -154,6 +154,48 @@ class GuidePulsePort(Protocol):
     ) -> GuidePulseResult: ...
 
 
+#: Why the RA buttons wait: the first move after connecting or at HOME must be Dec
+#: (OnStepAdapter's DEC-first rule -- at HOME the mount points at the pole).
+RA_NEEDS_DEC_FIRST = "RA is not defined yet: move Dec first (after connecting or at HOME)"
+
+
+@dataclass(frozen=True)
+class JogOutcome:
+    """How a hold-to-move jog ended (`JogPort.jog_outcome`): `ended_by` is OnStepAdapter's
+    reason (released / lease_expired / max_duration / limit), or "" when it failed."""
+
+    ok: bool
+    ended_by: str = ""
+    message: str = ""
+
+
+class JogPort(Protocol):
+    """Optional capability of a `MountPort` (`supports_jog`): hold-to-move one axis.
+
+    `start_jog` starts the axis moving at once; the caller calls `renew_jog` at least every
+    `jog_lease_s` while the button is held (OnStepAdapter's deadman stops the axis otherwise)
+    and `release_jog` when it is let go. `jog_outcome` is None while the jog still runs.
+    `ra_axis_defined` is False after connecting and at HOME until Dec has moved: RA moves and
+    jogs are refused until then (OnStepAdapter's DEC-first rule)."""
+
+    @property
+    def supports_jog(self) -> bool: ...
+
+    @property
+    def jog_lease_s(self) -> float: ...
+
+    @property
+    def ra_axis_defined(self) -> bool: ...
+
+    def start_jog(self, axis: MountAxis, direction: AxisDirection) -> CommandResult: ...
+
+    def renew_jog(self) -> bool: ...
+
+    def release_jog(self) -> None: ...
+
+    def jog_outcome(self) -> JogOutcome | None: ...
+
+
 class AngularMotionPort(Protocol):
     """Optional capability of a `MountPort` (`capabilities().supports_angular_moves`): a
     bounded angular move of one axis.

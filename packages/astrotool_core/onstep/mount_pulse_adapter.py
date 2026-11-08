@@ -93,6 +93,7 @@ from astrotool_core.mount.port import (
     AxisDirection,
     CommandResult,
     GuidePulseResult,
+    JogOutcome,
     MountAxis,
     MountCapabilities,
     MountStatus,
@@ -127,6 +128,19 @@ _GUIDE_DIRECTION = {
 }
 
 
+class _JogHandle(Protocol):
+    """The parts of OnStepAdapter's `JogHandle` this shim uses (indi_jog.py)."""
+
+    @property
+    def done(self) -> bool: ...
+
+    def renew(self) -> bool: ...
+
+    def release(self) -> None: ...
+
+    def wait(self, timeout: float | None = None) -> object: ...
+
+
 class _GuidePulseOutcome(Protocol):
     """The fields of 0.5.0's `IndiGuidePulseResult` this shim reads (indi_guiding.py:64-76)."""
 
@@ -158,6 +172,12 @@ def _installed_guide_pulse_range_ms() -> tuple[int, int] | None:
     return None
 
 
+#: Hold-to-move (OnStepAdapter's `jog_ra`/`jog_dec`): the index into the controller's list of
+#: slew rates (OnStep: 7 = 48x sidereal, ~12 arcmin/s) and the deadman lease.
+JOG_RATE_INDEX = 7
+JOG_LEASE_S = 0.5
+
+
 _NO_PULSE_PRIMITIVE = (
     "OnStepAdapter has no timed pulse primitive over INDI yet "
     "(tracked as an OnStepAdapter enhancement request)"
@@ -186,6 +206,9 @@ class OnStepMountPulseAdapter:
         self._in_flight_is_guide = False
         #: S6.0d: guide-pulse bounds of the connected OnStepAdapter; None = no capability.
         self._guide_range_ms: tuple[int, int] | None = None
+        #: The hold-to-move jog in flight (OnStepAdapter `JogHandle`), or None.
+        self._jog: _JogHandle | None = None
+        self._jog_outcome: JogOutcome | None = None
 
     def connect(self) -> None:
         if not self._held:
@@ -196,6 +219,7 @@ class OnStepMountPulseAdapter:
             self._guide_range_ms = _installed_guide_pulse_range_ms() if has_api else None
 
     def disconnect(self) -> None:
+        self.release_jog()  # never leave a held jog behind (its deadman would end it anyway)
         if self._held:
             self._held = False
             self._guide_range_ms = None
@@ -374,6 +398,82 @@ class OnStepMountPulseAdapter:
                 with self._state:
                     self._in_flight_generation = None
         return CommandResult(accepted=True)
+
+    # ---- JogPort (hold-to-move) -----------------------------------------
+    @property
+    def supports_jog(self) -> bool:
+        mount = self._mount()
+        return mount is not None and callable(getattr(mount, "jog_dec", None))
+
+    @property
+    def jog_lease_s(self) -> float:
+        return JOG_LEASE_S
+
+    @property
+    def ra_axis_defined(self) -> bool:
+        """OnStepAdapter's DEC-first state; True on an adapter without the rule."""
+        mount = self._mount()
+        if mount is None:
+            return False
+        return bool(getattr(mount, "ra_axis_defined", True))
+
+    def start_jog(self, axis: MountAxis, direction: AxisDirection) -> CommandResult:
+        """Start moving `axis` at once (returns without waiting for the move). Refused unsent
+        while a Stop is latched or another jog runs; OnStepAdapter refuses an RA jog until Dec
+        has moved, and any jog on a tracking/parked/faulted mount."""
+        mount = self._mount()
+        if mount is None:
+            return CommandResult(accepted=False, message="not connected")
+        if not self.supports_jog:
+            return CommandResult(
+                accepted=False, message="the installed OnStepAdapter has no hold-to-move jog"
+            )
+        sign = 1 if direction is AxisDirection.POSITIVE else -1
+        with self._connection.operation_lock:
+            with self._state:
+                if self._cancel.is_set():
+                    return CommandResult(accepted=False, message=_STOPPED + " -- jog not sent")
+                if self._jog is not None and not self._jog.done:
+                    return CommandResult(accepted=False, message="another jog is running")
+                self._move_generation += 1
+            start = mount.jog_ra if axis == MountAxis.AXIS1 else mount.jog_dec
+            try:
+                handle = start(sign, rate_index=JOG_RATE_INDEX, lease_s=JOG_LEASE_S)
+            except ONSTEP_OPERATION_ERRORS as exc:
+                return CommandResult(accepted=False, message=str(exc))
+            with self._state:
+                self._jog = handle
+                self._jog_outcome = None
+        return CommandResult(accepted=True)
+
+    def renew_jog(self) -> bool:
+        """Keep the jog moving; False once it has ended (released, deadman, limit, Stop)."""
+        jog = self._jog
+        return jog is not None and jog.renew()
+
+    def release_jog(self) -> None:
+        jog = self._jog
+        if jog is not None:
+            jog.release()
+
+    def jog_outcome(self) -> JogOutcome | None:
+        """How the last jog ended; None while it still runs (or none was started)."""
+        with self._state:
+            jog, outcome = self._jog, self._jog_outcome
+        if outcome is not None or jog is None:
+            return outcome
+        if not jog.done:
+            return None
+        try:
+            result = finish_motion(jog)
+            outcome = JogOutcome(ok=True, ended_by=str(getattr(result, "ended_by", "")))
+        except ONSTEP_OPERATION_ERRORS as exc:
+            message = f"{_STOPPED} ({exc})" if self._cancel.is_set() else str(exc)
+            outcome = JogOutcome(ok=False, message=message)
+        with self._state:
+            if self._jog is jog:
+                self._jog_outcome = outcome
+        return outcome
 
     # ---- GuidePulsePort (S6.0d) ------------------------------------------
     def guide_pulse(

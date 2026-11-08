@@ -14,8 +14,9 @@ dependencies = [
     "PySide6>=6.7",
     # Unreleased OnStepAdapter (after 0.6.2): the first build whose wheel ships onstep_mock and
     # onstep_adapter.capture, which the OnStep connection modes need (onstep/backend.py), and
-    # refuses an RA-axis move after connecting or at HOME until DEC has moved.
-    "onstep-adapter @ git+https://github.com/tschoenfelder/OnStepAdapter.git@e2e80d4e602aa766ef4adfa820c04a41abc19147",
+    # refuses an RA-axis move after connecting or at HOME until DEC has moved, and has the
+    # hold-to-move jog (jog_ra/jog_dec) behind the Mount Align RA/Dec buttons.
+    "onstep-adapter @ git+https://github.com/tschoenfelder/OnStepAdapter.git@f0f7cc06cb833365ad3024612fe5463ea7c7d563",
     "smarttscope-live-analysis @ git+https://github.com/tschoenfelder/SmartTScopeLiveAnalysis.git@v0.1.0",
 ]
 
