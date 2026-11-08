@@ -236,13 +236,13 @@ class TestDisconnectWhileMoving:
 class TestConnectVariants:
     def test_wrong_configured_device_name_times_out_on_fake_time(self) -> None:
         """#47: the adapter configured as "ToupTek EFW 1" against a driver that
-        is really "ToupTek EFW 2" and does NOT announce itself as a filter
-        wheel (no DRIVER_INFO) -- nothing to fall back to: a clean
+        is really a device that announces no DRIVER_INFO and whose name does
+        not say filter wheel -- nothing to fall back to: a clean
         ConnectionError after the discovery wait (2 s) plus exactly the
         configured timeout, with the client closed (no half-open state)."""
         clock = FakeClock()
         adapter, _ = make_simulated_filter_wheel_adapter(
-            FilterWheelScenario(_NAME, slot_names=_SLOTS),
+            FilterWheelScenario("Toup Device 2", slot_names=_SLOTS),
             clock=clock,
             device_name="ToupTek EFW 1",
             connect_timeout_s=10.0,

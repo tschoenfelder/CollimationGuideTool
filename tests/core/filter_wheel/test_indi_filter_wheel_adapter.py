@@ -383,6 +383,33 @@ class TestDeviceDiscovery:
         filter_wheel.connect()
         assert filter_wheel.device_name == _DEVICE_NAME
 
+    def test_without_driver_info_a_wheel_is_recognised_by_its_name(self) -> None:
+        # Field report 2026-11-08: the Pi's indiserver answered
+        # `indi_getprop "*.DRIVER_INFO.*"` with nothing at all.
+        fake = FakeIndiServer(device_name="ToupTek EFW 1", driver_interface=None)
+        fake.start()
+        adapter = IndiFilterWheelAdapter(
+            fake.host, fake.port, "ToupTek EFW 2", connect_timeout_s=2.0
+        )
+        try:
+            assert adapter.probe_device_name() == "ToupTek EFW 1"
+            adapter.connect()
+            assert adapter.is_available is True
+        finally:
+            adapter.disconnect()
+            fake.stop()
+
+    def test_without_driver_info_another_device_is_not_picked(self) -> None:
+        fake = FakeIndiServer(device_name="LX200 OnStep", driver_interface=None)
+        fake.start()
+        adapter = IndiFilterWheelAdapter(
+            fake.host, fake.port, "ToupTek EFW 2", discovery_timeout_s=0.3
+        )
+        try:
+            assert adapter.probe_device_name() == "ToupTek EFW 2"
+        finally:
+            fake.stop()
+
     def test_a_device_that_is_no_filter_wheel_is_not_picked(self) -> None:
         # e.g. only a camera is published (CCD_INTERFACE = 2): no wheel to
         # fall back to -- the configured name is tried and fails loudly.

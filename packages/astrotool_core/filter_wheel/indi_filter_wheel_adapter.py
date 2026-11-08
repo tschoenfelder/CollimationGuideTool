@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import contextlib
 import logging
+import re
 from collections.abc import Callable
 
 from astrotool_core.config.device_defaults import EFW_DEVICE_NAME, INDI_HOST, INDI_PORT
@@ -90,6 +91,9 @@ _DISCOVERY_SETTLE_S = 0.5
 #: libindi `DefaultDevice::FILTER_INTERFACE` (1 << 4) in `DRIVER_INFO`'s
 #: `DRIVER_INTERFACE` bitmask.
 _FILTER_INTERFACE = 1 << 4
+#: Fallback for a device that announces no DRIVER_INFO: a name that says
+#: filter wheel ("ToupTek EFW 1", "ZWO EFW", "QHY CFW", "Filter Wheel", ...).
+_WHEEL_NAME = re.compile(r"\b(?:EFW|CFW|filter\s*wheel|wheel)\b", re.IGNORECASE)
 
 
 class IndiFilterWheelAdapter(FilterWheelPort):
@@ -152,7 +156,10 @@ class IndiFilterWheelAdapter(FilterWheelPort):
             try:
                 is_wheel = bool(int(interface) & _FILTER_INTERFACE)
             except ValueError:
-                is_wheel = False
+                # Field report 2026-11-08: on the Pi, `indi_getprop
+                # "*.DRIVER_INFO.*"` returned nothing -- without an interface
+                # bitmask, fall back to the device's name.
+                is_wheel = info is None and _WHEEL_NAME.search(device) is not None
             if is_wheel or self._client.get_vector(device, "FILTER_SLOT") is not None:
                 wheels.append(device)
         return wheels
