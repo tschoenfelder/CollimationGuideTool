@@ -273,6 +273,7 @@ from astrotool_core.mount.movement_sizing import (
     CameraGeometry,
 )
 from astrotool_core.mount.operating_mode import OperatingMode, TrackingEnforcer
+from astrotool_core.mount.port import RA_NEEDS_DEC_FIRST
 from astrotool_core.session import DeviceConnectionService
 from astrotool_core.timing import SYSTEM_CLOCK, Clock, Deadline
 from PySide6.QtCore import QTimer
@@ -365,6 +366,7 @@ from collimation_tool.application.mount_motion import (
 )
 from collimation_tool.domain.target_mode import sizing_seed_distance_m
 from collimation_tool.ui.flow_layout import FlowLayout
+from collimation_tool.ui.mount_hold_jog import HoldToJog
 from collimation_tool.ui.mount_test_move_runner import MountTestMoveRunner
 
 #: S6.6a: these value types moved to `collimation_tool.application.mount_align_*`; they stay
@@ -560,6 +562,16 @@ class MountTestMovePanel(QWidget):
             else MountMotionExecutor(mount, tracking_enforcer=self._tracking_enforcer)
         )
         self._runner.use_executor(self._motion_executor)
+        #: Hold-to-move on the RA/Dec pad (a quick click stays a nudge), see mount_hold_jog.
+        self._hold_jog = HoldToJog(
+            mount=mount,
+            mount_park=mount_park,
+            executor=self._motion_executor,
+            on_click=self._on_nudge_clicked,
+            show=lambda text: self._result_label.setText(text),
+            changed=self._update_buttons_enabled,
+            parent=self,
+        )
         #: #52 K01 (S6.6b): the connect/disconnect lifecycle and its failure reporting (wording,
         #: the one log record, `last_connect_error` for diagnostics) have one owner, the S6.2
         #: `DeviceConnectionService` -- this panel no longer keeps its own copy.
@@ -782,11 +794,14 @@ class MountTestMovePanel(QWidget):
         for label, axis, direction in _NUDGE_BUTTONS:
             button = QPushButton(label)
             button.setEnabled(False)
-            button.clicked.connect(
-                lambda _checked=False, key=camera_key, a=axis, d=direction: (
-                    self._on_nudge_clicked(key, a, d)
+            # A quick click is the measured nudge; a longer hold moves the axis while held
+            # (`HoldToJog`, OnStepAdapter's jog with a deadman).
+            button.pressed.connect(
+                lambda key=camera_key, a=axis, d=direction, b=button: (
+                    self._hold_jog.press(key, a, d, b)
                 )
             )
+            button.released.connect(self._hold_jog.release)
             buttons[label] = button
             row.addWidget(button)
         self._nudge_buttons[camera_key] = buttons
@@ -2205,6 +2220,7 @@ class MountTestMovePanel(QWidget):
         )
         self._runner.abort()
         self._motion_executor.abort()
+        self._hold_jog.abort()
         # Issue #49: Stop ends the whole calibration/nudge, not just the current pulse: nothing
         # queued or in flight may carry on afterwards, and the panel is retryable at once.
         in_flight = self._capture_job is not None
@@ -2337,7 +2353,7 @@ class MountTestMovePanel(QWidget):
 
     def _update_buttons_enabled(self) -> None:
         interface = self.interface_state()
-        busy = self._runner.is_busy or self._capture_job is not None
+        busy = self._runner.is_busy or self._capture_job is not None or self._hold_jog.active
         ready = interface.available and not busy
         self._run_calibration_button.setEnabled(ready)
         self._stop_button.setEnabled(self._connected and busy)
@@ -2353,9 +2369,15 @@ class MountTestMovePanel(QWidget):
         # (`ready` alone) -- see `_on_nudge_clicked`'s own docstring for
         # how it now solves a duration with or without a real
         # per-camera calibration.
+        # DEC first (OnStepAdapter): after connecting and at HOME, RA is undefined until Dec has
+        # moved -- the RA buttons wait for it, and say why.
+        ra_ready = bool(getattr(self._mount, "ra_axis_defined", True))
+        held = self._hold_jog.held_button
         for buttons in self._nudge_buttons.values():
-            for button in buttons.values():
-                button.setEnabled(ready)
+            for label, button in buttons.items():
+                is_ra = label.startswith("RA")
+                button.setEnabled(button is held or (ready and (ra_ready or not is_ra)))
+                button.setToolTip(RA_NEEDS_DEC_FIRST if is_ra and not ra_ready else "")
 
         # Issue #31 Phase D: unlike the RA/Dec pad above, the
         # screen-relative pad needs a real, non-degenerate 4-direction
@@ -2488,6 +2510,7 @@ class MountTestMovePanel(QWidget):
         if job is not None:
             job.cancel.set()
             self._capture_job = None
+        self._hold_jog.abort()
         self._connection.disconnect()  # a no-op when not connected; never raises (K03)
         # Defensive -- if the window closes mid-calibration/nudge, don't
         # leave the (independently-lived) CameraPanels' auto-exposure

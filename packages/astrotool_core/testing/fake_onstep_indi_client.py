@@ -56,6 +56,7 @@ from onstep_adapter import (
     IndiStartupStatus,
     IndiStopResult,
     IndiUnparkResult,
+    MotionStopped,
     RaAxisUndefinedError,
 )
 
@@ -199,6 +200,58 @@ class FakeIndiTrackingResult:
     error: str | None = None
 
 
+@dataclass
+class FakeJogResult:
+    axis: str
+    direction: int
+    ended_by: str
+
+
+class FakeJogHandle:
+    """OnStepAdapter's `JogHandle` shape: moves `deg_per_renew` per renewal; ends on release,
+    on `expire()` (the deadman) or when the client's emergency stop runs."""
+
+    def __init__(self, client: FakeOnStepIndiClient, axis: str, direction: int) -> None:
+        self._client = client
+        self.axis = axis
+        self.direction = direction
+        self.renewals = 0
+        self.ended_by: str | None = None
+        self.stopped = False
+
+    @property
+    def done(self) -> bool:
+        return self.ended_by is not None or self.stopped
+
+    def renew(self) -> bool:
+        if self.done:
+            return False
+        self.renewals += 1
+        step = self._client.jog_deg_per_renew * self.direction
+        if self.axis == "ra":
+            self._client.ha_deg += step
+        else:
+            self._client.dec_deg += step
+            self._client.at_home = False
+            self._client.ra_axis_defined = True
+        return True
+
+    def release(self) -> None:
+        if not self.done:
+            self.ended_by = "released"
+
+    def expire(self) -> None:
+        if not self.done:
+            self.ended_by = "lease_expired"
+
+    def wait(self, timeout: float | None = None) -> FakeJogResult:
+        if self.stopped:
+            raise MotionStopped(f"{self.axis}_jog")
+        if self.ended_by is None:
+            raise TimeoutError("fake jog still running")
+        return FakeJogResult(self.axis, self.direction, self.ended_by)
+
+
 class FakeIndiMount:
     """`client.mount` — mirrors `onstep_adapter.IndiMount`'s facade shape."""
 
@@ -232,6 +285,16 @@ class FakeIndiMount:
         self, offset_deg: float, *, timeout_s: float = 30.0
     ) -> FakeIndiAxisMoveResult:
         return self._client.move_axis_deg("dec", offset_deg, timeout_s=timeout_s)
+
+    @property
+    def ra_axis_defined(self) -> bool:
+        return self._client.ra_axis_defined or not self._client.enforce_dec_first
+
+    def jog_ra(self, direction: int, **options: object) -> FakeJogHandle:
+        return self._client.jog("ra", direction, **options)
+
+    def jog_dec(self, direction: int, **options: object) -> FakeJogHandle:
+        return self._client.jog("dec", direction, **options)
 
     def goto(self, ra_hours: float, dec_deg: float) -> None:
         raise NotImplementedError(
@@ -333,6 +396,9 @@ class FakeOnStepIndiClient:
     #: about it can still start with an RA move.
     enforce_dec_first: bool = False
     ra_axis_defined: bool = False
+    #: Hold-to-move jogs started (`jog_ra`/`jog_dec`), and how far one renewal moves.
+    jogs: list[FakeJogHandle] = field(default_factory=list)
+    jog_deg_per_renew: float = 0.01
     axis_move_calls: list[tuple[str, float]] = field(default_factory=list)
     #: One finite axis move at a time, like the real `IndiAxisMover`.
     _axis_lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
@@ -467,6 +533,8 @@ class FakeOnStepIndiClient:
         return IndiPositionResult("park", True, None, None, None)
 
     def emergency_stop(self, *, timeout: float = 5.0) -> IndiStopResult:
+        for jog in self.jogs:
+            jog.stopped = True
         if self.stop_confirms:
             self.tracking = False
             self.slewing = False
@@ -505,6 +573,25 @@ class FakeOnStepIndiClient:
     #: fake now mirrors -- only tracking/slewing/parked/at_limit still
     #: block a move (plus a flat -80..80 deg DEC bound, not modeled here
     #: since nothing in this app's tests exercises it).
+    def jog(self, axis: str, direction: int, **_options: object) -> FakeJogHandle:
+        """OnStepAdapter's `client.jog`: the same preflight as a finite move, DEC first."""
+        if direction not in (1, -1):
+            raise ValueError("direction must be +1 or -1")
+        if any(not jog.done for jog in self.jogs):
+            raise RuntimeError("Another mount move (jog) is active")
+        if self.tracking or self.slewing or self.parked or self.at_limit:
+            raise RuntimeError(
+                "Local axis motion requires fresh unparked, stationary, "
+                "non-tracking and fault-free state"
+            )
+        if self.at_home:
+            self.ra_axis_defined = False
+        if self.enforce_dec_first and axis == "ra" and not self.ra_axis_defined:
+            raise RaAxisUndefinedError()
+        handle = FakeJogHandle(self, axis, direction)
+        self.jogs.append(handle)
+        return handle
+
     def move_axis_deg(
         self, axis: str, offset_deg: float, *, timeout_s: float = 30.0, poll_s: float = 0.1
     ) -> FakeIndiAxisMoveResult:
