@@ -37,6 +37,15 @@ Busy forever; a slot change the driver answers with `Alert` (e.g. a slot the whe
 have) is reported in `reason` (a stale Alert cached from before the latest command is not);
 a post-connect probe that raises closes the client again; the getProperties refresh throttle
 and the client are injectable (`clock=`, `client_factory=`).
+
+Device discovery: the configured/built-in device name is only a preference.
+`connect()` first asks indiserver for every device and uses the configured one
+if indiserver publishes it; otherwise it falls back to the filter wheel
+indiserver actually publishes (a device whose `DRIVER_INFO` reports libindi's
+`FILTER_INTERFACE` bit). Real-field reason: the ToupTek driver numbers its
+wheel "EFW 1" or "EFW 2" depending on the rig, and a hardcoded guess had
+already been wrong in both directions (#47 history in `device_defaults`).
+`device_name` reports the device actually in use after a connect.
 """
 
 from __future__ import annotations
@@ -71,6 +80,16 @@ _PROPERTY_REFRESH_INTERVAL_S = 2.0
 #: a slot the wheel does not have, arrives within tens of ms; the panel's own safety net
 #: is 10 s.
 _ALERT_GRACE_S = 1.0
+#: How long connect() waits for indiserver's answer to a device-less
+#: getProperties before deciding which device is the filter wheel.
+_DISCOVERY_TIMEOUT_S = 2.0
+#: After a filter wheel other than the configured one showed up: how much
+#: longer to wait for the configured one (indiserver lists devices one
+#: after another; the configured one may simply come later).
+_DISCOVERY_SETTLE_S = 0.5
+#: libindi `DefaultDevice::FILTER_INTERFACE` (1 << 4) in `DRIVER_INFO`'s
+#: `DRIVER_INTERFACE` bitmask.
+_FILTER_INTERFACE = 1 << 4
 
 
 class IndiFilterWheelAdapter(FilterWheelPort):
@@ -81,13 +100,18 @@ class IndiFilterWheelAdapter(FilterWheelPort):
         device_name: str = _DEFAULT_DEVICE_NAME,
         *,
         connect_timeout_s: float = _CONNECT_TIMEOUT_S,
+        discovery_timeout_s: float = _DISCOVERY_TIMEOUT_S,
         filter_names: dict[int, str] | None = None,
         names_override: bool = False,
         clock: Clock | None = None,
         client_factory: Callable[[str, int], IndiClient] | None = None,
     ) -> None:
+        #: The configured/built-in name -- a preference, see `_discover_device`.
+        self._preferred_device_name = device_name
+        #: The device actually used; replaced by the discovered one on connect().
         self._device_name = device_name
         self._connect_timeout_s = connect_timeout_s
+        self._discovery_timeout_s = discovery_timeout_s
         #: S6.3: the refresh throttle's time (default: the real clock).
         self._clock: Clock = clock if clock is not None else SYSTEM_CLOCK
         self._client = (client_factory or IndiClient)(host, port)
@@ -111,10 +135,86 @@ class IndiFilterWheelAdapter(FilterWheelPort):
         #: driver's own defaults did not match this rig's physical wheel).
         self._names_override = names_override
 
+    @property
+    def device_name(self) -> str:
+        """The INDI device in use: the configured one until a connect()
+        discovered which device indiserver actually publishes."""
+        return self._device_name
+
+    def _filter_wheel_devices(self) -> list[str]:
+        """Devices indiserver announced as filter wheels (DRIVER_INFO's
+        interface bitmask), or -- for a driver without DRIVER_INFO -- that
+        already define the Filter Wheel Interface's FILTER_SLOT."""
+        wheels: list[str] = []
+        for device in self._client.device_names():
+            info = self._client.get_vector(device, "DRIVER_INFO")
+            interface = info.elements.get("DRIVER_INTERFACE", "") if info else ""
+            try:
+                is_wheel = bool(int(interface) & _FILTER_INTERFACE)
+            except ValueError:
+                is_wheel = False
+            if is_wheel or self._client.get_vector(device, "FILTER_SLOT") is not None:
+                wheels.append(device)
+        return wheels
+
+    def _discover_device(self) -> str:
+        """The configured device if indiserver publishes it, else the filter
+        wheel it does publish; the configured name when nothing better is
+        known (the CONNECTION wait then reports the failure)."""
+        preferred = self._preferred_device_name
+
+        def preferred_known() -> bool:
+            return self._client.get_vector(preferred, "CONNECTION") is not None
+
+        self._client.send_get_properties(None)
+        # Optimistic: connect the configured device right away (no extra
+        # round trip when it is published; indiserver ignores a command for
+        # a device it does not have).
+        self._client.send_new_switch_vector(preferred, "CONNECTION", {"CONNECT": True})
+        self._client.wait_until(
+            lambda: preferred_known() or bool(self._filter_wheel_devices()),
+            self._discovery_timeout_s,
+        )
+        if preferred_known():
+            return preferred
+        if self._filter_wheel_devices():
+            self._client.wait_until(preferred_known, _DISCOVERY_SETTLE_S)
+            if preferred_known():
+                return preferred
+        wheels = self._filter_wheel_devices()
+        if not wheels:
+            _log.warning(
+                "IndiFilterWheelAdapter: indiserver publishes no filter wheel "
+                "(devices seen: %s); trying the configured %r",
+                self._client.device_names(),
+                preferred,
+            )
+            return preferred
+        if len(wheels) > 1:
+            _log.warning(
+                "IndiFilterWheelAdapter: configured %r not published; several filter "
+                "wheels are (%s) -- using the first. Set [filter_wheel] device to choose.",
+                preferred,
+                wheels,
+            )
+        _log.warning(
+            "IndiFilterWheelAdapter: configured %r is not published by indiserver; "
+            "using the filter wheel it does publish: %r",
+            preferred,
+            wheels[0],
+        )
+        return wheels[0]
+
     def connect(self) -> None:
         self._client.connect()
-        self._client.send_get_properties(self._device_name)
-        self._client.send_new_switch_vector(self._device_name, "CONNECTION", {"CONNECT": True})
+        try:
+            self._device_name = self._discover_device()
+        except BaseException:
+            self._client.close()
+            raise
+        if self._device_name != self._preferred_device_name:
+            # discovery already sent CONNECT to the configured device
+            self._client.send_new_switch_vector(self._device_name, "CONNECTION", {"CONNECT": True})
         connection = self._client.wait_for_vector(
             self._device_name,
             "CONNECTION",
@@ -125,7 +225,8 @@ class IndiFilterWheelAdapter(FilterWheelPort):
             self._client.close()
             raise ConnectionError(
                 f"IndiFilterWheelAdapter: {self._device_name!r} did not confirm CONNECTION "
-                f"within {self._connect_timeout_s}s — is indiserver running with this driver?"
+                f"within {self._connect_timeout_s}s — is indiserver running with this driver? "
+                f"(devices seen: {', '.join(self._client.device_names()) or 'none'})"
             )
         # The driver only defines the filter-wheel vectors once it has
         # probed for real hardware post-connect (mirrors

@@ -53,6 +53,12 @@ class FilterWheelPort(ABC):
         tolerance elsewhere."""
         ...
 
+    @property
+    def device_name(self) -> str | None:
+        """The device actually in use, when the adapter can know it (the
+        INDI adapter discovers it on connect). Default: None (unknown)."""
+        return None
+
     def slot_names(self) -> dict[int, str]:
         """Best-known name for every slot this wheel has, by precedence:
         device-reported name, then any config-supplied fallback, else absent

@@ -354,3 +354,51 @@ class TestDefaultsNameTheRigsDevice:
         finally:
             adapter.disconnect()
             fake.stop()
+
+
+class TestDeviceDiscovery:
+    """Real-field report (2026-11-08): the config/built-in default named
+    "ToupTek EFW 2" while the Pi's indiserver publishes only "ToupTek EFW 1".
+    connect() must find and use the wheel indiserver actually publishes."""
+
+    def test_a_stale_configured_name_falls_back_to_the_published_wheel(self) -> None:
+        fake = FakeIndiServer(device_name="ToupTek EFW 1", filter_slot=3)
+        fake.start()
+        adapter = IndiFilterWheelAdapter(
+            fake.host, fake.port, "ToupTek EFW 2", connect_timeout_s=2.0
+        )
+        try:
+            assert adapter.device_name == "ToupTek EFW 2"
+            adapter.connect()
+            assert adapter.device_name == "ToupTek EFW 1"
+            assert adapter.is_available is True
+            assert adapter.status().current_slot == 3
+        finally:
+            adapter.disconnect()
+            fake.stop()
+
+    def test_the_configured_name_is_kept_when_indiserver_publishes_it(
+        self, filter_wheel: IndiFilterWheelAdapter
+    ) -> None:
+        filter_wheel.connect()
+        assert filter_wheel.device_name == _DEVICE_NAME
+
+    def test_a_device_that_is_no_filter_wheel_is_not_picked(self) -> None:
+        # e.g. only a camera is published (CCD_INTERFACE = 2): no wheel to
+        # fall back to -- the configured name is tried and fails loudly.
+        fake = FakeIndiServer(device_name="ToupTek Camera", driver_interface=2)
+        fake.start()
+        adapter = IndiFilterWheelAdapter(
+            fake.host,
+            fake.port,
+            "ToupTek EFW 2",
+            connect_timeout_s=0.3,
+            discovery_timeout_s=0.3,
+        )
+        try:
+            with pytest.raises(ConnectionError, match="ToupTek Camera"):
+                adapter.connect()
+            assert adapter.device_name == "ToupTek EFW 2"
+        finally:
+            adapter.disconnect()
+            fake.stop()

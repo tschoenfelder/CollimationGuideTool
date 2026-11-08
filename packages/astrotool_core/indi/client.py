@@ -204,6 +204,34 @@ class IndiClient:
         with self._cond:
             return self._vectors.get((device, name))
 
+    def device_names(self) -> list[str]:
+        """Every device indiserver has announced at least one vector for, in
+        the order they first appeared -- the basis for discovering which
+        device actually is the filter wheel (the configured name can be
+        stale: the ToupTek driver numbers its wheels "EFW 1"/"EFW 2")."""
+        with self._cond:
+            seen: dict[str, None] = {}
+            for device, _name in self._vectors:
+                seen.setdefault(device, None)
+            return list(seen)
+
+    def wait_until(self, condition: Callable[[], bool], timeout_s: float) -> bool:
+        """Block until `condition()` is true (re-checked after every
+        received vector), or `timeout_s` elapses, or the connection is
+        lost. Returns whether the condition was met. `condition` may call
+        `get_vector`/`device_names` (the lock is re-entrant)."""
+        deadline = time.monotonic() + timeout_s
+        with self._cond:
+            while True:
+                if condition():
+                    return True
+                if self._sock is None:
+                    return False
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return False
+                self._cond.wait(timeout=remaining)
+
     def wait_for_vector(
         self,
         device: str,

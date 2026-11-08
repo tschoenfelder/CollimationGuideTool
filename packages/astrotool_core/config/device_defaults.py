@@ -16,6 +16,10 @@ from typing import Final
 #: The rig's filter wheel as its INDI driver names it. Corrected 2026-09-24
 #: (#47): the original "EFW 1" guess was never checked against the real
 #: indiserver (`indi_getprop`); the rig's driver reports itself as "EFW 2".
+#: 2026-11-08: the Pi's indiserver published "EFW 1" again -- the ToupTek
+#: driver's number is not stable, so this is only a PREFERENCE now:
+#: `IndiFilterWheelAdapter.connect()` uses the filter wheel indiserver
+#: actually publishes when this name (or a configured one) is not published.
 EFW_DEVICE_NAME: Final = "ToupTek EFW 2"
 
 #: The local indiserver every INDI consumer talks to (the filter wheel and

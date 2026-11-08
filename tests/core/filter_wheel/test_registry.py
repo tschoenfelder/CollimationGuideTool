@@ -148,17 +148,35 @@ class TestDefaultFactoryTargetsTheRealDevice:
         finally:
             adapter.disconnect()
 
-    def test_the_wrong_device_name_fails_explicitly_not_silently(
+    def test_a_stale_device_name_uses_the_wheel_indiserver_publishes(
         self, server: FakeIndiServer
     ) -> None:
+        """Real-field report 2026-11-08: a configured name indiserver does not
+        publish falls back to the filter wheel it does publish."""
         adapter = IndiFilterWheelAdapter(
             server.host, server.port, "Filter Wheel", connect_timeout_s=1.0
+        )
+        try:
+            adapter.connect()
+            assert adapter.device_name == _REAL_DEVICE
+            assert adapter.status().current_slot == 3
+        finally:
+            adapter.disconnect()
+
+    def test_the_wrong_device_name_fails_explicitly_when_no_wheel_is_published(
+        self,
+    ) -> None:
+        fake = FakeIndiServer(device_name="Some Camera", driver_interface=2)
+        fake.start()
+        adapter = IndiFilterWheelAdapter(
+            fake.host, fake.port, "Filter Wheel", connect_timeout_s=0.5, discovery_timeout_s=0.3
         )
         try:
             with pytest.raises(ConnectionError):
                 adapter.connect()
         finally:
             adapter.disconnect()
+            fake.stop()
 
     def test_reconnecting_is_deterministic(self, server: FakeIndiServer) -> None:
         adapter = IndiFilterWheelAdapter(

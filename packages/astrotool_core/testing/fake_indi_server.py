@@ -38,8 +38,13 @@ class FakeIndiServer:
         filter_slot: int = 1,
         filter_names: tuple[str, ...] | None = None,
         move_delay_s: float = 0.05,
+        driver_interface: int | None = 1 << 4,
     ) -> None:
         self._device_name = device_name
+        #: DRIVER_INFO's DRIVER_INTERFACE bitmask (libindi; FILTER_INTERFACE
+        #: = 16 by default), announced on getProperties before CONNECTION --
+        #: what the adapter's device discovery reads. None: no DRIVER_INFO.
+        self._driver_interface = driver_interface
         #: Issue #34: libindi standard Filter Wheel Interface simulation.
         #: Issue #47: a commanded FILTER_SLOT now actually moves -- Busy
         #: immediately, Ok after `move_delay_s` (mirrors real hardware/the
@@ -190,6 +195,10 @@ class FakeIndiServer:
         )
 
     def _handle_get_properties(self) -> None:
+        if self._driver_interface is not None:
+            self._def_text_vector(
+                "DRIVER_INFO", "Idle", {"DRIVER_INTERFACE": str(self._driver_interface)}
+            )
         self._def_switch_vector(
             "CONNECTION", "Ok", {"CONNECT": self._connected, "DISCONNECT": not self._connected}
         )

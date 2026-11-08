@@ -253,3 +253,24 @@ class TestDisconnectDuringMovement:
         assert panel._requested_slot is None
         assert not panel._connected
         panel.stop()  # must not raise even though already disconnected
+
+
+class _DiscoveringWheel(FakeFilterWheel):
+    """A wheel whose adapter found a different device than configured."""
+
+    @property
+    def device_name(self) -> str | None:
+        return "ToupTek EFW 1"
+
+
+class TestTitleNamesTheConnectedDevice:
+    def test_title_switches_to_the_discovered_device_on_connect(self, qapp: object) -> None:
+        panel = FilterWheelPanel(_DiscoveringWheel(), title="ToupTek EFW 2")
+        assert panel._title_label.text() == "<b>ToupTek EFW 2</b>"
+        panel._connect_button.setChecked(True)
+        assert panel._title_label.text() == "<b>ToupTek EFW 1</b>"
+
+    def test_a_wheel_that_does_not_know_its_device_keeps_the_title(self, qapp: object) -> None:
+        panel = FilterWheelPanel(FakeFilterWheel(), title="Main Filter Wheel")
+        panel._connect_button.setChecked(True)
+        assert panel._title_label.text() == "<b>Main Filter Wheel</b>"
