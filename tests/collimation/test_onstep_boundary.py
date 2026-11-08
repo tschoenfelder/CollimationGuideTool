@@ -18,15 +18,18 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 from astrotool_core.onstep import (
+    OnStepConnection,
     OnStepFocuserAdapter,
+    OnStepMode,
     OnStepMountParkAdapter,
     OnStepMountPulseAdapter,
 )
 from collimation_tool.main import (
     _default_focuser,
     _default_mount,
-    _default_onstep_connection,
+    _default_onstep_backend,
     _default_pulse_mount,
 )
 
@@ -51,8 +54,18 @@ _FORBIDDEN = (
 )
 
 
-def test_default_onstep_objects_are_the_adapter_shims_on_one_connection() -> None:
-    connection = _default_onstep_connection()
+@pytest.mark.parametrize("mode", list(OnStepMode))
+def test_default_onstep_objects_are_the_adapter_shims_on_one_connection(mode: OnStepMode) -> None:
+    """In every connection mode -- the mock, the real device, the real device behind the
+    sniffer -- the app gets the same shims on ONE OnStepAdapter connection."""
+    backend = _default_onstep_backend(mode)
+    try:
+        _assert_adapter_shims_on_one_connection(backend.connection)
+    finally:
+        backend.close()
+
+
+def _assert_adapter_shims_on_one_connection(connection: OnStepConnection) -> None:
     focuser = _default_focuser(connection)
     park = _default_mount(connection)
     pulse = _default_pulse_mount(connection)

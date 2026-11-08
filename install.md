@@ -196,6 +196,47 @@ flip_allowance_seconds = 120.0 # default
 reserve_seconds = 30.0         # default
 ```
 
+#### OnStep connection mode: mock, real device, real device + traffic sniffer
+
+Which OnStep the tool talks to is a switch with three positions. In every
+position the app still uses its ONE OnStepAdapter connection and the same
+focuser/park/Mount Align shims; only the INDI endpoint that connection is
+pointed at changes:
+
+| Mode | What the app connects to |
+| --- | --- |
+| `mock` | OnStepAdapter's OnStepX mock (`onstep_mock`), started inside the app on a free loopback port. No hardware is touched; slews take real time, STOP works, UNPARK auto-tracks, SET HOME/SET PARK/SYNC are refused. |
+| `real` | The indiserver from `[indi] host/port`, directly. |
+| `real-sniffer` (**default**) | A transparent pass-through (`onstep_adapter.capture.CaptureProxy`) on a free loopback port in front of that same indiserver. It forwards every byte unchanged and never sends one of its own; both directions are recorded. |
+
+Choose it on the command line (wins) or in `~/.CollimationGuideTool/config.toml`:
+
+```bash
+collimation-tool --onstep mock          # or: real, real-sniffer
+```
+
+```toml
+[onstep]
+mode = "real-sniffer"                   # default; "mock" | "real" | "real-sniffer"
+# Where the sniffer records; {date} keeps one JSON Lines file per UTC day
+# that every app start of that day appends to (default shown):
+capture_path = "~/.CollimationGuideTool/onstep-traffic/capture-{date}.jsonl"
+```
+
+The window title names the active mode. An unknown `[onstep] mode` falls
+back to the default with a log warning; an unknown `--onstep` value stops
+with a usage message. The mock uses the same `[indi]`/`[meridian]` settings
+as the rig (so it needs the same measured `[meridian]` values to connect),
+the site from `[observer]`, and starts parked on every app start.
+
+Read a capture with OnStepAdapter's tools:
+
+```bash
+.venv/bin/python -m onstep_adapter.tools.indi_capture summary ~/.CollimationGuideTool/onstep-traffic/capture-2026-11-08.jsonl
+.venv/bin/python -m onstep_adapter.tools.indi_capture check   ~/.CollimationGuideTool/onstep-traffic/capture-2026-11-08.jsonl
+.venv/bin/python -m onstep_mock.validate ~/.CollimationGuideTool/onstep-traffic/capture-2026-11-08.jsonl
+```
+
 **Capability boundary as of this OnStepAdapter build** (not a temporary
 bug — each remaining item is an explicit safety gate pending its own
 supervised test; tracking-enable and the axis-move floor, both originally
@@ -258,31 +299,28 @@ OnStepAdapter could own the serial port exclusively). After upgrading
 OnStepAdapter, update the Pi's venv:
 `.venv/bin/pip install <release wheel URL from pyproject.toml>`.
 
-**Upgrading the Pi to OnStepAdapter 0.5.0** (the current pin; the code that
-needs it arrives with the same `git reset --hard origin/main`). From the
-CollimationGuideTool checkout on the Pi, with the app closed:
+**Upgrading the Pi to the pinned OnStepAdapter build** (unreleased, after
+0.6.2: the first build whose wheel ships `onstep_mock` and
+`onstep_adapter.capture`, which the connection modes above need; its
+`park()`/axis moves return a stoppable `MotionHandle`, which this app waits
+on). From the CollimationGuideTool checkout on the Pi, with the app closed:
 
 ```bash
-curl -fLO https://github.com/tschoenfelder/OnStepAdapter/releases/download/v0.5.0/onstep_adapter-0.5.0-py3-none-any.whl
-sha256sum onstep_adapter-0.5.0-py3-none-any.whl
-# must print 2420ba1c47b61a406022debfa690bd76b12810d4eecbd7c1ad58d66865014da4
-.venv/bin/pip install --force-reinstall --no-deps ./onstep_adapter-0.5.0-py3-none-any.whl
-.venv/bin/python -c "import dataclasses, onstep_adapter as o, onstep_adapter.indi_guiding as g, onstep_adapter.indi_status as s; print(o.__version__, callable(getattr(o.IndiMount, 'guide_pulse', None)), 'guiding' in {f.name for f in dataclasses.fields(s.IndiMountSnapshot)}, hasattr(g.IndiGuideController, '_wait_onstep_guide_idle'))"
-# must print: 0.5.0 True True True
-rm onstep_adapter-0.5.0-py3-none-any.whl
+.venv/bin/pip install --force-reinstall --no-deps "git+https://github.com/tschoenfelder/OnStepAdapter.git@b6172aa393431f584359aec40951ad83fcddba05"
+.venv/bin/python -c "import onstep_adapter, onstep_mock, onstep_adapter.capture, onstep_adapter.indi_motion; print(onstep_adapter.__version__)"
+# must print: 0.6.2   (an ImportError means the old 0.6.2 release or 0.5.0 is still installed)
 ```
 
-`--force-reinstall` matters: an unpublished 0.5.0 pre-release (built
-2026-10-04, without the post-chunk `G`-flag wait) carries the SAME version
-number, so a plain `pip install` would keep it if it was ever installed.
-The last two `True`s are only printed by the published build.
+`--force-reinstall` matters: the pinned build reports the SAME version
+number as the 0.6.2 release, so a plain `pip install` could keep an older
+0.6.2 that lacks the mock and the sniffer.
 
-No config change is needed: 0.5.0 reads the same `[indi]` settings
-(`tracking_authority_policy` also governs the guide pulse's authority
-checks). Rolling back = the same steps with the v0.4.1 wheel
-(`releases/download/v0.4.1/onstep_adapter-0.4.1-py3-none-any.whl`) on a
-checkout from before the pin; the app then refuses astronomical
-reacquisition instead of guiding.
+No config change is needed: the build reads the same `[indi]`/`[meridian]`
+settings; `[onstep]` is optional (default `real-sniffer`). Rolling back =
+install the v0.5.0 wheel
+(`releases/download/v0.5.0/onstep_adapter-0.5.0-py3-none-any.whl`, sha256
+`2420ba1c47b61a406022debfa690bd76b12810d4eecbd7c1ad58d66865014da4`) on a
+checkout from before this pin.
 
 #### Filter wheel (which optical train it serves, and its filter names)
 

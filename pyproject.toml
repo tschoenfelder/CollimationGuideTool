@@ -11,7 +11,9 @@ dependencies = [
     "numpy>=1.26",
     "astropy>=6.0",
     "PySide6>=6.7",
-    "onstep-adapter @ https://github.com/tschoenfelder/OnStepAdapter/releases/download/v0.5.0/onstep_adapter-0.5.0-py3-none-any.whl",
+    # Unreleased OnStepAdapter (after 0.6.2): the first build whose wheel ships onstep_mock and
+    # onstep_adapter.capture, which the OnStep connection modes need (onstep/backend.py).
+    "onstep-adapter @ git+https://github.com/tschoenfelder/OnStepAdapter.git@b6172aa393431f584359aec40951ad83fcddba05",
     "smarttscope-live-analysis @ git+https://github.com/tschoenfelder/SmartTScopeLiveAnalysis.git@v0.1.0",
 ]
 
@@ -173,3 +175,10 @@ ignore_imports = [
   "astrotool_core.onstep.* -> onstep_adapter",
   "astrotool_core.testing.fake_onstep_indi_client -> onstep_adapter",
 ]
+
+[[tool.importlinter.contracts]]
+name = "only the OnStep connection modes start the OnStepX mock (onstep/backend.py)"
+type = "forbidden"
+source_modules = ["astrotool_core", "collimation_tool", "guide_tool"]
+forbidden_modules = ["onstep_mock"]
+ignore_imports = ["astrotool_core.onstep.backend -> onstep_mock"]

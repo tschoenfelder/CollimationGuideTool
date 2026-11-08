@@ -99,6 +99,7 @@ from astrotool_core.mount.port import (
 )
 from astrotool_core.onstep.connection import OnStepConnection
 from astrotool_core.onstep.errors import ONSTEP_OPERATION_ERRORS
+from astrotool_core.onstep.motion import finish_motion
 
 #: OnStepAdapter's own `IndiAxisMover` bound (30"..10 degrees), taken from OnStepAdapter
 #: itself (single source). Reported to callers as `MountCapabilities.min_angular_arcsec` /
@@ -362,9 +363,9 @@ class OnStepMountPulseAdapter:
                 self._in_flight_generation = self._move_generation
             try:
                 if axis == MountAxis.AXIS1:
-                    mount.move_ra_axis_deg(offset_deg)
+                    finish_motion(mount.move_ra_axis_deg(offset_deg))
                 else:
-                    mount.move_dec_axis_deg(offset_deg)
+                    finish_motion(mount.move_dec_axis_deg(offset_deg))
             except ONSTEP_OPERATION_ERRORS as exc:
                 if self._cancel.is_set():
                     return CommandResult(accepted=False, message=f"{_STOPPED} ({exc})")
