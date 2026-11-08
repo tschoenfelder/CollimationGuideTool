@@ -157,7 +157,7 @@ class IndiFilterWheelAdapter(FilterWheelPort):
                 wheels.append(device)
         return wheels
 
-    def _discover_device(self) -> str:
+    def _discover_device(self, *, send_connect: bool = True) -> str:
         """The configured device if indiserver publishes it, else the filter
         wheel it does publish; the configured name when nothing better is
         known (the CONNECTION wait then reports the failure)."""
@@ -170,7 +170,8 @@ class IndiFilterWheelAdapter(FilterWheelPort):
         # Optimistic: connect the configured device right away (no extra
         # round trip when it is published; indiserver ignores a command for
         # a device it does not have).
-        self._client.send_new_switch_vector(preferred, "CONNECTION", {"CONNECT": True})
+        if send_connect:
+            self._client.send_new_switch_vector(preferred, "CONNECTION", {"CONNECT": True})
         self._client.wait_until(
             lambda: preferred_known() or bool(self._filter_wheel_devices()),
             self._discovery_timeout_s,
@@ -204,6 +205,23 @@ class IndiFilterWheelAdapter(FilterWheelPort):
             wheels[0],
         )
         return wheels[0]
+
+    def probe_device_name(self) -> str:
+        """Ask indiserver which filter wheel it publishes, WITHOUT connecting
+        the device, so the UI can name the right one before the user presses
+        Connect (field report 2026-11-08: the title kept showing the stale
+        "ToupTek EFW 2" until a connect). Best-effort: indiserver not
+        reachable -> the current name. Never raises; a no-op while connected."""
+        if self._connected:
+            return self._device_name
+        try:
+            self._client.connect()
+            self._device_name = self._discover_device(send_connect=False)
+        except Exception:  # best-effort: a startup probe never fails the app
+            _log.debug("IndiFilterWheelAdapter: device probe failed", exc_info=True)
+        finally:
+            self._client.close()
+        return self._device_name
 
     def connect(self) -> None:
         self._client.connect()

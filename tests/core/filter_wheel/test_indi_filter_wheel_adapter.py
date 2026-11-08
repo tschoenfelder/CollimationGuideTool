@@ -402,3 +402,35 @@ class TestDeviceDiscovery:
         finally:
             adapter.disconnect()
             fake.stop()
+
+
+class TestProbeDeviceName:
+    """Field report 2026-11-08 (after the discovery fix): the panel title still
+    read "ToupTek EFW 2" before Connect -- the startup probe names the
+    published wheel without connecting it."""
+
+    def test_probe_names_the_published_wheel_without_connecting_it(self) -> None:
+        fake = FakeIndiServer(device_name="ToupTek EFW 1")
+        fake.start()
+        adapter = IndiFilterWheelAdapter(
+            fake.host, fake.port, "ToupTek EFW 2", connect_timeout_s=2.0
+        )
+        try:
+            assert adapter.probe_device_name() == "ToupTek EFW 1"
+            assert adapter.device_name == "ToupTek EFW 1"
+            assert adapter.is_available is False
+            assert fake._connected is False  # noqa: SLF001  # no CONNECT was sent
+            adapter.connect()  # the same adapter still connects afterwards
+            assert adapter.is_available is True
+        finally:
+            adapter.disconnect()
+            fake.stop()
+
+    def test_probe_without_indiserver_keeps_the_configured_name(self) -> None:
+        import socket
+
+        with socket.socket() as probe:  # a free port nothing listens on
+            probe.bind(("127.0.0.1", 0))
+            port = probe.getsockname()[1]
+        adapter = IndiFilterWheelAdapter("127.0.0.1", port, "ToupTek EFW 2")
+        assert adapter.probe_device_name() == "ToupTek EFW 2"

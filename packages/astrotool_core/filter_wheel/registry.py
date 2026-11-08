@@ -20,7 +20,7 @@ only, not shared with OAG as an earlier version of this module assumed).
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from astrotool_core.config.device_defaults import EFW_DEVICE_NAME, INDI_HOST, INDI_PORT
@@ -122,3 +122,20 @@ def build_filter_wheels(
         for wheel in layout.wheels
         if wheel.id in users
     ]
+
+
+def with_published_device_names(
+    assignments: list[FilterWheelAssignment],
+) -> list[FilterWheelAssignment]:
+    """Each INDI wheel's `device_name` replaced by the device indiserver
+    actually publishes (`IndiFilterWheelAdapter.probe_device_name`), so the
+    panel title is right before anyone presses Connect. Best-effort, never
+    raises: an unreachable indiserver keeps the configured name. Production
+    startup only (`collimation_tool.main`), never a config reader -- reading
+    config must not touch the network."""
+    resolved: list[FilterWheelAssignment] = []
+    for assignment in assignments:
+        if isinstance(assignment.port, IndiFilterWheelAdapter):
+            assignment = replace(assignment, device_name=assignment.port.probe_device_name())
+        resolved.append(assignment)
+    return resolved

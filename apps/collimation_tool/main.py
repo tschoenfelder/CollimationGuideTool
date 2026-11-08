@@ -24,6 +24,7 @@ from astrotool_core.filter_wheel.registry import (
     FilterWheelAssignment,
     build_filter_wheels,
     load_filter_wheel_layout,
+    with_published_device_names,
 )
 from astrotool_core.focus.port import FocuserPort
 from astrotool_core.mount.park_port import MountParkPort
@@ -178,7 +179,9 @@ def main() -> None:
         focuser=_default_focuser(onstep),
         mount=_default_mount(onstep),
         pulse_mount=_default_pulse_mount(onstep),
-        filter_wheels=_default_filter_wheels(),
+        # Field report 2026-11-08: name the wheel indiserver actually
+        # publishes (e.g. "ToupTek EFW 1") already before Connect.
+        filter_wheels=with_published_device_names(_default_filter_wheels()),
         threaded_captures=True,  # issue #49: never block the GUI thread on a frame wait
         diagnostics=diagnostics,
     )

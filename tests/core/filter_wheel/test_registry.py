@@ -189,3 +189,33 @@ class TestDefaultFactoryTargetsTheRealDevice:
             assert adapter.status().current_slot == 3
         finally:
             adapter.disconnect()
+
+
+class TestWithPublishedDeviceNames:
+    def test_the_assignment_names_the_wheel_indiserver_publishes(self) -> None:
+        from astrotool_core.filter_wheel.registry import (
+            FilterWheelAssignment,
+            with_published_device_names,
+        )
+
+        fake = FakeIndiServer(device_name="ToupTek EFW 1")
+        fake.start()
+        adapter = IndiFilterWheelAdapter(fake.host, fake.port, "ToupTek EFW 2")
+        try:
+            (resolved,) = with_published_device_names(
+                [FilterWheelAssignment("efw1", "ToupTek EFW 2", ("main",), adapter)]
+            )
+            assert resolved.device_name == "ToupTek EFW 1"
+            assert resolved.port is adapter
+            assert resolved.trains == ("main",)
+        finally:
+            fake.stop()
+
+    def test_a_non_indi_wheel_is_left_alone(self) -> None:
+        from astrotool_core.filter_wheel.registry import (
+            FilterWheelAssignment,
+            with_published_device_names,
+        )
+
+        assignment = FilterWheelAssignment("w", "Fake", ("main",), FakeFilterWheel())
+        assert with_published_device_names([assignment]) == [assignment]
