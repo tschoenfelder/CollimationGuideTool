@@ -274,3 +274,20 @@ class TestTitleNamesTheConnectedDevice:
         panel = FilterWheelPanel(FakeFilterWheel(), title="Main Filter Wheel")
         panel._connect_button.setChecked(True)
         assert panel._title_label.text() == "<b>Main Filter Wheel</b>"
+
+
+class TestFailureTextCanBeRead:
+    """Field report 2026-11-08: "Filter: connect failed" -- the reason after it
+    was cut off and could not be copied."""
+
+    def test_a_connect_failure_is_selectable_and_repeated_as_tooltip(self, qapp: object) -> None:
+        from PySide6.QtCore import Qt
+
+        panel = FilterWheelPanel(FakeFilterWheel(fail_connect=True))
+        panel._connect_button.setChecked(True)
+        text = panel._status_label.text()
+        assert text.startswith("Filter: connect failed")
+        assert panel._status_label.toolTip() == text
+        assert panel._status_label.wordWrap() is True
+        flags = panel._status_label.textInteractionFlags()
+        assert flags & Qt.TextInteractionFlag.TextSelectableByMouse

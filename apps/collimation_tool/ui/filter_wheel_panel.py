@@ -25,7 +25,7 @@ from typing import Any
 from astrotool_core.filter_wheel.port import FilterWheelPort, FilterWheelState
 from astrotool_core.session import DeviceConnectionService
 from astrotool_core.timing import SYSTEM_CLOCK, Clock
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import Qt, QTimer
 from PySide6.QtWidgets import (
     QComboBox,
     QHBoxLayout,
@@ -115,6 +115,12 @@ class FilterWheelPanel(QWidget):
         self._connect_button.setCheckable(True)
         self._connect_button.toggled.connect(self._on_toggle_connect)
         self._status_label = QLabel("Filter: not connected")
+        # Field report 2026-11-08: a long failure ("connect failed — <reason,
+        # devices seen>") was cut off and could not be copied. Wrap it, let
+        # the operator select/copy it, and repeat it as the tooltip.
+        self._status_label.setWordWrap(True)
+        self._status_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self._status_label.setToolTip("Filter: not connected")
         self._used_by_label = QLabel(
             f"Used by: {', '.join(self._used_by)}" if self._used_by else ""
         )
@@ -149,6 +155,10 @@ class FilterWheelPanel(QWidget):
 
         self._update_selector_enabled()
 
+    def _set_status(self, text: str) -> None:
+        self._status_label.setText(text)
+        self._status_label.setToolTip(text)
+
     def _set_slot_change_in_flight(self, value: bool) -> None:
         self._slot_change_in_flight = value
 
@@ -160,7 +170,7 @@ class FilterWheelPanel(QWidget):
         if checked:
             failure = self._connection.connect()
             if failure is not None:
-                self._status_label.setText(_filter_text(failure.status_text))
+                self._set_status(_filter_text(failure.status_text))
                 # blockSignals: resetting the button's checked state here
                 # must not re-enter this handler with checked=False, which
                 # would immediately overwrite the error message above.
@@ -186,7 +196,7 @@ class FilterWheelPanel(QWidget):
             self._set_slot_change_in_flight(False)
             self._requested_slot = None
             self._connect_button.setText("Connect")
-            self._status_label.setText(
+            self._set_status(
                 _filter_text(failures[-1].status_text) if failures else "Filter: not connected"
             )
         self._update_selector_enabled()
@@ -252,7 +262,7 @@ class FilterWheelPanel(QWidget):
             self._last_failure = str(exc)
             self._set_slot_change_in_flight(False)
             self._requested_slot = None
-            self._status_label.setText(f"Filter: {exc}")
+            self._set_status(f"Filter: {exc}")
             self._update_selector_enabled()
 
     def _poll_status(self) -> None:
@@ -262,7 +272,7 @@ class FilterWheelPanel(QWidget):
             return
         failure = self._poll_guard.run(self._poll_once)
         if failure is not None:
-            self._status_label.setText(f"Filter: {failure}")
+            self._set_status(f"Filter: {failure}")
             self._observe_slot_change(busy=None)
             self._slot_combo.setEnabled(False)
             self._set_button.setEnabled(False)
@@ -271,7 +281,7 @@ class FilterWheelPanel(QWidget):
         self._refresh_combo()
         status = self._filter_wheel.status()
         if self._last_failure is None:
-            self._status_label.setText(_status_text(status, self._requested_slot))
+            self._set_status(_status_text(status, self._requested_slot))
         rejected = (
             self._slot_change_in_flight
             and status.available
@@ -283,7 +293,7 @@ class FilterWheelPanel(QWidget):
             # S6.3 (S4 finding (b)): the driver answered the request with Alert (e.g. a slot
             # the wheel does not have) -- shown now, not after the 10 s safety net.
             self._last_failure = status.reason
-            self._status_label.setText(_filter_text(status.reason or ""))
+            self._set_status(_filter_text(status.reason or ""))
             self._set_slot_change_in_flight(False)
             self._requested_slot = None
         self._observe_slot_change(busy=status.moving)
