@@ -247,11 +247,20 @@ class IndiFilterWheelAdapter(FilterWheelPort):
             predicate=lambda v: v.elements.get("CONNECT") == "On",
         )
         if connection is None:
+            seen = self._client.device_names()
             self._client.close()
+            if not seen:
+                # Field report 2026-11-08: a hung indiserver accepted the
+                # socket but answered nothing; restarting it fixed it.
+                raise ConnectionError(
+                    "IndiFilterWheelAdapter: indiserver sent no devices at all — it may be "
+                    f"hung; restart indiserver ({self._device_name!r} did not confirm "
+                    f"CONNECTION within {self._connect_timeout_s}s)"
+                )
             raise ConnectionError(
                 f"IndiFilterWheelAdapter: {self._device_name!r} did not confirm CONNECTION "
                 f"within {self._connect_timeout_s}s — is indiserver running with this driver? "
-                f"(devices seen: {', '.join(self._client.device_names()) or 'none'})"
+                f"(devices seen: {', '.join(seen)})"
             )
         # The driver only defines the filter-wheel vectors once it has
         # probed for real hardware post-connect (mirrors

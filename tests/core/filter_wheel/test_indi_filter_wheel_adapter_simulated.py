@@ -349,3 +349,19 @@ class TestPropertyRefreshThrottle:
         clock.advance(0.01)
         adapter.status()
         assert refreshes() == after_connect + 2  # exactly 2 s later: refreshed again
+
+
+class TestHungIndiserver:
+    def test_an_indiserver_that_answers_nothing_is_named_as_probably_hung(self) -> None:
+        """Field report 2026-11-08: indiserver accepted the connection but sent
+        nothing (`indi_getprop` returned nothing either) until restarted."""
+        clock = FakeClock()
+        adapter, wheel = make_simulated_filter_wheel_adapter(
+            FilterWheelScenario("ToupTek EFW 1", slot_names=_SLOTS),
+            clock=clock,
+            connect_timeout_s=5.0,
+        )
+        wheel.receive = lambda _fragment: None  # type: ignore[method-assign]  # hung
+        with pytest.raises(ConnectionError, match="sent no devices at all .* restart indiserver"):
+            adapter.connect()
+        assert adapter.is_available is False
