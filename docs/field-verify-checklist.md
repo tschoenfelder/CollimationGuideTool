@@ -54,6 +54,11 @@ Focuser and autofocus:
 - [ ] A Stop during autofocus ends "Cancelled" and the focuser stays where it stopped. *(49-focuser-stop)*
 - [ ] A real focus sweep converges (artificial star and terrestrial target). *(33-autofocus, 35-autofocus-final-validation)*
 
+- [ ] Terrestrial autofocus on a real scene moves the focuser and lands on visibly good focus; each position takes about 3 exposures; with clipped glints it lowers the exposure and restores it, or reports "highlights clipped". *(56-terrestrial-autofocus)*
+- [ ] Artificial-star autofocus with several over-exposed stars follows the star nearest the centre cross, says so ("N found"), lowers the exposure and restores it. Check the Pi's time per position. *(58-artificial-star-acquisition)*
+- [ ] After either autofocus, judge the focus by eye: SUCCESS can be up to about 125 steps off until #59.
+- [ ] Both camera screens show the green centre cross, 2 px thick. *(57-centre-cross)*
+
 Artificial star, registration, reacquisition:
 - [ ] Choosing Artificial star switches to Terrestrial (tracking OFF) — user decision A. *(48-one-mode-source)*
 - [ ] ArtificialStarRegistrar on a real pinhole seen by both cameras (rotation ≈ 0 assumption). *(37-artificial-star-registration)*
