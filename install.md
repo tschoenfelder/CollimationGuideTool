@@ -306,7 +306,7 @@ OnStepAdapter, update the Pi's venv:
 on). From the CollimationGuideTool checkout on the Pi, with the app closed:
 
 ```bash
-.venv/bin/pip install --force-reinstall --no-deps "git+https://github.com/tschoenfelder/OnStepAdapter.git@f9eabb6bd30b701ad0bdb59ebde0d683d9b2bf46"
+.venv/bin/pip install --force-reinstall --no-deps "git+https://github.com/tschoenfelder/OnStepAdapter.git@e2e80d4e602aa766ef4adfa820c04a41abc19147"
 .venv/bin/python -c "import onstep_adapter, onstep_mock, onstep_adapter.capture, onstep_adapter.indi_motion; print(onstep_adapter.__version__)"
 # must print: 0.6.2   (an ImportError means the old 0.6.2 release or 0.5.0 is still installed)
 ```

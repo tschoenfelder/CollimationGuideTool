@@ -139,7 +139,8 @@ class TestEveryMoveIsAngular:
         rig, panel = self._calibrated()
         assert rig.mount.pulse_log == [], "no timed pulse may be sent (S6.8d)"
         axis, direction, arcsec = rig.mount.angular_log[0]
-        assert (axis, direction) == (MountAxis.AXIS1, AxisDirection.POSITIVE)
+        # Dec first: RA is undefined at HOME until Dec has moved.
+        assert (axis, direction) == (MountAxis.AXIS2, AxisDirection.POSITIVE)
         assert abs(arcsec - 150.0) < 1.0  # 25% of the narrow 600" frame
         panel.stop()
 

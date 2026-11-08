@@ -45,7 +45,11 @@ from collimation_tool.application.mount_align_guide import (
     seed_note,
 )
 from collimation_tool.application.mount_align_motion import MotionStep
-from collimation_tool.application.mount_align_plan import CalibrationStep, CalibrationStepRole
+from collimation_tool.application.mount_align_plan import (
+    CALIBRATION_FIRST_AXIS,
+    CalibrationStep,
+    CalibrationStepRole,
+)
 from collimation_tool.application.mount_motion import MountAlignPrimitive
 
 #: S6.8d: a calibration's first move when no participating camera has configured optics -- in
@@ -277,7 +281,9 @@ class CalibrationSizing:
         if not widths:
             return policy
         unit = self.unit_rate()
-        needed_ms = math.ceil(policy.band_high * max(widths) / unit * 1000.0)
+        # Rounded DOWN: the converted move must never exceed that edge (rounding up let a
+        # capped follow-up come out a fraction of an arcsecond beyond it).
+        needed_ms = math.floor(policy.band_high * max(widths) / unit * 1000.0)
         return replace(policy, max_duration_ms=max(policy.max_duration_ms, needed_ms))
 
     # ---- sizes --------------------------------------------------------------------------
@@ -484,11 +490,13 @@ class CalibrationSizing:
             else:
                 exclude_bounded(seed_key, failure, decision.reason or "bounded")
             responses.pop(seed_key, None)
-        if step.axis is MountAxis.AXIS1:
-            # RA and Dec share the mount's rate: start Dec from RA's accepted size.
-            self.axis_duration_ms[MountAxis.AXIS2] = self.axis_duration_ms[MountAxis.AXIS1]
-            if MountAxis.AXIS1 in self.axis_arcsec:
-                self.axis_arcsec[MountAxis.AXIS2] = self.axis_arcsec[MountAxis.AXIS1]
+        if step.axis is CALIBRATION_FIRST_AXIS:
+            # RA and Dec share the mount's rate: start the second axis from the first's
+            # accepted size (Dec is calibrated first: RA is undefined until Dec has moved).
+            second = MountAxis.AXIS1 if step.axis is MountAxis.AXIS2 else MountAxis.AXIS2
+            self.axis_duration_ms[second] = self.axis_duration_ms[step.axis]
+            if step.axis in self.axis_arcsec:
+                self.axis_arcsec[second] = self.axis_arcsec[step.axis]
         return False
 
     def axis_group_followups(

@@ -56,6 +56,7 @@ from onstep_adapter import (
     IndiStartupStatus,
     IndiStopResult,
     IndiUnparkResult,
+    RaAxisUndefinedError,
 )
 
 from astrotool_core.config import device_defaults
@@ -327,6 +328,11 @@ class FakeOnStepIndiClient:
     #: Controls `enable_tracking`/`start_tracking` once preflight passes.
     tracking_rejected: bool = False
 
+    #: OnStepAdapter's DEC-first rule (after connecting and at HOME, RA is undefined until a DEC
+    #: move completed; an RA move raises `RaAxisUndefinedError` unsent). Opt-in, so tests not
+    #: about it can still start with an RA move.
+    enforce_dec_first: bool = False
+    ra_axis_defined: bool = False
     axis_move_calls: list[tuple[str, float]] = field(default_factory=list)
     #: One finite axis move at a time, like the real `IndiAxisMover`.
     _axis_lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
@@ -360,6 +366,7 @@ class FakeOnStepIndiClient:
         if not self.connect_ok:
             raise ConnectionError("fake OnStep INDI device is not connected")
         self.closed = False
+        self.ra_axis_defined = False  # a new connection: DEC first again
         return IndiStartupStatus(
             device_connected=True,
             safe_meridian_flip_enabled=True,
@@ -439,6 +446,7 @@ class FakeOnStepIndiClient:
         if self.go_home_rejected:
             return IndiPositionResult("home", False, None, "fake rejected go_home", None)
         self.at_home = True
+        self.ra_axis_defined = False
         self.tracking = False
         return IndiPositionResult("home", True, None, None, None)
 
@@ -511,11 +519,17 @@ class FakeOnStepIndiClient:
                     "Local axis motion requires fresh unparked, stationary, "
                     "non-tracking and fault-free state"
                 )
+            if self.at_home:
+                self.ra_axis_defined = False
+            if self.enforce_dec_first and axis == "ra" and not self.ra_axis_defined:
+                raise RaAxisUndefinedError()
             self.axis_move_calls.append((axis, offset_deg))
             if axis == "ra":
                 self.ha_deg += offset_deg
             else:
                 self.dec_deg += offset_deg
+                self.at_home = False
+                self.ra_axis_defined = True
             self.tracking = False
             return FakeIndiAxisMoveResult(axis, offset_deg, offset_deg)
         finally:

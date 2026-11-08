@@ -20,6 +20,8 @@ from collimation_tool.application.mount_align_sizing import CalibrationSizing
 pytestmark = pytest.mark.unit
 
 A1 = MountAxis.AXIS1
+#: The RA-axis group of the calibration (Dec runs first, see `CALIBRATION_STEPS`).
+RA_STEPS = tuple(step for step in CALIBRATION_STEPS if step.axis is A1)
 POS, NEG = AxisDirection.POSITIVE, AxisDirection.NEGATIVE
 
 
@@ -117,14 +119,14 @@ def test_an_aborted_run_is_returned_in_capped_chunks() -> None:
     settings = MountAlignmentSettings()
     sizing = CalibrationSizing(mount=lambda: object(), settings=lambda: settings)
     assert sizing.abort_return(A1, 3000) == ([], "")
-    sizing.account_pulse(CALIBRATION_STEPS[0], 4000)
+    sizing.account_pulse(RA_STEPS[0], 4000)
     motion, suffix = sizing.abort_return(A1, 3000)
     assert motion == [(A1, NEG, 3000), (A1, NEG, 1000)]
     assert suffix == " (returning mount to start position…)"
 
 
 def test_calibration_labels_and_progress_text() -> None:
-    step = CALIBRATION_STEPS[2]
+    step = RA_STEPS[2]
     assert step_label(step, "before") == "axis1_negative_first_before"
     assert step_label(step, "after") == "axis1_negative_first_after"
     assert calibration_progress_text(A1, "NEGATIVE", "first", 800, None) == (

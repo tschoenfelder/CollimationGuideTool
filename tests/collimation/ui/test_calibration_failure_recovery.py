@@ -559,7 +559,7 @@ class TestDiagnostics:
         busy = panel.diagnostic_activity()
         assert busy["state"] == "capturing"
         assert busy["capture_in_flight"] is True
-        assert busy["capture_label"] == "axis1_positive_first_before"
+        assert busy["capture_label"] == "axis2_positive_first_before"  # Dec first
         assert busy["capture_elapsed_s"] >= 0.0
         assert panel.diagnostic_context()["activity"]["state"] == "capturing"
         panel._on_stop()

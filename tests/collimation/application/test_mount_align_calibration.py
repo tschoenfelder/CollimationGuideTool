@@ -13,6 +13,8 @@ from collimation_tool.application.mount_align_plan import CALIBRATION_STEPS, Cal
 pytestmark = pytest.mark.unit
 
 A1, A2 = MountAxis.AXIS1, MountAxis.AXIS2
+#: The RA-axis group of the calibration (Dec runs first, see `CALIBRATION_STEPS`).
+RA_STEPS = tuple(step for step in CALIBRATION_STEPS if step.axis is A1)
 POS, NEG = AxisDirection.POSITIVE, AxisDirection.NEGATIVE
 
 #: Image shift per (axis, direction): RA moves +x, Dec moves +y.
@@ -36,23 +38,30 @@ def _run(results: CalibrationResults, shifts: dict[str, dict]) -> None:  # type:
             )
 
 
+def test_dec_is_calibrated_before_ra() -> None:
+    # RA is not defined at HOME or right after connecting until Dec has moved, and
+    # OnStepAdapter refuses an RA-axis move until then: the run's first move is Dec.
+    axes = [step.axis for step in CALIBRATION_STEPS]
+    assert axes == [A2] * 4 + [A1] * 4
+
+
 def test_first_and_repeat_pair_into_a_characterization() -> None:
     results = CalibrationResults()
-    first, repeat = CALIBRATION_STEPS[0], CALIBRATION_STEPS[1]
+    first, repeat = RA_STEPS[0], RA_STEPS[1]
     results.record_direction_response("left", first, _response(first, (12.0, 0.0)))
     assert results.characterizations["left"] == {} and results.partial["left"] == {}
     results.record_direction_response("left", repeat, _response(repeat, (20.0, 0.0)))
     characterization = results.characterizations["left"][(A1, POS)]
     assert characterization.backlash_deficit_px == pytest.approx(8.0)
     assert results.partial["left"][A1].dx_px == 20.0  # the POSITIVE steady state
-    negative_repeat = CALIBRATION_STEPS[3]
+    negative_repeat = RA_STEPS[3]
     results.record_direction_response("left", negative_repeat, _response(negative_repeat, (-1, 0)))
     assert (A1, NEG) not in results.characterizations["left"]  # no FIRST: ignored
 
 
 def test_measure_step_excludes_cameras_without_frames_or_match() -> None:
     results = CalibrationResults()
-    step = CALIBRATION_STEPS[0]
+    step = RA_STEPS[0]
     before: dict[str, Measurement] = {"left": (1.0, 1.0), "right": (2.0, 2.0)}
     after: dict[str, Measurement] = {"left": (5.0, 1.0)}
     responses, newly_failed, match_failed = results.measure_step(
@@ -68,7 +77,7 @@ def test_measure_step_excludes_cameras_without_frames_or_match() -> None:
 
 def test_a_followup_measures_only_its_camera() -> None:
     results = CalibrationResults()
-    step = CalibrationStep(A1, POS, CALIBRATION_STEPS[0].role, duration_ms=900, only_camera="right")
+    step = CalibrationStep(A1, POS, RA_STEPS[0].role, duration_ms=900, only_camera="right")
     seen: list[str] = []
     both: dict[str, Measurement] = {"left": (1.0, 1.0), "right": (1.0, 1.0)}
     results.measure_step(step, both, both, lambda key, b, a: seen.append(key) or None)  # type: ignore[func-returns-value]

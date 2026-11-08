@@ -85,8 +85,11 @@ class CalibrationStep:
 #: reveals whether a direction's own first pulse this run underperforms
 #: relative to its own steady state (mechanical backlash/dead travel),
 #: rather than assuming opposite-direction symmetry the way the old
-#: 4-step sequence did. AXIS1 first is arbitrary; order between axes
-#: doesn't matter functionally. No corrective "return to start" pulse is
+#: 4-step sequence did. AXIS2 (Dec) comes first: right after connecting and
+#: at HOME, RA is not defined until the Dec axis has moved (the mount points
+#: at the pole), and OnStepAdapter refuses an RA-axis move until then. The
+#: order is otherwise free; the first axis's accepted size seeds the second
+#: (`CALIBRATION_FIRST_AXIS`). No corrective "return to start" pulse is
 #: appended at the end of a clean run -- each axis's own 4 pulses are two
 #: full-length positive and two full-length negative (same `pulse_ms`
 #: every time), so a clean run's own net residual displacement is exactly
@@ -94,15 +97,18 @@ class CalibrationStep:
 #: `_abort_calibration`'s own corrective pulse handles -- see that
 #: method's own docstring.
 CALIBRATION_STEPS: tuple[CalibrationStep, ...] = (
-    CalibrationStep(MountAxis.AXIS1, AxisDirection.POSITIVE, CalibrationStepRole.FIRST),
-    CalibrationStep(MountAxis.AXIS1, AxisDirection.POSITIVE, CalibrationStepRole.REPEAT),
-    CalibrationStep(MountAxis.AXIS1, AxisDirection.NEGATIVE, CalibrationStepRole.FIRST),
-    CalibrationStep(MountAxis.AXIS1, AxisDirection.NEGATIVE, CalibrationStepRole.REPEAT),
     CalibrationStep(MountAxis.AXIS2, AxisDirection.POSITIVE, CalibrationStepRole.FIRST),
     CalibrationStep(MountAxis.AXIS2, AxisDirection.POSITIVE, CalibrationStepRole.REPEAT),
     CalibrationStep(MountAxis.AXIS2, AxisDirection.NEGATIVE, CalibrationStepRole.FIRST),
     CalibrationStep(MountAxis.AXIS2, AxisDirection.NEGATIVE, CalibrationStepRole.REPEAT),
+    CalibrationStep(MountAxis.AXIS1, AxisDirection.POSITIVE, CalibrationStepRole.FIRST),
+    CalibrationStep(MountAxis.AXIS1, AxisDirection.POSITIVE, CalibrationStepRole.REPEAT),
+    CalibrationStep(MountAxis.AXIS1, AxisDirection.NEGATIVE, CalibrationStepRole.FIRST),
+    CalibrationStep(MountAxis.AXIS1, AxisDirection.NEGATIVE, CalibrationStepRole.REPEAT),
 )
+#: The axis calibrated first (Dec, see `CALIBRATION_STEPS`); its accepted probe size seeds the
+#: other axis's first probe.
+CALIBRATION_FIRST_AXIS: MountAxis = CALIBRATION_STEPS[0].axis
 
 
 @dataclass(frozen=True)

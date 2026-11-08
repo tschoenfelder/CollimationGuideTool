@@ -3703,37 +3703,38 @@ class TestMountTestMovePanel:
         # each capture -- same monkeypatch pattern as flaky_get_left_frame
         # a few tests below. Each entry is ((before_x, before_y),
         # (after_x, after_y)) for one measured (axis, direction), in
-        # _CALIBRATION_STEPS' own order (axis1+, axis1-, axis2+, axis2-);
+        # _CALIBRATION_STEPS' own order (axis2+, axis2-, axis1+, axis1-:
+        # Dec first, RA is undefined at HOME until Dec has moved);
         # each direction's own FIRST and REPEAT pulse share the same
         # entry (see _stepped_star_pair's own docstring).
         panel._get_left_frame, panel._wait_for_left_frame = _stepped_star_pair(
             [
-                ((50.0, 50.0), (60.0, 50.0)),
-                ((50.0, 50.0), (40.0, 50.0)),
                 ((50.0, 50.0), (50.0, 60.0)),
                 ((50.0, 50.0), (50.0, 40.0)),
+                ((50.0, 50.0), (60.0, 50.0)),
+                ((50.0, 50.0), (40.0, 50.0)),
             ]
         )
         panel._get_right_frame, panel._wait_for_right_frame = _stepped_star_pair(
             [
-                ((50.0, 50.0), (60.0, 50.0)),
-                ((50.0, 50.0), (40.0, 50.0)),
                 ((50.0, 50.0), (50.0, 60.0)),
                 ((50.0, 50.0), (50.0, 40.0)),
+                ((50.0, 50.0), (60.0, 50.0)),
+                ((50.0, 50.0), (40.0, 50.0)),
             ]
         )
 
         self._run_calibration_to_completion(panel, timeout_s=60.0)
 
         assert pulse_mount.equivalent_ms_log == [
-            (MountAxis.AXIS1, AxisDirection.POSITIVE, FALLBACK_CALIBRATION_MS),
-            (MountAxis.AXIS1, AxisDirection.POSITIVE, FALLBACK_CALIBRATION_MS),
-            (MountAxis.AXIS1, AxisDirection.NEGATIVE, FALLBACK_CALIBRATION_MS),
-            (MountAxis.AXIS1, AxisDirection.NEGATIVE, FALLBACK_CALIBRATION_MS),
             (MountAxis.AXIS2, AxisDirection.POSITIVE, FALLBACK_CALIBRATION_MS),
             (MountAxis.AXIS2, AxisDirection.POSITIVE, FALLBACK_CALIBRATION_MS),
             (MountAxis.AXIS2, AxisDirection.NEGATIVE, FALLBACK_CALIBRATION_MS),
             (MountAxis.AXIS2, AxisDirection.NEGATIVE, FALLBACK_CALIBRATION_MS),
+            (MountAxis.AXIS1, AxisDirection.POSITIVE, FALLBACK_CALIBRATION_MS),
+            (MountAxis.AXIS1, AxisDirection.POSITIVE, FALLBACK_CALIBRATION_MS),
+            (MountAxis.AXIS1, AxisDirection.NEGATIVE, FALLBACK_CALIBRATION_MS),
+            (MountAxis.AXIS1, AxisDirection.NEGATIVE, FALLBACK_CALIBRATION_MS),
         ]
         assert set(panel._calibration) == {"left", "right"}
         assert all(
@@ -3909,8 +3910,9 @@ class TestMountTestMovePanel:
         panel = window._test_move_panel
         self._make_scene_move(panel)
 
-        # Issue #31 Phase C: 8 steps now (axis1+first, axis1+repeat,
-        # axis1-first, axis1-repeat, axis2+first, ...), every one measured
+        # Issue #31 Phase C: 8 steps now, Dec first (axis2+first, axis2+repeat,
+        # axis2-first, axis2-repeat, axis1+first, ...; below "AXIS1" and
+        # "AXIS2" read as "the first" and "the second" axis), every one measured
         # (before+after, 3-sample stability window each = 6 left-camera
         # calls per step). AXIS1's own full 4-step group succeeds cleanly
         # (calls 1-24), AXIS2's own first (forward) pulse succeeds and its
@@ -3969,12 +3971,12 @@ class TestMountTestMovePanel:
         # +pulse_ms so far, see _abort_calibration's own docstring) fires
         # fire-and-forget.
         assert pulse_mount.equivalent_ms_log == [
-            (MountAxis.AXIS1, AxisDirection.POSITIVE, FALLBACK_CALIBRATION_MS),
-            (MountAxis.AXIS1, AxisDirection.POSITIVE, FALLBACK_CALIBRATION_MS),
-            (MountAxis.AXIS1, AxisDirection.NEGATIVE, FALLBACK_CALIBRATION_MS),
-            (MountAxis.AXIS1, AxisDirection.NEGATIVE, FALLBACK_CALIBRATION_MS),
+            (MountAxis.AXIS2, AxisDirection.POSITIVE, FALLBACK_CALIBRATION_MS),
             (MountAxis.AXIS2, AxisDirection.POSITIVE, FALLBACK_CALIBRATION_MS),
             (MountAxis.AXIS2, AxisDirection.NEGATIVE, FALLBACK_CALIBRATION_MS),
+            (MountAxis.AXIS2, AxisDirection.NEGATIVE, FALLBACK_CALIBRATION_MS),
+            (MountAxis.AXIS1, AxisDirection.POSITIVE, FALLBACK_CALIBRATION_MS),
+            (MountAxis.AXIS1, AxisDirection.NEGATIVE, FALLBACK_CALIBRATION_MS),
         ]
         # Now settled -- the message reflects the return pulse's own
         # actual, now-known outcome instead of still saying "returning".
@@ -4435,9 +4437,10 @@ class TestMountTestMovePanel:
 
         rng = np.random.default_rng(13)
         base = rng.normal(loc=500.0, scale=80.0, size=(120, 120))
-        # AXIS1's before/after are identical -- no real motion, matching
-        # the incident exactly, on both directions -- while AXIS2's
-        # genuinely differ (mirrored positive/negative). One independent
+        # The first calibrated axis's (Dec, AXIS2: Dec runs first) before/after
+        # are identical -- no real motion, matching the incident exactly, on
+        # both directions -- while the second's genuinely differ (mirrored
+        # positive/negative). One independent
         # sequence per camera, same reasoning as above.
         panel._get_left_frame, panel._wait_for_left_frame = _stepped_frame_pair(
             base, [((0, 0), (0, 0)), ((0, 0), (0, 0)), ((0, 0), (6, 0)), ((0, 0), (-6, 0))]
@@ -4457,7 +4460,7 @@ class TestMountTestMovePanel:
         assert panel._nudge_buttons["left"]["RA +"].isEnabled()
         assert panel._nudge_buttons["right"]["RA +"].isEnabled()
         assert "too close to parallel" in panel._result_label.text()
-        # AXIS1 (the zero one here) measured nothing on either camera --
+        # Dec (the zero one here) measured nothing on either camera --
         # the "may be a real mount/cable issue" branch, not the "confirmed
         # by the other camera" one (see the cross-camera test below).
         assert "measured no motion on either camera" in panel._result_label.text()
@@ -4509,8 +4512,9 @@ class TestMountTestMovePanel:
         panel._get_left_frame, panel._wait_for_left_frame = _stepped_frame_pair(
             base, [((0, 0), (0, 0)), ((0, 0), (0, 0)), ((0, 0), (0, 0)), ((0, 0), (0, 0))]
         )
+        # (Entries follow the calibration order: Dec (AXIS2) first, then RA.)
         panel._get_right_frame, panel._wait_for_right_frame = _stepped_frame_pair(
-            base, [((0, 0), (0, 0)), ((0, 0), (0, 0)), ((0, 0), (6, 0)), ((0, 0), (-6, 0))]
+            base, [((0, 0), (6, 0)), ((0, 0), (-6, 0)), ((0, 0), (0, 0)), ((0, 0), (0, 0))]
         )
 
         self._run_calibration_to_completion(panel, timeout_s=60.0)
@@ -4586,7 +4590,8 @@ class TestMountTestMovePanel:
         panel._wait_for_left_frame = lambda _reference, _timeout: _ok_result(flat)
         panel._get_right_frame, panel._wait_for_right_frame = _stepped_frame_pair(
             base,
-            [((0, 0), (0, 6)), ((0, 0), (0, -6)), ((0, 0), (6, 0)), ((0, 0), (-6, 0))],
+            # Dec (AXIS2) first, then RA -- the calibration order.
+            [((0, 0), (6, 0)), ((0, 0), (-6, 0)), ((0, 0), (0, 6)), ((0, 0), (0, -6))],
             stability_sample_count=2,
         )
 
@@ -4599,14 +4604,14 @@ class TestMountTestMovePanel:
         # All 8 steps still ran -- Main failing didn't cut the shared
         # mount sequence short.
         assert pulse_mount.equivalent_ms_log == [
-            (MountAxis.AXIS1, AxisDirection.POSITIVE, FALLBACK_CALIBRATION_MS),
-            (MountAxis.AXIS1, AxisDirection.POSITIVE, FALLBACK_CALIBRATION_MS),
-            (MountAxis.AXIS1, AxisDirection.NEGATIVE, FALLBACK_CALIBRATION_MS),
-            (MountAxis.AXIS1, AxisDirection.NEGATIVE, FALLBACK_CALIBRATION_MS),
             (MountAxis.AXIS2, AxisDirection.POSITIVE, FALLBACK_CALIBRATION_MS),
             (MountAxis.AXIS2, AxisDirection.POSITIVE, FALLBACK_CALIBRATION_MS),
             (MountAxis.AXIS2, AxisDirection.NEGATIVE, FALLBACK_CALIBRATION_MS),
             (MountAxis.AXIS2, AxisDirection.NEGATIVE, FALLBACK_CALIBRATION_MS),
+            (MountAxis.AXIS1, AxisDirection.POSITIVE, FALLBACK_CALIBRATION_MS),
+            (MountAxis.AXIS1, AxisDirection.POSITIVE, FALLBACK_CALIBRATION_MS),
+            (MountAxis.AXIS1, AxisDirection.NEGATIVE, FALLBACK_CALIBRATION_MS),
+            (MountAxis.AXIS1, AxisDirection.NEGATIVE, FALLBACK_CALIBRATION_MS),
         ]
         assert "left" not in panel._calibration
         assert "right" in panel._calibration
@@ -5393,8 +5398,9 @@ class TestTrackingMode:
         # a single poll() right after the busy-wait isn't reliably enough
         # (same reason _run_calibration_to_completion, used elsewhere in
         # this file, wraps its own poll() in a queue/pending-driven loop).
-        while MountAxis.AXIS1 not in panel._calibration_partial["left"]:
-            assert time.monotonic() < deadline, "AXIS1's own step never completed"
+        # Dec (AXIS2) is calibrated first.
+        while MountAxis.AXIS2 not in panel._calibration_partial["left"]:
+            assert time.monotonic() < deadline, "AXIS2's own step never completed"
             while panel._runner.is_busy:
                 assert time.monotonic() < deadline, "first pulse never completed"
                 time.sleep(0.01)
