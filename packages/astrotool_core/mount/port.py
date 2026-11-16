@@ -140,7 +140,8 @@ class GuidePulsePort(Protocol):
     """Optional capability of a `MountPort` (`capabilities().supports_guide_pulses_while_tracking`):
     a bounded guide pulse on one axis/direction while the mount keeps tracking. `direction` is
     the axis direction in the same convention as `AngularMotionPort.move_angular` (AXIS1
-    POSITIVE = west / increasing hour angle, AXIS2 POSITIVE = north); which way that moves the
+    POSITIVE = west / increasing hour angle, AXIS2 POSITIVE = OnStep's mechanical "north" jog
+    direction, which OnStepAdapter >= 0.6.11 publishes as a lower sky DEC); which way that moves the
     image is measured, never assumed."""
 
     @property
