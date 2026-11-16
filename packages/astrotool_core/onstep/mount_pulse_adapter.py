@@ -16,7 +16,7 @@ refuses. S6.8d (R9): `pulse_axis` is kept ONLY because `MountPort` still declare
 dormant GuideTool (`GuideCorrectionPolicy`, `calibrate_axes`; no mount is wired there). Mount
 Align and reacquisition never call it -- they use `move_angular` and `guide_pulse`.
 
-`move_angular` works for offsets from 30" to 36000" (10 degrees) --
+`move_angular` works for offsets from 30" to 54000" (15 degrees) --
 OnStepAdapter's own bound (raised from an original 720" floor after
 OnStepAdapter#14: every seed in AGENTS.md's Mount Align policy now clears
 it). Requests outside that range are refused with an explicit message,
@@ -102,7 +102,7 @@ from astrotool_core.onstep.connection import OnStepConnection
 from astrotool_core.onstep.errors import ONSTEP_OPERATION_ERRORS
 from astrotool_core.onstep.motion import finish_motion
 
-#: OnStepAdapter's own `IndiAxisMover` bound (30"..10 degrees), taken from OnStepAdapter
+#: OnStepAdapter's own `IndiAxisMover` bound (30"..15 degrees), taken from OnStepAdapter
 #: itself (single source). Reported to callers as `MountCapabilities.min_angular_arcsec` /
 #: `max_angular_arcsec` (S6.5); `MIN_AXIS_ARCSEC` stays re-exported for this app.
 MIN_AXIS_ARCSEC = float(MIN_AXIS_MOVE_ARCSEC)
@@ -119,7 +119,9 @@ NO_GUIDE_PULSE_API = (
 )
 
 #: S6.0d: axis/direction -> 0.5.0 guide direction (same sign convention as `move_angular`:
-#: AXIS1 POSITIVE increases hour angle = west, AXIS2 POSITIVE = north).
+#: AXIS1 POSITIVE increases hour angle = west, AXIS2 POSITIVE = OnStep's mechanical "north"
+#: jog direction; since OnStepAdapter 0.6.11 a positive finite DEC move follows that direction,
+#: which lowers the published sky DEC).
 _GUIDE_DIRECTION = {
     (MountAxis.AXIS1, AxisDirection.POSITIVE): "west",
     (MountAxis.AXIS1, AxisDirection.NEGATIVE): "east",

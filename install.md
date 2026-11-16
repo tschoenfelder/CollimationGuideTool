@@ -299,21 +299,23 @@ OnStepAdapter could own the serial port exclusively). After upgrading
 OnStepAdapter, update the Pi's venv:
 `.venv/bin/pip install <release wheel URL from pyproject.toml>`.
 
-**Upgrading the Pi to the pinned OnStepAdapter build** (unreleased, after
-0.6.2: the first build whose wheel ships `onstep_mock` and
+**Upgrading the Pi to the pinned OnStepAdapter build** (0.6.11 merged with
+main, OnStepAdapter#36: its wheel ships `onstep_mock` and
 `onstep_adapter.capture`, which the connection modes above need; its
 `park()`/axis moves return a stoppable `MotionHandle`, which this app waits
-on). From the CollimationGuideTool checkout on the Pi, with the app closed:
+on; finite axis moves go up to 15 degrees, and a positive DEC-axis move
+follows OnStep's mechanical jog direction, which lowers the published sky
+DEC). From the CollimationGuideTool checkout on the Pi, with the app closed:
 
 ```bash
-.venv/bin/pip install --force-reinstall --no-deps "git+https://github.com/tschoenfelder/OnStepAdapter.git@e0b32e2a39f921a1d955f3c53d115e19914495dc"
-.venv/bin/python -c "import onstep_adapter, onstep_mock, onstep_adapter.capture, onstep_adapter.indi_motion; print(onstep_adapter.__version__)"
-# must print: 0.6.2   (an ImportError means the old 0.6.2 release or 0.5.0 is still installed)
+.venv/bin/pip install --force-reinstall --no-deps "git+https://github.com/tschoenfelder/OnStepAdapter.git@4cc9c61f2a91f717ceeded18bcfc36a1bc452e28"
+.venv/bin/python -c "import onstep_adapter, onstep_mock, onstep_adapter.capture, onstep_adapter.indi_motion, onstep_adapter.indi_jog; print(onstep_adapter.__version__)"
+# must print: 0.6.11   (an ImportError means the v0.6.11 tag build, 0.6.2 or 0.5.0 is still installed)
 ```
 
 `--force-reinstall` matters: the pinned build reports the SAME version
-number as the 0.6.2 release, so a plain `pip install` could keep an older
-0.6.2 that lacks the mock and the sniffer.
+number as the v0.6.11 tag build, which lacks the DEC-first rule and the
+hold-to-move jog, so a plain `pip install` could keep that one.
 
 No config change is needed: the build reads the same `[indi]`/`[meridian]`
 settings; `[onstep]` is optional (default `real-sniffer`). Rolling back =

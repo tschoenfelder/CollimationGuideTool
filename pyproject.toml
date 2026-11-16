@@ -12,11 +12,13 @@ dependencies = [
     "numpy>=1.26",
     "astropy>=6.0",
     "PySide6>=6.7",
-    # Unreleased OnStepAdapter (after 0.6.2): the first build whose wheel ships onstep_mock and
-    # onstep_adapter.capture, which the OnStep connection modes need (onstep/backend.py), and
-    # refuses an RA-axis move after connecting or at HOME until DEC has moved, and has the
-    # hold-to-move jog (jog_ra/jog_dec) behind the Mount Align RA/Dec buttons.
-    "onstep-adapter @ git+https://github.com/tschoenfelder/OnStepAdapter.git@e0b32e2a39f921a1d955f3c53d115e19914495dc",
+    # OnStepAdapter 0.6.11 merged into main (OnStepAdapter#36): its wheel ships onstep_mock and
+    # onstep_adapter.capture, which the OnStep connection modes need (onstep/backend.py); it
+    # refuses an RA-axis move after connecting or at HOME until DEC has moved, has the
+    # hold-to-move jog (jog_ra/jog_dec) behind the Mount Align RA/Dec buttons, allows finite
+    # axis moves up to 15 degrees, and a positive DEC-axis move follows OnStep's mechanical jog
+    # direction (it lowers the published sky DEC).
+    "onstep-adapter @ git+https://github.com/tschoenfelder/OnStepAdapter.git@4cc9c61f2a91f717ceeded18bcfc36a1bc452e28",
     "smarttscope-live-analysis @ git+https://github.com/tschoenfelder/SmartTScopeLiveAnalysis.git@v0.1.0",
 ]
 

@@ -404,7 +404,7 @@ class TestPulse:
 class TestAngularMotion:
     """>= this dev build of 0.4.0: `move_angular` maps to
     `IndiMount.move_ra_axis_deg`/`move_dec_axis_deg`, a finite,
-    feedback-verified GOTO -- bounded to 30"-36000" (OnStepAdapter's own
+    feedback-verified GOTO -- bounded to 30"-54000" (OnStepAdapter's own
     range, raised from an original 720" floor per OnStepAdapter#14), no
     rate installation needed."""
 
@@ -434,7 +434,7 @@ class TestAngularMotion:
 
     def test_a_move_above_the_ceiling_is_refused(self) -> None:
         pulse, client = self._ready()
-        result = pulse.move_angular(MountAxis.AXIS1, AxisDirection.POSITIVE, 40000.0)
+        result = pulse.move_angular(MountAxis.AXIS1, AxisDirection.POSITIVE, 55000.0)
         assert not result.accepted
         assert client.axis_move_calls == []
 
