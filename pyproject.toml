@@ -17,8 +17,10 @@ dependencies = [
     # refuses an RA-axis move after connecting or at HOME until DEC has moved, has the
     # hold-to-move jog (jog_ra/jog_dec) behind the Mount Align RA/Dec buttons, allows finite
     # axis moves up to 15 degrees, and a positive DEC-axis move follows OnStep's mechanical jog
-    # direction (it lowers the published sky DEC).
-    "onstep-adapter @ git+https://github.com/tschoenfelder/OnStepAdapter.git@4cc9c61f2a91f717ceeded18bcfc36a1bc452e28",
+    # direction (it lowers the published sky DEC). 0.6.12 (OnStepAdapter#37): a finite axis move
+    # holds the other axis's hour angle (the goto target RA includes the sidereal drift since
+    # the reading) and turns tracking off as soon as the slew is seen.
+    "onstep-adapter @ git+https://github.com/tschoenfelder/OnStepAdapter.git@b4d5703b9d0c352cffe78577f167b5cefe4f2822",
     "smarttscope-live-analysis @ git+https://github.com/tschoenfelder/SmartTScopeLiveAnalysis.git@v0.1.0",
 ]
 
