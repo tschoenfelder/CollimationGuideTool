@@ -21,6 +21,7 @@ from onstep_adapter import IndiMount
 
 from astrotool_core.mount.park_port import MountParkPort, MountParkStatus
 from astrotool_core.onstep.connection import OnStepConnection
+from astrotool_core.onstep.link_health import explain_failure
 from astrotool_core.onstep.motion import finish_motion
 
 #: S6.0c: busy connection and nothing read yet -- "not known", never a guessed state.
@@ -53,6 +54,10 @@ class OnStepMountParkAdapter(MountParkPort):
     def _mount(self) -> IndiMount | None:
         client = self._connection.client
         return client.mount if self._held and client is not None else None
+
+    def _device(self) -> str:
+        """The INDI device name to name in a "reconnect" hint (field incident 908a26b9)."""
+        return str(getattr(self._connection.client, "device", None) or "the OnStep mount device")
 
     def status(self) -> MountParkStatus:
         # Real field report (diagnostic 7b21bdf1): see OnStepConnection's
@@ -99,7 +104,10 @@ class OnStepMountParkAdapter(MountParkPort):
                 return
             result = finish_motion(mount.park())
             if not result.confirmed:
-                raise RuntimeError(f"OnStep did not reach the parked state: {result.error}")
+                raise RuntimeError(
+                    "OnStep did not reach the parked state: "
+                    + explain_failure(mount, str(result.error), self._device())
+                )
 
     #: `park()` slews (seconds to minutes); `unpark()` is a quick switch
     #: flip + confirmation poll, not a slew, but both still make a
@@ -125,8 +133,10 @@ class OnStepMountParkAdapter(MountParkPort):
                 return
             result = mount.unpark()
             if not result.unparked_confirmed:
+                # Field incident 908a26b9: when OnStep has stopped answering, say THAT first.
                 raise RuntimeError(
-                    f"OnStep did not reach unparked with tracking off: {result.error}"
+                    "OnStep did not reach unparked with tracking off: "
+                    + explain_failure(mount, str(result.error), self._device())
                 )
 
     def stop_tracking(self) -> None:
@@ -163,7 +173,10 @@ class OnStepMountParkAdapter(MountParkPort):
                 return
             result = mount.enable_tracking()
             if not result.tracking_confirmed:
-                raise RuntimeError(f"OnStep did not confirm tracking on: {result.error}")
+                raise RuntimeError(
+                    "OnStep did not confirm tracking on: "
+                    + explain_failure(mount, str(result.error), self._device())
+                )
 
     #: No `confirm_home()` method (unlike 0.3.5): >= 0.4.0 establishes home
     #: authority automatically from live status

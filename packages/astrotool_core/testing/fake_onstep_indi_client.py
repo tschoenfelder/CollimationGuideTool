@@ -384,6 +384,10 @@ class FakeOnStepIndiClient:
 
     #: Controls `park`/`unpark`/`go_home` — mirrors `IndiRuntimeConfig.home_motion_enabled`.
     unpark_rejected: bool = False
+    #: Blockers / status age the next `observe_mount` reports (field incident 908a26b9: a
+    #: controller that stopped answering shows `onstep_status_not_fresh`).
+    snapshot_blockers: tuple[str, ...] = ()
+    status_age_ms: float = 0.0
     park_rejected: bool = False
     go_home_rejected: bool = False
     #: Controls `emergency_stop`/`stop_tracking`.
@@ -470,15 +474,15 @@ class FakeOnStepIndiClient:
             parked=self.parked,
             at_home=self.at_home,
             at_limit=self.at_limit,
-            status_age_ms=0.0,
+            status_age_ms=self.status_age_ms,
             coordinates_age_ms=0.0,
-            status_live=True,
+            status_live=not self.snapshot_blockers,
             coordinates_live=True,
             time_site_authority=self.time_site_authority,
             home_authority=self.home_authority_established,
             mechanical_safe=True,
             motion_refused=False,
-            blockers=(),
+            blockers=self.snapshot_blockers,
         )
 
     # ---- park/home/emergency-stop ---------------------------------------

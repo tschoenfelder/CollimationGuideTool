@@ -100,6 +100,7 @@ from astrotool_core.mount.port import (
 )
 from astrotool_core.onstep.connection import OnStepConnection
 from astrotool_core.onstep.errors import ONSTEP_OPERATION_ERRORS
+from astrotool_core.onstep.link_health import explain_failure
 from astrotool_core.onstep.motion import finish_motion
 
 #: OnStepAdapter's own `IndiAxisMover` bound (30"..15 degrees), taken from OnStepAdapter
@@ -262,6 +263,10 @@ class OnStepMountPulseAdapter:
         client = self._connection.client
         return client.mount if self._held and client is not None else None
 
+    def _device(self) -> str:
+        """The INDI device name to name in a "reconnect" hint (field incident 908a26b9)."""
+        return str(getattr(self._connection.client, "device", None) or "the OnStep mount device")
+
     def status(self) -> MountStatus:
         # Real field report (diagnostic 7b21bdf1): see OnStepConnection's
         # own module docstring -- move_angular() below runs on a worker
@@ -409,7 +414,10 @@ class OnStepMountPulseAdapter:
             except ONSTEP_OPERATION_ERRORS as exc:
                 if self._cancel.is_set():
                     return CommandResult(accepted=False, message=f"{_STOPPED} ({exc})")
-                return CommandResult(accepted=False, message=str(exc))
+                # Field incident 908a26b9: a silent controller is named as such.
+                return CommandResult(
+                    accepted=False, message=explain_failure(mount, str(exc), self._device())
+                )
             finally:
                 with self._state:
                     self._in_flight_generation = None
