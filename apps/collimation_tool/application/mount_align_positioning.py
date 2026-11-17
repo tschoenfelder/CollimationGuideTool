@@ -39,7 +39,11 @@ from collimation_tool.application.mount_align_messages import (
     missing_label,
 )
 from collimation_tool.application.mount_align_motion import MotionStep
-from collimation_tool.application.mount_align_plan import NudgeMove, ScreenDirection
+from collimation_tool.application.mount_align_plan import (
+    MovementSize,
+    NudgeMove,
+    ScreenDirection,
+)
 from collimation_tool.application.mount_align_sizing import angular_unit_rate
 from collimation_tool.application.mount_motion import MountAlignPrimitive
 
@@ -91,23 +95,37 @@ def cap_text(settings: MountAlignmentSettings, *, guide_pulse: bool = False) -> 
     return f'{nudge_cap_arcsec(settings):.0f}"'
 
 
+def nudge_fraction(settings: MountAlignmentSettings, size: MovementSize) -> float:
+    """The RA/Dec nudge as a fraction of the clicked camera's frame width at Move size `size`
+    (field report b977fe85: the size selector used to reach the screen-move pad only). Large
+    is `nudge_target_fraction`, the half-window nudge every click made before."""
+    return {
+        MovementSize.SMALL: settings.nudge_small_fraction,
+        MovementSize.MEDIUM: settings.nudge_medium_fraction,
+        MovementSize.LARGE: settings.nudge_target_fraction,
+    }[size]
+
+
 def uncalibrated_nudge_arcsec(
     settings: MountAlignmentSettings,
     camera_key: str,
     cameras: Callable[[], list[CameraGeometry]] | None,
     distance_m: Callable[[], float | None],
+    fraction: float | None = None,
 ) -> float:
-    """AGENTS.md / #31 Phase A: a pre-calibration nudge specified in frame terms
-    (`nudge_target_fraction` of the clicked camera's frame width), converted to an angle from
-    that camera's configured optics (`cameras`, the geometry provider; None = none). Without optics:
-    the fixed `NO_OPTICS_NUDGE_ARCSEC`."""
+    """AGENTS.md / #31 Phase A: a pre-calibration nudge specified in frame terms (`fraction`
+    of the clicked camera's frame width, default `nudge_target_fraction`), converted to an
+    angle from that camera's configured optics (`cameras`, the geometry provider; None = none).
+    Without optics: the fixed `NO_OPTICS_NUDGE_ARCSEC` at Large, scaled by the same ratio."""
+    if fraction is None:
+        fraction = settings.nudge_target_fraction
     if cameras is not None:
         distance = distance_m()
         for camera in cameras():
             fov = camera.fov_arcsec(distance) if camera.key == camera_key else None
             if fov is not None:
-                return settings.nudge_target_fraction * fov[0]
-    return NO_OPTICS_NUDGE_ARCSEC
+                return fraction * fov[0]
+    return NO_OPTICS_NUDGE_ARCSEC * fraction / settings.nudge_target_fraction
 
 
 @dataclass(frozen=True)
@@ -133,8 +151,10 @@ def plan_nudge(
     floor_arcsec: Callable[[], float],
     primitive: MountAlignPrimitive = MountAlignPrimitive.AXIS,
     arcsec_per_px: Callable[[], float | None] = lambda: None,
+    fraction: float | None = None,
 ) -> NudgePlan:
-    """Size one RA/Dec nudge.
+    """Size one RA/Dec nudge (`fraction` of the camera's frame width, from the Move size;
+    default `nudge_target_fraction`).
 
     Uncalibrated (no `matrix`): `uncalibrated_arcsec` (sized from the camera's optics) -- RA/Dec
     buttons are never held hostage to a calibration existing (real diagnostic 5e71b958).
@@ -181,7 +201,9 @@ def plan_nudge(
         if frame is None:
             return NudgePlan(error=f"{missing_label(mode)} before pulsing")
         _frame_height, frame_width = frame.shape[:2]
-        target_px = settings.nudge_target_fraction * frame_width
+        target_px = (
+            settings.nudge_target_fraction if fraction is None else fraction
+        ) * frame_width
         rate_px_per_ms = response.magnitude_px / response.duration_ms
         duration_ms = round(target_px / rate_px_per_ms)
         if duration_ms <= 0:

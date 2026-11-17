@@ -400,6 +400,9 @@ class FakeOnStepIndiClient:
     jogs: list[FakeJogHandle] = field(default_factory=list)
     jog_deg_per_renew: float = 0.01
     axis_move_calls: list[tuple[str, float]] = field(default_factory=list)
+    #: The Dec at each `axis_move_calls` entry, to turn an RA-axis offset back into the angle
+    #: it moved the sky (`sky_move_arcsec`): the app sends RA as sky / cos(Dec) (b977fe85).
+    axis_move_decs: list[float] = field(default_factory=list)
     #: One finite axis move at a time, like the real `IndiAxisMover`.
     _axis_lock: threading.Lock = field(default_factory=threading.Lock, repr=False, compare=False)
 
@@ -592,6 +595,15 @@ class FakeOnStepIndiClient:
         self.jogs.append(handle)
         return handle
 
+    def sky_move_arcsec(self) -> list[float]:
+        """Each axis move's size ON THE SKY (arcsec): an RA-axis offset x moved it x * cos(Dec)."""
+        return [
+            abs(offset_deg) * 3600.0 * (math.cos(math.radians(dec)) if axis == "ra" else 1.0)
+            for (axis, offset_deg), dec in zip(
+                self.axis_move_calls, self.axis_move_decs, strict=True
+            )
+        ]
+
     def move_axis_deg(
         self, axis: str, offset_deg: float, *, timeout_s: float = 30.0, poll_s: float = 0.1
     ) -> FakeIndiAxisMoveResult:
@@ -611,6 +623,7 @@ class FakeOnStepIndiClient:
             if self.enforce_dec_first and axis == "ra" and not self.ra_axis_defined:
                 raise RaAxisUndefinedError()
             self.axis_move_calls.append((axis, offset_deg))
+            self.axis_move_decs.append(self.dec_deg)
             if axis == "ra":
                 self.ha_deg += offset_deg
             else:

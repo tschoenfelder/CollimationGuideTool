@@ -381,10 +381,27 @@ class TestManualMovesMoveTheRealAdapter:
         panel._on_nudge_clicked("left", MountAxis.AXIS1, AxisDirection.POSITIVE)
         _drain(panel)
 
-        axis, arcsec = _only_move(rig)
+        axis, _arcsec = _only_move(rig)
         assert axis == "ra"
-        assert arcsec == pytest.approx(300.0)
+        # 300" on the sky; the adapter turns the RA axis by that / cos(Dec) (field report b977fe85)
+        assert rig.client.sky_move_arcsec() == [pytest.approx(300.0)]
         assert "Move failed" not in panel._result_label.text()
+        panel.stop()
+
+    @pytest.mark.parametrize(("size", "expected"), [("SMALL", 360.0), ("MEDIUM", 900.0)])
+    def test_the_move_size_sizes_an_uncalibrated_dec_nudge(
+        self, qapp: object, rig: _Rig, size: str, expected: float
+    ) -> None:
+        """Field report b977fe85: "even on Large the movement was minor" -- the Move size never
+        reached the RA/Dec buttons. Small / Medium are a fifth / half of Large's half window."""
+        panel = rig.panel()
+        panel._size_buttons[MovementSize[size]].setChecked(True)
+        panel._on_nudge_clicked("right", MountAxis.AXIS2, AxisDirection.NEGATIVE)
+        _drain(panel)
+
+        axis, arcsec = _only_move(rig)
+        assert axis == "dec"
+        assert arcsec == pytest.approx(-expected)
         panel.stop()
 
     def test_an_uncalibrated_dec_minus_nudge_moves_the_mount(self, qapp: object, rig: _Rig) -> None:
@@ -703,7 +720,10 @@ class TestStopDuringABlockingAngularGoto:
         _run_fake_time_until_idle(clock, panel._runner)
         _drain(panel)
         # the earlier Stop is not held against the operator's next action
-        assert (client.ha_deg - ha_after_stop) * 3600.0 == pytest.approx(300.0)
+        # 300" on the sky = 300" / cos(Dec) of RA-axis turn (field report b977fe85)
+        assert (client.ha_deg - ha_after_stop) * 3600.0 == pytest.approx(
+            300.0 / math.cos(math.radians(client.dec_deg))
+        )
         assert "Move failed" not in panel._result_label.text()
         panel.stop()
 

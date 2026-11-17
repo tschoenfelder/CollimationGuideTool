@@ -19,12 +19,13 @@ from collimation_tool.application.mount_align_motion import (
     submit_axis_move,
     submit_motion_sequence,
 )
-from collimation_tool.application.mount_align_plan import ScreenDirection
+from collimation_tool.application.mount_align_plan import MovementSize, ScreenDirection
 from collimation_tool.application.mount_align_positioning import (
     NO_ANGULAR_MOVE,
     NO_OPTICS_NUDGE_ARCSEC,
     cap_text,
     nudge_cap_arcsec,
+    nudge_fraction,
     plan_nudge,
     plan_screen_move,
     uncalibrated_nudge_arcsec,
@@ -92,6 +93,37 @@ def test_an_uncalibrated_nudge_uses_the_frame_fraction_or_the_fixed_pulse() -> N
     assert fallback == 1000 * (48.0 * 15.041) / 1000.0  # the former pulse_ms default at "7"
     assert uncalibrated_nudge_arcsec(_SETTINGS, "right", lambda: cameras, lambda: None) == fallback
     assert uncalibrated_nudge_arcsec(_SETTINGS, "left", None, lambda: None) == fallback
+
+
+def test_the_move_size_picks_the_ra_dec_nudge_fraction() -> None:
+    """Field report b977fe85: the Move size reached the screen-move pad only. Large is the
+    half-window nudge every click made before; Medium and Small are half and a fifth of it."""
+    defaults = MountAlignmentSettings()
+    assert nudge_fraction(defaults, MovementSize.LARGE) == defaults.nudge_target_fraction == 0.5
+    assert nudge_fraction(defaults, MovementSize.MEDIUM) == pytest.approx(0.25)
+    assert nudge_fraction(defaults, MovementSize.SMALL) == pytest.approx(0.10)
+    custom = MountAlignmentSettings(nudge_small_fraction=0.02, nudge_medium_fraction=0.3)
+    assert nudge_fraction(custom, MovementSize.SMALL) == 0.02
+    assert nudge_fraction(custom, MovementSize.MEDIUM) == 0.3
+
+
+def test_an_uncalibrated_nudge_follows_the_size_with_or_without_optics() -> None:
+    cameras = [CameraGeometry("left", 1000, 800, 0.5)]  # 500" wide
+    for fraction, with_optics, without in ((0.5, 250.0, 1.0), (0.25, 125.0, 0.5), (0.1, 50.0, 0.2)):
+        assert uncalibrated_nudge_arcsec(
+            _SETTINGS, "left", lambda: cameras, lambda: None, fraction=fraction
+        ) == pytest.approx(with_optics)
+        # Without optics the fixed 722" is Large, scaled by the same ratio.
+        assert uncalibrated_nudge_arcsec(
+            _SETTINGS, "left", None, lambda: None, fraction=fraction
+        ) == pytest.approx(NO_OPTICS_NUDGE_ARCSEC * without)
+
+
+def test_a_calibrated_nudge_moves_the_selected_fraction_of_the_frame() -> None:
+    unit = angular_unit_rate(_SETTINGS)
+    plan = _nudge(matrix=_matrix(0.1), fraction=0.1)  # 40 px at 0.1 px/ms = 400 equivalent ms
+    assert plan.move is not None and not plan.move.clamped
+    assert plan.move.arcsec == pytest.approx(400 * unit / 1000.0)
 
 
 def test_an_uncalibrated_nudge_never_peeks() -> None:

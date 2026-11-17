@@ -5749,11 +5749,12 @@ class TestScreenRelativeMove:
         panel._connect_button.setChecked(True)
         panel._calibration["left"] = self._matrix()
         panel._update_buttons_enabled()
+        panel._size_buttons[MovementSize.SMALL].setChecked(True)  # Large is the default now
 
         panel._on_screen_move_clicked("left", ScreenDirection.LEFT)
         self._drive_to_completion(panel)
 
-        # Small (default) = 5% of this camera's own 200px-wide frame =
+        # Small = 5% of this camera's own 200px-wide frame =
         # 10px target, left = -dx -- AXIS1's own 0.1 px/ms rate (either
         # direction, symmetric here) solves 100ms.
         assert pulse_mount.equivalent_ms_log == [(MountAxis.AXIS1, AxisDirection.NEGATIVE, 100)]
