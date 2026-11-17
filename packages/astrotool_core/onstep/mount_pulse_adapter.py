@@ -100,7 +100,7 @@ from astrotool_core.mount.port import (
 )
 from astrotool_core.onstep.connection import OnStepConnection
 from astrotool_core.onstep.errors import ONSTEP_OPERATION_ERRORS
-from astrotool_core.onstep.link_health import explain_failure
+from astrotool_core.onstep.link_health import explain_failure, recover_if_silent
 from astrotool_core.onstep.motion import finish_motion
 
 #: OnStepAdapter's own `IndiAxisMover` bound (30"..15 degrees), taken from OnStepAdapter
@@ -414,10 +414,16 @@ class OnStepMountPulseAdapter:
             except ONSTEP_OPERATION_ERRORS as exc:
                 if self._cancel.is_set():
                     return CommandResult(accepted=False, message=f"{_STOPPED} ({exc})")
-                # Field incident 908a26b9: a silent controller is named as such.
-                return CommandResult(
-                    accepted=False, message=explain_failure(mount, str(exc), self._device())
-                )
+                # Field incident 908a26b9: a silent controller is named as such and the INDI
+                # driver reconnected automatically -- but the move is NOT retried: it may have
+                # failed after it was sent, and a retry could move the mount twice.
+                message = explain_failure(mount, str(exc), self._device())
+                recovery = recover_if_silent(mount, self._device(), "axis move")
+                if recovery.recovered:
+                    message = f"{recovery.notice} The move was not repeated -- click again."
+                elif recovery.notice is not None:
+                    message = f"{message} -- {recovery.notice}"
+                return CommandResult(accepted=False, message=message)
             finally:
                 with self._state:
                     self._in_flight_generation = None
