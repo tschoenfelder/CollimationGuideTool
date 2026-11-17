@@ -139,7 +139,8 @@ class _GuideRig:
         return CalibrationMatrix(responses=responses)
 
     def moves_arcsec(self) -> list[float]:
-        return [abs(offset_deg) * 3600.0 for _axis, offset_deg in self.client.axis_move_calls]
+        """On the sky: the adapter turns the RA axis by sky / cos(Dec) (field report b977fe85)."""
+        return self.client.sky_move_arcsec()
 
 
 class TestRecenteringMovesTheProductionAdapter:

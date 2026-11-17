@@ -602,6 +602,7 @@ class SimulatedOnStepIndiClient(FakeOnStepIndiClient):
                 if self.tracking or self.slewing or self.parked or self.at_limit:
                     raise RuntimeError(AXIS_STATE_REFUSED)
                 self.axis_move_calls.append((axis, offset_deg))
+                self.axis_move_decs.append(self.dec_deg)
                 duration = abs(offset_deg) / self.scenario.axis_rate_deg_per_s
                 if self.scenario.axis_move_errors:
                     # A failure after the goto was issued: 0.4.1 stops the mount.

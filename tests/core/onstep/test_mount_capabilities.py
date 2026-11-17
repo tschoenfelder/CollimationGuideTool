@@ -22,11 +22,13 @@ from astrotool_core.testing.fake_onstep_indi_client import make_fake_onstep_indi
 from onstep_adapter.indi_axis_motion import MAX_AXIS_MOVE_DEG, MIN_AXIS_MOVE_ARCSEC
 
 
-def _connected_onstep() -> OnStepMountPulseAdapter:
+def _connected_onstep(*, dec_deg: float | None = None) -> OnStepMountPulseAdapter:
     connection, made = make_fake_onstep_indi_connection()
     mount = OnStepMountPulseAdapter(connection)
     mount.connect()
     made[0].parked = False
+    if dec_deg is not None:
+        made[0].dec_deg = dec_deg
     return mount
 
 
@@ -53,7 +55,9 @@ class TestOnStepReportsItsAngularBounds:
 
     @pytest.mark.parametrize("axis", [MountAxis.AXIS1, MountAxis.AXIS2])
     def test_move_angular_accepts_exactly_the_reported_range(self, axis: MountAxis) -> None:
-        mount = _connected_onstep()
+        """At Dec 0 (cos = 1): an RA move's sky angle is turned into an axis angle by
+        1/cos(Dec), so away from the equator the RA top end is the range x cos(Dec)."""
+        mount = _connected_onstep(dec_deg=0.0)
         caps = mount.capabilities()
         low, high = caps.min_angular_arcsec, caps.max_angular_arcsec
         assert high is not None

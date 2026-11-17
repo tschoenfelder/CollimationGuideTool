@@ -14,6 +14,7 @@ no INDI equivalent -- see each adapter's own module docstring.
 from __future__ import annotations
 
 import logging
+import math
 import threading
 import time
 from collections.abc import Callable
@@ -447,6 +448,7 @@ class TestAngularMotion:
 
     def test_angular_moves_map_to_signed_degree_offsets(self) -> None:
         pulse, client = self._ready()
+        client.dec_deg = 0.0  # cos(Dec) = 1: the RA sky angle IS the axis angle here
         for axis, direction in [
             (MountAxis.AXIS1, AxisDirection.POSITIVE),
             (MountAxis.AXIS1, AxisDirection.NEGATIVE),
@@ -461,6 +463,34 @@ class TestAngularMotion:
             ("dec", 1000.0 / 3600.0),
             ("dec", -1000.0 / 3600.0),
         ]
+
+    @pytest.mark.parametrize("dec_deg", [60.0, -60.0])
+    def test_an_ra_move_turns_the_axis_by_the_sky_angle_over_cos_dec(self, dec_deg: float) -> None:
+        """Field report b977fe85: `move_angular`'s arcsec is an angle on the sky; an RA-axis
+        turn of x moves the sky only x * cos(Dec), so RA nudges came out short. At Dec +-60 the
+        axis turns twice the sky angle; Dec moves are never scaled."""
+        pulse, client = self._ready()
+        client.dec_deg = dec_deg
+        assert pulse.move_angular(MountAxis.AXIS1, AxisDirection.NEGATIVE, 1000.0).accepted
+        assert pulse.move_angular(MountAxis.AXIS2, AxisDirection.POSITIVE, 1000.0).accepted
+        (ra_axis, ra_deg), (dec_axis, dec_deg_sent) = client.axis_move_calls
+        assert ra_axis == "ra" and ra_deg * 3600.0 == pytest.approx(-2000.0)
+        assert dec_axis == "dec" and dec_deg_sent * 3600.0 == pytest.approx(1000.0)
+
+    def test_the_ra_scale_stops_growing_near_the_pole(self) -> None:
+        pulse, client = self._ready()
+        client.dec_deg = 89.0
+        assert pulse.move_angular(MountAxis.AXIS1, AxisDirection.POSITIVE, 1000.0).accepted
+        ((_axis, ra_deg),) = client.axis_move_calls
+        assert ra_deg * 3600.0 == pytest.approx(1000.0 / math.cos(math.radians(80.0)))
+
+    def test_an_ra_move_whose_axis_turn_exceeds_the_bound_is_refused_unsent(self) -> None:
+        pulse, client = self._ready()
+        client.dec_deg = 60.0
+        result = pulse.move_angular(MountAxis.AXIS1, AxisDirection.POSITIVE, 30000.0)  # 60000"
+        assert not result.accepted
+        assert "RA-axis turn" in result.message and "nothing was sent" in result.message
+        assert client.axis_move_calls == []
 
     def test_tracking_on_is_refused_with_the_adapters_own_reason(self) -> None:
         """OnStepAdapter's own precondition (axis motion requires tracking

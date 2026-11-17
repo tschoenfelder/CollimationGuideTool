@@ -245,10 +245,11 @@ def test_the_configured_center_rate_is_passed_through(center_rate_x: float) -> N
     )
 
     assert result.failure_reason is None, result
-    first_axis, first_deg = sky.client.axis_move_calls[0]
+    first_axis, _first_deg = sky.client.axis_move_calls[0]
     assert first_axis == "ra"
-    # 50 px = 330" to go: the first move is the 28 px step, 184.8" -- whatever the unit.
-    assert abs(first_deg) * 3600.0 == pytest.approx(28.0 * _GUIDE_ARCSEC_PER_PX)
+    # 50 px = 330" to go: the first move is the 28 px step, 184.8" on the sky -- whatever the
+    # unit (the adapter turns the RA axis by that / cos(Dec)).
+    assert sky.client.sky_move_arcsec()[0] == pytest.approx(28.0 * _GUIDE_ARCSEC_PER_PX)
 
 
 class TestALatchedStop:
@@ -338,7 +339,7 @@ class TestAFrameSizedReacquisitionStep:
         )
 
         assert result.failure_reason is None, result
-        moves = [abs(deg) * 3600.0 for _axis, deg in sky.client.axis_move_calls]
+        moves = sky.client.sky_move_arcsec()  # RA turns sky / cos(Dec)
         step_cap_arcsec = 0.25 * _GUIDE_SHAPE[0] * _GUIDE_ARCSEC_PER_PX  # 75 px of image
         assert max(moves) > 61.0, moves  # larger than the fixed 500 ms cap
         assert max(moves) <= step_cap_arcsec + 1e-6, moves
@@ -361,7 +362,7 @@ class TestAFrameSizedReacquisitionStep:
         )
 
         assert result.failure_reason is None, result
-        moves = [abs(deg) * 3600.0 for _axis, deg in sky.client.axis_move_calls]
+        moves = sky.client.sky_move_arcsec()  # RA turns sky / cos(Dec)
         assert max(moves) > 61.0, moves  # larger than the fixed 500 ms cap
         assert max(moves) <= 28.0 * _GUIDE_ARCSEC_PER_PX + 1e-6, moves  # 0.35 x 80 px radius
 

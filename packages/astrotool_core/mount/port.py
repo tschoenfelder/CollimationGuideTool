@@ -205,7 +205,8 @@ class AngularMotionPort(Protocol):
     (>= 0.4 over INDI). The application decides the angular size (image space -> optics ->
     arcsec) and measures the achieved displacement; no rate is installed (S6.8d: the timed
     bootstrap that measured one is gone). `direction` is the axis direction, `arcsec` a
-    positive magnitude."""
+    positive magnitude: an angle ON THE SKY for both axes -- for AXIS1 the adapter turns the RA
+    axis by `arcsec` / cos(Dec) (field report b977fe85)."""
 
     def move_angular(
         self, axis: MountAxis, direction: AxisDirection, arcsec: float

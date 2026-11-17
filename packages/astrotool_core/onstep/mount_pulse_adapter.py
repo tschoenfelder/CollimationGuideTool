@@ -107,6 +107,10 @@ from astrotool_core.onstep.motion import finish_motion
 #: `max_angular_arcsec` (S6.5); `MIN_AXIS_ARCSEC` stays re-exported for this app.
 MIN_AXIS_ARCSEC = float(MIN_AXIS_MOVE_ARCSEC)
 _MAX_AXIS_ARCSEC = float(MAX_AXIS_MOVE_DEG) * 3600.0
+#: An RA move's sky angle is scaled by 1/cos(Dec) (field report b977fe85); beyond this Dec the
+#: scale stops growing (x5.76), so a move near the pole cannot explode.
+_MAX_RA_SCALE_DEC_DEG = 80.0
+_MIN_RA_SCALE_COS = math.cos(math.radians(_MAX_RA_SCALE_DEC_DEG))
 
 _log = logging.getLogger(__name__)
 
@@ -378,8 +382,18 @@ class OnStepMountPulseAdapter:
                 ),
             )
         positive = direction is AxisDirection.POSITIVE
-        offset_deg = (arcsec if positive else -arcsec) / 3600.0
         with self._connection.operation_lock:
+            axis_arcsec = arcsec
+            if axis == MountAxis.AXIS1:
+                # Field report b977fe85: `arcsec` is an angle ON THE SKY (the app sizes it from a
+                # camera's field of view), but an RA-axis turn of x moves the sky by only
+                # x * cos(Dec) -- RA nudges came out ~38% short at Dec 51. Convert at the one
+                # place every RA move passes, from a fresh reading inside the lock.
+                scaled = self._ra_axis_arcsec(mount, arcsec)
+                if isinstance(scaled, str):
+                    return CommandResult(accepted=False, message=scaled)
+                axis_arcsec = scaled
+            offset_deg = (axis_arcsec if positive else -axis_arcsec) / 3600.0
             # S6.0c: checked once the connection is ours -- a Stop that arrived while this
             # move was queued (or between two steps of a sequence) means: send nothing.
             with self._state:  # atomic with abort(): see there
@@ -400,6 +414,26 @@ class OnStepMountPulseAdapter:
                 with self._state:
                     self._in_flight_generation = None
         return CommandResult(accepted=True)
+
+    @staticmethod
+    def _ra_axis_arcsec(mount: IndiMount, sky_arcsec: float) -> float | str:
+        """The RA-axis turn that moves the sky by `sky_arcsec` at the mount's current Dec
+        (sky / cos(Dec), cos clamped at `_MAX_RA_SCALE_DEC_DEG`), or why nothing is sent."""
+        try:
+            dec_deg = mount.get_status().dec_deg
+        except ONSTEP_OPERATION_ERRORS as exc:
+            return f"no Dec reading for the RA move ({exc}) -- nothing was sent"
+        if dec_deg is None or not math.isfinite(dec_deg):
+            return "no Dec reading for the RA move -- nothing was sent"
+        cos_dec = max(math.cos(math.radians(dec_deg)), _MIN_RA_SCALE_COS)
+        axis_arcsec = sky_arcsec / cos_dec
+        if axis_arcsec > _MAX_AXIS_ARCSEC:
+            return (
+                f'{sky_arcsec:.1f}" on the sky needs a {axis_arcsec:.1f}" RA-axis turn at Dec '
+                f"{dec_deg:.1f}, beyond OnStepAdapter's "
+                f'{_MAX_AXIS_ARCSEC:.0f}" -- nothing was sent'
+            )
+        return axis_arcsec
 
     # ---- JogPort (hold-to-move) -----------------------------------------
     @property

@@ -76,6 +76,13 @@ _DEFAULT_MIN_CALIBRATION_PULSE_MS = 200
 #: not a fixed pixel count, given Main and Guide have very different
 #: resolutions).
 _DEFAULT_NUDGE_TARGET_FRACTION = 0.5
+#: Field report b977fe85 (2026-11-17): "even on Large the movement has been minor" -- the shared
+#: Move size selector only reached the screen-move pad, never the RA/Dec buttons. It now picks
+#: the RA/Dec nudge too: Large is `nudge_target_fraction` (the half window above), Medium and
+#: Small are fractions of the clicked camera's frame width too: half and a fifth of Large
+#: (25% and 10% by default).
+_DEFAULT_NUDGE_SMALL_FRACTION = _DEFAULT_NUDGE_TARGET_FRACTION / 5
+_DEFAULT_NUDGE_MEDIUM_FRACTION = _DEFAULT_NUDGE_TARGET_FRACTION / 2
 #: Real report: "calibration doesn't wait for mount to be stabilized" --
 #: MountTestMoveRunner used to capture the "after" frame the instant
 #: pulse_axis() confirmed the motion switch back off, with no allowance
@@ -218,6 +225,9 @@ class MountAlignmentSettings:
     same clamp-not-refuse philosophy `_on_nudge_clicked` already uses."""
 
     nudge_target_fraction: float = _DEFAULT_NUDGE_TARGET_FRACTION
+    #: The RA/Dec nudge at Move size Small / Medium (Large = `nudge_target_fraction`).
+    nudge_small_fraction: float = _DEFAULT_NUDGE_SMALL_FRACTION
+    nudge_medium_fraction: float = _DEFAULT_NUDGE_MEDIUM_FRACTION
     settle_ms: int = _DEFAULT_SETTLE_MS
     frame_settle_ms: int = _DEFAULT_FRAME_SETTLE_MS
     max_nudge_arcsec: float = _DEFAULT_MAX_NUDGE_ARCSEC
@@ -351,6 +361,12 @@ def load_mount_alignment_settings(
 
     return MountAlignmentSettings(
         nudge_target_fraction=nudge_target_fraction,
+        nudge_small_fraction=_read(
+            table, "nudge_small_fraction", defaults.nudge_small_fraction, _positive_float
+        ),
+        nudge_medium_fraction=_read(
+            table, "nudge_medium_fraction", defaults.nudge_medium_fraction, _positive_float
+        ),
         settle_ms=settle_ms,
         frame_settle_ms=frame_settle_ms,
         max_nudge_arcsec=_read(

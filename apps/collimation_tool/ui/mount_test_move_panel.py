@@ -346,6 +346,7 @@ from collimation_tool.application.mount_align_positioning import (
     cap_text,
     check_nudge_motion,
     nudge_cap_arcsec,
+    nudge_fraction,
     nudge_tracking_warning,
     plan_nudge,
     plan_screen_move,
@@ -729,7 +730,8 @@ class MountTestMovePanel(QWidget):
 
         #: Issue #31 Phase D: shared size selector -- one choice applies
         #: to whichever screen-move button is clicked next, on either
-        #: camera (one shared choice, not a per-camera setting).
+        #: camera (one shared choice, not a per-camera setting). Field report
+        #: b977fe85: it sizes the RA/Dec nudges too (`nudge_fraction`).
         self._size_group = QButtonGroup(self)
         self._size_group.setExclusive(True)
         self._size_buttons: dict[MovementSize, QPushButton] = {}
@@ -741,7 +743,10 @@ class MountTestMovePanel(QWidget):
             self._size_group.addButton(button)
             self._size_buttons[size] = button
             size_row.addWidget(button)
-        self._size_buttons[MovementSize.SMALL].setChecked(True)  # conservative default
+        # Field report b977fe85: the size now sizes the RA/Dec nudges too, and Large is the
+        # half-window nudge every click made before -- so Large is the default (the screen-move
+        # pad's former Small default only ever applied after a calibration).
+        self._size_buttons[MovementSize.LARGE].setChecked(True)
         #: S6.6b: per camera, the screen directions the mount's smallest angular move forbids at
         #: the selected size -> the reason (button disabled, reason as its tooltip).
         self._screen_move_refusals: dict[str, dict[ScreenDirection, str]] = {}
@@ -1785,7 +1790,12 @@ class MountTestMovePanel(QWidget):
             camera_key,
             self._camera_geometry,
             lambda: self._sizing_distance_for(self._target_mode()),
+            fraction=self._nudge_fraction(),
         )
+
+    def _nudge_fraction(self) -> float:
+        """The RA/Dec nudge at the selected Move size (field report b977fe85)."""
+        return nudge_fraction(self._settings, self._screen_move_size())
 
     def _cap_text(self) -> str:
         return cap_text(
@@ -1903,6 +1913,7 @@ class MountTestMovePanel(QWidget):
             floor_arcsec=self._min_angular_arcsec,
             primitive=primitive,
             arcsec_per_px=lambda: self._arcsec_per_px(camera_key),
+            fraction=self._nudge_fraction(),
         )
         if plan.error is not None:
             self._last_error = plan.error
