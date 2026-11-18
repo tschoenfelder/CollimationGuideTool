@@ -38,6 +38,7 @@ from astrotool_core.testing import (
     make_simulated_onstep_connection,
 )
 from astrotool_core.testing.fake_onstep_indi_client import (
+    FakeIndiAxisMoveResult,
     FakeOnStepIndiClient,
     fake_indi_runtime_config,
     make_fake_onstep_indi_connection,
@@ -435,9 +436,42 @@ class TestAngularMotion:
 
     def test_a_move_above_the_ceiling_is_refused(self) -> None:
         pulse, client = self._ready()
-        result = pulse.move_angular(MountAxis.AXIS1, AxisDirection.POSITIVE, 55000.0)
+        result = pulse.move_angular(MountAxis.AXIS1, AxisDirection.POSITIVE, 45.0 * 3600 + 1)
         assert not result.accepted
         assert client.axis_move_calls == []
+
+    def test_a_dec_step_beyond_the_single_move_bound_runs_as_equal_parts(self) -> None:
+        """Operator request 2026-11-18: a Large RA/Dec step is 20 degrees; OnStepAdapter bounds
+        one finite move at 15 degrees, so the step runs as two 10 degree parts."""
+        pulse, client = self._ready()
+        assert pulse.move_angular(MountAxis.AXIS2, AxisDirection.NEGATIVE, 20.0 * 3600).accepted
+        assert [axis for axis, _deg in client.axis_move_calls] == ["dec", "dec"]
+        assert [deg for _axis, deg in client.axis_move_calls] == pytest.approx([-10.0, -10.0])
+
+    def test_an_ra_step_is_split_after_the_cos_dec_scaling(self) -> None:
+        pulse, client = self._ready()
+        client.dec_deg = 60.0  # 20 degrees on the sky = a 40 degree RA-axis turn
+        assert pulse.move_angular(MountAxis.AXIS1, AxisDirection.POSITIVE, 20.0 * 3600).accepted
+        parts = [deg for _axis, deg in client.axis_move_calls]
+        assert len(parts) == 3 and sum(parts) == pytest.approx(40.0)
+        assert all(deg <= 15.0 for deg in parts)
+
+    def test_a_stop_between_two_parts_sends_no_further_part(self) -> None:
+        pulse, client = self._ready()
+        real = client.move_axis_deg
+
+        def stop_after_first(
+            axis: str, offset_deg: float, *, timeout_s: float = 30.0, poll_s: float = 0.1
+        ) -> FakeIndiAxisMoveResult:
+            result = real(axis, offset_deg, timeout_s=timeout_s, poll_s=poll_s)
+            pulse._cancel.set()  # Stop pressed while the first part ran
+            return result
+
+        client.move_axis_deg = stop_after_first  # type: ignore[method-assign]
+        result = pulse.move_angular(MountAxis.AXIS2, AxisDirection.POSITIVE, 20.0 * 3600)
+        assert not result.accepted
+        assert "after 1 of 2 parts" in result.message
+        assert len(client.axis_move_calls) == 1
 
     def test_a_move_needs_no_installed_rate(self) -> None:
         """S6.8d (R9): the former accepted-but-unused `install_rate`/`installed_rate` are gone --
@@ -487,7 +521,7 @@ class TestAngularMotion:
     def test_an_ra_move_whose_axis_turn_exceeds_the_bound_is_refused_unsent(self) -> None:
         pulse, client = self._ready()
         client.dec_deg = 60.0
-        result = pulse.move_angular(MountAxis.AXIS1, AxisDirection.POSITIVE, 30000.0)  # 60000"
+        result = pulse.move_angular(MountAxis.AXIS1, AxisDirection.POSITIVE, 30.0 * 3600)  # 60 deg
         assert not result.accepted
         assert "RA-axis turn" in result.message and "nothing was sent" in result.message
         assert client.axis_move_calls == []

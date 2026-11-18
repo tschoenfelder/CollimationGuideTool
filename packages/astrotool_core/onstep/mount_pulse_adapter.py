@@ -108,6 +108,11 @@ from astrotool_core.onstep.motion import finish_motion
 #: `max_angular_arcsec` (S6.5); `MIN_AXIS_ARCSEC` stays re-exported for this app.
 MIN_AXIS_ARCSEC = float(MIN_AXIS_MOVE_ARCSEC)
 _MAX_AXIS_ARCSEC = float(MAX_AXIS_MOVE_DEG) * 3600.0
+#: Operator request (2026-11-18): RA/Dec steps up to 20 degrees on the sky, which OnStepAdapter
+#: bounds at 15 degrees per finite move (and an RA step grows by 1/cos(Dec) on the axis).
+#: `move_angular` splits a larger turn into equal parts, each within OnStepAdapter's bound, up
+#: to this total -- a sanity limit, not a target.
+_MAX_TOTAL_AXIS_ARCSEC = 45.0 * 3600.0
 #: An RA move's sky angle is scaled by 1/cos(Dec) (field report b977fe85); beyond this Dec the
 #: scale stops growing (x5.76), so a move near the pole cannot explode.
 _MAX_RA_SCALE_DEC_DEG = 80.0
@@ -251,7 +256,7 @@ class OnStepMountPulseAdapter:
             supports_guide_pulses_while_tracking=self.guide_pulse_range_ms is not None,
             supports_angular_moves=True,
             min_angular_arcsec=MIN_AXIS_ARCSEC,
-            max_angular_arcsec=_MAX_AXIS_ARCSEC,
+            max_angular_arcsec=_MAX_TOTAL_AXIS_ARCSEC,
         )
 
     @property
@@ -378,12 +383,12 @@ class OnStepMountPulseAdapter:
             return CommandResult(accepted=False, message="not connected")
         if not (arcsec > 0.0) or not math.isfinite(arcsec):
             return CommandResult(accepted=False, message=f"invalid angular size {arcsec!r}")
-        if arcsec < MIN_AXIS_ARCSEC or arcsec > _MAX_AXIS_ARCSEC:
+        if arcsec < MIN_AXIS_ARCSEC or arcsec > _MAX_TOTAL_AXIS_ARCSEC:
             return CommandResult(
                 accepted=False,
                 message=(
                     f"{arcsec:.1f}\" is outside OnStepAdapter's supported axis-move range "
-                    f"({MIN_AXIS_ARCSEC:.0f}\"-{_MAX_AXIS_ARCSEC:.0f}\")"
+                    f"({MIN_AXIS_ARCSEC:.0f}\"-{_MAX_TOTAL_AXIS_ARCSEC:.0f}\")"
                 ),
             )
         positive = direction is AxisDirection.POSITIVE
@@ -398,19 +403,28 @@ class OnStepMountPulseAdapter:
                 if isinstance(scaled, str):
                     return CommandResult(accepted=False, message=scaled)
                 axis_arcsec = scaled
-            offset_deg = (axis_arcsec if positive else -axis_arcsec) / 3600.0
-            # S6.0c: checked once the connection is ours -- a Stop that arrived while this
-            # move was queued (or between two steps of a sequence) means: send nothing.
-            with self._state:  # atomic with abort(): see there
-                if self._cancel.is_set():
-                    return CommandResult(accepted=False, message=_STOPPED + " -- move not sent")
-                self._move_generation += 1
-                self._in_flight_generation = self._move_generation
+            # Beyond OnStepAdapter's single-move bound: equal parts, each within it.
+            parts = max(1, math.ceil(axis_arcsec / _MAX_AXIS_ARCSEC - 1e-9))
+            part_deg = (axis_arcsec if positive else -axis_arcsec) / parts / 3600.0
+            done = 0
             try:
-                if axis == MountAxis.AXIS1:
-                    finish_motion(mount.move_ra_axis_deg(offset_deg))
-                else:
-                    finish_motion(mount.move_dec_axis_deg(offset_deg))
+                for _ in range(parts):
+                    # S6.0c: checked once the connection is ours (and before every part) -- a
+                    # Stop that arrived while this move was queued, between two steps of a
+                    # sequence or between two parts of this move means: send nothing more.
+                    with self._state:  # atomic with abort(): see there
+                        if self._cancel.is_set():
+                            note = "" if done == 0 else f" after {done} of {parts} parts"
+                            return CommandResult(
+                                accepted=False, message=f"{_STOPPED} -- move not sent{note}"
+                            )
+                        self._move_generation += 1
+                        self._in_flight_generation = self._move_generation
+                    if axis == MountAxis.AXIS1:
+                        finish_motion(mount.move_ra_axis_deg(part_deg))
+                    else:
+                        finish_motion(mount.move_dec_axis_deg(part_deg))
+                    done += 1
             except ONSTEP_OPERATION_ERRORS as exc:
                 if self._cancel.is_set():
                     return CommandResult(accepted=False, message=f"{_STOPPED} ({exc})")
@@ -441,11 +455,11 @@ class OnStepMountPulseAdapter:
             return "no Dec reading for the RA move -- nothing was sent"
         cos_dec = max(math.cos(math.radians(dec_deg)), _MIN_RA_SCALE_COS)
         axis_arcsec = sky_arcsec / cos_dec
-        if axis_arcsec > _MAX_AXIS_ARCSEC:
+        if axis_arcsec > _MAX_TOTAL_AXIS_ARCSEC:
             return (
                 f'{sky_arcsec:.1f}" on the sky needs a {axis_arcsec:.1f}" RA-axis turn at Dec '
                 f"{dec_deg:.1f}, beyond OnStepAdapter's "
-                f'{_MAX_AXIS_ARCSEC:.0f}" -- nothing was sent'
+                f'{_MAX_TOTAL_AXIS_ARCSEC:.0f}" -- nothing was sent'
             )
         return axis_arcsec
 

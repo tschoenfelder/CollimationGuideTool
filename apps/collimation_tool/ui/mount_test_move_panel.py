@@ -345,6 +345,7 @@ from collimation_tool.application.mount_align_plan import (
 from collimation_tool.application.mount_align_positioning import (
     cap_text,
     check_nudge_motion,
+    nudge_angle_arcsec,
     nudge_cap_arcsec,
     nudge_fraction,
     nudge_tracking_warning,
@@ -1805,6 +1806,14 @@ class MountTestMovePanel(QWidget):
             fraction=self._nudge_fraction(),
         )
 
+    def _fixed_nudge_arcsec(self) -> float | None:
+        """Operator request 2026-11-18: an angular RA/Dec step is a fixed angle on the sky
+        (1/5/20 degrees by Move size); None = the frame-relative nudge (`nudge_fixed_angles`
+        off)."""
+        if not self._settings.nudge_fixed_angles:
+            return None
+        return nudge_angle_arcsec(self._settings, self._screen_move_size())
+
     def _nudge_fraction(self) -> float:
         """The RA/Dec nudge at the selected Move size (field report b977fe85)."""
         return nudge_fraction(self._settings, self._screen_move_size())
@@ -1926,6 +1935,8 @@ class MountTestMovePanel(QWidget):
             primitive=primitive,
             arcsec_per_px=lambda: self._arcsec_per_px(camera_key),
             fraction=self._nudge_fraction(),
+            # Operator request 2026-11-18: angular RA/Dec steps are fixed angles (1/5/20 deg).
+            fixed_arcsec=self._fixed_nudge_arcsec(),
         )
         if plan.error is not None:
             self._last_error = plan.error

@@ -5,11 +5,21 @@ waits for Dec after connecting (OnStepAdapter's DEC-first rule)."""
 
 from __future__ import annotations
 
+import pytest
 from astrotool_core.mount import AxisDirection, JogOutcome, MountAxis
 from astrotool_core.mount.port import RA_NEEDS_DEC_FIRST
 from collimation_tool.ui.mount_hold_jog import JOG_OWNER, HoldToJog
+from collimation_tool.ui.mount_test_move_panel import MountTestMovePanel
 from PySide6.QtWidgets import QPushButton
 from test_mount_align_real_onstep_adapter import _drain, _Rig
+
+
+@pytest.fixture(autouse=True)
+def _frame_relative_nudges(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests pin the frame-relative RA/Dec nudge (`nudge_fixed_angles = false`); the
+    default fixed 1/5/20 degree steps are covered by test_mount_align_fixed_angle_steps.py."""
+    monkeypatch.setattr(MountTestMovePanel, "_fixed_nudge_arcsec", lambda self: None)
+
 
 POS, NEG = AxisDirection.POSITIVE, AxisDirection.NEGATIVE
 
