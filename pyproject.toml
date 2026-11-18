@@ -29,7 +29,8 @@ dependencies = [
     # 0.7.13 (#41): a short OnStep Status gap after stop commands is a wait, not an ABORT.
     # 0.7.14 (#42): single-axis moves may use the fastest slew rates (1/5/20 degree steps).
     # 0.7.15 (#43): coarse steps stop at the target on an accelerating mount (live stop).
-    "onstep-adapter @ git+https://github.com/tschoenfelder/OnStepAdapter.git@979f6804ba51417aaaa70f7ade44de2dd30dd0db",
+    # 0.7.16 (#44): connect() connects an OnStep INDI device left disconnected (indiserver restart).
+    "onstep-adapter @ git+https://github.com/tschoenfelder/OnStepAdapter.git@3692ce454a0052b7739947c04b899e42ad8c11f9",
     "smarttscope-live-analysis @ git+https://github.com/tschoenfelder/SmartTScopeLiveAnalysis.git@v0.1.0",
 ]
 
