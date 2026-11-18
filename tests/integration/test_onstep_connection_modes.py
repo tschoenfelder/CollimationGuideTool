@@ -31,7 +31,9 @@ def rig() -> Iterator[SimulatedOnStepServer]:
     """The "real device": an OnStepX mock behind its own INDI port, named in `[indi]`, with the
     rig's measured `[meridian]` limits (install.md; the built-in 0.5/0.75 defaults leave
     OnStepAdapter too little time for its 120 s flip allowance and refuse to connect)."""
-    with SimulatedOnStepServer(SimConfig(speed=20)) as server:
+    # OnStepAdapter 0.7.17 stops a finite move from live readings: the mount must be physical
+    # (the rig model of field capture 2eb2a5cb), not the instant 20x mock.
+    with SimulatedOnStepServer(SimConfig.rig_2eb2a5cb(slew_deg_per_s=40.0)) as server:
         paths.own_config_path().parent.mkdir(parents=True, exist_ok=True)
         paths.own_config_path().write_text(
             f'[indi]\nhost = "{server.host}"\nport = {server.port}\nhome_motion_enabled = true\n'

@@ -299,7 +299,8 @@ OnStepAdapter could own the serial port exclusively). After upgrading
 OnStepAdapter, update the Pi's venv:
 `.venv/bin/pip install <release wheel URL from pyproject.toml>`.
 
-**Upgrading the Pi to the pinned OnStepAdapter build** (0.7.16, OnStepAdapter#44: the app connects
+**Upgrading the Pi to the pinned OnStepAdapter build** (0.7.17, OnStepAdapter#45: RA/Dec steps stop
+on target from the live position; 0.7.16, OnStepAdapter#44: the app connects
 the OnStep INDI device itself after an indiserver restart; 0.7.15, OnStepAdapter#43: coarse steps
 stop at the target on an accelerating mount; 0.7.14, OnStepAdapter#41/#42: a short
 status gap after a stop no longer aborts a move, and coarse steps use the fastest slew rates;
@@ -312,15 +313,15 @@ moves drive only their own axis with OnStep's single-axis motion, never a goto; 
 #36's merge of 0.6.11 with main: its wheel ships `onstep_mock` and
 `onstep_adapter.capture`, which the connection modes above need; its
 `park()`/axis moves return a stoppable `MotionHandle`, which this app waits
-on; finite axis moves go up to 15 degrees, and a positive DEC-axis move
+on; finite axis moves go up to 15 degrees (45 from 0.7.17), and a positive DEC-axis move
 follows OnStep's mechanical jog direction, which lowers the published sky
 DEC; a finite axis move holds the other axis's hour angle and turns tracking
 off as soon as the slew is seen). From the CollimationGuideTool checkout on the Pi, with the app closed:
 
 ```bash
-.venv/bin/pip install --force-reinstall --no-deps "git+https://github.com/tschoenfelder/OnStepAdapter.git@3692ce454a0052b7739947c04b899e42ad8c11f9"
+.venv/bin/pip install --force-reinstall --no-deps "git+https://github.com/tschoenfelder/OnStepAdapter.git@474f577fd0a82f920ee81cb0e82f49e8c011bf68"
 .venv/bin/python -c "import onstep_adapter, onstep_mock, onstep_adapter.capture, onstep_adapter.indi_motion, onstep_adapter.indi_jog; print(onstep_adapter.__version__)"
-# must print: 0.7.16   (an ImportError means the v0.6.11 tag build, 0.6.2 or 0.5.0 is still installed)
+# must print: 0.7.17   (an ImportError means the v0.6.11 tag build, 0.6.2 or 0.5.0 is still installed)
 ```
 
 `--force-reinstall` makes pip replace whatever OnStepAdapter build is
@@ -460,8 +461,9 @@ terminal) after upgrading — there is no background service to restart.
 **RA/Dec steps are fixed angles: 1, 5 and 20 degrees (2026-11-18).** On a mount with
 angular moves (Terrestrial mode) the RA/Dec buttons move Small 1°, Medium 5° and Large 20° on
 the sky (`nudge_small_deg`, `nudge_medium_deg`, `nudge_large_deg` under `[mount_alignment]`),
-whatever the camera optics or calibration, and not limited by `max_nudge_arcsec`. A step beyond
-OnStepAdapter's 15° single-move bound runs as equal parts (Stop works between them). Set
+whatever the camera optics or calibration, and not limited by `max_nudge_arcsec`. Each step is
+one move (OnStepAdapter 0.7.17: up to 45°; it stops on target from the live position, so a 20°
+step takes ~7 s of motion and starts ~0.4 s after the click). Set
 `nudge_fixed_angles = false` to get the frame-relative sizes described below back. Guide-pulse
 nudges (Astronomical mode) are unchanged.
 

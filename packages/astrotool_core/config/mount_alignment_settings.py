@@ -85,8 +85,8 @@ _DEFAULT_NUDGE_SMALL_FRACTION = _DEFAULT_NUDGE_TARGET_FRACTION / 5
 #: Operator request (2026-11-18): on a mount with angular moves (Terrestrial mode) the RA/Dec
 #: buttons move FIXED angles on the sky -- Small 1, Medium 5, Large 20 degrees -- independent
 #: of camera optics or calibration and not limited by `max_nudge_arcsec` (which still caps
-#: frame-relative screen moves and guide pulses). OnStepMountPulseAdapter splits a move beyond
-#: OnStepAdapter's single-move bound (15 degrees) into equal parts.
+#: frame-relative screen moves and guide pulses). OnStepAdapter (>= 0.7.17) runs each as one
+#: move; OnStepMountPulseAdapter would split one beyond its single-move bound into equal parts.
 _DEFAULT_NUDGE_SMALL_DEG = 1.0
 _DEFAULT_NUDGE_MEDIUM_DEG = 5.0
 _DEFAULT_NUDGE_LARGE_DEG = 20.0

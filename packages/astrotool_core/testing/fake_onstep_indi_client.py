@@ -629,9 +629,9 @@ class FakeOnStepIndiClient:
     def move_axis_deg(
         self, axis: str, offset_deg: float, *, timeout_s: float = 30.0, poll_s: float = 0.1
     ) -> FakeIndiAxisMoveResult:
-        minimum_deg = 30.0 / 3600.0
-        if not math.isfinite(offset_deg) or not minimum_deg <= abs(offset_deg) <= 15.0:
-            raise ValueError("Axis move must be between 30 arcseconds and 15 degrees")
+        minimum_deg = 30.0 / 3600.0  # bounds: OnStepAdapter 0.7.17
+        if not math.isfinite(offset_deg) or not minimum_deg <= abs(offset_deg) <= 45.0:
+            raise ValueError("Axis move must be between 30 arcseconds and 45 degrees")
         if not self._axis_lock.acquire(blocking=False):
             raise RuntimeError("Another axis motion is active")
         try:
