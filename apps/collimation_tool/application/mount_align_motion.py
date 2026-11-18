@@ -19,7 +19,11 @@ from astrotool_core.mount import AxisDirection, MountAxis, MountParkPort, MountP
 
 from collimation_tool.application.mount_motion import MountAlignPrimitive
 
-MotionStep = tuple[MountAxis, AxisDirection, int] | tuple[MountAxis, AxisDirection, int, float]
+MotionStep = (
+    tuple[MountAxis, AxisDirection, int]
+    | tuple[MountAxis, AxisDirection, int, float]
+    | tuple[MountAxis, AxisDirection, int, float, bool]
+)
 
 
 class MotionRunner(Protocol):
@@ -49,17 +53,22 @@ def submit_axis_move(
     settle_ms: int,
     primitive: MountAlignPrimitive = MountAlignPrimitive.AXIS,
     calibration: bool = False,
+    axis_angle: bool = False,
 ) -> bool:
     """One single-axis move (a calibration step or a nudge): an angular move of `arcsec` -- or
     (S6.8b, `primitive` GUIDE_PULSE) `duration_ms` of guide pulses while tracking. An axis move
     without an angular size (`arcsec` None) is submitted as-is and refused by the runner before
     anything is sent. `calibration`: the move is a calibration step (names the cause of an
-    Astronomical tracking refusal, S6.8d). False = not started (a move is already running)."""
-    step: MotionStep = (
-        (axis, direction, duration_ms)
-        if primitive is MountAlignPrimitive.GUIDE_PULSE or arcsec is None
-        else (axis, direction, duration_ms, arcsec)
-    )
+    Astronomical tracking refusal, S6.8d). `axis_angle`: `arcsec` turns the axis itself (the
+    fixed 1/5/20 degree buttons; no 1/cos(Dec) for RA). False = not started (a move is already
+    running)."""
+    step: MotionStep
+    if primitive is MountAlignPrimitive.GUIDE_PULSE or arcsec is None:
+        step = (axis, direction, duration_ms)
+    elif axis_angle:
+        step = (axis, direction, duration_ms, arcsec, True)
+    else:
+        step = (axis, direction, duration_ms, arcsec)
     return submit_motion_sequence(
         runner,
         mount_park,

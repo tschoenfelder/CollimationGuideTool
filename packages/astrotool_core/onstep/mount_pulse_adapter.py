@@ -378,6 +378,20 @@ class OnStepMountPulseAdapter:
     def move_angular(
         self, axis: MountAxis, direction: AxisDirection, arcsec: float
     ) -> CommandResult:
+        return self._move(axis, direction, arcsec, on_sky=True)
+
+    def move_axis_angle(
+        self, axis: MountAxis, direction: AxisDirection, arcsec: float
+    ) -> CommandResult:
+        """Turn the axis ITSELF by `arcsec` -- no 1/cos(Dec) for RA. Operator (2026-11-18,
+        diag fd84c75f): the fixed 1/5/20 degree RA/Dec buttons turn each axis by that angle,
+        as OnStepAdapter's own test turns it; on the sky (`move_angular`) a 20 degree RA step
+        at Dec 71.9 needed a 64 degree axis turn and was refused."""
+        return self._move(axis, direction, arcsec, on_sky=False)
+
+    def _move(
+        self, axis: MountAxis, direction: AxisDirection, arcsec: float, *, on_sky: bool
+    ) -> CommandResult:
         mount = self._mount()
         if mount is None:
             return CommandResult(accepted=False, message="not connected")
@@ -394,7 +408,7 @@ class OnStepMountPulseAdapter:
         positive = direction is AxisDirection.POSITIVE
         with self._connection.operation_lock:
             axis_arcsec = arcsec
-            if axis == MountAxis.AXIS1:
+            if axis == MountAxis.AXIS1 and on_sky:
                 # Field report b977fe85: `arcsec` is an angle ON THE SKY (the app sizes it from a
                 # camera's field of view), but an RA-axis turn of x moves the sky by only
                 # x * cos(Dec) -- RA nudges came out ~38% short at Dec 51. Convert at the one
@@ -456,11 +470,16 @@ class OnStepMountPulseAdapter:
         cos_dec = max(math.cos(math.radians(dec_deg)), _MIN_RA_SCALE_COS)
         axis_arcsec = sky_arcsec / cos_dec
         if axis_arcsec > _MAX_TOTAL_AXIS_ARCSEC:
-            return (
-                f'{sky_arcsec:.1f}" on the sky needs a {axis_arcsec:.1f}" RA-axis turn at Dec '
-                f"{dec_deg:.1f}, beyond OnStepAdapter's "
-                f'{_MAX_TOTAL_AXIS_ARCSEC:.0f}" -- nothing was sent'
+            # Field diag fd84c75f: at Dec 88.3 a 20 degree step needed a 115 degree RA-axis
+            # turn and was refused -- the RA buttons then did nothing. Near the pole the step
+            # turns the RA axis by the most it may instead (the sky moves less), and says so.
+            _log.warning(
+                '%.1f" on the sky needs a %.1f" RA-axis turn at Dec %.1f; turning the RA axis '
+                'by the %.0f" maximum instead (%.1f" on the sky)',
+                sky_arcsec, axis_arcsec, dec_deg, _MAX_TOTAL_AXIS_ARCSEC,
+                _MAX_TOTAL_AXIS_ARCSEC * cos_dec,
             )
+            return _MAX_TOTAL_AXIS_ARCSEC
         return axis_arcsec
 
     # ---- JogPort (hold-to-move) -----------------------------------------

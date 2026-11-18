@@ -83,7 +83,7 @@ _DEFAULT_NUDGE_TARGET_FRACTION = 0.5
 #: (25% and 10% by default).
 _DEFAULT_NUDGE_SMALL_FRACTION = _DEFAULT_NUDGE_TARGET_FRACTION / 5
 #: Operator request (2026-11-18): on a mount with angular moves (Terrestrial mode) the RA/Dec
-#: buttons move FIXED angles on the sky -- Small 1, Medium 5, Large 20 degrees -- independent
+#: buttons turn the axis by FIXED angles -- Small 1, Medium 5, Large 20 degrees -- independent
 #: of camera optics or calibration and not limited by `max_nudge_arcsec` (which still caps
 #: frame-relative screen moves and guide pulses). OnStepAdapter (>= 0.7.17) runs each as one
 #: move; OnStepMountPulseAdapter would split one beyond its single-move bound into equal parts.
@@ -237,7 +237,7 @@ class MountAlignmentSettings:
     nudge_small_fraction: float = _DEFAULT_NUDGE_SMALL_FRACTION
     nudge_medium_fraction: float = _DEFAULT_NUDGE_MEDIUM_FRACTION
     #: The RA/Dec step at Move size Small / Medium / Large on a mount with angular moves
-    #: (degrees on the sky; operator request 2026-11-18).
+    #: (degrees of axis turn, also for RA at any Dec; operator request 2026-11-18, fd84c75f).
     nudge_small_deg: float = _DEFAULT_NUDGE_SMALL_DEG
     nudge_medium_deg: float = _DEFAULT_NUDGE_MEDIUM_DEG
     nudge_large_deg: float = _DEFAULT_NUDGE_LARGE_DEG

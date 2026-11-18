@@ -5,8 +5,6 @@ production `OnStepMountPulseAdapter` runs it as equal parts."""
 
 from __future__ import annotations
 
-import math
-
 import pytest
 from astrotool_core.config import MountAlignmentSettings
 from astrotool_core.mount import AxisDirection, MountAxis
@@ -54,18 +52,18 @@ def test_a_large_dec_step_is_one_20_degree_move(qapp: object, rig: _Rig) -> None
     panel.stop()
 
 
-def test_a_large_ra_step_is_20_degrees_on_the_sky(qapp: object, rig: _Rig) -> None:
+def test_a_large_ra_step_turns_the_ra_axis_20_degrees_at_any_dec(qapp: object, rig: _Rig) -> None:
+    """Operator (2026-11-18, diag fd84c75f): the fixed 1/5/20 degree buttons turn the axis
+    itself -- at Dec 71.9 a 20 degree step "on the sky" needed a 64 degree RA-axis turn and was
+    refused. One move, 20 degrees of RA axis, whatever the Dec."""
     panel = rig.panel()
     panel._on_nudge_clicked("left", MountAxis.AXIS2, AxisDirection.POSITIVE)  # Dec first
     _drain(panel)
     rig.client.axis_move_calls.clear()
     rig.client.axis_move_decs.clear()
+    rig.client.dec_deg = 71.9
     panel._on_nudge_clicked("left", MountAxis.AXIS1, AxisDirection.POSITIVE)
     _drain(panel)
     ra = [(axis, deg) for axis, deg in rig.client.axis_move_calls if axis == "ra"]
-    assert len(ra) == 1, panel._result_label.text()  # one move (OnStepAdapter 0.7.17: <= 45 deg)
-    assert sum(rig.client.sky_move_arcsec()) / 3600.0 == pytest.approx(20.0)
-    assert sum(deg for _a, deg in ra) == pytest.approx(
-        20.0 / math.cos(math.radians(rig.client.axis_move_decs[0]))
-    )
+    assert [deg for _a, deg in ra] == [pytest.approx(20.0)], panel._result_label.text()
     panel.stop()

@@ -299,7 +299,8 @@ OnStepAdapter could own the serial port exclusively). After upgrading
 OnStepAdapter, update the Pi's venv:
 `.venv/bin/pip install <release wheel URL from pyproject.toml>`.
 
-**Upgrading the Pi to the pinned OnStepAdapter build** (0.7.17, OnStepAdapter#45: RA/Dec steps stop
+**Upgrading the Pi to the pinned OnStepAdapter build** (0.7.18, OnStepAdapter#46: DEC moves never
+run past the DEC bound; 0.7.17, OnStepAdapter#45: RA/Dec steps stop
 on target from the live position; 0.7.16, OnStepAdapter#44: the app connects
 the OnStep INDI device itself after an indiserver restart; 0.7.15, OnStepAdapter#43: coarse steps
 stop at the target on an accelerating mount; 0.7.14, OnStepAdapter#41/#42: a short
@@ -319,9 +320,9 @@ DEC; a finite axis move holds the other axis's hour angle and turns tracking
 off as soon as the slew is seen). From the CollimationGuideTool checkout on the Pi, with the app closed:
 
 ```bash
-.venv/bin/pip install --force-reinstall --no-deps "git+https://github.com/tschoenfelder/OnStepAdapter.git@474f577fd0a82f920ee81cb0e82f49e8c011bf68"
+.venv/bin/pip install --force-reinstall --no-deps "git+https://github.com/tschoenfelder/OnStepAdapter.git@fc4aaf18e8c71344b795ea9a9bebb0d63b222bc9"
 .venv/bin/python -c "import onstep_adapter, onstep_mock, onstep_adapter.capture, onstep_adapter.indi_motion, onstep_adapter.indi_jog; print(onstep_adapter.__version__)"
-# must print: 0.7.17   (an ImportError means the v0.6.11 tag build, 0.6.2 or 0.5.0 is still installed)
+# must print: 0.7.18   (an ImportError means the v0.6.11 tag build, 0.6.2 or 0.5.0 is still installed)
 ```
 
 `--force-reinstall` makes pip replace whatever OnStepAdapter build is
@@ -459,8 +460,8 @@ terminal) after upgrading — there is no background service to restart.
 ### Config migration notes
 
 **RA/Dec steps are fixed angles: 1, 5 and 20 degrees (2026-11-18).** On a mount with
-angular moves (Terrestrial mode) the RA/Dec buttons move Small 1°, Medium 5° and Large 20° on
-the sky (`nudge_small_deg`, `nudge_medium_deg`, `nudge_large_deg` under `[mount_alignment]`),
+angular moves (Terrestrial mode) the RA/Dec buttons turn the RA or Dec AXIS by Small 1°,
+Medium 5° and Large 20° at any Dec (2026-11-18, diag fd84c75f; `nudge_small_deg`, `nudge_medium_deg`, `nudge_large_deg` under `[mount_alignment]`),
 whatever the camera optics or calibration, and not limited by `max_nudge_arcsec`. Each step is
 one move (OnStepAdapter 0.7.17: up to 45°; it stops on target from the live position, so a 20°
 step takes ~7 s of motion and starts ~0.4 s after the click). Set

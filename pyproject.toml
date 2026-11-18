@@ -31,7 +31,8 @@ dependencies = [
     # 0.7.15 (#43): coarse steps stop at the target on an accelerating mount (live stop).
     # 0.7.16 (#44): connect() connects an OnStep INDI device left disconnected (indiserver restart).
     # 0.7.17 (#45): finite moves stop on target from the live position; up to 45 deg in one move.
-    "onstep-adapter @ git+https://github.com/tschoenfelder/OnStepAdapter.git@474f577fd0a82f920ee81cb0e82f49e8c011bf68",
+    # 0.7.18 (#46): DEC moves never run past the DEC bound (measured direction, braking-aware).
+    "onstep-adapter @ git+https://github.com/tschoenfelder/OnStepAdapter.git@fc4aaf18e8c71344b795ea9a9bebb0d63b222bc9",
     "smarttscope-live-analysis @ git+https://github.com/tschoenfelder/SmartTScopeLiveAnalysis.git@v0.1.0",
 ]
 

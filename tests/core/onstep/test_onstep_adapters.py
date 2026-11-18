@@ -534,13 +534,19 @@ class TestAngularMotion:
         ((_axis, ra_deg),) = client.axis_move_calls
         assert ra_deg * 3600.0 == pytest.approx(1000.0 / math.cos(math.radians(80.0)))
 
-    def test_an_ra_move_whose_axis_turn_exceeds_the_bound_is_refused_unsent(self) -> None:
+    def test_an_ra_move_whose_axis_turn_exceeds_the_bound_turns_the_most_it_may(
+        self, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        """Field diag fd84c75f: at Dec 88.3 a 20 degree RA step (a 115 degree axis turn) was
+        refused, so the RA buttons did nothing near the pole. It now turns the RA axis by the
+        45 degree maximum and logs that the sky moved less."""
         pulse, client = self._ready()
-        client.dec_deg = 60.0
-        result = pulse.move_angular(MountAxis.AXIS1, AxisDirection.POSITIVE, 30.0 * 3600)  # 60 deg
-        assert not result.accepted
-        assert "RA-axis turn" in result.message and "nothing was sent" in result.message
-        assert client.axis_move_calls == []
+        client.dec_deg = 88.3
+        with caplog.at_level(logging.WARNING):
+            result = pulse.move_angular(MountAxis.AXIS1, AxisDirection.POSITIVE, 20.0 * 3600)
+        assert result.accepted
+        assert sum(deg for _axis, deg in client.axis_move_calls) == pytest.approx(45.0)
+        assert "maximum instead" in caplog.text
 
     def test_tracking_on_is_refused_with_the_adapters_own_reason(self) -> None:
         """OnStepAdapter's own precondition (axis motion requires tracking
