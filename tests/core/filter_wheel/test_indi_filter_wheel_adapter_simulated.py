@@ -367,3 +367,35 @@ class TestHungIndiserver:
         with pytest.raises(ConnectionError, match="sent no devices at all .* restart indiserver"):
             adapter.connect()
         assert adapter.is_available is False
+
+
+class TestDisconnectLeavesASharedWheelAlone:
+    """Operator request 2026-11-18 (after diag 8472eb2f): the wheel is SHARED on indiserver
+    (Ekos may use it). Closing the app used to send INDI DISCONNECT, which switched the wheel
+    off for every client and left it off for the next start. Now DISCONNECT is sent only when
+    this app switched the wheel on."""
+
+    def test_a_wheel_this_app_switched_on_is_switched_off_again(self) -> None:
+        adapter, wheel = _wheel(FakeClock())
+        assert not wheel.connected
+        adapter.connect()
+        assert wheel.connected
+        adapter.disconnect()
+        assert not wheel.connected
+
+    def test_a_wheel_another_client_had_connected_stays_connected(self) -> None:
+        adapter, wheel = _wheel(FakeClock())
+        wheel.connected = True  # e.g. Ekos connected it earlier
+        adapter.connect()
+        assert adapter.status().filter_name == "R"
+        adapter.disconnect()
+        assert wheel.connected  # only this app's connection closed
+        assert not adapter.is_available
+
+    def test_reconnecting_after_a_shared_disconnect_works_at_once(self) -> None:
+        adapter, wheel = _wheel(FakeClock())
+        wheel.connected = True
+        adapter.connect()
+        adapter.disconnect()
+        adapter.connect()
+        assert adapter.is_available and wheel.connected
