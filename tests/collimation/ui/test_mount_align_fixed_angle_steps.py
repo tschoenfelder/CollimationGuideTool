@@ -67,3 +67,30 @@ def test_a_large_ra_step_turns_the_ra_axis_20_degrees_at_any_dec(qapp: object, r
     ra = [(axis, deg) for axis, deg in rig.client.axis_move_calls if axis == "ra"]
     assert [deg for _a, deg in ra] == [pytest.approx(20.0)], panel._result_label.text()
     panel.stop()
+
+
+def test_a_fixed_step_waits_no_extra_settle_time(
+    qapp: object, rig: _Rig, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Operator (2026-11-18 21:00): a Small step took too long until the buttons were free
+    again. OnStepAdapter returns only once the axis is at rest; a fixed (positioning) step adds
+    no `settle_ms` on top."""
+    import dataclasses
+
+    from collimation_tool.application.mount_align_motion import submit_axis_move
+    from collimation_tool.ui import mount_test_move_panel
+
+    calls: list[dict[str, object]] = []
+
+    def spy(*args: object, **kwargs: object) -> bool:
+        calls.append(kwargs)
+        return bool(submit_axis_move(*args, **kwargs))  # type: ignore[arg-type]
+
+    monkeypatch.setattr(mount_test_move_panel, "submit_axis_move", spy)
+    panel = rig.panel()
+    panel._settings = dataclasses.replace(panel._settings, settle_ms=1000)  # the default
+    panel._size_buttons[MovementSize.SMALL].setChecked(True)
+    panel._on_nudge_clicked("left", MountAxis.AXIS2, AxisDirection.POSITIVE)
+    _drain(panel)
+    assert calls and calls[0]["settle_ms"] == 0 and calls[0]["axis_angle"] is True
+    panel.stop()

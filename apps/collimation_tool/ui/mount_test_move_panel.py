@@ -1951,14 +1951,19 @@ class MountTestMovePanel(QWidget):
         # last stability-VERIFIED at-rest reference (taken before this move is submitted).
         reference = self._reusable_reference(mode)
         self._cancel_nudge_check()  # a new move: an older check's AFTER would be mid-motion
+        fixed = self._fixed_nudge_arcsec() is not None
         started = submit_axis_move(
             self._runner, self._mount_park, self._mount,
             move.axis, move.direction, move.duration_ms, move.arcsec,
-            settle_ms=self._settings.settle_ms,
+            # Operator (2026-11-18 21:00): a Small step took too long until the buttons were
+            # free again. A fixed step only positions the mount and OnStepAdapter returns once
+            # the axis is at rest, so it gets no extra settle wait (the background no-motion
+            # check still waits for stable frames on its own).
+            settle_ms=0 if fixed else self._settings.settle_ms,
             primitive=primitive,
             # Operator (2026-11-18, diag fd84c75f): a fixed 1/5/20 degree step turns the axis
             # itself by that angle, at any Dec (as OnStepAdapter's own test does).
-            axis_angle=self._fixed_nudge_arcsec() is not None,
+            axis_angle=fixed,
         )
         if not started:
             return  # a move is already running
