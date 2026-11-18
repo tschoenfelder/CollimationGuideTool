@@ -25,7 +25,8 @@ dependencies = [
     # mount.reconnect_device() reopens the INDI driver's link when OnStep stops answering.
     # 0.7.11 (OnStepAdapter#28): guarded astronomical/terrestrial mode arbitration; inactive
     # here (no `[terrestrial] state_file` in the config), so the calls this app makes are unchanged.
-    "onstep-adapter @ git+https://github.com/tschoenfelder/OnStepAdapter.git@cc06a1b3624cbbbfbf4c4f379dc2985242ffde3d",
+    # 0.7.12 (OnStepAdapter#40): reconnect_device() accepts a driver that reconnects by itself.
+    "onstep-adapter @ git+https://github.com/tschoenfelder/OnStepAdapter.git@19c2b989ecfbf91de6087df0c669fcd6da244187",
     "smarttscope-live-analysis @ git+https://github.com/tschoenfelder/SmartTScopeLiveAnalysis.git@v0.1.0",
 ]
 
