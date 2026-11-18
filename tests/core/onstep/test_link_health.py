@@ -14,7 +14,10 @@ from astrotool_core.onstep.link_health import (
     onstep_not_answering,
     reconnect_hint,
 )
-from astrotool_core.testing.fake_onstep_indi_client import make_fake_onstep_indi_connection
+from astrotool_core.testing.fake_onstep_indi_client import (
+    FakeOnStepIndiClient,
+    make_fake_onstep_indi_connection,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -70,7 +73,9 @@ def test_unpark_on_a_silent_controller_says_so_first() -> None:
     assert 'Reconnect "' in message and 'CONNECTION.CONNECT=On' in message
 
 
-def _silent_park_adapter(*, recovers: bool = True) -> tuple[OnStepMountParkAdapter, object]:
+def _silent_park_adapter(
+    *, recovers: bool = True
+) -> tuple[OnStepMountParkAdapter, FakeOnStepIndiClient]:
     conn, made = make_fake_onstep_indi_connection()
     park = OnStepMountParkAdapter(conn)
     park.connect()

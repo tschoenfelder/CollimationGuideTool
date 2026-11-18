@@ -23,7 +23,9 @@ dependencies = [
     # finite axis moves no longer use a goto -- only the requested axis is driven, with OnStep's
     # single-axis motion, so a Dec move never turns the RA motor. 0.6.14 (OnStepAdapter#39):
     # mount.reconnect_device() reopens the INDI driver's link when OnStep stops answering.
-    "onstep-adapter @ git+https://github.com/tschoenfelder/OnStepAdapter.git@a089e12fe0f52818f016cf9160ac62ffaa5dff9e",
+    # 0.7.11 (OnStepAdapter#28): guarded astronomical/terrestrial mode arbitration; inactive
+    # here (no `[terrestrial] state_file` in the config), so the calls this app makes are unchanged.
+    "onstep-adapter @ git+https://github.com/tschoenfelder/OnStepAdapter.git@cc06a1b3624cbbbfbf4c4f379dc2985242ffde3d",
     "smarttscope-live-analysis @ git+https://github.com/tschoenfelder/SmartTScopeLiveAnalysis.git@v0.1.0",
 ]
 

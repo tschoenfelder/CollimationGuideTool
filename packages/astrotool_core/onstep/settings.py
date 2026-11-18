@@ -105,6 +105,7 @@ def load_onstep_indi_config(
     indi = _table(own_path, "indi")
     meridian = _table(own_path, "meridian")
     focuser_max = indi.get("focuser_max_position")
+    home_motion_enabled = _bool(indi, "home_motion_enabled", False)
     return IndiRuntimeConfig(
         host=_text(indi, "host", INDI_HOST),
         port=int(_number(indi, "port", INDI_PORT)),
@@ -121,6 +122,10 @@ def load_onstep_indi_config(
             int(focuser_max) if isinstance(focuser_max, int) and not isinstance(focuser_max, bool)
             else None
         ),
-        home_motion_enabled=_bool(indi, "home_motion_enabled", False),
+        home_motion_enabled=home_motion_enabled,
+        # OnStepAdapter 0.7.x split PARK/UNPARK off the HOME gate (`park_motion_enabled`,
+        # default off). Until 0.6.14 `home_motion_enabled = true` enabled PARK/UNPARK too, so
+        # an installation that opted in keeps them unless it sets the new key explicitly.
+        park_motion_enabled=_bool(indi, "park_motion_enabled", home_motion_enabled),
         tracking_authority_policy=_tracking_policy(indi),
     )
