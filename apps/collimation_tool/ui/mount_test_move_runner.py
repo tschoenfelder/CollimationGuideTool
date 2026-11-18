@@ -111,6 +111,9 @@ PulseStep = tuple[MountAxis, AxisDirection, int]
 #: An axis step: an ANGULAR move of `arcsec` through OnStepAdapter (`move_angular`);
 #: `duration_ms` is its equivalent duration in the calibration unit (`equivalent_duration`).
 AngularPulseStep = tuple[MountAxis, AxisDirection, int, float]
+#: An axis step whose `arcsec` turns the axis itself (`move_axis_angle`: no 1/cos(Dec) for
+#: RA) -- the fixed 1/5/20 degree RA/Dec buttons. The trailing True marks it.
+AxisAngleStep = tuple[MountAxis, AxisDirection, int, float, bool]
 
 MOTION_ANGULAR = "angular"
 #: Same wording as the OnStep adapter's own Stop refusal, so either reads the same.
@@ -213,13 +216,20 @@ _NO_ANGULAR_MOVE = (
 )
 
 
-def _move_axis(mount: MountPort, step: PulseStep | AngularPulseStep) -> CommandResult:
+def _move_axis(
+    mount: MountPort, step: PulseStep | AngularPulseStep | AxisAngleStep
+) -> CommandResult:
     """One axis step: the angular move through OnStepAdapter, as the adapter REPORTS it
     (`capabilities().supports_angular_moves`, S6.8a #55 C02). A refusal is final and reported
     as the adapter gave it (S6.0, audit P02)."""
-    if len(step) != 4 or not mount.capabilities().supports_angular_moves:
+    if len(step) not in (4, 5) or not mount.capabilities().supports_angular_moves:
         return CommandResult(accepted=False, message=_NO_ANGULAR_MOVE)
-    axis, direction, _ms, arcsec = step
+    angular = cast("AngularPulseStep | AxisAngleStep", step)
+    axis, direction, arcsec = angular[0], angular[1], angular[3]
+    axis_angle = getattr(mount, "move_axis_angle", None)
+    if angular[4:] == (True,) and callable(axis_angle):
+        result: CommandResult = axis_angle(axis, direction, arcsec)
+        return result
     return cast(AngularMotionPort, mount).move_angular(axis, direction, arcsec)
 
 
@@ -264,7 +274,7 @@ class MountTestMoveRunner:
         self,
         mount_park: MountParkPort,
         mount: MountPort,
-        steps: Sequence[PulseStep | AngularPulseStep],
+        steps: Sequence[PulseStep | AngularPulseStep | AxisAngleStep],
         *,
         settle_ms: int = 0,
         primitive: MountAlignPrimitive = MountAlignPrimitive.AXIS,
@@ -329,7 +339,7 @@ class MountTestMoveRunner:
         claim: MotionClaim,
         mount_park: MountParkPort,
         mount: MountPort,
-        steps: Sequence[PulseStep | AngularPulseStep],
+        steps: Sequence[PulseStep | AngularPulseStep | AxisAngleStep],
         settle_ms: int,
         primitive: MountAlignPrimitive = MountAlignPrimitive.AXIS,
         calibration: bool = False,
@@ -411,7 +421,7 @@ class MountTestMoveRunner:
         claim: MotionClaim,
         mount_park: MountParkPort,
         mount: MountPort,
-        steps: Sequence[PulseStep | AngularPulseStep],
+        steps: Sequence[PulseStep | AngularPulseStep | AxisAngleStep],
         settle_ms: int,
     ) -> MountPulseOutcome:
         """S6.8b: the steps as guide pulses while tracking. Nothing is unparked, parked or
@@ -490,7 +500,7 @@ class MountTestMoveRunner:
         claim: MotionClaim,
         mount_park: MountParkPort,
         mount: MountPort,
-        steps: Sequence[PulseStep | AngularPulseStep],
+        steps: Sequence[PulseStep | AngularPulseStep | AxisAngleStep],
         settle_ms: int,
         calibration: bool = False,
     ) -> MountPulseOutcome:

@@ -1956,6 +1956,9 @@ class MountTestMovePanel(QWidget):
             move.axis, move.direction, move.duration_ms, move.arcsec,
             settle_ms=self._settings.settle_ms,
             primitive=primitive,
+            # Operator (2026-11-18, diag fd84c75f): a fixed 1/5/20 degree step turns the axis
+            # itself by that angle, at any Dec (as OnStepAdapter's own test does).
+            axis_angle=self._fixed_nudge_arcsec() is not None,
         )
         if not started:
             return  # a move is already running
