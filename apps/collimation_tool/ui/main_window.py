@@ -456,6 +456,10 @@ class MainWindow(QMainWindow):
             threaded_captures=threaded_captures,
             motion_executor=self._motion_executor,
         )
+        # Field report 0fa9a1a3: one mount connection for everything -- Mount Align (the RA/Dec
+        # buttons and calibration) connects and disconnects with the Mount panel.
+        self._test_move_panel.follow_mount_connection()
+        self._mount_panel.connection_changed.connect(self._test_move_panel.mount_connection_changed)
 
         # Restore last session's connected camera + exposure/gain/
         # auto-exposure per panel — see module docstring's "Startup
