@@ -550,6 +550,27 @@ class TestSettings:
         assert config.focuser_max_position == 20000
         assert (config.flip_request_deg, config.tracking_stop_deg) == (90.0, 105.0)
 
+    @pytest.mark.parametrize(
+        ("indi_table", "expected"),
+        [
+            ("", False),  # nothing configured: both gates stay off
+            ("home_motion_enabled = true\n", True),  # the rig's opt-in keeps PARK/UNPARK
+            ("home_motion_enabled = true\npark_motion_enabled = false\n", False),
+            ("park_motion_enabled = true\n", True),
+        ],
+    )
+    def test_park_motion_follows_the_home_opt_in_unless_set_explicitly(
+        self, tmp_path: Path, indi_table: str, expected: bool
+    ) -> None:
+        """OnStepAdapter 0.7.x split PARK/UNPARK off the HOME gate (`park_motion_enabled`,
+        default off): CI on the 0.7.11 pin refused every unpark ("INDI PARK/UNPARK motion is
+        disabled in this installation"). Until 0.6.14 `home_motion_enabled = true` enabled
+        PARK/UNPARK too, so that opt-in carries over unless the new key is set."""
+        own = tmp_path / "config.toml"
+        own.write_text(f"[indi]\n{indi_table}")
+        config = load_onstep_indi_config(tmp_path / "missing-shared.toml", own)
+        assert config.park_motion_enabled is expected
+
     def test_tracking_authority_policy_is_read_and_validated(self, tmp_path: Path) -> None:
         own = tmp_path / "config.toml"
         missing = tmp_path / "s.toml"

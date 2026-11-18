@@ -907,6 +907,7 @@ def fake_indi_runtime_config(**overrides: object) -> IndiRuntimeConfig:
         safe_meridian_flip_via_home=True,
         focuser_max_position=10000,
         home_motion_enabled=True,
+        park_motion_enabled=True,
     )
     defaults.update(overrides)
     return IndiRuntimeConfig(**defaults)
