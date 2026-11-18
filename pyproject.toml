@@ -26,7 +26,9 @@ dependencies = [
     # 0.7.11 (OnStepAdapter#28): guarded astronomical/terrestrial mode arbitration; inactive
     # here (no `[terrestrial] state_file` in the config), so the calls this app makes are unchanged.
     # 0.7.12 (OnStepAdapter#40): reconnect_device() accepts a driver that reconnects by itself.
-    "onstep-adapter @ git+https://github.com/tschoenfelder/OnStepAdapter.git@19c2b989ecfbf91de6087df0c669fcd6da244187",
+    # 0.7.13 (#41): a short OnStep Status gap after stop commands is a wait, not an ABORT.
+    # 0.7.14 (#42): single-axis moves may use the fastest slew rates (1/5/20 degree steps).
+    "onstep-adapter @ git+https://github.com/tschoenfelder/OnStepAdapter.git@5a224e18cd4d71a56d60d9d0218c03735c23cd32",
     "smarttscope-live-analysis @ git+https://github.com/tschoenfelder/SmartTScopeLiveAnalysis.git@v0.1.0",
 ]
 
