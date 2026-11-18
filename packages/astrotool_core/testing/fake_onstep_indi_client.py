@@ -52,6 +52,7 @@ from onstep_adapter import (
     IndiMeridianState,
     IndiMountSnapshot,
     IndiPositionResult,
+    IndiReconnectResult,
     IndiRuntimeConfig,
     IndiStartupStatus,
     IndiStopResult,
@@ -273,6 +274,9 @@ class FakeIndiMount:
     def stop(self) -> IndiStopResult:
         return self._client.emergency_stop()
 
+    def reconnect_device(self, *, timeout: float = 20.0) -> IndiReconnectResult:
+        return self._client.reconnect_device(timeout=timeout)
+
     def meridian_status(self) -> IndiMeridianState | None:
         return None
 
@@ -388,6 +392,9 @@ class FakeOnStepIndiClient:
     #: controller that stopped answering shows `onstep_status_not_fresh`).
     snapshot_blockers: tuple[str, ...] = ()
     status_age_ms: float = 0.0
+    #: 0.6.14 `reconnect_device`: whether it brings fresh status back, and how often it ran.
+    reconnect_recovers: bool = True
+    reconnect_calls: int = 0
     park_rejected: bool = False
     go_home_rejected: bool = False
     #: Controls `emergency_stop`/`stop_tracking`.
@@ -505,7 +512,7 @@ class FakeOnStepIndiClient:
         self._require_home_motion()
         if self.unpark_rejected:
             return IndiUnparkResult(False, "unpark", None, "fake rejected unpark", None)
-        if not self.parked or self.slewing:
+        if not self.parked or self.slewing or self.snapshot_blockers:
             return IndiUnparkResult(
                 False, "preflight", None,
                 "Fresh parked, stationary and fault-free status is required", None,
@@ -513,6 +520,17 @@ class FakeOnStepIndiClient:
         self.parked = False
         self.tracking = False
         return IndiUnparkResult(True, "unparked", None, None, None)
+
+    def reconnect_device(self, *, timeout: float = 20.0) -> IndiReconnectResult:
+        """0.6.14: DISCONNECT + CONNECT of the INDI device; never moves the mount."""
+        self.reconnect_calls += 1
+        if not self.reconnect_recovers:
+            return IndiReconnectResult(
+                False, timeout, "no fresh OnStep status after reconnecting the driver"
+            )
+        self.snapshot_blockers = ()
+        self.status_age_ms = 0.0
+        return IndiReconnectResult(True, 2.5, None)
 
     def go_home(self, *, timeout: float = 120.0) -> IndiPositionResult:
         self._require_home_motion()

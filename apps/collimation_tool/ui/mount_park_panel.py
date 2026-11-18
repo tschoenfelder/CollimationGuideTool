@@ -82,6 +82,9 @@ class MountParkPanel(QWidget):
         self._action_issued_at: float | None = None
         self._action_worker: threading.Thread | None = None
         self._action_error: str | None = None
+        #: Field incident 908a26b9: the notice of the last automatic INDI reconnect, kept on
+        #: the status line until the next park/unpark so the operator sees it.
+        self._link_notice: str | None = None
         #: S6.8c-R5: the executor claim of the park/unpark in flight -- the main window's
         #: mount Stop cancels it (`MotionClaim.cancelled`), and the outcome then reads
         #: "stopped by the user" instead of a failure (OnStepAdapter's `park()` has no cancel
@@ -200,6 +203,7 @@ class MountParkPanel(QWidget):
         self._seen_busy_since_action = False
         self._action_issued_at = self._clock.monotonic()
         self._action_error = None
+        self._link_notice = None
         self._update_buttons_enabled()
         run = self._mount.park if action == "park" else self._mount.unpark
         if getattr(self._mount, "long_running_actions", False):
@@ -277,9 +281,10 @@ class MountParkPanel(QWidget):
             home = {None: "", True: ", home confirmed", False: ", HOME NOT CONFIRMED"}[
                 self._home_confirmed()
             ]
-            self._status_label.setText(
-                f"{state}, {tracking}{home}{self._policy_suffix(status.tracking)}"
-            )
+            text = f"{state}, {tracking}{home}{self._policy_suffix(status.tracking)}"
+            if self._link_notice is not None:
+                text = f"{text} — {self._link_notice}"
+            self._status_label.setText(text)
         worker = self._action_worker
         if worker is not None:
             if worker.is_alive():
@@ -298,6 +303,11 @@ class MountParkPanel(QWidget):
             settled_action = self._pending_action
             self._action_in_flight = False
             self._pending_action = None
+            take_notice = getattr(self._mount, "take_notice", None)
+            if callable(take_notice):
+                notice = take_notice()
+                if notice is not None and self._action_error is None:
+                    self._link_notice = notice
             if self._stopped_by_user():
                 # Review: a Stop never hides what OnStepAdapter reported for the command.
                 text = f"{(settled_action or 'action').capitalize()} stopped by the user"

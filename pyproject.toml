@@ -21,8 +21,9 @@ dependencies = [
     # holds the other axis's hour angle (the goto target RA includes the sidereal drift since
     # the reading) and turns tracking off as soon as the slew is seen. 0.6.13 (OnStepAdapter#38):
     # finite axis moves no longer use a goto -- only the requested axis is driven, with OnStep's
-    # single-axis motion, so a Dec move never turns the RA motor.
-    "onstep-adapter @ git+https://github.com/tschoenfelder/OnStepAdapter.git@30b896d51df2ecb4afa6855e5f907df53eef79e9",
+    # single-axis motion, so a Dec move never turns the RA motor. 0.6.14 (OnStepAdapter#39):
+    # mount.reconnect_device() reopens the INDI driver's link when OnStep stops answering.
+    "onstep-adapter @ git+https://github.com/tschoenfelder/OnStepAdapter.git@a089e12fe0f52818f016cf9160ac62ffaa5dff9e",
     "smarttscope-live-analysis @ git+https://github.com/tschoenfelder/SmartTScopeLiveAnalysis.git@v0.1.0",
 ]
 

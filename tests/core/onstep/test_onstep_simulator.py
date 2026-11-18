@@ -578,8 +578,8 @@ class TestGuidePulseCapability:
         (tests/contracts/test_onstep_guide_pulse_contract.py checks the pin itself)."""
         import onstep_adapter
 
-        # The pin (0.6.13, OnStepAdapter#38/#37 on 0.6.11 + DEC-first/jog) has guide_pulse like 0.5.0.
-        assert onstep_adapter.__version__ == "0.6.13"
+        # The pin (0.6.14, OnStepAdapter#37-#39 on 0.6.11) has guide_pulse like 0.5.0.
+        assert onstep_adapter.__version__ == "0.6.14"
         assert callable(getattr(onstep_adapter.IndiMount, "guide_pulse", None))
 
     def test_the_default_scenario_is_the_pinned_0_5_0(

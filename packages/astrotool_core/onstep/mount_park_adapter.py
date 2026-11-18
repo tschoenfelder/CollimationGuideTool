@@ -21,7 +21,7 @@ from onstep_adapter import IndiMount
 
 from astrotool_core.mount.park_port import MountParkPort, MountParkStatus
 from astrotool_core.onstep.connection import OnStepConnection
-from astrotool_core.onstep.link_health import explain_failure
+from astrotool_core.onstep.link_health import Recovery, explain_failure, recover_if_silent
 from astrotool_core.onstep.motion import finish_motion
 
 #: S6.0c: busy connection and nothing read yet -- "not known", never a guessed state.
@@ -35,6 +35,27 @@ class OnStepMountParkAdapter(MountParkPort):
         #: S6.0c: the last readings, served while another operation holds the connection.
         self._last_status: MountParkStatus | None = None
         self._last_home_confirmed = False
+        #: Field incident 908a26b9: what the last automatic reconnect did, for the panel.
+        self._notice: str | None = None
+
+    def take_notice(self) -> str | None:
+        """The operator notice of the last automatic INDI reconnect (once), or None."""
+        notice, self._notice = self._notice, None
+        return notice
+
+    def _recovered(self, mount: IndiMount, action: str) -> Recovery:
+        """USER DECISION 2026-11-17: OnStep stopped answering -> reconnect the INDI driver
+        automatically, log why, and let the caller retry the action ONCE."""
+        recovery = recover_if_silent(mount, self._device(), action)
+        if recovery.notice is not None:
+            self._notice = recovery.notice
+        return recovery
+
+    def _failure(self, mount: IndiMount, prefix: str, detail: str, recovery: Recovery) -> str:
+        text = f"{prefix}: {explain_failure(mount, detail, self._device())}"
+        if recovery.attempted and recovery.notice is not None:
+            text = f"{text} -- {recovery.notice}"
+        return text
 
     def connect(self) -> None:
         if not self._held:
@@ -104,10 +125,16 @@ class OnStepMountParkAdapter(MountParkPort):
                 return
             result = finish_motion(mount.park())
             if not result.confirmed:
-                raise RuntimeError(
-                    "OnStep did not reach the parked state: "
-                    + explain_failure(mount, str(result.error), self._device())
-                )
+                recovery = self._recovered(mount, "park")
+                if recovery.recovered:
+                    result = finish_motion(mount.park())
+                if not result.confirmed:
+                    raise RuntimeError(
+                        self._failure(
+                            mount, "OnStep did not reach the parked state",
+                            str(result.error), recovery,
+                        )
+                    )
 
     #: `park()` slews (seconds to minutes); `unpark()` is a quick switch
     #: flip + confirmation poll, not a slew, but both still make a
@@ -133,11 +160,18 @@ class OnStepMountParkAdapter(MountParkPort):
                 return
             result = mount.unpark()
             if not result.unparked_confirmed:
-                # Field incident 908a26b9: when OnStep has stopped answering, say THAT first.
-                raise RuntimeError(
-                    "OnStep did not reach unparked with tracking off: "
-                    + explain_failure(mount, str(result.error), self._device())
-                )
+                # Field incident 908a26b9: OnStep stopped answering -> reconnect, retry once;
+                # otherwise say THAT first.
+                recovery = self._recovered(mount, "unpark")
+                if recovery.recovered:
+                    result = mount.unpark()
+                if not result.unparked_confirmed:
+                    raise RuntimeError(
+                        self._failure(
+                            mount, "OnStep did not reach unparked with tracking off",
+                            str(result.error), recovery,
+                        )
+                    )
 
     def stop_tracking(self) -> None:
         """No bare "tracking off" exists over INDI yet -- `emergency_stop`
@@ -173,10 +207,16 @@ class OnStepMountParkAdapter(MountParkPort):
                 return
             result = mount.enable_tracking()
             if not result.tracking_confirmed:
-                raise RuntimeError(
-                    "OnStep did not confirm tracking on: "
-                    + explain_failure(mount, str(result.error), self._device())
-                )
+                recovery = self._recovered(mount, "tracking on")
+                if recovery.recovered:
+                    result = mount.enable_tracking()
+                if not result.tracking_confirmed:
+                    raise RuntimeError(
+                        self._failure(
+                            mount, "OnStep did not confirm tracking on",
+                            str(result.error), recovery,
+                        )
+                    )
 
     #: No `confirm_home()` method (unlike 0.3.5): >= 0.4.0 establishes home
     #: authority automatically from live status
