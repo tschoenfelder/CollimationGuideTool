@@ -1600,3 +1600,51 @@ class TestAstronomicalAxisMoveRefusalsSayWhy:
         assert log.pulses == [] and log.stops == []
         assert rig.client.tracking is True  # turned on by the star measurement, never off
         panel.stop()
+
+
+class TestOneMountConnectionForBasicMovement:
+    """Field report 0fa9a1a3 (2026-11-18): the mount was unparked from the Mount panel, but
+    the RA/Dec buttons stayed disabled because Mount Align had a Connect of its own that was
+    never pressed. "Why do you ask for mount align to allow basic movement of the mount?" --
+    Mount Align now follows the Mount panel's connection (`MainWindow` wires it)."""
+
+    @staticmethod
+    def _wired(rig: _Rig) -> tuple[MountParkPanel, MountTestMovePanel]:
+        mount_panel = MountParkPanel(rig.park)
+        align = MountTestMovePanel(
+            rig.mount,
+            mount_park=rig.park,
+            tracking_enforcer=TrackingEnforcer(
+                rig.park, OperatingMode.TERRESTRIAL, settle_timeout_s=0, clock=FakeClock()
+            ),
+            get_left_frame=rig.getter("left"),
+            get_right_frame=rig.getter("right"),
+            wait_for_left_frame=rig.waiter("left"),
+            wait_for_right_frame=rig.waiter("right"),
+            settings=_SETTINGS,
+            runner=MountTestMoveRunner(clock=rig.runner_clock),
+        )
+        align.follow_mount_connection()
+        mount_panel.connection_changed.connect(align.mount_connection_changed)
+        return mount_panel, align
+
+    def test_connecting_the_mount_enables_the_ra_dec_buttons_without_a_second_connect(
+        self, qapp: object, rig: _Rig
+    ) -> None:
+        mount_panel, align = self._wired(rig)
+        assert align._connect_button.isHidden()
+        assert not align._nudge_buttons["left"]["Dec +"].isEnabled()
+
+        mount_panel._connect_button.setChecked(True)
+
+        assert align.interface_state().available, align.interface_state().detail
+        assert align._nudge_buttons["left"]["Dec +"].isEnabled()
+        align._on_nudge_clicked("left", MountAxis.AXIS2, AxisDirection.POSITIVE)
+        _drain(align)
+        assert rig.client.axis_move_calls, align._result_label.text()
+
+        mount_panel._connect_button.setChecked(False)
+        assert not align.interface_state().available
+        assert not align._nudge_buttons["left"]["Dec +"].isEnabled()
+        align.stop()
+        mount_panel.stop()

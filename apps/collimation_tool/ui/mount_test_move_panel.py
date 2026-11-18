@@ -844,6 +844,18 @@ class MountTestMovePanel(QWidget):
     def _last_connect_error(self) -> str | None:
         return self._connection.last_connect_error
 
+    def follow_mount_connection(self) -> None:
+        """Field report 0fa9a1a3 (2026-11-18): "Why do you ask for mount align to allow basic
+        movement of the mount?" -- Mount Align no longer has a Connect of its own; it connects
+        and disconnects with the Mount panel's connection (`mount_connection_changed`)."""
+        self._connect_button.hide()
+
+    def mount_connection_changed(self, connected: bool) -> None:
+        """Follow the Mount panel: connect with it (a failure is shown here, as from the former
+        button) and disconnect with it."""
+        if connected != self._connected:
+            self._connect_button.setChecked(connected)
+
     def _on_toggle_connect(self, checked: bool) -> None:
         if checked:
             failure = self._connection.connect()

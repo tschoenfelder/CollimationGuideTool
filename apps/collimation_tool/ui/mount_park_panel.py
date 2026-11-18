@@ -22,7 +22,7 @@ from astrotool_core.mount.operating_mode import OperatingMode, TrackingEnforcer
 from astrotool_core.mount.park_port import MountParkPort
 from astrotool_core.session import ConnectionFailure, DeviceConnectionService
 from astrotool_core.timing import SYSTEM_CLOCK, Clock
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from collimation_tool.application.mount_motion import MotionClaim, MountMotionExecutor
@@ -40,6 +40,11 @@ _TRANSITION_CONFIRMATION_TIMEOUT_S = 30.0
 
 
 class MountParkPanel(QWidget):
+    #: True once this panel's mount connection is up, False once it is released. The main
+    #: window lets Mount Align follow it: basic RA/Dec movement needs no second Connect
+    #: (field report 0fa9a1a3, 2026-11-18).
+    connection_changed = Signal(bool)
+
     def __init__(
         self,
         mount: MountParkPort,
@@ -149,14 +154,17 @@ class MountParkPanel(QWidget):
             self._connect_button.setText("Disconnect")
             self._timer.start()
             self._poll_status()
-        else:
-            self._timer.stop()
-            failures = self._connection.disconnect()
-            self._action_in_flight = False
-            self._pending_action = None
-            self._connect_button.setText("Connect")
-            self._status_label.setText(failures[-1].status_text if failures else "Not connected.")
+            self._update_buttons_enabled()
+            self.connection_changed.emit(True)
+            return
+        self._timer.stop()
+        failures = self._connection.disconnect()
+        self._action_in_flight = False
+        self._pending_action = None
+        self._connect_button.setText("Connect")
+        self._status_label.setText(failures[-1].status_text if failures else "Not connected.")
         self._update_buttons_enabled()
+        self.connection_changed.emit(False)
 
     def _show_connection_failure(self, failure: ConnectionFailure) -> None:
         self._status_label.setText(failure.status_text)
