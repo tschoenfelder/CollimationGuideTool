@@ -16,7 +16,7 @@ refuses. S6.8d (R9): `pulse_axis` is kept ONLY because `MountPort` still declare
 dormant GuideTool (`GuideCorrectionPolicy`, `calibrate_axes`; no mount is wired there). Mount
 Align and reacquisition never call it -- they use `move_angular` and `guide_pulse`.
 
-`move_angular` works for offsets from 30" to 54000" (15 degrees) --
+`move_angular` works for offsets from 30" to 162000" (45 degrees, OnStepAdapter 0.7.17) --
 OnStepAdapter's own bound (raised from an original 720" floor after
 OnStepAdapter#14: every seed in AGENTS.md's Mount Align policy now clears
 it). Requests outside that range are refused with an explicit message,
@@ -103,13 +103,13 @@ from astrotool_core.onstep.errors import ONSTEP_OPERATION_ERRORS
 from astrotool_core.onstep.link_health import explain_failure, recover_if_silent
 from astrotool_core.onstep.motion import finish_motion
 
-#: OnStepAdapter's own `IndiAxisMover` bound (30"..15 degrees), taken from OnStepAdapter
+#: OnStepAdapter's own `IndiAxisMover` bound (30"..45 degrees since 0.7.17), from OnStepAdapter
 #: itself (single source). Reported to callers as `MountCapabilities.min_angular_arcsec` /
 #: `max_angular_arcsec` (S6.5); `MIN_AXIS_ARCSEC` stays re-exported for this app.
 MIN_AXIS_ARCSEC = float(MIN_AXIS_MOVE_ARCSEC)
 _MAX_AXIS_ARCSEC = float(MAX_AXIS_MOVE_DEG) * 3600.0
 #: Operator request (2026-11-18): RA/Dec steps up to 20 degrees on the sky, which OnStepAdapter
-#: bounds at 15 degrees per finite move (and an RA step grows by 1/cos(Dec) on the axis).
+#: bounded at 15 degrees per finite move before 0.7.17 (an RA step grows by 1/cos(Dec) on the axis).
 #: `move_angular` splits a larger turn into equal parts, each within OnStepAdapter's bound, up
 #: to this total -- a sanity limit, not a target.
 _MAX_TOTAL_AXIS_ARCSEC = 45.0 * 3600.0

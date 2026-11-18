@@ -30,6 +30,7 @@ from astrotool_core.onstep import (
     OnStepMountParkAdapter,
     OnStepMountPulseAdapter,
     load_onstep_indi_config,
+    mount_pulse_adapter,
 )
 from astrotool_core.testing import (
     ObservableRLock,
@@ -440,15 +441,27 @@ class TestAngularMotion:
         assert not result.accepted
         assert client.axis_move_calls == []
 
-    def test_a_dec_step_beyond_the_single_move_bound_runs_as_equal_parts(self) -> None:
-        """Operator request 2026-11-18: a Large RA/Dec step is 20 degrees; OnStepAdapter bounds
-        one finite move at 15 degrees, so the step runs as two 10 degree parts."""
+    def test_a_20_degree_dec_step_is_one_move(self) -> None:
+        """OnStepAdapter 0.7.17 bounds one finite move at 45 degrees: a Large step is one move."""
+        pulse, client = self._ready()
+        assert pulse.move_angular(MountAxis.AXIS2, AxisDirection.NEGATIVE, 20.0 * 3600).accepted
+        assert [deg for _axis, deg in client.axis_move_calls] == pytest.approx([-20.0])
+
+    def test_a_dec_step_beyond_the_single_move_bound_runs_as_equal_parts(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A step beyond OnStepAdapter's single-move bound (15 degrees before 0.7.17) runs as
+        equal parts."""
+        monkeypatch.setattr(mount_pulse_adapter, "_MAX_AXIS_ARCSEC", 15.0 * 3600.0)
         pulse, client = self._ready()
         assert pulse.move_angular(MountAxis.AXIS2, AxisDirection.NEGATIVE, 20.0 * 3600).accepted
         assert [axis for axis, _deg in client.axis_move_calls] == ["dec", "dec"]
         assert [deg for _axis, deg in client.axis_move_calls] == pytest.approx([-10.0, -10.0])
 
-    def test_an_ra_step_is_split_after_the_cos_dec_scaling(self) -> None:
+    def test_an_ra_step_is_split_after_the_cos_dec_scaling(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(mount_pulse_adapter, "_MAX_AXIS_ARCSEC", 15.0 * 3600.0)
         pulse, client = self._ready()
         client.dec_deg = 60.0  # 20 degrees on the sky = a 40 degree RA-axis turn
         assert pulse.move_angular(MountAxis.AXIS1, AxisDirection.POSITIVE, 20.0 * 3600).accepted
@@ -456,7 +469,10 @@ class TestAngularMotion:
         assert len(parts) == 3 and sum(parts) == pytest.approx(40.0)
         assert all(deg <= 15.0 for deg in parts)
 
-    def test_a_stop_between_two_parts_sends_no_further_part(self) -> None:
+    def test_a_stop_between_two_parts_sends_no_further_part(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(mount_pulse_adapter, "_MAX_AXIS_ARCSEC", 15.0 * 3600.0)
         pulse, client = self._ready()
         real = client.move_axis_deg
 

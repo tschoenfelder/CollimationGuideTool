@@ -37,9 +37,9 @@ class TestOnStepReportsItsAngularBounds:
         caps = _connected_onstep().capabilities()
         assert caps.supports_angular_moves is True
         assert caps.min_angular_arcsec == float(MIN_AXIS_MOVE_ARCSEC)
-        # Operator request 2026-11-18 (20 degree steps): move_angular splits a turn beyond
-        # OnStepAdapter's single-move bound into parts, up to a 45 degree total.
-        assert caps.max_angular_arcsec == 45.0 * 3600.0 > float(MAX_AXIS_MOVE_DEG) * 3600.0
+        # Operator request 2026-11-18 (20 degree steps): up to a 45 degree total; OnStepAdapter
+        # 0.7.17 runs that as one move (move_angular would split a larger single-move bound).
+        assert caps.max_angular_arcsec == 45.0 * 3600.0 == float(MAX_AXIS_MOVE_DEG) * 3600.0
         assert caps.supports_pulse_guiding is False  # S6.0: unchanged
 
     def test_the_bounds_are_reported_before_connect_too(self) -> None:

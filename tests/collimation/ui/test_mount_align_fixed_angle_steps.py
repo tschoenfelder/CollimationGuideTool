@@ -44,13 +44,13 @@ def test_small_and_medium_dec_steps_are_one_move(
     panel.stop()
 
 
-def test_a_large_dec_step_is_20_degrees_in_two_parts(qapp: object, rig: _Rig) -> None:
+def test_a_large_dec_step_is_one_20_degree_move(qapp: object, rig: _Rig) -> None:
+    """OnStepAdapter 0.7.17 runs a finite move of up to 45 degrees (field capture 2eb2a5cb:
+    two 10 degree parts doubled the time of a 20 degree step)."""
     panel = rig.panel()  # Large is the default Move size
     panel._on_nudge_clicked("right", MountAxis.AXIS2, AxisDirection.NEGATIVE)
     _drain(panel)
-    assert _dec_degrees(rig) == [pytest.approx(-10.0), pytest.approx(-10.0)], (
-        panel._result_label.text()
-    )
+    assert _dec_degrees(rig) == [pytest.approx(-20.0)], panel._result_label.text()
     panel.stop()
 
 
@@ -63,7 +63,7 @@ def test_a_large_ra_step_is_20_degrees_on_the_sky(qapp: object, rig: _Rig) -> No
     panel._on_nudge_clicked("left", MountAxis.AXIS1, AxisDirection.POSITIVE)
     _drain(panel)
     ra = [(axis, deg) for axis, deg in rig.client.axis_move_calls if axis == "ra"]
-    assert len(ra) == 2, panel._result_label.text()
+    assert len(ra) == 1, panel._result_label.text()  # one move (OnStepAdapter 0.7.17: <= 45 deg)
     assert sum(rig.client.sky_move_arcsec()) / 3600.0 == pytest.approx(20.0)
     assert sum(deg for _a, deg in ra) == pytest.approx(
         20.0 / math.cos(math.radians(rig.client.axis_move_decs[0]))

@@ -141,7 +141,7 @@ from astrotool_core.timing import SYSTEM_CLOCK, Clock
 
 #: 0.4.1 `IndiAxisMover.move` argument bounds (indi_axis_motion.py).
 _MIN_AXIS_MOVE_DEG = 30.0 / 3600.0
-_MAX_AXIS_MOVE_DEG = 15.0
+_MAX_AXIS_MOVE_DEG = 45.0  # 0.7.17
 #: 0.4.1 `enable_tracking_via_indi` poll period and required fresh polls.
 _TRACKING_POLL_S = 0.15
 #: Float slack for poll-count arithmetic (k * 0.15 is not exact in binary).
@@ -585,7 +585,7 @@ class SimulatedOnStepIndiClient(FakeOnStepIndiClient):
         if not math.isfinite(offset_deg) or not (
             _MIN_AXIS_MOVE_DEG <= abs(offset_deg) <= _MAX_AXIS_MOVE_DEG
         ):
-            raise ValueError("Axis move must be between 30 arcseconds and 15 degrees")
+            raise ValueError("Axis move must be between 30 arcseconds and 45 degrees")
         if not math.isfinite(timeout_s) or not 1 <= timeout_s <= 60:
             raise ValueError("Axis move timeout must be between 1 and 60 seconds")
         if not math.isfinite(poll_s) or not 0.05 <= poll_s <= 0.25:
