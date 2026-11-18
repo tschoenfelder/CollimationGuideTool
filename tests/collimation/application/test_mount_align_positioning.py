@@ -24,6 +24,7 @@ from collimation_tool.application.mount_align_positioning import (
     NO_ANGULAR_MOVE,
     NO_OPTICS_NUDGE_ARCSEC,
     cap_text,
+    nudge_angle_arcsec,
     nudge_cap_arcsec,
     nudge_fraction,
     plan_nudge,
@@ -239,3 +240,25 @@ def test_every_move_is_one_submitted_sequence() -> None:
         ("submit_sequence", [(A2, NEG, 300, 45.0)], {"settle_ms": 7, **axis}),
         ("submit_sequence", [(A1, POS, 10)], {"settle_ms": 0, **axis}),
     ]
+
+
+def test_a_fixed_angle_nudge_ignores_calibration_and_the_frame_cap() -> None:
+    """Operator request 2026-11-18: angular RA/Dec steps are fixed angles (1/5/20 degrees)."""
+    twenty = nudge_angle_arcsec(MountAlignmentSettings(), MovementSize.LARGE)
+    assert twenty == 72000.0
+    plan = _nudge(matrix=_matrix(0.1), fixed_arcsec=twenty)  # cap here is 600"
+    assert plan.move is not None and not plan.move.clamped
+    assert plan.move.arcsec == twenty
+
+
+def test_a_fixed_angle_below_the_mount_floor_is_refused() -> None:
+    plan = _nudge(fixed_arcsec=10.0, floor_arcsec=lambda: 30.0)
+    assert plan.move is None and plan.error is not None and "nothing was sent" in plan.error
+
+
+def test_guide_pulse_nudges_never_take_the_fixed_angle() -> None:
+    from collimation_tool.application.mount_motion import MountAlignPrimitive
+
+    plan = _nudge(fixed_arcsec=72000.0, primitive=MountAlignPrimitive.GUIDE_PULSE)
+    assert plan.move is not None and plan.move.arcsec is None  # sized in guide-ms as before
+

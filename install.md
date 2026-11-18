@@ -299,7 +299,9 @@ OnStepAdapter could own the serial port exclusively). After upgrading
 OnStepAdapter, update the Pi's venv:
 `.venv/bin/pip install <release wheel URL from pyproject.toml>`.
 
-**Upgrading the Pi to the pinned OnStepAdapter build** (0.7.12, OnStepAdapter#40: the automatic
+**Upgrading the Pi to the pinned OnStepAdapter build** (0.7.14, OnStepAdapter#41/#42: a short
+status gap after a stop no longer aborts a move, and coarse steps use the fastest slew rates;
+0.7.12, OnStepAdapter#40: the automatic
 reconnect accepts a driver that reconnects by itself; 0.7.11, OnStepAdapter#28: guarded
 astronomical/terrestrial mode arbitration -- inactive unless `[terrestrial] state_file` is set
 in the OnStepAdapter config, which this app does not set; 0.6.14, OnStepAdapter#39: the app
@@ -314,9 +316,9 @@ DEC; a finite axis move holds the other axis's hour angle and turns tracking
 off as soon as the slew is seen). From the CollimationGuideTool checkout on the Pi, with the app closed:
 
 ```bash
-.venv/bin/pip install --force-reinstall --no-deps "git+https://github.com/tschoenfelder/OnStepAdapter.git@19c2b989ecfbf91de6087df0c669fcd6da244187"
+.venv/bin/pip install --force-reinstall --no-deps "git+https://github.com/tschoenfelder/OnStepAdapter.git@5a224e18cd4d71a56d60d9d0218c03735c23cd32"
 .venv/bin/python -c "import onstep_adapter, onstep_mock, onstep_adapter.capture, onstep_adapter.indi_motion, onstep_adapter.indi_jog; print(onstep_adapter.__version__)"
-# must print: 0.7.12   (an ImportError means the v0.6.11 tag build, 0.6.2 or 0.5.0 is still installed)
+# must print: 0.7.14   (an ImportError means the v0.6.11 tag build, 0.6.2 or 0.5.0 is still installed)
 ```
 
 `--force-reinstall` makes pip replace whatever OnStepAdapter build is
@@ -452,6 +454,14 @@ Pi menu (or `.venv/bin/collimation-tool` / `.venv/bin/guide-tool` from a
 terminal) after upgrading — there is no background service to restart.
 
 ### Config migration notes
+
+**RA/Dec steps are fixed angles: 1, 5 and 20 degrees (2026-11-18).** On a mount with
+angular moves (Terrestrial mode) the RA/Dec buttons move Small 1°, Medium 5° and Large 20° on
+the sky (`nudge_small_deg`, `nudge_medium_deg`, `nudge_large_deg` under `[mount_alignment]`),
+whatever the camera optics or calibration, and not limited by `max_nudge_arcsec`. A step beyond
+OnStepAdapter's 15° single-move bound runs as equal parts (Stop works between them). Set
+`nudge_fixed_angles = false` to get the frame-relative sizes described below back. Guide-pulse
+nudges (Astronomical mode) are unchanged.
 
 **Move size now sizes the RA/Dec buttons too (field report b977fe85).** The
 Small / Medium / Large selector in Mount Align used to size only the

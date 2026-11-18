@@ -106,6 +106,17 @@ def nudge_fraction(settings: MountAlignmentSettings, size: MovementSize) -> floa
     }[size]
 
 
+def nudge_angle_arcsec(settings: MountAlignmentSettings, size: MovementSize) -> float:
+    """The fixed RA/Dec step on the sky at Move size `size` on a mount with angular moves
+    (operator request 2026-11-18: Small 1, Medium 5, Large 20 degrees)."""
+    degrees = {
+        MovementSize.SMALL: settings.nudge_small_deg,
+        MovementSize.MEDIUM: settings.nudge_medium_deg,
+        MovementSize.LARGE: settings.nudge_large_deg,
+    }[size]
+    return degrees * 3600.0
+
+
 def uncalibrated_nudge_arcsec(
     settings: MountAlignmentSettings,
     camera_key: str,
@@ -152,6 +163,7 @@ def plan_nudge(
     primitive: MountAlignPrimitive = MountAlignPrimitive.AXIS,
     arcsec_per_px: Callable[[], float | None] = lambda: None,
     fraction: float | None = None,
+    fixed_arcsec: float | None = None,
 ) -> NudgePlan:
     """Size one RA/Dec nudge (`fraction` of the camera's frame width, from the Move size;
     default `nudge_target_fraction`).
@@ -185,6 +197,22 @@ def plan_nudge(
         )
     if not guide and not angular_only():
         return NudgePlan(error=NO_ANGULAR_MOVE)
+    if not guide and fixed_arcsec is not None:
+        # Operator request 2026-11-18: a fixed angle on the sky (1/5/20 degrees by Move size),
+        # independent of optics, calibration and the frame-relative safety cap.
+        floor = floor_arcsec()
+        if fixed_arcsec < floor:
+            return NudgePlan(
+                error=(
+                    f"{AXIS_LABELS[axis]} move of {fixed_arcsec:.1f}\" is below the mount's "
+                    f'smallest angular move ({floor:.0f}") -- nothing was sent'
+                )
+            )
+        unit = angular_unit_rate(settings)
+        duration_ms = max(1, round(fixed_arcsec / unit * 1000.0))
+        return NudgePlan(
+            move=NudgeMove(camera_key, axis, direction, duration_ms, False, fixed_arcsec)
+        )
     duration_ms = 0
     if matrix is not None:
         response = matrix.response_for(axis, direction)

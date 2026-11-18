@@ -22,6 +22,7 @@ import time
 from collections.abc import Callable
 
 import numpy as np
+import pytest
 from astrotool_core.acquisition.stable_frame_acquisition import (
     DeliveredFrame,
     FrameAcquisitionResult,
@@ -36,6 +37,14 @@ from astrotool_core.testing.fake_mount_park import FakeMountPark
 from astrotool_core.timing import FakeClock
 from collimation_tool.ui.mount_test_move_panel import MountTestMovePanel
 from collimation_tool.ui.mount_test_move_runner import MountTestMoveRunner
+
+
+@pytest.fixture(autouse=True)
+def _frame_relative_nudges(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests pin the frame-relative RA/Dec nudge (`nudge_fixed_angles = false`); the
+    default fixed 1/5/20 degree steps are covered by test_mount_align_fixed_angle_steps.py."""
+    monkeypatch.setattr(MountTestMovePanel, "_fixed_nudge_arcsec", lambda self: None)
+
 
 _SETTINGS = MountAlignmentSettings(
     settle_ms=0,

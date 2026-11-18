@@ -72,6 +72,14 @@ from collimation_tool.ui.mount_test_move_panel import (
 )
 from collimation_tool.ui.mount_test_move_runner import MountTestMoveRunner
 
+
+@pytest.fixture(autouse=True)
+def _frame_relative_nudges(monkeypatch: pytest.MonkeyPatch) -> None:
+    """These tests pin the frame-relative RA/Dec nudge (`nudge_fixed_angles = false`); the
+    default fixed 1/5/20 degree steps are covered by test_mount_align_fixed_angle_steps.py."""
+    monkeypatch.setattr(MountTestMovePanel, "_fixed_nudge_arcsec", lambda self: None)
+
+
 _SHAPE = (240, 240)
 _CENTER = (120.0, 120.0)
 #: Issue #30: a flat/all-zero frame has zero variance, which

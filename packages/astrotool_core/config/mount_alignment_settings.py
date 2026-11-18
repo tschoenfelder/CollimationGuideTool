@@ -82,6 +82,14 @@ _DEFAULT_NUDGE_TARGET_FRACTION = 0.5
 #: Small are fractions of the clicked camera's frame width too: half and a fifth of Large
 #: (25% and 10% by default).
 _DEFAULT_NUDGE_SMALL_FRACTION = _DEFAULT_NUDGE_TARGET_FRACTION / 5
+#: Operator request (2026-11-18): on a mount with angular moves (Terrestrial mode) the RA/Dec
+#: buttons move FIXED angles on the sky -- Small 1, Medium 5, Large 20 degrees -- independent
+#: of camera optics or calibration and not limited by `max_nudge_arcsec` (which still caps
+#: frame-relative screen moves and guide pulses). OnStepMountPulseAdapter splits a move beyond
+#: OnStepAdapter's single-move bound (15 degrees) into equal parts.
+_DEFAULT_NUDGE_SMALL_DEG = 1.0
+_DEFAULT_NUDGE_MEDIUM_DEG = 5.0
+_DEFAULT_NUDGE_LARGE_DEG = 20.0
 _DEFAULT_NUDGE_MEDIUM_FRACTION = _DEFAULT_NUDGE_TARGET_FRACTION / 2
 #: Real report: "calibration doesn't wait for mount to be stabilized" --
 #: MountTestMoveRunner used to capture the "after" frame the instant
@@ -228,6 +236,14 @@ class MountAlignmentSettings:
     #: The RA/Dec nudge at Move size Small / Medium (Large = `nudge_target_fraction`).
     nudge_small_fraction: float = _DEFAULT_NUDGE_SMALL_FRACTION
     nudge_medium_fraction: float = _DEFAULT_NUDGE_MEDIUM_FRACTION
+    #: The RA/Dec step at Move size Small / Medium / Large on a mount with angular moves
+    #: (degrees on the sky; operator request 2026-11-18).
+    nudge_small_deg: float = _DEFAULT_NUDGE_SMALL_DEG
+    nudge_medium_deg: float = _DEFAULT_NUDGE_MEDIUM_DEG
+    nudge_large_deg: float = _DEFAULT_NUDGE_LARGE_DEG
+    #: True (default): those fixed angles; False: the former frame-relative RA/Dec nudge
+    #: (`nudge_*_fraction` of the clicked camera's frame, capped by `max_nudge_arcsec`).
+    nudge_fixed_angles: bool = True
     settle_ms: int = _DEFAULT_SETTLE_MS
     frame_settle_ms: int = _DEFAULT_FRAME_SETTLE_MS
     max_nudge_arcsec: float = _DEFAULT_MAX_NUDGE_ARCSEC
@@ -257,6 +273,13 @@ def _read[T](table: dict[str, Any], key: str, default: T, convert: Callable[[Any
         return convert(value)
     except (TypeError, ValueError):
         return default
+
+
+def _strict_bool(value: object) -> bool:
+    """A TOML boolean; anything else is malformed (-> the default)."""
+    if not isinstance(value, bool):
+        raise TypeError(f"not a boolean: {value!r}")
+    return value
 
 
 def _positive_float(value: object) -> float:
@@ -366,6 +389,14 @@ def load_mount_alignment_settings(
         ),
         nudge_medium_fraction=_read(
             table, "nudge_medium_fraction", defaults.nudge_medium_fraction, _positive_float
+        ),
+        nudge_small_deg=_read(table, "nudge_small_deg", defaults.nudge_small_deg, _positive_float),
+        nudge_medium_deg=_read(
+            table, "nudge_medium_deg", defaults.nudge_medium_deg, _positive_float
+        ),
+        nudge_large_deg=_read(table, "nudge_large_deg", defaults.nudge_large_deg, _positive_float),
+        nudge_fixed_angles=_read(
+            table, "nudge_fixed_angles", defaults.nudge_fixed_angles, _strict_bool
         ),
         settle_ms=settle_ms,
         frame_settle_ms=frame_settle_ms,
