@@ -77,6 +77,9 @@ class IndiClient:
         self._stop = threading.Event()
         self._cond = threading.Condition()
         self._vectors: dict[tuple[str, str], VectorState] = {}
+        #: The FIRST state seen per vector since the last `connect()` -- e.g. whether a shared
+        #: device was already connected before this client asked for it.
+        self._first_seen: dict[tuple[str, str], VectorState] = {}
         self._parser = IncrementalIndiParser(self._on_element)
 
     @property
@@ -94,6 +97,8 @@ class IndiClient:
                 f"IndiClient: could not connect to indiserver at {self._host}:{self._port}: {exc}"
             ) from exc
         self._sock.settimeout(0.5)  # let _read_loop notice self._stop promptly
+        with self._cond:
+            self._first_seen.clear()
         self._stop.clear()
         self._reader_thread = threading.Thread(
             target=self._read_loop, name="indi-client-reader", daemon=True
@@ -155,8 +160,15 @@ class IndiClient:
         name = element.attrs.get("name", "")
         state = element.attrs.get("state", "Idle")
         with self._cond:
-            self._vectors[(device, name)] = VectorState(state=state, elements=element.children)
+            vector = VectorState(state=state, elements=element.children)
+            self._vectors[(device, name)] = vector
+            self._first_seen.setdefault((device, name), vector)
             self._cond.notify_all()
+
+    def first_seen_vector(self, device: str, name: str) -> VectorState | None:
+        """The first state of `(device, name)` received since the last `connect()`."""
+        with self._cond:
+            return self._first_seen.get((device, name))
 
     def _send(self, fragment: str) -> None:
         sock = self._sock

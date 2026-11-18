@@ -121,6 +121,9 @@ class IndiFilterWheelAdapter(FilterWheelPort):
         self._client = (client_factory or IndiClient)(host, port)
         self._connected = False
         self._available = False
+        #: True only when THIS app switched the shared wheel on (it was disconnected in INDI
+        #: before our CONNECT): only then does `disconnect()` send INDI DISCONNECT.
+        self._switched_on_by_us = False
         #: None until the first refresh (the first status() always refreshes).
         self._last_property_refresh: float | None = None
         #: S6.3 review: when the last slot change was sent (clock time) and whether the
@@ -275,6 +278,11 @@ class IndiFilterWheelAdapter(FilterWheelPort):
             self._client.close()
             raise
         self._connected = True
+        # The first CONNECTION state seen is the one getProperties reported, i.e. BEFORE our
+        # CONNECT reached the driver (indiserver answers in order): Off means we switched the
+        # shared wheel on. Unknown counts as "not ours" -- never switch off another client's.
+        first = self._client.first_seen_vector(self._device_name, "CONNECTION")
+        self._switched_on_by_us = first is not None and first.elements.get("CONNECT") != "On"
         self._command_sent_at = None
         self._busy_seen_since_command = False
         self._requested_slot = None
@@ -288,7 +296,12 @@ class IndiFilterWheelAdapter(FilterWheelPort):
             _log.info("IndiFilterWheelAdapter: connected to %r", self._device_name)
 
     def disconnect(self) -> None:
-        if self._connected:
+        """Release the wheel. The device is SHARED on indiserver (Ekos may use it too): INDI
+        DISCONNECT is sent only when this app switched the wheel on; otherwise only this app's
+        own connection closes and the driver stays connected (operator request 2026-11-18,
+        after diag 8472eb2f: a DISCONNECT on quit left the wheel off for every client and for
+        the next start)."""
+        if self._connected and self._switched_on_by_us:
             # Best-effort -- a dropped connection must not crash teardown
             # (real incident b6d3384b), same convention as the focuser
             # and mount adapters.
@@ -296,9 +309,18 @@ class IndiFilterWheelAdapter(FilterWheelPort):
                 self._client.send_new_switch_vector(
                     self._device_name, "CONNECTION", {"DISCONNECT": True}
                 )
+            _log.info("IndiFilterWheelAdapter: disconnected %r (this app had connected it)",
+                      self._device_name)
+        elif self._connected:
+            _log.info(
+                "IndiFilterWheelAdapter: left %r connected in INDI (it was already connected "
+                "before this app; only this app's connection closes)",
+                self._device_name,
+            )
         self._client.close()
         self._connected = False
         self._available = False
+        self._switched_on_by_us = False
 
     @property
     def is_available(self) -> bool:
