@@ -39,7 +39,7 @@ dependencies = [
     # 0.7.23 (#51): a 1 deg step in ~3 s (0.06 deg small-step tolerance, rest from one reading).
     # 0.7.24 (#52): a single late reading no longer ends a step mid-coast.
     # 0.7.25 (#53): close enough (6 %, max 0.5 deg) needs no second move; learning fix.
-    "onstep-adapter @ git+https://github.com/tschoenfelder/OnStepAdapter.git@f25f6bf10e4e26e68c8d93f8f2cc5bb6ee144e13",
+    "onstep-adapter @ git+https://github.com/tschoenfelder/OnStepAdapter.git@f49f8a35819147ddee214040d7129099f9f0f312",
     "smarttscope-live-analysis @ git+https://github.com/tschoenfelder/SmartTScopeLiveAnalysis.git@v0.1.0",
 ]
 
