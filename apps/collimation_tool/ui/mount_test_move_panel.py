@@ -739,7 +739,7 @@ class MountTestMovePanel(QWidget):
         size_row = FlowLayout()
         size_row.addWidget(QLabel("Move size"))
         for label, size in _SIZE_BUTTONS:
-            button = QPushButton(label)
+            button = QPushButton(self._size_label(label, size))
             button.setCheckable(True)
             self._size_group.addButton(button)
             self._size_buttons[size] = button
@@ -1793,6 +1793,14 @@ class MountTestMovePanel(QWidget):
         return None
 
     # ---- S6.0: manual moves on a mount without timed pulses ------------------
+    def _size_label(self, label: str, size: MovementSize) -> str:
+        """Operator (2026-11-20): with fixed RA/Dec steps the Move size buttons read as their
+        angles ("1°", "5°", "20°"); frame-relative nudges keep Small/Medium/Large."""
+        if not self._settings.nudge_fixed_angles:
+            return label
+        degrees = nudge_angle_arcsec(self._settings, size) / 3600.0
+        return f"{degrees:g}°"
+
     def _nudge_cap_arcsec(self) -> float:
         return nudge_cap_arcsec(self._settings)
 

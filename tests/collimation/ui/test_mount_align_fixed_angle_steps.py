@@ -94,3 +94,11 @@ def test_a_fixed_step_waits_no_extra_settle_time(
     _drain(panel)
     assert calls and calls[0]["settle_ms"] == 0 and calls[0]["axis_angle"] is True
     panel.stop()
+
+
+def test_the_move_size_buttons_show_their_angles(qapp: object, rig: _Rig) -> None:
+    """Operator (2026-11-20): "Change buttons small, medium large to the degree values"."""
+    panel = rig.panel()
+    labels = [panel._size_buttons[size].text() for size in MovementSize]
+    assert labels == ["1°", "5°", "20°"]
+    panel.stop()
