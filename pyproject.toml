@@ -33,7 +33,9 @@ dependencies = [
     # 0.7.17 (#45): finite moves stop on target from the live position; up to 45 deg in one move.
     # 0.7.18 (#46): DEC moves never run past the DEC bound (measured direction, braking-aware).
     # 0.7.19 (#47): Small steps land in one pass (speed-up model, braking learned per speed).
-    "onstep-adapter @ git+https://github.com/tschoenfelder/OnStepAdapter.git@d89febee6fe8ab77ada462ea2bc8b9a115afeb26",
+    # 0.7.20 (#48): 250 ms driver polling while a move runs; moves land within 0.5 %.
+    # 0.7.21 (#49): a move OnStep stops at a limit ends at once; the move back is allowed.
+    "onstep-adapter @ git+https://github.com/tschoenfelder/OnStepAdapter.git@eb8dece4643ba6dc0df1cf403d8f41cdfdbd045f",
     "smarttscope-live-analysis @ git+https://github.com/tschoenfelder/SmartTScopeLiveAnalysis.git@v0.1.0",
 ]
 
