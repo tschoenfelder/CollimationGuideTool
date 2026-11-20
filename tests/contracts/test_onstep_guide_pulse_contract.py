@@ -47,13 +47,13 @@ from onstep_adapter.indi_status import IndiMountSnapshot
 _PYPROJECT = Path(__file__).resolve().parents[2] / "pyproject.toml"
 _PINNED_SOURCE = (
     "git+https://github.com/tschoenfelder/OnStepAdapter.git@"
-    "c00b73830533fb1c439c07d8d9169f674cae5d00"
+    "f25f6bf10e4e26e68c8d93f8f2cc5bb6ee144e13"
 )
-#: The pinned build reports 0.7.24 (OnStepAdapter#52 rest, #51 1 deg, #50, #49 limit, #48, #45,
+#: The pinned build reports 0.7.25 (OnStepAdapter#53 close enough, #52 rest, #51, #49 limit, #45,
 #: rates, #40 reconnect fix, #28 terrestrial mode, #39 reconnect, #38 single-axis moves,
 #: #37 on top of
 #: #36's merge of the 0.6.7-0.6.11 jog fixes with main's DEC-first rule and hold-to-move jogs).
-PINNED_ONSTEP_ADAPTER_VERSION = "0.7.24"
+PINNED_ONSTEP_ADAPTER_VERSION = "0.7.25"
 
 
 class TestThePinnedOnStepAdapter:
