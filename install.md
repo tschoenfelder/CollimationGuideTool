@@ -327,9 +327,9 @@ DEC; a finite axis move holds the other axis's hour angle and turns tracking
 off as soon as the slew is seen). From the CollimationGuideTool checkout on the Pi, with the app closed:
 
 ```bash
-.venv/bin/pip install --force-reinstall --no-deps "git+https://github.com/tschoenfelder/OnStepAdapter.git@f49f8a35819147ddee214040d7129099f9f0f312"
+.venv/bin/pip install --force-reinstall --no-deps "git+https://github.com/tschoenfelder/OnStepAdapter.git@cc8c3612675d9373268853d1aaf243828426eb18"
 .venv/bin/python -c "import onstep_adapter, onstep_mock, onstep_adapter.capture, onstep_adapter.indi_motion, onstep_adapter.indi_jog; print(onstep_adapter.__version__)"
-# must print: 0.7.26   (an ImportError means the v0.6.11 tag build, 0.6.2 or 0.5.0 is still installed)
+# must print: 0.7.27   (an ImportError means the v0.6.11 tag build, 0.6.2 or 0.5.0 is still installed)
 ```
 
 `--force-reinstall` makes pip replace whatever OnStepAdapter build is
