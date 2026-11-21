@@ -14,6 +14,7 @@ from dataclasses import dataclass
 
 import numpy as np
 from astrotool_core.config import MountAlignmentSettings
+from astrotool_core.config.mount_alignment_settings import MAX_SCREEN_MOVE_SHARE
 from astrotool_core.mount import (
     AxisDirection,
     AxisResponse,
@@ -341,6 +342,7 @@ def plan_screen_move(
     if frame is None:
         return ScreenMovePlan(error=f"{missing_label(mode)} before pulsing")
     frame_height, frame_width = frame.shape[:2]
+    fraction = min(fraction, MAX_SCREEN_MOVE_SHARE)  # never beyond 25 % of the field
     dx_sign, dy_sign = screen_direction.value
     target_dx_px = dx_sign * fraction * frame_width
     target_dy_px = dy_sign * fraction * frame_height

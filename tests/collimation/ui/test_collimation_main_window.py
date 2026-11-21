@@ -249,6 +249,20 @@ def _axis_response(axis: MountAxis, dx_px: float, dy_px: float) -> AxisResponse:
     )
 
 
+
+def _pin_screen_fractions(panel: MountTestMovePanel) -> None:
+    """The screen-move steps these tests were written for (5/15/30 % of the frame); the
+    defaults are now 1/5/20 % (operator, 2026-11-21)."""
+    import dataclasses
+
+    panel._settings = dataclasses.replace(
+        panel._settings,
+        screen_move_small_fraction=0.05,
+        screen_move_medium_fraction=0.15,
+        screen_move_large_fraction=0.30,
+    )
+
+
 class TestDegenerateCalibrationMessage:
     """Direct unit coverage for _degenerate_calibration_message() -- the
     panel-level tests in TestMountTestMovePanel exercise it end-to-end
@@ -5754,6 +5768,7 @@ class TestScreenRelativeMove:
     def test_clicking_left_solves_and_submits_the_right_pulse_sequence(self, qapp: object) -> None:
         pulse_mount = _EqMsMount()
         panel = self._panel(mount=pulse_mount)
+        _pin_screen_fractions(panel)  # the 5/15/30 % steps these assertions encode
         panel._connect_button.setChecked(True)
         panel._calibration["left"] = self._matrix()
         panel._update_buttons_enabled()
@@ -5772,6 +5787,7 @@ class TestScreenRelativeMove:
     def test_medium_size_solves_a_larger_duration_than_small(self, qapp: object) -> None:
         pulse_mount = _EqMsMount()
         panel = self._panel(mount=pulse_mount)
+        _pin_screen_fractions(panel)  # the 5/15/30 % steps these assertions encode
         panel._connect_button.setChecked(True)
         panel._calibration["left"] = self._matrix()
         panel._update_buttons_enabled()
