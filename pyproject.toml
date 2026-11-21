@@ -40,7 +40,8 @@ dependencies = [
     # 0.7.24 (#52): a single late reading no longer ends a step mid-coast.
     # 0.7.25 (#53): close enough (6 %, max 0.5 deg) needs no second move; learning fix.
     # 0.7.27 (#55): fix the aim-factor update so it converges to the measured gain.
-    "onstep-adapter @ git+https://github.com/tschoenfelder/OnStepAdapter.git@cc8c3612675d9373268853d1aaf243828426eb18",
+    # 0.7.28 (#56): connect waits for the driver's UTC time.
+    "onstep-adapter @ git+https://github.com/tschoenfelder/OnStepAdapter.git@ee70e915001cdf3db5feb54b460ddbb406c50769",
     "smarttscope-live-analysis @ git+https://github.com/tschoenfelder/SmartTScopeLiveAnalysis.git@v0.1.0",
 ]
 

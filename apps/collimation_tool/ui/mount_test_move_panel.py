@@ -1794,12 +1794,17 @@ class MountTestMovePanel(QWidget):
 
     # ---- S6.0: manual moves on a mount without timed pulses ------------------
     def _size_label(self, label: str, size: MovementSize) -> str:
-        """Operator (2026-11-20): with fixed RA/Dec steps the Move size buttons read as their
-        angles ("1°", "5°", "20°"); frame-relative nudges keep Small/Medium/Large."""
+        """Operator (2026-11-20/21): the Move size buttons read their RA/Dec angle and their
+        screen-move share of the frame ("1° · 1%", "5° · 5%", "20° · 20%")."""
         if not self._settings.nudge_fixed_angles:
             return label
         degrees = nudge_angle_arcsec(self._settings, size) / 3600.0
-        return f"{degrees:g}°"
+        percent = {
+            MovementSize.SMALL: self._settings.screen_move_small_fraction,
+            MovementSize.MEDIUM: self._settings.screen_move_medium_fraction,
+            MovementSize.LARGE: self._settings.screen_move_large_fraction,
+        }[size] * 100.0
+        return f"{degrees:g}° · {percent:g}%"
 
     def _nudge_cap_arcsec(self) -> float:
         return nudge_cap_arcsec(self._settings)

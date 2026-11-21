@@ -178,16 +178,20 @@ DEFAULT_STABILITY_SAMPLE_INTERVAL_S = 0.2
 _DEFAULT_STABILITY_TIMEOUT_S = 8.0
 #: Issue #31's own suggested frame-relative movement sizes for the
 #: per-camera screen-relative ←→↑↓ controls, once a valid response model
-#: exists ("Small ≈ 5% of this camera's frame, Medium ≈ 15%, Large ≈
-#: 30%") -- these are the issue's own suggested starting percentages, not
+#: exists ("Small ≈ 1% of this camera's frame, Medium ≈ 5%, Large ≈
+#: 20%") -- operator (2026-11-21): start with 1, 5 and 20 % of the screen width, and never more
+#: than `MAX_SCREEN_MOVE_SHARE` (25 %) of the visible field. These were the issue's own
+#: suggested percentages (5/15/30), not
 #: yet tuned against a live rig, same caveat as every other real-
 #: hardware-facing constant in this module. Deliberately a fraction of
 #: *this camera's own* frame width (mirrors `nudge_target_fraction`'s own
 #: reasoning), not a fixed pixel count -- Main and Guide have very
 #: different resolutions.
-_DEFAULT_SCREEN_MOVE_SMALL_FRACTION = 0.05
-_DEFAULT_SCREEN_MOVE_MEDIUM_FRACTION = 0.15
-_DEFAULT_SCREEN_MOVE_LARGE_FRACTION = 0.30
+_DEFAULT_SCREEN_MOVE_SMALL_FRACTION = 0.01
+_DEFAULT_SCREEN_MOVE_MEDIUM_FRACTION = 0.05
+_DEFAULT_SCREEN_MOVE_LARGE_FRACTION = 0.20
+#: No screen move may exceed this share of the visible field (operator, 2026-11-21).
+MAX_SCREEN_MOVE_SHARE = 0.25
 
 
 @dataclass(frozen=True)

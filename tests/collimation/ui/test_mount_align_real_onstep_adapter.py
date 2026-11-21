@@ -73,7 +73,12 @@ def _frame_relative_nudges(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(MountTestMovePanel, "_fixed_nudge_arcsec", lambda self: None)
 
 
+# The screen-move assertions below were written for the earlier 5/15/30 % steps; they pin the
+# mechanics at those fractions (the defaults are now 1/5/20 %, operator 2026-11-21).
 _SETTINGS = MountAlignmentSettings(
+    screen_move_small_fraction=0.05,
+    screen_move_medium_fraction=0.15,
+    screen_move_large_fraction=0.30,
     settle_ms=0,
     frame_settle_ms=0,
     stability_sample_interval_s=0.0,
