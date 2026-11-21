@@ -107,3 +107,30 @@ def test_the_move_size_buttons_show_their_angles(qapp: object, rig: _Rig) -> Non
     labels = [panel._size_label(label, size) for label, size in _SIZE_BUTTONS]
     assert labels == ["1° · 1%", "5° · 5%", "20° · 20%"]
     panel.stop()
+
+
+def test_calibration_caps_a_long_guide_exposure_and_restores_it(qapp: object) -> None:
+    """Field diag 1c3e2dc7 (2026-11-21): a 2 s guide exposure could not be confirmed to start
+    after the calibration request. A calibration runs with exposures capped, then restores."""
+    from types import SimpleNamespace
+
+    from PySide6.QtWidgets import QDoubleSpinBox
+
+    from collimation_tool.ui.camera_panel import CameraPanel
+
+    spin = QDoubleSpinBox()
+    spin.setRange(0.1, 1_000_000.0)
+    spin.setValue(2000.0)
+    panel = SimpleNamespace(
+        _exposure_spin=spin,
+        _exposure_before_calibration=None,
+        CALIBRATION_MAX_EXPOSURE_MS=CameraPanel.CALIBRATION_MAX_EXPOSURE_MS,
+    )
+    CameraPanel.set_calibration_exposure_cap(panel, True)
+    assert spin.value() == CameraPanel.CALIBRATION_MAX_EXPOSURE_MS
+    CameraPanel.set_calibration_exposure_cap(panel, False)
+    assert spin.value() == 2000.0
+    spin.setValue(100.0)  # a short exposure is never lengthened, and nothing is restored
+    CameraPanel.set_calibration_exposure_cap(panel, True)
+    CameraPanel.set_calibration_exposure_cap(panel, False)
+    assert spin.value() == 100.0
