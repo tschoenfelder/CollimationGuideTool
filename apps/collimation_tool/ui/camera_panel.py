@@ -406,6 +406,28 @@ class CameraPanel(QWidget):
         self._camera.set_exposure_ms(value)
         self.settings_changed.emit()
 
+    #: The exposure a calibration runs with at most (field diag 1c3e2dc7, 2026-11-21): a 2 s guide
+    #: exposure could not be confirmed to start after the request, so calibration failed.
+    CALIBRATION_MAX_EXPOSURE_MS = 500.0
+    #: The exposure this panel had before a calibration capped it (None: not capped).
+    _exposure_before_calibration: float | None = None
+
+    def set_calibration_exposure_cap(self, enabled: bool) -> None:
+        """Calibration: cap this camera's exposure at `CALIBRATION_MAX_EXPOSURE_MS` while it
+        runs, restoring the previous value afterwards."""
+        if enabled:
+            current = self._exposure_spin.value()
+            if (
+                self._exposure_before_calibration is None
+                and current > self.CALIBRATION_MAX_EXPOSURE_MS
+            ):
+                self._exposure_before_calibration = current
+                self._exposure_spin.setValue(self.CALIBRATION_MAX_EXPOSURE_MS)
+            return
+        restore, self._exposure_before_calibration = self._exposure_before_calibration, None
+        if restore is not None:
+            self._exposure_spin.setValue(restore)
+
     def _on_gain_changed(self, value: int) -> None:
         self._camera.set_gain(value)
         self.settings_changed.emit()
