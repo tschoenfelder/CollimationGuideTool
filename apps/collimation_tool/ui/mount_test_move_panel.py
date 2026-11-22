@@ -466,6 +466,8 @@ class MountTestMovePanel(QWidget):
         runner: MountTestMoveRunner | None = None,
         set_left_auto_exposure_paused: Callable[[bool], None] | None = None,
         set_right_auto_exposure_paused: Callable[[bool], None] | None = None,
+        set_left_calibration_exposure_cap: Callable[[bool], None] | None = None,
+        set_right_calibration_exposure_cap: Callable[[bool], None] | None = None,
         get_left_exposure_gain: Callable[[], tuple[float, int]] | None = None,
         get_right_exposure_gain: Callable[[], tuple[float, int]] | None = None,
         wait_for_left_frame: StableFrameWaiter | None = None,
@@ -551,6 +553,12 @@ class MountTestMovePanel(QWidget):
         #: that doesn't wire a real CameraPanel don't need to supply one.
         self._set_left_auto_exposure_paused = set_left_auto_exposure_paused or (lambda _: None)
         self._set_right_auto_exposure_paused = set_right_auto_exposure_paused or (lambda _: None)
+        self._set_left_calibration_exposure_cap = set_left_calibration_exposure_cap or (
+            lambda _: None
+        )
+        self._set_right_calibration_exposure_cap = set_right_calibration_exposure_cap or (
+            lambda _: None
+        )
         self._settings = settings if settings is not None else MountAlignmentSettings()
         self._runner = runner if runner is not None else MountTestMoveRunner()
         #: S6.8b: the primitive of the last manual move submitted (its cap is named in it).
@@ -1376,6 +1384,10 @@ class MountTestMovePanel(QWidget):
     def _resume_auto_exposure(self) -> None:
         self._set_left_auto_exposure_paused(False)
         self._set_right_auto_exposure_paused(False)
+        # Calibration caps the exposures for its run (field diag 1c3e2dc7); restore them here,
+        # where every calibration ends (finish or abort). No-op when nothing was capped.
+        self._set_left_calibration_exposure_cap(False)
+        self._set_right_calibration_exposure_cap(False)
 
     def _on_run_calibration_clicked(self) -> None:
         try:
@@ -1405,6 +1417,8 @@ class MountTestMovePanel(QWidget):
         # Resumed in _abort_calibration (every failure path) and
         # _finish_calibration (success).
         self._pause_auto_exposure()
+        self._set_left_calibration_exposure_cap(True)
+        self._set_right_calibration_exposure_cap(True)
         self._start_next_calibration_step()
 
     def _start_next_calibration_step(self) -> None:
