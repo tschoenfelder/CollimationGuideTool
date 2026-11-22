@@ -468,6 +468,8 @@ class MountTestMovePanel(QWidget):
         set_right_auto_exposure_paused: Callable[[bool], None] | None = None,
         set_left_calibration_exposure_cap: Callable[[bool], None] | None = None,
         set_right_calibration_exposure_cap: Callable[[bool], None] | None = None,
+        is_left_streaming: Callable[[], bool] | None = None,
+        is_right_streaming: Callable[[], bool] | None = None,
         get_left_exposure_gain: Callable[[], tuple[float, int]] | None = None,
         get_right_exposure_gain: Callable[[], tuple[float, int]] | None = None,
         wait_for_left_frame: StableFrameWaiter | None = None,
@@ -553,6 +555,10 @@ class MountTestMovePanel(QWidget):
         #: that doesn't wire a real CameraPanel don't need to supply one.
         self._set_left_auto_exposure_paused = set_left_auto_exposure_paused or (lambda _: None)
         self._set_right_auto_exposure_paused = set_right_auto_exposure_paused or (lambda _: None)
+        # Read-only stream state (does not consume a frame), so a calibration can skip a camera
+        # that isn't streaming without disturbing that camera's frame getter.
+        self._is_left_streaming = is_left_streaming or (lambda: True)
+        self._is_right_streaming = is_right_streaming or (lambda: True)
         self._set_left_calibration_exposure_cap = set_left_calibration_exposure_cap or (
             lambda _: None
         )
@@ -588,6 +594,9 @@ class MountTestMovePanel(QWidget):
         self._connection = DeviceConnectionService(title, mount)
         self._pending: PendingAction | None = None
         self._calibration_queue: list[CalibrationStep] = []
+        #: True from "Run Calibration" until the run finishes, aborts or is cancelled. The queue
+        #: alone can't say so: each step leaves it when submitted, before its after-capture runs.
+        self._calibration_running = False
         #: Issue #42: the exact availability message currently owned by the
         #: status label (so it is cleared when the condition clears, but a real
         #: calibration/result/error text is never stomped).
@@ -1097,6 +1106,11 @@ class MountTestMovePanel(QWidget):
         return CaptureRequest(
             mode=mode,
             label=label,
+            skip_cameras=(
+                frozenset(self._calibration_failed_cameras)
+                if self._calibration_running
+                else frozenset()
+            ),
             after_monotonic=after_monotonic,
             verify_stability=verify_stability,
             timeout_s=self._verified_capture_timeout_s(),
@@ -1265,6 +1279,7 @@ class MountTestMovePanel(QWidget):
         of the cameras' auto-exposure -- the shared reset behind Stop and `_fail_safe`."""
         self._cancel_nudge_check()
         self._calibration_queue = []
+        self._calibration_running = False
         self._pending = None
         self._awaiting_stranded_return = False
         job = self._capture_job
@@ -1399,6 +1414,7 @@ class MountTestMovePanel(QWidget):
     def _begin_calibration(self) -> None:
         self._cancel_nudge_check()  # S6.6b: a move follows -- an open check would span it
         self._calibration_queue = list(CALIBRATION_STEPS)
+        self._calibration_running = True
         self._results.reset()
         self._sizing.reset_net()
         self._last_failure_classes = {}
@@ -1419,7 +1435,21 @@ class MountTestMovePanel(QWidget):
         self._pause_auto_exposure()
         self._set_left_calibration_exposure_cap(True)
         self._set_right_calibration_exposure_cap(True)
+        self._exclude_non_streaming_cameras()
         self._start_next_calibration_step()
+
+    def _exclude_non_streaming_cameras(self) -> None:
+        """Calibration runs per camera (operator, 2026-11-22): a camera that isn't streaming is
+        skipped and says so -- it does not abort the other camera's calibration."""
+        checks = (("left", self._is_left_streaming), ("right", self._is_right_streaming))
+        for key, is_streaming in checks:
+            if not is_streaming():
+                self._calibration_failed_cameras.add(key)
+                self._last_failure_classes[key] = MeasurementFailureClass.CAPTURE_INVALID
+                self._sizing.bounded[key] = (
+                    "not streaming, so skipped (start this camera's stream to calibrate it)"
+                )
+                self._sizing.log.append({"event": "not_streaming", "camera": key})
 
     def _start_next_calibration_step(self) -> None:
         if not self._calibration_queue:
@@ -1546,6 +1576,7 @@ class MountTestMovePanel(QWidget):
             axis, self._settings.max_calibration_pulse_ms
         )
         self._calibration_queue = []
+        self._calibration_running = False
         self._pending = None
         self._last_error = message
         self._result_label.setText(f"Calibration failed: {message}{suffix}")
@@ -1868,6 +1899,7 @@ class MountTestMovePanel(QWidget):
     def _finish_calibration(self) -> None:
         """Show the run's verdict (`CalibrationResults.verdict`: a matrix per usable camera,
         degenerate/no-motion cameras explained -- real report 0270868c)."""
+        self._calibration_running = False
         verdict = self._results.verdict(
             self._sizing.bounded, UNIT_FOR_PRIMITIVE[self._sizing.primitive]
         )

@@ -985,6 +985,11 @@ class CameraPanel(QWidget):
         bundle couldn't actually answer)."""
         return (self._exposure_spin.value(), self._gain_spin.value())
 
+    def is_streaming(self) -> bool:
+        """True while this camera's stream is running (no frame is consumed). Calibration uses
+        it to skip a camera that is not streaming."""
+        return self._stream is not None
+
     def latest_mono_frame(self) -> np.ndarray | None:
         """The most recently captured frame's mono representation
         (demosaiced luma for a color camera, raw pixels for mono) — for

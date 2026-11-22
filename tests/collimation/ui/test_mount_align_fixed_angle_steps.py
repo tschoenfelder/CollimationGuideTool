@@ -125,11 +125,11 @@ def test_calibration_caps_a_long_guide_exposure_and_restores_it(qapp: object) ->
         _exposure_before_calibration=None,
         CALIBRATION_MAX_EXPOSURE_MS=CameraPanel.CALIBRATION_MAX_EXPOSURE_MS,
     )
-    CameraPanel.set_calibration_exposure_cap(panel, True)
+    CameraPanel.set_calibration_exposure_cap(panel, True)  # type: ignore[arg-type]
     assert spin.value() == CameraPanel.CALIBRATION_MAX_EXPOSURE_MS
-    CameraPanel.set_calibration_exposure_cap(panel, False)
+    CameraPanel.set_calibration_exposure_cap(panel, False)  # type: ignore[arg-type]
     assert spin.value() == 2000.0
     spin.setValue(100.0)  # a short exposure is never lengthened, and nothing is restored
-    CameraPanel.set_calibration_exposure_cap(panel, True)
-    CameraPanel.set_calibration_exposure_cap(panel, False)
+    CameraPanel.set_calibration_exposure_cap(panel, True)  # type: ignore[arg-type]
+    CameraPanel.set_calibration_exposure_cap(panel, False)  # type: ignore[arg-type]
     assert spin.value() == 100.0
