@@ -97,15 +97,15 @@ def test_a_fixed_step_waits_no_extra_settle_time(
 
 
 def test_the_move_size_buttons_show_their_angles(qapp: object, rig: _Rig) -> None:
-    """Operator (2026-11-20/21): the Move size buttons read "1° · 1%", "5° · 5%", "20° · 20%"
-    -- the RA/Dec angle and the screen-move share of the frame, at the default settings."""
+    """Operator (2026-11-22): the Move size buttons read only their angle ("1°", "5°", "20°");
+    the screen-move share has its own mark on each camera's screen pad."""
     from astrotool_core.config import MountAlignmentSettings
     from collimation_tool.ui.mount_test_move_panel import _SIZE_BUTTONS
 
     panel = rig.panel()
     panel._settings = MountAlignmentSettings()  # the defaults, not the test rig's pinned steps
     labels = [panel._size_label(label, size) for label, size in _SIZE_BUTTONS]
-    assert labels == ["1° · 1%", "5° · 5%", "20° · 20%"]
+    assert labels == ["1°", "5°", "20°"]
     panel.stop()
 
 
