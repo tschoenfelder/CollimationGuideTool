@@ -114,9 +114,8 @@ def test_calibration_caps_a_long_guide_exposure_and_restores_it(qapp: object) ->
     after the calibration request. A calibration runs with exposures capped, then restores."""
     from types import SimpleNamespace
 
-    from PySide6.QtWidgets import QDoubleSpinBox
-
     from collimation_tool.ui.camera_panel import CameraPanel
+    from PySide6.QtWidgets import QDoubleSpinBox
 
     spin = QDoubleSpinBox()
     spin.setRange(0.1, 1_000_000.0)
