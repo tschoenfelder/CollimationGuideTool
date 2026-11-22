@@ -38,10 +38,16 @@ def measure_brightest_source(frame: np.ndarray | None) -> tuple[float, float] | 
     return (brightest.x, brightest.y)
 
 
-def measure(mode: TargetMode, frame: np.ndarray | None) -> Measurement | None:
+def measure(
+    mode: TargetMode, frame: np.ndarray | None, *, artificial_star: bool = False
+) -> Measurement | None:
     """One camera's "before"/"after" measurement in the given mode -- a star centroid, or the
-    whole frame itself (to cross-correlate against its counterpart later)."""
-    if mode == "star":
+    whole frame itself (to cross-correlate against its counterpart later).
+
+    `artificial_star` (operator, 2026-11-22): the target is an artificial star. It still moves
+    like terrestrial (tracking off), but its movement is read from the artificial star's own
+    centroid in each frame, not from whole-frame correlation."""
+    if mode == "star" or artificial_star:
         return measure_brightest_source(frame)
     return frame  # "terrestrial" -- any frame at all is usable here
 
@@ -60,7 +66,8 @@ def build_response(
     in as the "after" position relative to a `(0, 0)` "before" instead. Returns None if
     terrestrial mode's correlation didn't find enough shared structure to trust (see
     `measure_translation_offset`'s own docstring)."""
-    if mode == "star":
+    if mode == "star" or isinstance(before, tuple):
+        # A centroid measurement (a star, or an artificial star on a terrestrial move).
         assert isinstance(before, tuple) and isinstance(after, tuple)
         return response_from_positions(axis, direction, pulse_ms, before, after)
     assert isinstance(before, np.ndarray) and isinstance(after, np.ndarray)

@@ -3839,6 +3839,54 @@ class TestMountTestMovePanel:
         assert wait_frame_calls == 48
         window.close()
 
+    def test_a_camera_that_is_not_streaming_is_skipped_by_calibration(
+        self, qapp: object
+    ) -> None:
+        """Operator (2026-11-22): calibration runs per camera, and a camera that isn't streaming
+        is skipped rather than aborting the whole run. The left camera is reported as not
+        streaming: its frame getter must never be called, the right camera still calibrates
+        (the mount moves), and left is recorded as skipped."""
+        pulse_mount = _EqMsMount()
+        mount_park = FakeMountPark(start_parked=True)
+        window = self._window(mount_park=mount_park, pulse_mount=pulse_mount)
+        self._connect_and_stream_cameras(window)
+        window._mount_panel._connect_button.setChecked(True)
+        window._test_move_panel._connect_button.setChecked(True)
+        panel = window._test_move_panel
+        panel._is_left_streaming = lambda: False
+        left_getter_calls = 0
+        real_get_left_frame = panel._get_left_frame
+
+        def counting_get_left_frame() -> np.ndarray | None:
+            nonlocal left_getter_calls
+            left_getter_calls += 1
+            return real_get_left_frame()
+
+        panel._get_left_frame = counting_get_left_frame
+        panel._wait_for_left_frame = lambda _reference, _timeout: _result_or_unavailable(
+            counting_get_left_frame()
+        )
+
+        self._run_calibration_to_completion(panel, timeout_s=60.0)
+
+        assert left_getter_calls == 0
+        assert "left" in panel._calibration_failed_cameras
+        assert pulse_mount.equivalent_ms_log, "the right camera's calibration still ran"
+        window.close()
+
+    def test_an_artificial_star_target_is_measured_by_its_centroid_on_terrestrial_moves(
+        self, qapp: object
+    ) -> None:
+        """Operator (2026-11-22): artificial star uses the terrestrial move mode, detecting the
+        star itself. The panel must hand that choice to every capture it makes."""
+        window = self._window(mount_park=FakeMountPark(start_parked=True), pulse_mount=_EqMsMount())
+        panel = window._test_move_panel
+        panel._is_artificial_star = lambda: True
+        request = panel._snapshot_capture_request("terrestrial", None, None, True)
+        assert request.artificial_star is True
+        assert request.mode == "terrestrial"
+        window.close()
+
     def test_calibration_steps_pass_the_configured_settle_ms_to_the_runner(
         self, qapp: object
     ) -> None:

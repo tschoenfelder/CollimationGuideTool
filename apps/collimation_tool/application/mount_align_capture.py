@@ -116,6 +116,11 @@ class CaptureRequest:
     #: S6.6b (review C1): False = only VERIFY the mount's tracking state (no start/stop
     #: command) -- the background nudge check, which a newer move may overtake at any time.
     repair_tracking: bool = True
+    #: Cameras this capture does not wait for or measure ("left"/"right"): a calibration skips a
+    #: camera that isn't streaming, or whose measurement already failed (operator, 2026-11-22).
+    skip_cameras: frozenset[str] = frozenset()
+    #: The target is an artificial star: measured by its own centroid, moved as terrestrial.
+    artificial_star: bool = False
 
 
 @dataclass
@@ -185,11 +190,12 @@ def capture_blocking(
     result.tracking_error = tracking_failure(request.required_tracking, request.mode)
     if result.tracking_error is not None:
         return result
+    active = [key for key in ("left", "right") if key not in request.skip_cameras]
     if not request.verify_stability:
-        result.left_frame = get_left_frame()
-        result.right_frame = get_right_frame()
+        result.left_frame = get_left_frame() if "left" in active else None
+        result.right_frame = get_right_frame() if "right" in active else None
         for key, frame in (("left", result.left_frame), ("right", result.right_frame)):
-            if frame is None:
+            if key in active and frame is None:
                 result.instant_failures[key] = capture_invalid_result(
                     FrameAcquisitionStatus.CAMERA_UNAVAILABLE
                 )
@@ -200,8 +206,13 @@ def capture_blocking(
         after = request.after_monotonic
         result.base_reference = after if after is not None else clock.monotonic()
         result.settle_s = settings.frame_settle_ms / 1000.0 if after is not None else 0.0
-        result.results = acquire_verified_frames(
-            {"left": wait_for_left_frame, "right": wait_for_right_frame},
+        waiters = {
+            key: waiter
+            for key, waiter in (("left", wait_for_left_frame), ("right", wait_for_right_frame))
+            if key in active
+        }
+        result.results = (
+            acquire_verified_frames(waiters, 
             # S6.7: the shared rule -- exposure must start after the motion ended + settle.
             reference_monotonic=measurement_reference(result.base_reference, result.settle_s),
             timeout_s=request.timeout_s,
@@ -212,11 +223,15 @@ def capture_blocking(
             cancelled=cancelled,
             clock=clock,
         )
-        result.left_frame = result.results["left"].frame
-        result.right_frame = result.results["right"].frame
+            if waiters
+            else {}
+        )
+        result.left_frame = result.results["left"].frame if "left" in result.results else None
+        result.right_frame = result.results["right"].frame if "right" in result.results else None
     result.raw = {
-        "left": measure(request.mode, result.left_frame),
-        "right": measure(request.mode, result.right_frame),
+        key: measure(request.mode, frame, artificial_star=request.artificial_star)
+        for key, frame in (("left", result.left_frame), ("right", result.right_frame))
+        if key in active
     }
     return result
 
