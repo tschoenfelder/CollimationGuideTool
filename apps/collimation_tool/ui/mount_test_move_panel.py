@@ -776,8 +776,10 @@ class MountTestMovePanel(QWidget):
         )
 
         self._screen_move_buttons: dict[str, dict[ScreenDirection, QPushButton]] = {}
+        self._screen_pad_labels: dict[str, QLabel] = {}
         main_screen_row = self._build_screen_move_pad("left")
         guide_screen_row = self._build_screen_move_pad("right")
+        self._refresh_screen_pad_marks()
 
         self._result_label = QLabel("")
         self._result_label.setWordWrap(True)
@@ -814,7 +816,8 @@ class MountTestMovePanel(QWidget):
         to become the new binding overflow once the previously-touched
         rows stopped being the widest."""
         row = FlowLayout()
-        row.addWidget(QLabel(f"{CAMERA_LABELS[camera_key]}:"))
+        # Unit mark (operator, 2026-11-22): these RA/Dec buttons always move by angle, in degrees.
+        row.addWidget(QLabel(f"{CAMERA_LABELS[camera_key]} RA/Dec (°):"))
         buttons: dict[str, QPushButton] = {}
         for label, axis, direction in _NUDGE_BUTTONS:
             button = QPushButton(label)
@@ -841,7 +844,10 @@ class MountTestMovePanel(QWidget):
         the mount is connected/movable. FlowLayout, same reasoning as
         `_build_direction_pad`."""
         row = FlowLayout()
-        row.addWidget(QLabel(f"{CAMERA_LABELS[camera_key]} screen:"))
+        # Unit mark (operator, 2026-11-22): the share of the frame, for the selected size.
+        pad_label = QLabel("")
+        self._screen_pad_labels[camera_key] = pad_label
+        row.addWidget(pad_label)
         buttons: dict[ScreenDirection, QPushButton] = {}
         for label, screen_direction in _SCREEN_MOVE_BUTTONS:
             button = QPushButton(label)
@@ -1843,17 +1849,12 @@ class MountTestMovePanel(QWidget):
 
     # ---- S6.0: manual moves on a mount without timed pulses ------------------
     def _size_label(self, label: str, size: MovementSize) -> str:
-        """Operator (2026-11-20/21): the Move size buttons read their RA/Dec angle and their
-        screen-move share of the frame ("1° · 1%", "5° · 5%", "20° · 20%")."""
+        """Operator (2026-11-20/21): the Move size buttons read their RA/Dec angle ("1°", "5°",
+        "20°"). The screen-move share is marked on each camera's screen pad (2026-11-22)."""
         if not self._settings.nudge_fixed_angles:
             return label
         degrees = nudge_angle_arcsec(self._settings, size) / 3600.0
-        percent = {
-            MovementSize.SMALL: self._settings.screen_move_small_fraction,
-            MovementSize.MEDIUM: self._settings.screen_move_medium_fraction,
-            MovementSize.LARGE: self._settings.screen_move_large_fraction,
-        }[size] * 100.0
-        return f"{degrees:g}° · {percent:g}%"
+        return f"{degrees:g}°"
 
     def _nudge_cap_arcsec(self) -> float:
         return nudge_cap_arcsec(self._settings)
@@ -2175,8 +2176,28 @@ class MountTestMovePanel(QWidget):
         self._result_label.setText(f"{done}{check.note}")
 
     def _on_move_size_changed(self) -> None:
+        self._refresh_screen_pad_marks()
         self._refresh_screen_move_limits()
         self._update_buttons_enabled()
+
+    def _selected_size(self) -> MovementSize:
+        for size, button in self._size_buttons.items():
+            if button.isChecked():
+                return size
+        return MovementSize.LARGE
+
+    def _screen_share_percent(self, size: MovementSize) -> float:
+        return {
+            MovementSize.SMALL: self._settings.screen_move_small_fraction,
+            MovementSize.MEDIUM: self._settings.screen_move_medium_fraction,
+            MovementSize.LARGE: self._settings.screen_move_large_fraction,
+        }[size] * 100.0
+
+    def _refresh_screen_pad_marks(self) -> None:
+        """Unit mark next to each camera's screen pad: the % of frame the selected size moves."""
+        percent = self._screen_share_percent(self._selected_size())
+        for camera_key, pad_label in self._screen_pad_labels.items():
+            pad_label.setText(f"{CAMERA_LABELS[camera_key]} screen ({percent:g}%):")
 
     def _refresh_screen_move_limits(self) -> None:
         """S6.6b (S6.0 re-review b): which screen moves the mount's smallest angular move can
