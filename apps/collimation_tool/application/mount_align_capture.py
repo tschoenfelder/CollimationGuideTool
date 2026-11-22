@@ -119,6 +119,8 @@ class CaptureRequest:
     #: Cameras this capture does not wait for or measure ("left"/"right"): a calibration skips a
     #: camera that isn't streaming, or whose measurement already failed (operator, 2026-11-22).
     skip_cameras: frozenset[str] = frozenset()
+    #: The target is an artificial star: measured by its own centroid, moved as terrestrial.
+    artificial_star: bool = False
 
 
 @dataclass
@@ -227,7 +229,7 @@ def capture_blocking(
         result.left_frame = result.results["left"].frame if "left" in result.results else None
         result.right_frame = result.results["right"].frame if "right" in result.results else None
     result.raw = {
-        key: measure(request.mode, frame)
+        key: measure(request.mode, frame, artificial_star=request.artificial_star)
         for key, frame in (("left", result.left_frame), ("right", result.right_frame))
         if key in active
     }

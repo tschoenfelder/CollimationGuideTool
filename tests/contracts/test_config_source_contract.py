@@ -478,7 +478,7 @@ def test_every_consumer_observes_injected_seed_distances(
     assert MainWindow._calibration_distance_m(natural, "terrestrial") == 12_345.0
     assert MainWindow._calibration_distance_m(natural, "star") is None
     assert MainWindow._calibration_distance_m(artificial, "terrestrial") == 42.0
-    panel: Any = SimpleNamespace(_calibration_distance_m=None)
+    panel: Any = SimpleNamespace(_calibration_distance_m=None, _is_artificial_star=lambda: False)
     assert MountTestMovePanel._sizing_distance_for(panel, "terrestrial") == 12_345.0
     assert MountTestMovePanel._sizing_distance_for(panel, "star") is None
 

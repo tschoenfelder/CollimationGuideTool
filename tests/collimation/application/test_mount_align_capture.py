@@ -192,6 +192,27 @@ def test_star_response_is_the_centroid_shift() -> None:
     assert (response.dx_px, response.dy_px, response.duration_ms) == (3.0, 4.0, 500)
 
 
+def _point_frame(x: float, y: float) -> np.ndarray:
+    """A dark frame with one soft bright point at (x, y) -- an artificial star."""
+    yy, xx = np.mgrid[0:96, 0:96]
+    frame: np.ndarray = 100.0 + 4000.0 * np.exp(-((xx - x) ** 2 + (yy - y) ** 2) / (2 * 2.0**2))
+    return frame
+
+
+def test_artificial_star_measures_the_point_centroid_on_a_terrestrial_move() -> None:
+    """Operator (2026-11-22): artificial star moves like terrestrial (tracking off), but its
+    movement is read from the star's own centroid in each frame, not whole-frame correlation."""
+    before = measure("terrestrial", _point_frame(30.0, 40.0), artificial_star=True)
+    after = measure("terrestrial", _point_frame(33.0, 44.0), artificial_star=True)
+    assert isinstance(before, tuple) and isinstance(after, tuple)
+    assert before == pytest.approx((30.0, 40.0), abs=0.5)
+    response = build_response(
+        "terrestrial", MountAxis.AXIS1, AxisDirection.POSITIVE, 500, before, after
+    )
+    assert response is not None
+    assert (round(response.dx_px), round(response.dy_px)) == (3, 4)
+
+
 def test_terrestrial_response_is_the_correlated_shift() -> None:
     rng = np.random.default_rng(3)
     before = rng.normal(1000.0, 200.0, (96, 96))

@@ -469,6 +469,7 @@ class MountTestMovePanel(QWidget):
         set_left_calibration_exposure_cap: Callable[[bool], None] | None = None,
         set_right_calibration_exposure_cap: Callable[[bool], None] | None = None,
         is_left_streaming: Callable[[], bool] | None = None,
+        is_artificial_star: Callable[[], bool] | None = None,
         is_right_streaming: Callable[[], bool] | None = None,
         get_left_exposure_gain: Callable[[], tuple[float, int]] | None = None,
         get_right_exposure_gain: Callable[[], tuple[float, int]] | None = None,
@@ -558,6 +559,7 @@ class MountTestMovePanel(QWidget):
         # Read-only stream state (does not consume a frame), so a calibration can skip a camera
         # that isn't streaming without disturbing that camera's frame getter.
         self._is_left_streaming = is_left_streaming or (lambda: True)
+        self._is_artificial_star = is_artificial_star or (lambda: False)
         self._is_right_streaming = is_right_streaming or (lambda: True)
         self._set_left_calibration_exposure_cap = set_left_calibration_exposure_cap or (
             lambda _: None
@@ -1113,6 +1115,7 @@ class MountTestMovePanel(QWidget):
             ),
             after_monotonic=after_monotonic,
             verify_stability=verify_stability,
+            artificial_star=self._is_artificial_star(),
             timeout_s=self._verified_capture_timeout_s(),
             required_tracking=self._required_tracking_mode(),
             movement_context=self._last_movement_context,
@@ -1834,7 +1837,8 @@ class MountTestMovePanel(QWidget):
         if self._calibration_distance_m is not None:
             return self._calibration_distance_m(mode)
         if mode == "terrestrial":
-            return sizing_seed_distance_m(artificial_star=False)  # #55 D06: one owner
+            # #55 D06: one owner; an artificial star is a finite-distance target (30 m seed).
+            return sizing_seed_distance_m(artificial_star=self._is_artificial_star())
         return None
 
     # ---- S6.0: manual moves on a mount without timed pulses ------------------

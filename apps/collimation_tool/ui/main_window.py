@@ -447,6 +447,7 @@ class MainWindow(QMainWindow):
             set_right_calibration_exposure_cap=self._right_panel.set_calibration_exposure_cap,
             is_left_streaming=self._left_panel.is_streaming,
             is_right_streaming=self._right_panel.is_streaming,
+            is_artificial_star=self._artificial_star_selected,
             get_left_exposure_gain=self._left_panel.current_exposure_gain,
             get_right_exposure_gain=self._right_panel.current_exposure_gain,
             wait_for_left_frame=self._left_panel.wait_for_frame_after,

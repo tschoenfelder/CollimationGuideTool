@@ -3874,6 +3874,19 @@ class TestMountTestMovePanel:
         assert pulse_mount.equivalent_ms_log, "the right camera's calibration still ran"
         window.close()
 
+    def test_an_artificial_star_target_is_measured_by_its_centroid_on_terrestrial_moves(
+        self, qapp: object
+    ) -> None:
+        """Operator (2026-11-22): artificial star uses the terrestrial move mode, detecting the
+        star itself. The panel must hand that choice to every capture it makes."""
+        window = self._window(mount_park=FakeMountPark(start_parked=True), pulse_mount=_EqMsMount())
+        panel = window._test_move_panel
+        panel._is_artificial_star = lambda: True
+        request = panel._snapshot_capture_request("terrestrial", None, None, True)
+        assert request.artificial_star is True
+        assert request.mode == "terrestrial"
+        window.close()
+
     def test_calibration_steps_pass_the_configured_settle_ms_to_the_runner(
         self, qapp: object
     ) -> None:
