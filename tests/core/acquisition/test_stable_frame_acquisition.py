@@ -43,6 +43,25 @@ def _frame(captured_at: float, *, exposure_seconds: float = 0.0) -> DeliveredFra
 
 
 class TestAcquireStableFrame:
+    def test_a_reference_in_the_future_does_not_eat_into_the_budget(self) -> None:
+        """Field bundles a2dc7fae / ae85c7a1 (2026-11-23): the reference (pulse end + 1 s settle)
+        lay 2 s ahead of the wait, so a 2 s budget counted from the wait's own start ran out
+        before any frame could start after it. The budget must start at the reference."""
+        clock = _FakeClock(step_s=0.5)
+
+        def next_frame(_timeout_s: float) -> DeliveredFrame | None:
+            return _frame(clock.tick(), exposure_seconds=0.0)
+
+        result = acquire_stable_frame(
+            next_frame,
+            is_available=lambda: True,
+            reference_monotonic=3.0,
+            timeout_s=2.0,
+            now=clock.now,
+        )
+
+        assert result.status is FrameAcquisitionStatus.OK
+
     def test_accepts_a_frame_whose_exposure_started_after_the_reference(self) -> None:
         clock = _FakeClock()
 

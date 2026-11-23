@@ -145,7 +145,11 @@ def acquire_stable_frame(
     now = now or (clock or SYSTEM_CLOCK).monotonic
     if not is_available():
         return FrameAcquisitionResult(FrameAcquisitionStatus.CAMERA_UNAVAILABLE)
-    deadline = now() + timeout_s
+    # The budget starts at the reference, not before it: a reference still in the future (the
+    # settle after a pulse) must not eat into the wait. Field bundle a2dc7fae/ae85c7a1
+    # (2026-11-23): with a 1 s settle the reference sat 2 s after the wait began and the
+    # 2 s budget ran out before any frame could start after it.
+    deadline = max(now(), reference_monotonic) + timeout_s
     saw_overlapping_exposure = False
     longest: float | None = None
     while True:

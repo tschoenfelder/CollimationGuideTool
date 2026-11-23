@@ -80,9 +80,10 @@ class TestStableFrameDeadline:
     @pytest.mark.parametrize(
         ("timeout_s", "calls", "expected"),
         [
-            (3.001, 4, FrameAcquisitionStatus.OK),  # deadline just after t=3
-            (3.0, 3, FrameAcquisitionStatus.EXPOSURE_OVERLAPPED_MOTION),  # exactly at t=3
-            (2.999, 3, FrameAcquisitionStatus.EXPOSURE_OVERLAPPED_MOTION),  # just before
+            # The budget starts at the reference (0.5 s): deadline = 0.5 + timeout_s.
+            (2.501, 4, FrameAcquisitionStatus.OK),  # deadline just after t=3
+            (2.5, 3, FrameAcquisitionStatus.EXPOSURE_OVERLAPPED_MOTION),  # exactly at t=3
+            (2.499, 3, FrameAcquisitionStatus.EXPOSURE_OVERLAPPED_MOTION),  # just before
         ],
     )
     def test_a_frame_is_requested_only_while_time_is_left(
@@ -128,7 +129,8 @@ class TestStableFrameDeadline:
         # Two frames inside the window whose exposures began before t=0.5,
         # then a valid one just after the deadline.
         source = _ScheduledSource(clock, [(1.0, 0.4), (2.0, 0.4), (3.001, 3.0)])
-        result = _stable(clock, source, reference=0.5)
+        # The budget starts at the reference (0.5 s), so 2.5 s is a deadline at t=3.0.
+        result = _stable(clock, source, reference=0.5, timeout_s=2.5)
         assert result.status is FrameAcquisitionStatus.EXPOSURE_OVERLAPPED_MOTION
 
 
