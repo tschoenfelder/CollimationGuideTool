@@ -38,6 +38,7 @@ Two entry points, matching the two places this replaces ad hoc logic:
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
@@ -45,6 +46,8 @@ from enum import Enum
 import numpy as np
 
 from astrotool_core.timing import SYSTEM_CLOCK, Clock
+
+_log = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -161,6 +164,17 @@ def acquire_stable_frame(
         exposure_start = frame.captured_at_monotonic - frame.exposure_seconds
         if exposure_start >= reference_monotonic:
             return FrameAcquisitionResult(FrameAcquisitionStatus.OK, frame, longest)
+        # Field bundle a2dc7fae (2026-11-23): every frame was rejected although the cycle is short.
+        # Log each rejection's own timing so the next bundle shows which clock or stamp is off.
+        _log.warning(
+            "fresh-frame reject: exposure_start=%.3f reference=%.3f behind_by=%.3f s "
+            "(captured_at=%.3f exposure=%.4f s)",
+            exposure_start,
+            reference_monotonic,
+            reference_monotonic - exposure_start,
+            frame.captured_at_monotonic,
+            frame.exposure_seconds,
+        )
         saw_overlapping_exposure = True
     status = (
         FrameAcquisitionStatus.EXPOSURE_OVERLAPPED_MOTION
