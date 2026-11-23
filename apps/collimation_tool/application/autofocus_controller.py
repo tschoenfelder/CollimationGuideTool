@@ -216,6 +216,7 @@ class AutofocusController:
         self._clipped_shares: dict[float, float] = {}
         #: Review 2 #5: an exposure lowering was issued this run -> always restore.
         self._exposure_lowered = False
+        self._saturated_at_min_exposure = False
         #: Issue #58: the artificial-star acquisition step-down of the current run.
         self._max_acquisition_exposure_steps = max(0, max_acquisition_exposure_steps)
         #: Review N3: the camera's full scale for the artificial-star clipping test (None:
@@ -264,6 +265,7 @@ class AutofocusController:
         override: tuple[AutofocusStatus, str | None] | None = None
         self._clipped_shares = {}
         self._exposure_lowered = False
+        self._saturated_at_min_exposure = False
         self._acquisition_control = control if artificial else None
         self._attempts = attempts
         self._cancel_event = cancel_event
@@ -336,6 +338,7 @@ class AutofocusController:
 
         valid = [point for point in search_result.samples if point.valid]
         confidence = valid[-1].confidence if valid else 0.0
+        override = self._with_saturation(override, search_result.status)
         status = search_result.status
         failure_reason = search_result.failure_reason
         if override is not None:
@@ -453,11 +456,66 @@ class AutofocusController:
                 measurement = stepped
         else:
             measurement = tracker.measure(frame)
+            # Field bundle f468c003 (2026-11-23): near focus the artificial star saturates and the
+            # tracked position stops finding it ("not_found_at_tracked_position"), so the run ended
+            # with insufficient evidence. A lost or clipped star on a measurement needs the same
+            # exposure step-down as at acquisition, on the SAME tracked target.
+            lost_in_clipped_frame = measurement.size_px is None and tracker.last_frame_clipped
+            if self._acquisition_control is not None and lost_in_clipped_frame:
+                stepped = self._step_down_on_tracked_star(tracker, self._acquisition_control)
+                at_floor = SATURATED_AT_MIN_EXPOSURE
+                if isinstance(stepped, InvalidSample) and stepped.reason == at_floor:
+                    # A star still clipped at the camera's floor cannot be measured: the run ends
+                    # as saturated (see `run`), not as a run of other samples.
+                    self._saturated_at_min_exposure = True
+                if stepped is None or isinstance(stepped, InvalidSample):
+                    return stepped
+                measurement = stepped
         if measurement.size_px is None:
             return InvalidSample(measurement.reason or "no_star")
         # A single star is a usable but reduced-confidence measurement
         # (issue #33: one suitable star => appropriately reduced confidence).
         return FocusSample(value=measurement.size_px, confidence=1.0 / 3.0)
+
+    def _with_saturation(
+        self, override: tuple[AutofocusStatus, str | None] | None, status: AutofocusStatus
+    ) -> tuple[AutofocusStatus, str | None] | None:
+        """A tracked star that still clipped at the camera's floor ends the run as saturated."""
+        saturated = self._saturated_at_min_exposure and status is not AutofocusStatus.CANCELLED
+        if override is None and saturated:
+            return _saturated_result()
+        return override
+
+    def _step_down_on_tracked_star(
+        self, tracker: StarTargetTracker, control: ExposureControl
+    ) -> TrackedStarMeasurement | InvalidSample | None:
+        """Field bundle f468c003 (2026-11-23): the tracked artificial star saturates near focus,
+        and the run lost it. Lower the exposure and measure the SAME tracked target again, until
+        it is found unclipped. Unlike the acquisition step-down this never re-acquires, so the
+        run cannot switch to a different point source. Returns the unclipped measurement, `None`
+        when no frame arrived, or an `InvalidSample` (`saturated_at_min_exposure`, `cancelled`,
+        or the measurement's own reason)."""
+        last: TrackedStarMeasurement | None = None
+        for _ in range(self._max_acquisition_exposure_steps):
+            if self._cancel_check is not None and self._cancel_check():
+                self._acquisition_cancelled = True
+                return InvalidSample("cancelled")
+            lowered = self._lower_exposure(control, self._attempts, self._cancel_event)
+            if lowered == "cancelled":
+                self._acquisition_cancelled = True
+                return InvalidSample("cancelled")
+            if lowered is not None:
+                break  # the camera's minimum exposure
+            self._acquisition_steps += 1
+            frame = self._acquire_fresh_frame()
+            if frame is None:
+                return None
+            last = tracker.measure(frame)
+            if last.size_px is not None and not _clipped_target(tracker, last):
+                return last
+        if last is not None and last.size_px is None:
+            return InvalidSample(last.reason or "no_star")
+        return InvalidSample(SATURATED_AT_MIN_EXPOSURE)
 
     def _step_down_until_unclipped(
         self, tracker: StarTargetTracker, control: ExposureControl
@@ -599,6 +657,11 @@ class AutofocusController:
                 return
             if self._lower_exposure(control, attempts, cancel_event) is not None:
                 return
+
+
+def _saturated_result() -> tuple[AutofocusStatus, str | None]:
+    """The tracked star still clipped at the camera's floor: no clean measurement exists."""
+    return AutofocusStatus.NO_USABLE_EVIDENCE, SATURATED_AT_MIN_EXPOSURE
 
 
 def _clipped_target(tracker: StarTargetTracker, measurement: TrackedStarMeasurement) -> bool:
