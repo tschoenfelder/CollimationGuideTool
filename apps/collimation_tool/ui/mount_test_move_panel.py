@@ -1445,6 +1445,23 @@ class MountTestMovePanel(QWidget):
         self._set_left_calibration_exposure_cap(True)
         self._set_right_calibration_exposure_cap(True)
         self._exclude_non_streaming_cameras()
+        # Field bundle 1a64be4d: record the exposure and gain each camera actually runs with,
+        # after the caps, so a bundle shows whether they took effect.
+        for key, exposure_gain in (
+            ("left", self._get_left_exposure_gain()),
+            ("right", self._get_right_exposure_gain()),
+        ):
+            if exposure_gain is None:
+                continue
+            exposure_ms, gain = exposure_gain
+            self._sizing.log.append(
+                {
+                    "event": "calibration_settings",
+                    "camera": key,
+                    "exposure_ms": exposure_ms,
+                    "gain": gain,
+                }
+            )
         self._start_next_calibration_step()
 
     def _exclude_non_streaming_cameras(self) -> None:

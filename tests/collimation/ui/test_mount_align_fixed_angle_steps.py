@@ -115,15 +115,21 @@ def test_calibration_caps_a_long_guide_exposure_and_restores_it(qapp: object) ->
     from types import SimpleNamespace
 
     from collimation_tool.ui.camera_panel import CameraPanel
-    from PySide6.QtWidgets import QDoubleSpinBox
+    from PySide6.QtWidgets import QDoubleSpinBox, QSpinBox
 
     spin = QDoubleSpinBox()
     spin.setRange(0.1, 1_000_000.0)
     spin.setValue(2000.0)
+    gain = QSpinBox()
+    gain.setRange(100, 15000)
+    gain.setValue(403)  # the rig's normal gain: under the cap, so only exposure changes here
     panel = SimpleNamespace(
         _exposure_spin=spin,
+        _gain_spin=gain,
         _exposure_before_calibration=None,
+        _gain_before_calibration=None,
         CALIBRATION_MAX_EXPOSURE_MS=CameraPanel.CALIBRATION_MAX_EXPOSURE_MS,
+        CALIBRATION_MAX_GAIN=CameraPanel.CALIBRATION_MAX_GAIN,
     )
     CameraPanel.set_calibration_exposure_cap(panel, True)  # type: ignore[arg-type]
     assert spin.value() == CameraPanel.CALIBRATION_MAX_EXPOSURE_MS
@@ -133,3 +139,35 @@ def test_calibration_caps_a_long_guide_exposure_and_restores_it(qapp: object) ->
     CameraPanel.set_calibration_exposure_cap(panel, True)  # type: ignore[arg-type]
     CameraPanel.set_calibration_exposure_cap(panel, False)  # type: ignore[arg-type]
     assert spin.value() == 100.0
+
+
+def test_calibration_caps_a_high_guide_gain_and_restores_it(qapp: object) -> None:
+    """Field bundle 1a64be4d (2026-11-23): auto-exposure had raised the guide gain to 3803, and
+    even a short exposure clipped the frames. A calibration caps gain too, then restores it."""
+    from types import SimpleNamespace
+
+    from collimation_tool.ui.camera_panel import CameraPanel
+    from PySide6.QtWidgets import QDoubleSpinBox, QSpinBox
+
+    exposure = QDoubleSpinBox()
+    exposure.setRange(0.1, 1_000_000.0)
+    exposure.setValue(500.0)  # already short: only gain is capped here
+    gain = QSpinBox()
+    gain.setRange(100, 15000)
+    gain.setValue(3803)
+    panel = SimpleNamespace(
+        _exposure_spin=exposure,
+        _gain_spin=gain,
+        _exposure_before_calibration=None,
+        _gain_before_calibration=None,
+        CALIBRATION_MAX_EXPOSURE_MS=CameraPanel.CALIBRATION_MAX_EXPOSURE_MS,
+        CALIBRATION_MAX_GAIN=CameraPanel.CALIBRATION_MAX_GAIN,
+    )
+    CameraPanel.set_calibration_exposure_cap(panel, True)  # type: ignore[arg-type]
+    assert gain.value() == CameraPanel.CALIBRATION_MAX_GAIN
+    CameraPanel.set_calibration_exposure_cap(panel, False)  # type: ignore[arg-type]
+    assert gain.value() == 3803
+    gain.setValue(403)  # the rig's normal gain is already below the cap: never raised
+    CameraPanel.set_calibration_exposure_cap(panel, True)  # type: ignore[arg-type]
+    CameraPanel.set_calibration_exposure_cap(panel, False)  # type: ignore[arg-type]
+    assert gain.value() == 403
