@@ -47,9 +47,11 @@ STATUS_MESSAGES: dict[FrameAcquisitionStatus, str] = {
 #: there is no move to overlap. Used instead of the message above
 #: whenever `_capture_failure_detail()` knows no movement was commanded
 #: yet for this capture.
+#: Field bundle 240fb36b (2026-11-23): the Guide was already at 24 ms, so "try a shorter
+#: exposure" was wrong advice. The frames' exposure start did not catch up with the request.
 EXPOSURE_OVERLAPPED_NO_MOVE_MESSAGE = (
-    "no frame's exposure could be confirmed to start after the request -- "
-    "try a shorter camera exposure"
+    "no frame started exposing after the request -- the camera's frame timing did not catch "
+    "up with it (the exposure itself was not the cause); retry, and send the diagnostic bundle"
 )
 
 #: Issue #30: message text for a capture that got frames (unlike anything

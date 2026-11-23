@@ -35,6 +35,7 @@ class MovementSize(Enum):
     fraction of *this camera's own* frame width/height (mirrors
     `nudge_target_fraction`'s own reasoning), not a fixed pixel count."""
 
+    TINY = "tiny"  # operator (2026-11-23): 0.1 deg RA/Dec step; screen pads use the Small share
     SMALL = "small"
     MEDIUM = "medium"
     LARGE = "large"

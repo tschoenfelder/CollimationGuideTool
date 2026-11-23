@@ -123,6 +123,10 @@ class StreamController:
         self._seq = 0
         self._error: Exception | None = None
         self._err_lock = threading.Lock()
+        #: Duration of the most recent full capture call (trigger, exposure, readout, transfer).
+        #: A freshness wait must cover at least one whole cycle: the first frame whose exposure
+        #: starts after a request can be a full cycle away (field bundle 240fb36b, 2026-11-23).
+        self.last_cycle_s: float | None = None
 
     @property
     def state(self) -> AcquisitionState:
@@ -166,6 +170,7 @@ class StreamController:
                 cycle_start = self._clock.monotonic()
                 frame = self.camera.capture(exposure_s)
                 captured_at = self._clock.monotonic()  # after capture: true frame age
+                self.last_cycle_s = captured_at - cycle_start
                 started = frame.exposure_started_at
                 if started is not None:
                     # S6.7: the end of the exposure itself (trigger + exposure), not the end

@@ -25,9 +25,10 @@ def _dec_degrees(rig: _Rig) -> list[float]:
 def test_the_default_step_angles_are_1_5_and_20_degrees() -> None:
     settings = MountAlignmentSettings()
     assert settings.nudge_fixed_angles is True
-    assert [nudge_angle_arcsec(settings, size) / 3600.0 for size in MovementSize] == [
-        1.0, 5.0, 20.0,
-    ]
+    # Operator (2026-11-23): a 0.1 deg step under the 1 deg one; screen pads keep their own shares.
+    assert [nudge_angle_arcsec(settings, size) / 3600.0 for size in (
+        MovementSize.TINY, MovementSize.SMALL, MovementSize.MEDIUM, MovementSize.LARGE,
+    )] == [0.1, 1.0, 5.0, 20.0]
 
 
 @pytest.mark.parametrize(("size", "parts"), [("SMALL", [1.0]), ("MEDIUM", [5.0])])
@@ -105,7 +106,7 @@ def test_the_move_size_buttons_show_their_angles(qapp: object, rig: _Rig) -> Non
     panel = rig.panel()
     panel._settings = MountAlignmentSettings()  # the defaults, not the test rig's pinned steps
     labels = [panel._size_label(label, size) for label, size in _SIZE_BUTTONS]
-    assert labels == ["1°", "5°", "20°"]
+    assert labels == ["0.1°", "1°", "5°", "20°"]
     panel.stop()
 
 
