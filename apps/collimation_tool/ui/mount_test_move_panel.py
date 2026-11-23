@@ -445,6 +445,7 @@ _SCREEN_MOVE_BUTTONS: tuple[tuple[str, ScreenDirection], ...] = (
 
 
 _SIZE_BUTTONS: tuple[tuple[str, MovementSize], ...] = (
+    ("Tiny", MovementSize.TINY),
     ("Small", MovementSize.SMALL),
     ("Medium", MovementSize.MEDIUM),
     ("Large", MovementSize.LARGE),
@@ -470,6 +471,8 @@ class MountTestMovePanel(QWidget):
         set_right_calibration_exposure_cap: Callable[[bool], None] | None = None,
         is_left_streaming: Callable[[], bool] | None = None,
         is_artificial_star: Callable[[], bool] | None = None,
+        get_left_cycle_s: Callable[[], float | None] | None = None,
+        get_right_cycle_s: Callable[[], float | None] | None = None,
         is_right_streaming: Callable[[], bool] | None = None,
         get_left_exposure_gain: Callable[[], tuple[float, int]] | None = None,
         get_right_exposure_gain: Callable[[], tuple[float, int]] | None = None,
@@ -560,6 +563,8 @@ class MountTestMovePanel(QWidget):
         # that isn't streaming without disturbing that camera's frame getter.
         self._is_left_streaming = is_left_streaming or (lambda: True)
         self._is_artificial_star = is_artificial_star or (lambda: False)
+        self._get_left_cycle_s = get_left_cycle_s or (lambda: None)
+        self._get_right_cycle_s = get_right_cycle_s or (lambda: None)
         self._is_right_streaming = is_right_streaming or (lambda: True)
         self._set_left_calibration_exposure_cap = set_left_calibration_exposure_cap or (
             lambda _: None
@@ -1010,7 +1015,10 @@ class MountTestMovePanel(QWidget):
         """How long `_capture_both`'s freshness waits may take, scaled for the cameras' current
         exposure (S6.6a: the rule lives in `mount_align_capture.fresh_frame_timeout_s`)."""
         return fresh_frame_timeout_s(
-            self._get_left_exposure_gain(), self._get_right_exposure_gain()
+            self._get_left_exposure_gain(),
+            self._get_right_exposure_gain(),
+            left_cycle_s=self._get_left_cycle_s(),
+            right_cycle_s=self._get_right_cycle_s(),
         )
 
     def _verified_capture_timeout_s(self) -> float:
@@ -1454,12 +1462,14 @@ class MountTestMovePanel(QWidget):
             if exposure_gain is None:
                 continue
             exposure_ms, gain = exposure_gain
+            cycle_s = (self._get_left_cycle_s if key == "left" else self._get_right_cycle_s)()
             self._sizing.log.append(
                 {
                     "event": "calibration_settings",
                     "camera": key,
                     "exposure_ms": exposure_ms,
                     "gain": gain,
+                    "cycle_s": cycle_s,
                 }
             )
         self._start_next_calibration_step()
@@ -2205,6 +2215,7 @@ class MountTestMovePanel(QWidget):
 
     def _screen_share_percent(self, size: MovementSize) -> float:
         return {
+            MovementSize.TINY: self._settings.screen_move_small_fraction,
             MovementSize.SMALL: self._settings.screen_move_small_fraction,
             MovementSize.MEDIUM: self._settings.screen_move_medium_fraction,
             MovementSize.LARGE: self._settings.screen_move_large_fraction,
@@ -2250,6 +2261,7 @@ class MountTestMovePanel(QWidget):
 
     def _screen_move_fraction(self) -> float:
         return {
+            MovementSize.TINY: self._settings.screen_move_small_fraction,
             MovementSize.SMALL: self._settings.screen_move_small_fraction,
             MovementSize.MEDIUM: self._settings.screen_move_medium_fraction,
             MovementSize.LARGE: self._settings.screen_move_large_fraction,

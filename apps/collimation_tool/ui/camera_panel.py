@@ -997,6 +997,11 @@ class CameraPanel(QWidget):
         bundle couldn't actually answer)."""
         return (self._exposure_spin.value(), self._gain_spin.value())
 
+    def frame_cycle_s(self) -> float | None:
+        """Duration of this camera's most recent capture cycle (exposure plus readout and
+        transfer), or None when it is not streaming. See `StreamController.last_cycle_s`."""
+        return self._stream.last_cycle_s if self._stream is not None else None
+
     def is_streaming(self) -> bool:
         """True while this camera's stream is running (no frame is consumed). Calibration uses
         it to skip a camera that is not streaming."""

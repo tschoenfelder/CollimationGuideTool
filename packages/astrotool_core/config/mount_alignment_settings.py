@@ -87,6 +87,7 @@ _DEFAULT_NUDGE_SMALL_FRACTION = _DEFAULT_NUDGE_TARGET_FRACTION / 5
 #: of camera optics or calibration and not limited by `max_nudge_arcsec` (which still caps
 #: frame-relative screen moves and guide pulses). OnStepAdapter (>= 0.7.17) runs each as one
 #: move; OnStepMountPulseAdapter would split one beyond its single-move bound into equal parts.
+_DEFAULT_NUDGE_TINY_DEG = 0.1  # operator (2026-11-23): a finer RA/Dec step under the 1 deg one
 _DEFAULT_NUDGE_SMALL_DEG = 1.0
 _DEFAULT_NUDGE_MEDIUM_DEG = 5.0
 _DEFAULT_NUDGE_LARGE_DEG = 20.0
@@ -242,6 +243,7 @@ class MountAlignmentSettings:
     nudge_medium_fraction: float = _DEFAULT_NUDGE_MEDIUM_FRACTION
     #: The RA/Dec step at Move size Small / Medium / Large on a mount with angular moves
     #: (degrees of axis turn, also for RA at any Dec; operator request 2026-11-18, fd84c75f).
+    nudge_tiny_deg: float = _DEFAULT_NUDGE_TINY_DEG
     nudge_small_deg: float = _DEFAULT_NUDGE_SMALL_DEG
     nudge_medium_deg: float = _DEFAULT_NUDGE_MEDIUM_DEG
     nudge_large_deg: float = _DEFAULT_NUDGE_LARGE_DEG
@@ -394,6 +396,7 @@ def load_mount_alignment_settings(
         nudge_medium_fraction=_read(
             table, "nudge_medium_fraction", defaults.nudge_medium_fraction, _positive_float
         ),
+        nudge_tiny_deg=_read(table, "nudge_tiny_deg", defaults.nudge_tiny_deg, _positive_float),
         nudge_small_deg=_read(table, "nudge_small_deg", defaults.nudge_small_deg, _positive_float),
         nudge_medium_deg=_read(
             table, "nudge_medium_deg", defaults.nudge_medium_deg, _positive_float

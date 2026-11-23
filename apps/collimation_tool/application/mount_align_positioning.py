@@ -101,6 +101,7 @@ def nudge_fraction(settings: MountAlignmentSettings, size: MovementSize) -> floa
     (field report b977fe85: the size selector used to reach the screen-move pad only). Large
     is `nudge_target_fraction`, the half-window nudge every click made before."""
     return {
+        MovementSize.TINY: settings.nudge_small_fraction,
         MovementSize.SMALL: settings.nudge_small_fraction,
         MovementSize.MEDIUM: settings.nudge_medium_fraction,
         MovementSize.LARGE: settings.nudge_target_fraction,
@@ -111,6 +112,7 @@ def nudge_angle_arcsec(settings: MountAlignmentSettings, size: MovementSize) -> 
     """The fixed RA/Dec step on the sky at Move size `size` on a mount with angular moves
     (operator request 2026-11-18: Small 1, Medium 5, Large 20 degrees)."""
     degrees = {
+        MovementSize.TINY: settings.nudge_tiny_deg,
         MovementSize.SMALL: settings.nudge_small_deg,
         MovementSize.MEDIUM: settings.nudge_medium_deg,
         MovementSize.LARGE: settings.nudge_large_deg,

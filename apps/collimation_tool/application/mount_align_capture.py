@@ -154,14 +154,24 @@ class CaptureJob:
 
 
 def fresh_frame_timeout_s(
-    left_state: tuple[float, int] | None, right_state: tuple[float, int] | None
+    left_state: tuple[float, int] | None,
+    right_state: tuple[float, int] | None,
+    *,
+    left_cycle_s: float | None = None,
+    right_cycle_s: float | None = None,
 ) -> float:
     """How long one freshness wait may take, scaled for the slowest current camera exposure
     (real diagnostic 9ca6daa3: a fixed 2 s budget had no margin left for 2 s exposures).
-    Falls back to the budget's floor when no exposure is known. S6.7: the numbers are the
-    shared rule's (`DEFAULT_FRESH_FRAME_BUDGET`, its one owner)."""
-    exposures_ms = [state[0] for state in (left_state, right_state) if state is not None]
-    slowest_s = max(exposures_ms) / 1000.0 if exposures_ms else None
+    Field bundle 240fb36b (2026-11-23): the budget must also cover one whole capture cycle
+    (readout and transfer, not just the exposure), since the first frame whose exposure starts
+    after the request can be a full cycle away. Falls back to the budget's floor when nothing is
+    known. S6.7: the numbers are the shared rule's (`DEFAULT_FRESH_FRAME_BUDGET`, its one owner)."""
+    spans_s: list[float] = []
+    for state, cycle_s in ((left_state, left_cycle_s), (right_state, right_cycle_s)):
+        if state is None:
+            continue
+        spans_s.append(max(state[0] / 1000.0, cycle_s or 0.0))
+    slowest_s = max(spans_s) if spans_s else None
     return DEFAULT_FRESH_FRAME_BUDGET.timeout_s(slowest_s)
 
 

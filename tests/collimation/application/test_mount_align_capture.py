@@ -401,3 +401,14 @@ def test_the_at_rest_reference_is_reused_only_while_valid() -> None:
     assert reusable_reference(reference, mode="star", submit_count=3, now=edge + 0.001) is None
     no_count = VerifiedReference(10.0, None, "star", {})
     assert reusable_reference(no_count, mode="star", submit_count=None, now=10.0) is None
+
+
+def test_fresh_frame_budget_covers_a_full_capture_cycle() -> None:
+    """Field bundle 240fb36b (2026-11-23): the Guide's 24 ms exposure still failed the freshness
+    wait, because a whole capture cycle (readout and transfer) takes longer than the 2 s floor.
+    The budget must cover one measured cycle, not just the exposure."""
+    floor = DEFAULT_FRESH_FRAME_BUDGET.timeout_s(0.024)
+    slow_cycle = fresh_frame_timeout_s(None, (24.0, 100), right_cycle_s=1.2)
+    assert slow_cycle == DEFAULT_FRESH_FRAME_BUDGET.timeout_s(1.2)
+    assert slow_cycle > floor
+    assert fresh_frame_timeout_s(None, (24.0, 100)) == floor
