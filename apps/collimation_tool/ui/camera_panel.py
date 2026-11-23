@@ -409,12 +409,17 @@ class CameraPanel(QWidget):
     #: The exposure a calibration runs with at most (field diag 1c3e2dc7, 2026-11-21): a 2 s guide
     #: exposure could not be confirmed to start after the request, so calibration failed.
     CALIBRATION_MAX_EXPOSURE_MS = 500.0
-    #: The exposure this panel had before a calibration capped it (None: not capped).
+    #: Field bundle 1a64be4d (2026-11-23): auto-exposure had raised the guide gain to 3803, so
+    #: even a 500 ms exposure clipped the frames. Calibration caps gain too, at the rig's normal
+    #: guide gain (config: 403), so the frames are not clipped.
+    CALIBRATION_MAX_GAIN = 500
+    #: The exposure and gain this panel had before a calibration capped them (None: not capped).
     _exposure_before_calibration: float | None = None
+    _gain_before_calibration: int | None = None
 
     def set_calibration_exposure_cap(self, enabled: bool) -> None:
-        """Calibration: cap this camera's exposure at `CALIBRATION_MAX_EXPOSURE_MS` while it
-        runs, restoring the previous value afterwards."""
+        """Calibration: cap this camera's exposure at `CALIBRATION_MAX_EXPOSURE_MS` and its gain
+        at `CALIBRATION_MAX_GAIN` while it runs, restoring the previous values afterwards."""
         if enabled:
             current = self._exposure_spin.value()
             if (
@@ -423,10 +428,17 @@ class CameraPanel(QWidget):
             ):
                 self._exposure_before_calibration = current
                 self._exposure_spin.setValue(self.CALIBRATION_MAX_EXPOSURE_MS)
+            current_gain = self._gain_spin.value()
+            if self._gain_before_calibration is None and current_gain > self.CALIBRATION_MAX_GAIN:
+                self._gain_before_calibration = current_gain
+                self._gain_spin.setValue(self.CALIBRATION_MAX_GAIN)
             return
         restore, self._exposure_before_calibration = self._exposure_before_calibration, None
         if restore is not None:
             self._exposure_spin.setValue(restore)
+        restore_gain, self._gain_before_calibration = self._gain_before_calibration, None
+        if restore_gain is not None:
+            self._gain_spin.setValue(restore_gain)
 
     def _on_gain_changed(self, value: int) -> None:
         self._camera.set_gain(value)
