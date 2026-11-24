@@ -151,6 +151,7 @@ def acquire_stable_frame(
     # 2 s budget ran out before any frame could start after it.
     deadline = max(now(), reference_monotonic) + timeout_s
     saw_overlapping_exposure = False
+    frames_seen = 0
     longest: float | None = None
     while True:
         if is_cancelled():
@@ -163,6 +164,7 @@ def acquire_stable_frame(
         frame = next_frame(remaining)
         if frame is None:
             break
+        frames_seen += 1
         if longest is None or frame.exposure_seconds > longest:
             longest = frame.exposure_seconds
         exposure_start = frame.captured_at_monotonic - frame.exposure_seconds
@@ -184,6 +186,18 @@ def acquire_stable_frame(
         FrameAcquisitionStatus.EXPOSURE_OVERLAPPED_MOTION
         if saw_overlapping_exposure
         else FrameAcquisitionStatus.TIMEOUT
+    )
+    # Field bundle 39003fb1 (2026-11-24): the wait ended ~2 s after it began, with no reason logged.
+    # Log why: the deadline it ran to, the time left and how it ended.
+    _log.warning(
+        "fresh-frame wait ended: status=%s reference=%.3f deadline=%.3f now=%.3f "
+        "timeout_s=%.3f frames_seen=%d",
+        status.value,
+        reference_monotonic,
+        deadline,
+        now(),
+        timeout_s,
+        frames_seen,
     )
     return FrameAcquisitionResult(status, longest_exposure_s=longest)
 
