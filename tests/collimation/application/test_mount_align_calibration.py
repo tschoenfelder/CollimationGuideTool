@@ -8,7 +8,11 @@ from astrotool_core.mount import AxisDirection, AxisResponse, MountAxis
 from collimation_tool.application.mount_align_calibration import CalibrationResults
 from collimation_tool.application.mount_align_failures import MeasurementFailureClass
 from collimation_tool.application.mount_align_measurement import Measurement
-from collimation_tool.application.mount_align_plan import CALIBRATION_STEPS, CalibrationStep
+from collimation_tool.application.mount_align_plan import (
+    CALIBRATION_STEPS,
+    CalibrationStep,
+    CalibrationStepRole,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -124,6 +128,23 @@ def test_a_direction_without_motion_is_no_motion_detected() -> None:
         "Guide: no image displacement for AXIS1 NEGATIVE -- check that the "
         "mount really moves in that direction."
     ]
+
+
+def test_first_and_repeat_readings_that_disagree_are_never_stored() -> None:
+    """Field bundle e890a222 (2026-11-24): Dec+ read (224, 13) px and then (0, 482) px. The
+    frames did not support a measurement, so the camera's calibration must not be stored."""
+    results = CalibrationResults()
+    for step in CALIBRATION_STEPS:
+        shift = _GOOD[(step.axis, step.direction)]
+        if (step.axis, step.direction) == (A2, POS):
+            shift = (224.0, 13.0) if step.role is CalibrationStepRole.FIRST else (0.0, 482.0)
+        results.record_direction_response("right", step, _response(step, shift))
+
+    verdict = results.verdict({})
+
+    assert verdict.matrices == {}
+    assert verdict.failure_classes == {"right": MeasurementFailureClass.CALIBRATION_INVALID}
+    assert "AXIS2 POSITIVE disagree" in verdict.lines[0]
 
 
 def test_reset_starts_a_new_attempt() -> None:

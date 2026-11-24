@@ -155,7 +155,10 @@ def calibrate_axes(
 #: are physically independent (RA vs Dec), so this should only ever fire on
 #: a bad calibration (e.g. one axis's "before"/"after" measurement was
 #: wrong) -- the caller should ask the user to recalibrate, not retry.
-_MIN_DETERMINANT_RATIO = 1e-3
+#: Field bundle e890a222 (2026-11-24): a 1e-3 ratio (~0.06 deg) let a pair 2.3 deg apart through,
+#: and screen moves then came out ~20x too large and RA/Dec-shaped. RA and Dec move the image
+#: roughly perpendicular to each other, so anything under 30 deg (sin 0.5) is a bad measurement.
+_MIN_DETERMINANT_RATIO = 0.5
 
 
 def is_degenerate(axis1_response: AxisResponse, axis2_response: AxisResponse) -> bool:

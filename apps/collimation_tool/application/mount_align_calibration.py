@@ -8,6 +8,7 @@ usable camera plus the per-camera summary lines and failure classes. No Qt, no d
 
 from __future__ import annotations
 
+import math
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 
@@ -166,6 +167,20 @@ class CalibrationResults:
                     )
                 )
                 continue
+            inconsistent = [
+                f"{axis.name} {direction.name}"
+                for (axis, direction), characterization in self.characterizations[key].items()
+                if _first_and_repeat_disagree(characterization.first, characterization.repeat)
+            ]
+            if inconsistent:
+                # Field bundle e890a222 (2026-11-24): the same direction read (224, 13) px and then
+                # (0, 482) px -- the frames did not support a measurement; never store that.
+                verdict.failure_classes[key] = MeasurementFailureClass.CALIBRATION_INVALID
+                lines.append(
+                    f"{CAMERA_LABELS[key]}: the two readings for {', '.join(inconsistent)} "
+                    "disagree -- the frames did not overlap enough to measure; recalibrate."
+                )
+                continue
             still = [
                 f"{axis.name} {direction.name}"
                 for (axis, direction), characterization in self.characterizations[key].items()
@@ -195,3 +210,21 @@ class CalibrationResults:
                 f"Dec-axis {format_response(axis2)}"
             )
         return verdict
+
+#: Two readings of one direction disagree beyond noise: more than 45 deg apart, or one more than
+#: 3x the other. Readings under 5 px (e.g. backlash on a direction's first move) are not compared.
+_CONSISTENCY_MIN_PX = 5.0
+_CONSISTENCY_MAX_ANGLE_DEG = 45.0
+_CONSISTENCY_MAX_RATIO = 3.0
+
+
+def _first_and_repeat_disagree(first: AxisResponse, repeat: AxisResponse) -> bool:
+    first_px = math.hypot(first.dx_px, first.dy_px)
+    repeat_px = math.hypot(repeat.dx_px, repeat.dy_px)
+    if min(first_px, repeat_px) < _CONSISTENCY_MIN_PX:
+        return False
+    cosine = (first.dx_px * repeat.dx_px + first.dy_px * repeat.dy_px) / (first_px * repeat_px)
+    if cosine < math.cos(math.radians(_CONSISTENCY_MAX_ANGLE_DEG)):
+        return True
+    return max(first_px, repeat_px) / min(first_px, repeat_px) > _CONSISTENCY_MAX_RATIO
+

@@ -415,3 +415,16 @@ class TestSolveScreenMove:
 
         with pytest.raises(ValueError, match="parallel"):
             solve_screen_move(matrix, target_dx_px=10.0, target_dy_px=0.0)
+
+
+def test_axes_a_few_degrees_apart_are_degenerate() -> None:
+    """Field bundle e890a222 (2026-11-24): RA (-3, 76) px and Dec (0, 482) px, 2.3 deg apart,
+    passed the old 0.06 deg guard and made screen moves ~20x too large."""
+    from astrotool_core.mount import AxisDirection, AxisResponse, MountAxis
+    from astrotool_core.mount.axis_calibration import is_degenerate
+
+    ra = AxisResponse(MountAxis.AXIS1, AxisDirection.POSITIVE, 1000, -3.0, 76.0, 0.0)
+    dec = AxisResponse(MountAxis.AXIS2, AxisDirection.POSITIVE, 1000, 0.0, 482.0, 0.0)
+    assert is_degenerate(ra, dec)
+    square = AxisResponse(MountAxis.AXIS2, AxisDirection.POSITIVE, 1000, 482.0, 0.0, 0.0)
+    assert not is_degenerate(ra, square)
