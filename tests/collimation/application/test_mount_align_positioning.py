@@ -195,7 +195,7 @@ def test_a_screen_move_is_solved_from_the_matrix_as_an_angle() -> None:
     unit = angular_unit_rate(_SETTINGS)
     plan = _screen()  # 40 px right = RA+ 400 equivalent ms
     assert plan.motion is not None and plan.angular and not plan.clamped
-    assert [step[:3] for step in plan.motion] == [(A1, POS, 400)]
+    assert [step[:3] for step in plan.motion] == [(A1, NEG, 400)]
     assert plan.motion[0][3] == pytest.approx(400 * unit / 1000.0)
 
 

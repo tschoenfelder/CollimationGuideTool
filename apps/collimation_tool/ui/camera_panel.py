@@ -186,8 +186,12 @@ class CameraPanel(QWidget):
         device_lister: Callable[[], list[TouptekDeviceInfo]] = _list_touptek_devices,
         camera_factory: Callable[[str], CameraPort] = default_camera_factory,
         auto_exposure_config: AutoExposureConfig | None = None,
+        shows_collimation: bool = True,
     ) -> None:
         super().__init__()
+        #: Operator (2026-11-24): collimation (and its screw calibration) is for the SCT only. The
+        #: guide scope's panel shows its stream status, not a collimation recommendation.
+        self._shows_collimation = shows_collimation
         self._device_lister = device_lister
         self._camera_factory = camera_factory
         #: #52 (S6.2): the name this panel's camera lifecycle failures are logged under.
@@ -784,8 +788,12 @@ class CameraPanel(QWidget):
                 fov_polygon=self._fov_polygon,
                 matched_point=self._matched_point,
             )
-            text = _format_recommendation(outcome.result, outcome.recommendation)
-            if self._target_mode_label:
+            text = (
+                _format_recommendation(outcome.result, outcome.recommendation)
+                if self._shows_collimation
+                else "Streaming"  # the guide scope is not collimated: no screw advice here
+            )
+            if self._shows_collimation and self._target_mode_label:
                 text = f"[{self._target_mode_label}] {text}"
             self._recommendation_label.setText(text)
 
