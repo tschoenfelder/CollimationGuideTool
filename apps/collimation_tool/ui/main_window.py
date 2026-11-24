@@ -290,6 +290,7 @@ class MainWindow(QMainWindow):
             device_lister=device_lister,
             camera_factory=camera_factory,
             auto_exposure_config=auto_exposure_config,
+            shows_collimation=False,  # collimation is for the SCT (Main) only
         )
         self._left_panel.connected_device_changed.connect(self._on_left_camera_changed)
         self._right_panel.connected_device_changed.connect(self._on_right_camera_changed)

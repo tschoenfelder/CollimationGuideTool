@@ -483,6 +483,14 @@ def test_window_starts_idle(qapp: object) -> None:
     assert not window._left_panel._start_button.isChecked()
 
 
+def test_only_the_main_panel_shows_collimation_advice(qapp: object) -> None:
+    """Operator (2026-11-24): collimation and its screw calibration are for the SCT (Main) only;
+    the guide scope's panel never shows screw advice."""
+    window = MainWindow(_donut_camera((0.0, 0.0)))
+    assert window._left_panel._shows_collimation
+    assert not window._right_panel._shows_collimation
+
+
 def test_starting_the_stream_and_polling_measures_and_shows_overlay(qapp: object) -> None:
     window = MainWindow(_donut_camera((5.0, -2.0)))
     panel = window._left_panel
@@ -1521,11 +1529,13 @@ class TestRightPanel:
         panel._start_button.setChecked(True)
         try:
             deadline = time.monotonic() + 2.0
-            while "Error" not in panel._recommendation_label.text():
+            while panel._last_result is None:
                 assert time.monotonic() < deadline, "no measurement observed in time"
                 time.sleep(0.02)
                 panel._poll_frame()
             assert not panel._live_view.pixmap().isNull()
+            # The guide scope is not collimated: it shows its stream status, no screw advice.
+            assert panel._recommendation_label.text() == "Streaming"
         finally:
             panel._start_button.setChecked(False)
         # The left panel is untouched by the right panel streaming.
