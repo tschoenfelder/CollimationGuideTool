@@ -65,6 +65,48 @@ def _failing_waiter(status: FrameAcquisitionStatus) -> StableFrameWaiter:
     return waiter
 
 
+def _settling_waiter(
+    clock: _FakeClock, frame: np.ndarray, frame_period_s: float = 0.5
+) -> StableFrameWaiter:
+    """A waiter with the real stable-wait contract: it returns only a frame whose exposure
+    started at or after `reference`, and its own budget is anchored at max(now, reference)."""
+
+    def waiter(reference: float, timeout_s: float) -> FrameAcquisitionResult:
+        deadline = max(clock.now(), reference) + timeout_s
+        while clock.now() <= deadline:
+            clock.sleep(frame_period_s)
+            if clock.now() >= reference:
+                return FrameAcquisitionResult(
+                    FrameAcquisitionStatus.OK,
+                    DeliveredFrame(
+                        pixels=frame, captured_at_monotonic=clock.now(), exposure_seconds=0.0
+                    ),
+                )
+        return FrameAcquisitionResult(FrameAcquisitionStatus.TIMEOUT)
+
+    return waiter
+
+
+def test_a_reference_in_the_future_does_not_eat_into_the_verified_budget() -> None:
+    """Field bundle 5fa215d7 (2026-11-24): the settle after a pulse put the reference ~4 s ahead
+    of the wait, and the verified-capture deadline (counted from the wait's start) ran out before
+    a stable frame could start after it. The budget must start at the reference."""
+    base = _textured_image((60, 60), seed=4)
+    clock = _FakeClock(step_s=0.05)
+
+    result = acquire_verified_frame(
+        _settling_waiter(clock, base.copy()),
+        reference_monotonic=5.0,
+        timeout_s=2.0,
+        stability_tolerance_px=1.0,
+        stability_sample_count=3,
+        sleep=clock.sleep,
+        now=clock.now,
+    )
+
+    assert result.status is MotionAwareStatus.OK
+
+
 class TestAcquireVerifiedFrame:
     def test_an_already_stable_sequence_is_accepted(self) -> None:
         base = _textured_image((60, 60), seed=1)
