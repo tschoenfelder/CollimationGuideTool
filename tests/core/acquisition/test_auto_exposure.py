@@ -622,3 +622,16 @@ def test_custom_target_band_is_respected() -> None:
         config=config,
     )
     assert result.changed is False
+
+
+def test_a_frame_with_half_a_percent_saturated_is_brought_down() -> None:
+    """Operator (2026-11-24): the live view said "clipped" while auto-exposure held still, because
+    up to 1% of the frame could saturate unnoticed. The rest of this frame sits in the target band
+    and 0.5% of it is saturated: auto-exposure must now lower gain or exposure."""
+    pixels = np.full((200, 200), 0.6 * 4095, dtype=np.float32)
+    pixels.flat[: 200] = 4095.0  # 0.5% of the frame at full scale
+    result = compute_auto_exposure(
+        pixels, bit_depth=12, current_exposure_ms=100.0, current_gain=100, capabilities=_CAPS
+    )
+    assert result.changed
+    assert result.gain == 100 and result.exposure_ms < 100.0  # gain at minimum: exposure drops

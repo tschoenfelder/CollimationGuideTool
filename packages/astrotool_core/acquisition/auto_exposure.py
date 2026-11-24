@@ -89,7 +89,10 @@ class AutoExposureConfig:
     default_gain: int = 100
     #: Percentile of the frame's pixel distribution treated as "the signal"
     #: — not the mean, since astro frames are mostly near-black background.
-    percentile: float = 99.0
+    #: Operator (2026-11-24): at 99.0 up to 1% of the frame could stay saturated while the live
+    #: view reported "clipped"; at 99.9 auto-exposure brings gain, then exposure, down once more
+    #: than 0.1% of the frame clips, still tolerating a few small specular highlights.
+    percentile: float = 99.9
     #: Clamp on how much exposure may change in one step, so a single
     #: noisy/outlier frame can't cause a wild jump or oscillation.
     max_step_factor: float = 2.0
