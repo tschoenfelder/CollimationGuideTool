@@ -172,6 +172,16 @@ class StreamController:
                 captured_at = self._clock.monotonic()  # after capture: true frame age
                 self.last_cycle_s = captured_at - cycle_start
                 started = frame.exposure_started_at
+                # Diagnostic (2026-11-24): per frame, the cycle, the raw return time and the
+                # stamped exposure start, so a bundle shows how each frame's stamps fall behind.
+                _log.warning(
+                    "stream %s frame: cycle_start=%.3f returned=%.3f started=%s exposure=%.4f",
+                    self.name,
+                    cycle_start,
+                    captured_at,
+                    f"{started:.3f}" if started is not None else "none",
+                    frame.exposure_seconds,
+                )
                 if started is not None:
                     # S6.7: the end of the exposure itself (trigger + exposure), not the end
                     # of readout/pull/copy: consumers derive the exposure START as

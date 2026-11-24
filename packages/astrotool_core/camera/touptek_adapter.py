@@ -966,6 +966,15 @@ class TouptekCameraAdapter(CameraPort):
             raise TimeoutError(f"TouptekCameraAdapter: no frame received within {timeout_s:.1f}s")
         if self._capture_error is not None:
             raise self._capture_error
+        # Diagnostic (2026-11-24): trigger -> SDK frame-ready latency, to see where the freshness
+        # wait's frame stamps fall behind (field bundles 7be8627b and later).
+        _log.warning(
+            "touptek frame: trigger=%.3f ready=%.3f latency=%.3f s timeout=%.2f",
+            self._last_trigger_at or 0.0,
+            self._clock.monotonic(),
+            self._clock.monotonic() - (self._last_trigger_at or 0.0),
+            timeout_s,
+        )
         return self._pull_pixels()
 
     def _pull_pixels(self) -> np.ndarray:  # pragma: no cover
