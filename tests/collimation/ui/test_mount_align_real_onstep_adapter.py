@@ -76,6 +76,8 @@ def _frame_relative_nudges(monkeypatch: pytest.MonkeyPatch) -> None:
 # The screen-move assertions below were written for the earlier 5/15/30 % steps; they pin the
 # mechanics at those fractions (the defaults are now 1/5/20 %, operator 2026-11-21).
 _SETTINGS = MountAlignmentSettings(
+    # These tests pin the long-standing 25% calibration target (12.5% default since 2026-11-24).
+    calibration_target_fraction=0.25,
     screen_move_small_fraction=0.05,
     screen_move_medium_fraction=0.15,
     screen_move_large_fraction=0.30,

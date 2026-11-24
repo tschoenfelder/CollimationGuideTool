@@ -29,7 +29,8 @@ from astrotool_core.mount.movement_sizing import (
 )
 
 #: 20x sidereal seed, 25% target, 20-30% band, 3 s cap, 0.2 s floor
-_POLICY = SizingPolicy(center_rate_x=20.0)
+# The algorithm tests pin the long-standing 25% target (the default is 12.5% since 2026-11-24).
+_POLICY = SizingPolicy(center_rate_x=20.0, target_fraction=0.25)
 
 _OAG = CameraGeometry("oag", 3840, 2160, 206.265 * 2.0 / 2030.0, focal_length_mm=2030.0)
 _MAIN = CameraGeometry("main", 3840, 2160, 206.265 * 2.9 / 2030.0, focal_length_mm=2030.0)
@@ -109,7 +110,7 @@ class TestFirstMoveSeed:
         assert plan.duration_ms == 3000
 
     def test_a_faster_rate_brings_the_wide_guide_inside_the_cap(self) -> None:
-        fast = SizingPolicy(center_rate_x=48.0)  # 48x = 721.97 "/s -> 2.21 s
+        fast = SizingPolicy(center_rate_x=48.0, target_fraction=0.25)  # 48x = 721.97 "/s -> 2.21 s
 
         plan = plan_first_move([_GUIDE], fast)
 

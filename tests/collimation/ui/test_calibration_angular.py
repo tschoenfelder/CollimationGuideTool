@@ -30,6 +30,8 @@ from collimation_tool.ui.mount_test_move_panel import MountTestMovePanel
 from collimation_tool.ui.mount_test_move_runner import MountTestMoveRunner
 
 _SETTINGS = MountAlignmentSettings(
+    # These tests pin the long-standing 25% calibration target (12.5% default since 2026-11-24).
+    calibration_target_fraction=0.25,
     settle_ms=0,
     frame_settle_ms=0,
     stability_sample_interval_s=0.0,

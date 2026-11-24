@@ -71,7 +71,8 @@ def _port(mount: object) -> MountPort:
 
 
 def _sizing(mount: object, settings: MountAlignmentSettings | None = None) -> CalibrationSizing:
-    chosen = settings or MountAlignmentSettings()
+    # These tests pin the long-standing 25% target (the default is 12.5% since 2026-11-24).
+    chosen = settings or MountAlignmentSettings(calibration_target_fraction=0.25)
     return CalibrationSizing(mount=lambda: mount, settings=lambda: chosen)
 
 

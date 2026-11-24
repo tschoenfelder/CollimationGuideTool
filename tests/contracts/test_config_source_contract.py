@@ -444,7 +444,8 @@ def test_the_owned_numeric_values_are_unchanged() -> None:
     assert target_mode.ARTIFICIAL_STAR_SEED_DISTANCE_M == 30.0
     assert mount_alignment_settings.DEFAULT_STABILITY_SAMPLE_INTERVAL_S == 0.2
     assert mount_alignment_settings.DEFAULT_STABILITY_SAMPLE_COUNT == 3
-    assert mount_alignment_settings.DEFAULT_CALIBRATION_TARGET_FRACTION == 0.25
+    # Operator (2026-11-24): halved from 0.25 so calibration frames still overlap.
+    assert mount_alignment_settings.DEFAULT_CALIBRATION_TARGET_FRACTION == 0.125
 
 
 def test_the_numeric_scanner_catches_each_kind_of_restatement() -> None:
