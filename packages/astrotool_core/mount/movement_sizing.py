@@ -21,6 +21,7 @@ than `min_duration_ms` (timing/acceleration would dominate).
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from enum import Enum
 
@@ -82,13 +83,25 @@ class SizingPolicy:
     center_rate_x: float
     #: S6.9 (#55 D08): owned by `config.mount_alignment_settings` (no second literal here).
     target_fraction: float = DEFAULT_CALIBRATION_TARGET_FRACTION
-    band_low: float = 0.20
-    band_high: float = 0.30
-    #: A camera must see at least this fraction of its frame to be measurable.
-    wide_min_fraction: float = 0.10
+    #: The accept band around the target, and the share a camera must see to be measurable.
+    #: Derived from `target_fraction` unless given (0.8x / 1.2x / 0.4x -- at a 25% target the
+    #: long-standing 20-30% band and 10% minimum), so a smaller target keeps them consistent.
+    band_low: float = math.nan
+    band_high: float = math.nan
+    wide_min_fraction: float = math.nan
     max_duration_ms: int = 3000
     min_duration_ms: int = 200
     max_attempts: int = 4
+
+    def __post_init__(self) -> None:
+        derived = {
+            "band_low": 0.8 * self.target_fraction,
+            "band_high": 1.2 * self.target_fraction,
+            "wide_min_fraction": 0.4 * self.target_fraction,
+        }
+        for name, value in derived.items():
+            if math.isnan(getattr(self, name)):
+                object.__setattr__(self, name, value)
 
 
 class SizingStatus(Enum):

@@ -277,7 +277,7 @@ class TestCalibrationSizingSettings:
     def test_defaults_follow_the_issue_policy(self) -> None:
         settings = MountAlignmentSettings()
 
-        assert settings.calibration_target_fraction == 0.25
+        assert settings.calibration_target_fraction == 0.125  # halved 2026-11-24
         assert settings.max_calibration_pulse_ms == 3000
         assert settings.min_calibration_pulse_ms == 200
 
@@ -306,7 +306,7 @@ class TestCalibrationSizingSettings:
 
         settings = load_mount_alignment_settings(path)
 
-        assert settings.calibration_target_fraction == 0.25
+        assert settings.calibration_target_fraction == 0.125  # halved 2026-11-24
         assert settings.max_calibration_pulse_ms == 3000
 
 

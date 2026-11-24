@@ -49,10 +49,12 @@ REMOVED_KEYS: tuple[str, ...] = (
     "max_nudge_pulse_ms",
 )
 
-#: Issue #46: calibration moves are sized to ~25% of the frame (not a fixed
+#: Issue #46: calibration moves are sized to a share of the frame (not a fixed
 #: move), capped and never below a minimum -- see astrotool_core.mount.movement_sizing.
 #: S6.9 (#55 D08): the ONE owner -- `SizingPolicy.target_fraction` defaults to it.
-DEFAULT_CALIBRATION_TARGET_FRACTION = 0.25
+#: Operator (2026-11-24, bundle 7e6c0067): at 25% the before/after frames no longer overlapped
+#: enough for the terrestrial correlation; halved to 12.5%.
+DEFAULT_CALIBRATION_TARGET_FRACTION = 0.125
 #: The unit of an angular calibration's equivalent durations, and the seed of its first move:
 #: the controller's centering rate as a multiple of sidereal (`equivalent_duration`). ONLY a
 #: seed -- the measured displacement is authoritative.
