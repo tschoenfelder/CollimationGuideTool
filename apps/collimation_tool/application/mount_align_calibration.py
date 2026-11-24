@@ -166,16 +166,18 @@ class CalibrationResults:
                     )
                 )
                 continue
-            if any(
-                characterization.steady_state.magnitude_px <= 0.0
-                for characterization in self.characterizations[key].values()
-            ):
+            still = [
+                f"{axis.name} {direction.name}"
+                for (axis, direction), characterization in self.characterizations[key].items()
+                if characterization.steady_state.magnitude_px <= 0.0
+            ]
+            if still:
                 # Issue #43: EVERY direction must have produced motion, not only the two
-                # POSITIVE ones is_degenerate() looks at.
+                # POSITIVE ones is_degenerate() looks at. Field bundle befe48b4: name them.
                 verdict.failure_classes[key] = MeasurementFailureClass.NO_MOTION_DETECTED
                 lines.append(
-                    f"{CAMERA_LABELS[key]}: at least one direction produced no image "
-                    "displacement -- check that the mount really moves in every direction."
+                    f"{CAMERA_LABELS[key]}: no image displacement for {', '.join(still)} "
+                    "-- check that the mount really moves in that direction."
                 )
                 continue
             # Issue #31 Phase C: every measured direction's own steady-state response (not just

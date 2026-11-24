@@ -121,8 +121,8 @@ def test_a_direction_without_motion_is_no_motion_detected() -> None:
     verdict = results.verdict({})
     assert verdict.failure_classes == {"right": MeasurementFailureClass.NO_MOTION_DETECTED}
     assert verdict.lines == [
-        "Guide: at least one direction produced no image displacement -- check that the "
-        "mount really moves in every direction."
+        "Guide: no image displacement for AXIS1 NEGATIVE -- check that the "
+        "mount really moves in that direction."
     ]
 
 
