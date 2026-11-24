@@ -124,6 +124,8 @@ _log = logging.getLogger(__name__)
 
 _POLL_INTERVAL_MS = 100
 _RECENT_FRAMES_KEPT = 3
+#: Stand-in pixels for a frame the freshness rule rejects (its pixels are never read).
+_STALE_FRAME_PIXELS = np.empty((0, 0), dtype=np.float32)
 
 
 def default_camera_factory(camera_id: str) -> CameraPort:
@@ -1088,10 +1090,21 @@ class CameraPanel(QWidget):
                 return None
             cursor = mailbox_frame.sequence
             self._remember_frame(mailbox_frame)
+            exposure_s = mailbox_frame.frame.exposure_seconds
+            if mailbox_frame.captured_at_monotonic - exposure_s < reference_monotonic:
+                # Field bundle 4013795c (2026-11-24): the walk starts at the ring's oldest frame,
+                # and converting each stale colour frame to mono cost 0.5-0.8 s on the Pi, so the
+                # wait spent its whole budget on frames the freshness rule rejects anyway and never
+                # reached the fresh ones. A stale frame's pixels are never used: skip converting it.
+                return DeliveredFrame(
+                    pixels=_STALE_FRAME_PIXELS,
+                    captured_at_monotonic=mailbox_frame.captured_at_monotonic,
+                    exposure_seconds=exposure_s,
+                )
             return DeliveredFrame(
                 pixels=self._frame_to_mono(mailbox_frame.frame),
                 captured_at_monotonic=mailbox_frame.captured_at_monotonic,
-                exposure_seconds=mailbox_frame.frame.exposure_seconds,
+                exposure_seconds=exposure_s,
             )
 
         return acquire_stable_frame(
