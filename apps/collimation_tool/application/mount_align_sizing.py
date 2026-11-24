@@ -459,6 +459,27 @@ class CalibrationSizing:
         seed_key = self.smallest_fov_key(list(responses))
         if seed_key is None:
             return False
+        # Field bundle d1d2165a (2026-11-24): the Main camera read exactly 0 on the first probe
+        # while the Guide saw the same move clearly. A zero while another camera moved is a failed
+        # match, not "too little motion": sizing on it quadrupled the move and pushed the Main
+        # image beyond what correlation can track. Size from a camera that saw the motion.
+        moved = [
+            key
+            for key in responses
+            if key in self.geometry
+            and measured_fraction(self.geometry[key], responses[key].dx_px, responses[key].dy_px)
+            >= NO_MOTION_WIDTH_FRACTION
+        ]
+        if moved and seed_key not in moved:
+            self.log.append(
+                {
+                    "event": "seed_skipped",
+                    "axis": step.axis.name,
+                    "camera": seed_key,
+                    "reason": "no displacement while another camera moved",
+                }
+            )
+            seed_key = self.smallest_fov_key(moved) or seed_key
         response = responses[seed_key]
         geometry = self.geometry[seed_key]
         fraction = measured_fraction(geometry, response.dx_px, response.dy_px)
