@@ -211,11 +211,11 @@ class CalibrationResults:
             )
         return verdict
 
-#: Two readings of one direction disagree beyond noise: more than 45 deg apart, or one more than
-#: 3x the other. Readings under 5 px (e.g. backlash on a direction's first move) are not compared.
+#: Two readings of one direction disagree beyond noise when they point more than 45 deg apart.
+#: Readings under 5 px are not compared. Size is not compared: the first move after a reversal
+#: is shortened by backlash by design (bundle 46eb1a3a: Dec- read -61 px, then -187 px).
 _CONSISTENCY_MIN_PX = 5.0
 _CONSISTENCY_MAX_ANGLE_DEG = 45.0
-_CONSISTENCY_MAX_RATIO = 3.0
 
 
 def _first_and_repeat_disagree(first: AxisResponse, repeat: AxisResponse) -> bool:
@@ -224,7 +224,5 @@ def _first_and_repeat_disagree(first: AxisResponse, repeat: AxisResponse) -> boo
     if min(first_px, repeat_px) < _CONSISTENCY_MIN_PX:
         return False
     cosine = (first.dx_px * repeat.dx_px + first.dy_px * repeat.dy_px) / (first_px * repeat_px)
-    if cosine < math.cos(math.radians(_CONSISTENCY_MAX_ANGLE_DEG)):
-        return True
-    return max(first_px, repeat_px) / min(first_px, repeat_px) > _CONSISTENCY_MAX_RATIO
+    return cosine < math.cos(math.radians(_CONSISTENCY_MAX_ANGLE_DEG))
 
