@@ -31,27 +31,57 @@ from __future__ import annotations
 import threading
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 
 from onstep_adapter import IndiRuntimeConfig, OnStepIndiClient
+from onstep_adapter.indi_transport import IndiTransport
 
 #: The message OnStepAdapter's connect raises when the driver publishes no UTC time.
 _DRIVER_TIME_MISSING = "TIME_UTC is empty"
 
 
-def _connect_with_time_sync(client: OnStepIndiClient, timeout: float) -> None:
-    """Connect; if the driver has published no UTC time, send the Raspberry's own time and site
-    once (operator decision, 2026-11-24: the app does this on connect) and connect again.
+def _sync_driver_time(config: IndiRuntimeConfig, timeout: float) -> None:
+    """Send the Raspberry's time and the observer site to the driver, the way the INDI monitor
+    does, through its own short INDI session. OnStepAdapter's connect closes its transport when
+    the driver publishes no UTC time, so the sync cannot run on that client (bundle df7c66ca,
+    2026-11-24); OnStepAdapter itself is unchanged."""
+    now = datetime.now().astimezone()
+    utc = now.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%S")
+    offset_hours = (now.utcoffset() or timedelta(0)).total_seconds() / 3600.0
+    transport = IndiTransport(host=config.host, port=config.port)
+    transport.connect(timeout=timeout)
+    try:
+        transport.wait_property(config.device, "CONNECTION", timeout=timeout)
+        transport.set_text(
+            config.device, "TIME_UTC", {"UTC": utc, "OFFSET": f"{offset_hours:+.2f}"},
+            timeout=timeout,
+        )
+        transport.set_number(
+            config.device, "GEOGRAPHIC_COORD",
+            {
+                "LAT": config.observer_lat,
+                "LONG": config.observer_lon,
+                "ELEV": config.observer_alt_m,
+            },
+            timeout=timeout,
+        )
+    finally:
+        transport.close()
 
-    Field bundle b848c925 (2026-11-24): the driver's TIME_UTC stayed empty, so the connect gave
-    up while another client could connect. OnStepAdapter's `sync_time_location` refuses without
-    the operator's approval, which this path gives by design. Any other connect failure is raised
-    unchanged."""
+
+def _connect_with_time_sync(
+    client: OnStepIndiClient,
+    timeout: float,
+    sync_time: Callable[[], None],
+) -> None:
+    """Connect; if the driver has published no UTC time, send the time and site once and connect
+    again (operator decision, 2026-11-24). Any other connect failure is raised unchanged."""
     try:
         client.connect(timeout=timeout)
     except Exception as exc:  # re-raised unless it is the driver-time failure (see above)
         if _DRIVER_TIME_MISSING not in str(exc):
             raise
-        client.sync_time_location(user_approved=True, timeout=timeout)
+        sync_time()
         client.connect(timeout=timeout)
 
 
@@ -129,7 +159,11 @@ class OnStepConnection:
             if self._client is None:
                 client = self._client_factory(config=self._config)
                 try:
-                    _connect_with_time_sync(client, self._timeout)
+                    _connect_with_time_sync(
+                        client,
+                        self._timeout,
+                        lambda: _sync_driver_time(self._config, self._timeout),
+                    )
                 except BaseException:
                     client.close()
                     raise
