@@ -153,6 +153,12 @@ class CaptureJob:
     error: BaseException | None = None
 
 
+#: Operator (2026-11-24, bundle 178e61fd): the Main (3840 px wide) failed "image not stable"
+#: at a fixed 3 px tolerance; each camera may also move up to 0.2% of its frame width
+#: (~8 px on the Main, ~4 px on the guide) between stability samples.
+STABILITY_TOLERANCE_FRAME_FRACTION = 0.002
+
+
 def fresh_frame_timeout_s(
     left_state: tuple[float, int] | None,
     right_state: tuple[float, int] | None,
@@ -227,6 +233,7 @@ def capture_blocking(
             reference_monotonic=measurement_reference(result.base_reference, result.settle_s),
             timeout_s=request.timeout_s,
             stability_tolerance_px=settings.stability_tolerance_px,
+            stability_tolerance_frame_fraction=STABILITY_TOLERANCE_FRAME_FRACTION,
             stability_sample_count=settings.stability_sample_count,
             stability_sample_interval_s=settings.stability_sample_interval_s,
             movement_context=request.movement_context,

@@ -310,3 +310,26 @@ class TestAcquireVerifiedFrames:
 
         assert set(results) == {"main", "guide", "finder", "oag"}
         assert all(result.ok for result in results.values())
+
+
+def test_a_wide_frame_gets_a_tolerance_scaled_with_its_width() -> None:
+    """Operator (2026-11-24, bundle 178e61fd): the Main (3840 px) failed "image not stable" at a
+    fixed 3 px tolerance. A 5 px jitter on a 4000 px frame is within 0.2% of its width."""
+    base = _textured_image((64, 4000), seed=7)
+    jittered = [np.roll(base, 5 * (index % 2), axis=1) for index in range(60)]  # never settles
+
+    def run(fraction: float) -> MotionAwareStatus:
+        clock = _FakeClock()
+        return acquire_verified_frame(
+            _sequence_waiter(clock, [frame.copy() for frame in jittered]),
+            reference_monotonic=0.0,
+            timeout_s=0.5,
+            stability_tolerance_px=3.0,
+            stability_tolerance_frame_fraction=fraction,
+            stability_sample_count=3,
+            sleep=clock.sleep,
+            now=clock.now,
+        ).status
+
+    assert run(0.002) is MotionAwareStatus.OK
+    assert run(0.0) is not MotionAwareStatus.OK
