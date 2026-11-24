@@ -3656,7 +3656,10 @@ class TestMountTestMovePanel:
         # The timeout is derived from a monotonic deadline, so it can come out a few
         # microseconds under the 8.0 s floor -- a 1e-6 tolerance made this flaky in CI.
         assert timeouts[0] == pytest.approx(8.0, abs=0.05)
-        assert all(t <= 8.0 for t in timeouts)
+        # The budget is anchored at the reference (the frame settle after the pulse), so a later
+        # wait can run up to `settle` past the fresh-frame budget (field bundle 5fa215d7).
+        settle_s = panel._settings.frame_settle_ms / 1000.0
+        assert all(t <= 8.0 + settle_s + 0.05 for t in timeouts)
         panel.stop()
 
     def test_starts_disconnected_with_calibration_and_nudge_buttons_disabled(

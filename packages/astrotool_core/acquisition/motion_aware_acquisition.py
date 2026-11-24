@@ -166,7 +166,9 @@ def acquire_verified_frame(
     source_clock = clock or SYSTEM_CLOCK
     sleep = sleep or source_clock.sleep
     now = now or source_clock.monotonic
-    deadline = now() + timeout_s
+    # The budget starts at the reference, not before it: a settle still running when the wait
+    # begins must not eat into it (field bundle 5fa215d7, 2026-11-24: the reference sat ~4 s ahead).
+    deadline = max(now(), reference_monotonic) + timeout_s
     samples: list[np.ndarray] = []
     #: Issue #43 evidence: timing of every frame drawn (bounded by the window), so a
     #: bundle can prove whether each accepted exposure started after the motion.
@@ -185,7 +187,10 @@ def acquire_verified_frame(
         remaining = deadline - now()
         if remaining <= 0:
             break
-        result = waiter(current_reference, remaining)
+        # The waiter anchors its own budget at max(now, reference), so hand it the budget left
+        # from that same origin; otherwise a reference still in the future overshoots the deadline.
+        wait_budget = deadline - max(now(), current_reference)
+        result = waiter(current_reference, wait_budget)
         if not result.ok:
             return MotionAwareFrameResult(
                 MotionAwareStatus.CAPTURE_INVALID, stability=last_stability,
