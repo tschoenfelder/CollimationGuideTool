@@ -147,6 +147,22 @@ def test_first_and_repeat_readings_that_disagree_are_never_stored() -> None:
     assert "AXIS2 POSITIVE disagree" in verdict.lines[0]
 
 
+def test_a_backlash_shortened_first_reading_is_still_consistent() -> None:
+    """Field bundle 46eb1a3a (2026-11-24): Dec- read -61 px on its first move after the reversal
+    and -187 px on the repeat. Backlash shortens the first move by design: keep the matrix."""
+    results = CalibrationResults()
+    for step in CALIBRATION_STEPS:
+        shift = _GOOD[(step.axis, step.direction)]
+        if (step.axis, step.direction) == (A2, NEG) and step.role is CalibrationStepRole.FIRST:
+            shift = (0.0, -6.0)  # 30% of the repeat's -20 px
+        results.record_direction_response("right", step, _response(step, shift))
+
+    verdict = results.verdict({})
+
+    assert "right" in verdict.matrices
+    assert verdict.failure_classes == {}
+
+
 def test_reset_starts_a_new_attempt() -> None:
     results = CalibrationResults()
     _run(results, {"left": _GOOD})
