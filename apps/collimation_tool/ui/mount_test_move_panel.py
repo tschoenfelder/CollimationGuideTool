@@ -1806,6 +1806,21 @@ class MountTestMovePanel(QWidget):
         )
         for key in match_failed:
             self._last_failure_classes[key] = MeasurementFailureClass.MATCH_FAILED
+        # Field bundle befe48b4 (2026-11-24): the verdict said a direction produced no image
+        # displacement, and nothing recorded which one. Log every step's measured displacement.
+        for key, response in responses.items():
+            self._sizing.log.append(
+                {
+                    "event": "measured",
+                    "camera": key,
+                    "axis": step.axis.name,
+                    "direction": step.direction.name,
+                    "role": step.role.name,
+                    "duration_ms": duration_ms,
+                    "dx_px": round(response.dx_px, 1),
+                    "dy_px": round(response.dy_px, 1),
+                }
+            )
         return responses, newly_failed
 
     # ---- issue #43: 'the image did not move' is an explicit outcome -------------

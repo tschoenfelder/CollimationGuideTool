@@ -133,6 +133,13 @@ def _format_autofocus_status(result: AutofocusResult) -> str:
     return f"{text}{choice}"
 
 
+def _af_target_text(*, selected: bool) -> str:
+    """The Auto Focus target as plain text (set by the collimation target, not clickable)."""
+    if selected:
+        return "Target: artificial star (set by the collimation target)"
+    return "Target: follows the Operating mode (pick Artificial star as collimation target)"
+
+
 class FocuserPanel(QWidget):
     #: Fires whenever "one move at a time"'s own in-flight window opens
     #: or closes -- issued (or resumed after connect/disconnect) True,
@@ -268,6 +275,10 @@ class FocuserPanel(QWidget):
         self._af_artificial_button.setToolTip(
             "Shows the Auto Focus target type -- set by the collimation target mode"
         )
+        # Operator (2026-11-24): a greyed button looks clickable but is not. Show the target as a
+        # plain description instead; the hidden button above only keeps the checked state.
+        self._af_artificial_button.setVisible(False)
+        self._af_target_label = QLabel(_af_target_text(selected=False))
 
         self._auto_focus_button = QPushButton("Auto Focus")
         self._auto_focus_button.clicked.connect(self._on_auto_focus_clicked)
@@ -287,6 +298,7 @@ class FocuserPanel(QWidget):
         autofocus_mode_row = FlowLayout()
         autofocus_mode_row.addWidget(QLabel("Auto Focus"))
         autofocus_mode_row.addWidget(self._af_artificial_button)
+        autofocus_mode_row.addWidget(self._af_target_label)
         autofocus_mode_row.addWidget(self._af_metric_label)
         self._show_af_metric()
 
@@ -536,6 +548,7 @@ class FocuserPanel(QWidget):
         Issue #56: the only way to set it -- the button merely shows it."""
         self._artificial_star_selected = selected
         self._af_artificial_button.setChecked(selected)
+        self._af_target_label.setText(_af_target_text(selected=selected))
         self._show_af_metric()
 
     def _poll_status(self) -> None:

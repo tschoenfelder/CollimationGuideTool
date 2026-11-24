@@ -457,7 +457,7 @@ class TestNoMotionIsExplicit:
 
         assert panel.calibration_for("left") is None  # not a usable 4-direction matrix
         assert panel._last_failure_classes["left"] is MeasurementFailureClass.NO_MOTION_DETECTED
-        assert "at least one direction produced no image displacement" in panel._result_label.text()
+        assert "no image displacement for AXIS2 NEGATIVE" in panel._result_label.text()
         panel.stop()
 
     def test_a_nudge_that_moved_nothing_is_not_a_confirmed_displacement(

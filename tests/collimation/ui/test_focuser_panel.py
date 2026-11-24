@@ -411,6 +411,19 @@ class TestArtificialStarMode:
         assert panel._autofocus_mode() is AutofocusMode.STAR
         assert not panel._af_artificial_button.isChecked()
 
+    def test_the_target_is_shown_as_a_plain_description_not_a_greyed_button(
+        self, qapp: object
+    ) -> None:
+        """Operator (2026-11-24): a greyed button looks clickable. The target is a description
+        that follows the collimation target."""
+        panel = _artificial_panel()
+        assert panel._af_artificial_button.isHidden()
+
+        panel.select_artificial_star_mode(True)
+        assert "artificial star" in panel._af_target_label.text()
+        panel.select_artificial_star_mode(False)
+        assert "follows the Operating mode" in panel._af_target_label.text()
+
     def test_deselecting_artificial_star_returns_to_the_global_modes_metric(
         self, qapp: object
     ) -> None:
