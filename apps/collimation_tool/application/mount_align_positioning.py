@@ -346,8 +346,10 @@ def plan_screen_move(
     frame_height, frame_width = frame.shape[:2]
     fraction = min(fraction, MAX_SCREEN_MOVE_SHARE)  # never beyond 25 % of the field
     dx_sign, dy_sign = screen_direction.value
-    target_dx_px = dx_sign * fraction * frame_width
-    target_dy_px = dy_sign * fraction * frame_height
+    # Operator (2026-11-24): an arrow moves the VIEW that way, so the image content moves the
+    # opposite way (it used to move the content in the arrow's direction, which read as inverted).
+    target_dx_px = -dx_sign * fraction * frame_width
+    target_dy_px = -dy_sign * fraction * frame_height
     try:
         steps = solve_screen_move(matrix, target_dx_px=target_dx_px, target_dy_px=target_dy_px)
     except ValueError as exc:

@@ -5841,7 +5841,7 @@ class TestScreenRelativeMove:
         # Small = 5% of this camera's own 200px-wide frame =
         # 10px target, left = -dx -- AXIS1's own 0.1 px/ms rate (either
         # direction, symmetric here) solves 100ms.
-        assert pulse_mount.equivalent_ms_log == [(MountAxis.AXIS1, AxisDirection.NEGATIVE, 100)]
+        assert pulse_mount.equivalent_ms_log == [(MountAxis.AXIS1, AxisDirection.POSITIVE, 100)]
         assert "Main left (Small)" in panel._result_label.text()
         panel.stop()
 
@@ -5859,7 +5859,7 @@ class TestScreenRelativeMove:
 
         # Medium (15%, default settings) of 200px = 30px target -- 3x
         # Small's own 10px target, so 3x the duration (300ms vs 100ms).
-        assert pulse_mount.equivalent_ms_log == [(MountAxis.AXIS1, AxisDirection.POSITIVE, 300)]
+        assert pulse_mount.equivalent_ms_log == [(MountAxis.AXIS1, AxisDirection.NEGATIVE, 300)]
         panel.stop()
 
     def test_screen_move_clamps_to_the_safety_cap(self, qapp: object) -> None:
@@ -5876,7 +5876,7 @@ class TestScreenRelativeMove:
 
         # Solved size (100 equivalent ms, same math as the first test above) exceeds the cap
         # (60) -- clamped down, not refused, same philosophy as _on_nudge_clicked's own cap.
-        assert pulse_mount.equivalent_ms_log == [(MountAxis.AXIS1, AxisDirection.NEGATIVE, 60)]
+        assert pulse_mount.equivalent_ms_log == [(MountAxis.AXIS1, AxisDirection.POSITIVE, 60)]
         assert "safety-capped" in panel._result_label.text()
         panel.stop()
 

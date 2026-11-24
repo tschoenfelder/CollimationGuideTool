@@ -487,7 +487,7 @@ class TestManualMovesMoveTheRealAdapter:
         x1, y1 = rig.image_shift_px("left")
         assert "Move failed" not in panel._result_label.text(), panel._result_label.text()
         assert panel._last_error is None
-        assert abs((x1 - x0) - 0.30 * 240) < 0.25 * 0.30 * 240, (x1 - x0, y1 - y0)
+        assert abs((x1 - x0) + 0.30 * 240) < 0.25 * 0.30 * 240, (x1 - x0, y1 - y0)
         assert abs(y1 - y0) < 0.25 * 0.30 * 240, (x1 - x0, y1 - y0)
         panel.stop()
 
@@ -509,7 +509,7 @@ class TestManualMovesMoveTheRealAdapter:
         assert [axis for axis, _offset in new] == ["ra"], new
         assert all(abs(offset) * 3600.0 >= MIN_AXIS_ARCSEC for _axis, offset in new)
         x1, _y1 = rig.image_shift_px("left")
-        assert abs((x1 - x0) - 0.15 * 240) < 0.25 * 0.15 * 240, x1 - x0
+        assert abs((x1 - x0) + 0.15 * 240) < 0.25 * 0.15 * 240, x1 - x0
         assert "Move failed" not in panel._result_label.text()
         panel.stop()
 
@@ -1305,7 +1305,7 @@ class TestAstronomicalMountAlignUsesGuidePulses:
         assert rig.client.axis_move_calls == []
         x1, _y1 = rig.image_shift_px("left")
         wanted = panel._settings.screen_move_large_fraction * 240
-        assert abs((x1 - x0) - wanted) < 0.25 * wanted, (x1 - x0, wanted)
+        assert abs((x1 - x0) + wanted) < 0.25 * wanted, (x1 - x0, wanted)
         assert rig.client.tracking is True and log.stops == []
         panel.stop()
 
