@@ -252,6 +252,25 @@ def test_a_small_probe_is_resized_and_retried() -> None:
     assert sizing.log[-1]["event"] == "probe" and sizing.log[-1]["action"] == "retry"
 
 
+def test_a_zero_on_the_narrow_camera_while_the_wide_one_moved_is_not_resized() -> None:
+    """Field bundle d1d2165a (2026-11-24): the Main (narrow) camera read 0 while the Guide saw
+    the move. Sizing on that zero quadrupled the move. It now sizes from the camera that moved."""
+    sizing = _sized()
+    before = sizing.axis_duration_ms[A1]
+    retry = sizing.probe(
+        RA_STEPS[0],
+        before,
+        {"left": _response(0.0), "right": _response(250.0)},  # right: 25 % of its frame
+        exclude_no_motion=_no_exclusion,
+        exclude_bounded=_no_exclusion,
+    )
+    assert retry is False
+    assert sizing.axis_duration_ms[A1] == before
+    skipped = [entry for entry in sizing.log if entry["event"] == "seed_skipped"]
+    assert skipped and skipped[0]["camera"] == "left"
+    assert sizing.log[-1]["event"] == "probe" and sizing.log[-1]["camera"] == "right"
+
+
 def test_an_in_band_probe_is_accepted_and_seeds_ra() -> None:
     # Dec is calibrated first (RA is undefined at HOME until Dec has moved): Dec's accepted
     # size starts RA.
