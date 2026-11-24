@@ -470,6 +470,7 @@ class MountTestMovePanel(QWidget):
         set_left_calibration_exposure_cap: Callable[[bool], None] | None = None,
         set_right_calibration_exposure_cap: Callable[[bool], None] | None = None,
         is_left_streaming: Callable[[], bool] | None = None,
+        on_calibration_failed: Callable[[str], None] | None = None,
         is_artificial_star: Callable[[], bool] | None = None,
         get_left_cycle_s: Callable[[], float | None] | None = None,
         get_right_cycle_s: Callable[[], float | None] | None = None,
@@ -563,6 +564,7 @@ class MountTestMovePanel(QWidget):
         # that isn't streaming without disturbing that camera's frame getter.
         self._is_left_streaming = is_left_streaming or (lambda: True)
         self._is_artificial_star = is_artificial_star or (lambda: False)
+        self._on_calibration_failed = on_calibration_failed or (lambda _message: None)
         self._get_left_cycle_s = get_left_cycle_s or (lambda: None)
         self._get_right_cycle_s = get_right_cycle_s or (lambda: None)
         self._is_right_streaming = is_right_streaming or (lambda: True)
@@ -1613,6 +1615,7 @@ class MountTestMovePanel(QWidget):
         )
         self._calibration_queue = []
         self._calibration_running = False
+        self._on_calibration_failed(message)
         self._pending = None
         self._last_error = message
         self._result_label.setText(f"Calibration failed: {message}{suffix}")

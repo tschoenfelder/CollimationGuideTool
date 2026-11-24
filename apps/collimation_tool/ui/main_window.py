@@ -311,6 +311,9 @@ class MainWindow(QMainWindow):
             get_frame=self._left_panel.latest_mono_frame,
             wait_for_frame=self._left_panel.wait_for_frame_after,
             set_auto_exposure_paused=self._left_panel.set_auto_exposure_paused,
+            on_autofocus_failed=lambda result: self._capture_failure_bundle(
+                "autofocus", f"{result.status.value} ({result.failure_reason})"
+            ),
             optical_train_label="Main",
             # Issue #33 (artificial star): may lower Main's exposure/gain while
             # autofocusing a saturating star; always restored after the run.
@@ -447,6 +450,9 @@ class MainWindow(QMainWindow):
             set_right_calibration_exposure_cap=self._right_panel.set_calibration_exposure_cap,
             is_left_streaming=self._left_panel.is_streaming,
             is_right_streaming=self._right_panel.is_streaming,
+            on_calibration_failed=lambda message: self._capture_failure_bundle(
+                "calibration", message
+            ),
             is_artificial_star=self._artificial_star_selected,
             get_left_cycle_s=self._left_panel.frame_cycle_s,
             get_right_cycle_s=self._right_panel.frame_cycle_s,
@@ -1219,6 +1225,16 @@ class MainWindow(QMainWindow):
             if png_bytes is not None:
                 images[f"{name}_display.png"] = png_bytes
         return images
+
+    def _capture_failure_bundle(self, kind: str, detail: str) -> None:
+        """Field bundles (2026-11-24): a failed calibration or autofocus run saves its own
+        diagnostics bundle, with the recent frames of both cameras, so it can be tested locally."""
+        frames = [*self._left_panel.recent_frames(), *self._right_panel.recent_frames()]
+        bundle = self._diagnostics.capture_manual(
+            reason=f"{kind} failed: {detail}", frames=frames
+        )
+        if bundle is not None:
+            self._diagnostics_status_label.setText(bundle.incident_id)
 
     def _on_capture_diagnostics(self) -> None:
         reason = self._diagnostics_note.text().strip() or _DEFAULT_MANUAL_REASON
