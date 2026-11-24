@@ -136,6 +136,7 @@ def acquire_verified_frame(
     reference_monotonic: float,
     timeout_s: float,
     stability_tolerance_px: float,
+    stability_tolerance_frame_fraction: float = 0.0,
     stability_sample_count: int = DEFAULT_STABILITY_SAMPLE_COUNT,
     stability_sample_interval_s: float = DEFAULT_STABILITY_SAMPLE_INTERVAL_S,
     movement_context: CommandedMovementContext | None = None,
@@ -213,8 +214,14 @@ def acquire_verified_frame(
             samples.pop(0)
             timings.pop(0)
         if len(samples) == stability_sample_count:
+            # Operator (2026-11-24): a fixed pixel tolerance is far stricter on a wide-frame camera
+            # (3 px on a 3840 px Main frame); allow at least this share of the frame width too.
+            tolerance_px = max(
+                stability_tolerance_px,
+                stability_tolerance_frame_fraction * samples[-1].shape[-1],
+            )
             last_stability = check_image_stability(
-                samples, tolerance_px=stability_tolerance_px, min_samples=stability_sample_count
+                samples, tolerance_px=tolerance_px, min_samples=stability_sample_count
             )
             if last_stability.stable:
                 return MotionAwareFrameResult(
@@ -250,6 +257,7 @@ def acquire_verified_frames(
     reference_monotonic: float,
     timeout_s: float,
     stability_tolerance_px: float,
+    stability_tolerance_frame_fraction: float = 0.0,
     stability_sample_count: int = DEFAULT_STABILITY_SAMPLE_COUNT,
     stability_sample_interval_s: float = DEFAULT_STABILITY_SAMPLE_INTERVAL_S,
     movement_context: CommandedMovementContext | None = None,
@@ -271,6 +279,7 @@ def acquire_verified_frames(
             waiter,
             reference_monotonic=reference_monotonic, timeout_s=timeout_s,
             stability_tolerance_px=stability_tolerance_px,
+            stability_tolerance_frame_fraction=stability_tolerance_frame_fraction,
             stability_sample_count=stability_sample_count,
             stability_sample_interval_s=stability_sample_interval_s,
             movement_context=movement_context, cancelled=cancelled, sleep=sleep, now=now,
