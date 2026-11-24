@@ -34,6 +34,26 @@ from contextlib import contextmanager
 
 from onstep_adapter import IndiRuntimeConfig, OnStepIndiClient
 
+#: The message OnStepAdapter's connect raises when the driver publishes no UTC time.
+_DRIVER_TIME_MISSING = "TIME_UTC is empty"
+
+
+def _connect_with_time_sync(client: OnStepIndiClient, timeout: float) -> None:
+    """Connect; if the driver has published no UTC time, send the Raspberry's own time and site
+    once (operator decision, 2026-11-24: the app does this on connect) and connect again.
+
+    Field bundle b848c925 (2026-11-24): the driver's TIME_UTC stayed empty, so the connect gave
+    up while another client could connect. OnStepAdapter's `sync_time_location` refuses without
+    the operator's approval, which this path gives by design. Any other connect failure is raised
+    unchanged."""
+    try:
+        client.connect(timeout=timeout)
+    except Exception as exc:  # re-raised unless it is the driver-time failure (see above)
+        if _DRIVER_TIME_MISSING not in str(exc):
+            raise
+        client.sync_time_location(user_approved=True, timeout=timeout)
+        client.connect(timeout=timeout)
+
 
 class OnStepConnection:
     def __init__(
@@ -109,7 +129,7 @@ class OnStepConnection:
             if self._client is None:
                 client = self._client_factory(config=self._config)
                 try:
-                    client.connect(timeout=self._timeout)
+                    _connect_with_time_sync(client, self._timeout)
                 except BaseException:
                     client.close()
                     raise
