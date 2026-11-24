@@ -172,3 +172,19 @@ def test_calibration_caps_a_high_guide_gain_and_restores_it(qapp: object) -> Non
     CameraPanel.set_calibration_exposure_cap(panel, True)  # type: ignore[arg-type]
     CameraPanel.set_calibration_exposure_cap(panel, False)  # type: ignore[arg-type]
     assert gain.value() == 403
+
+
+def test_a_calibration_abort_reports_the_failure_for_a_diagnostics_bundle(
+    qapp: object, rig: _Rig
+) -> None:
+    """Field bundles (2026-11-24): a failed calibration must capture its own diagnostics bundle,
+    with the recent frames, so the failure can be tested locally. The abort reports its message."""
+    from astrotool_core.mount import MountAxis
+
+    panel = rig.panel()
+    reported: list[str] = []
+    panel._on_calibration_failed = reported.append
+    panel._abort_calibration("no frame available before pulsing", axis=MountAxis.AXIS1)
+
+    assert reported == ["no frame available before pulsing"]
+    panel.stop()

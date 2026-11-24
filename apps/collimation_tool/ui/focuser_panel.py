@@ -153,6 +153,7 @@ class FocuserPanel(QWidget):
         get_frame: Callable[[], np.ndarray | None] | None = None,
         wait_for_frame: Callable[[float, float], FrameAcquisitionResult] | None = None,
         set_auto_exposure_paused: Callable[[bool], None] | None = None,
+        on_autofocus_failed: Callable[[AutofocusResult], None] | None = None,
         optical_train_label: str = "Main",
         exposure_control: ExposureControl | None = None,
         measurement_gate: Callable[[str], str | None] | None = None,
@@ -210,6 +211,8 @@ class FocuserPanel(QWidget):
         self._get_frame = get_frame
         self._wait_for_frame = wait_for_frame
         self._set_auto_exposure_paused = set_auto_exposure_paused
+        #: Field bundles (2026-11-24): a run that did not succeed captures diagnostics with frames.
+        self._on_autofocus_failed = on_autofocus_failed or (lambda _result: None)
         self._autofocus_runner = AutofocusRunner()
         self._autofocus_running = False
         self._last_autofocus_result: AutofocusResult | None = None
@@ -486,6 +489,8 @@ class FocuserPanel(QWidget):
         self._autofocus_running = False
         result = outcome.result
         self._last_autofocus_result = result
+        if result.status not in (AutofocusStatus.SUCCESS, AutofocusStatus.CANCELLED):
+            self._on_autofocus_failed(result)
         text = _format_autofocus_status(result)
         if self._cancelled_by_mode_change:
             text += " (cancelled: the operating mode changed during the run)"
