@@ -189,6 +189,7 @@ from collimation_tool.application.star_acquisition import (
     AcquisitionStatus,
     FocusedStarAcquisition,
 )
+from collimation_tool.domain.screw_guidance import ScrewModel
 from collimation_tool.domain.target_mode import CollimationTargetMode, sizing_seed_distance_m
 from collimation_tool.ui.camera_panel import CameraPanel, default_camera_factory
 from collimation_tool.ui.filter_wheel_panel import FilterWheelPanel
@@ -199,6 +200,7 @@ from collimation_tool.ui.fov_calibrator import FovCalibrator
 from collimation_tool.ui.fov_overlay import compute_fov_overlay_rect
 from collimation_tool.ui.mount_park_panel import MountParkPanel
 from collimation_tool.ui.mount_test_move_panel import MountTestMovePanel
+from collimation_tool.ui.screw_panel import ScrewPanel
 from collimation_tool.ui.star_centering_panel import StarCenteringPanel
 
 _CALIBRATION_POLL_INTERVAL_MS = 200
@@ -488,6 +490,13 @@ class MainWindow(QMainWindow):
         )
         self._test_move_panel.stop_requested.connect(self._star_centering_panel.stop)
         self._test_move_panel.centering_move_failed.connect(self._star_centering_panel.fail)
+        # Operator (2026-11-27): learn each screw's effect and show it as an arrow on Main.
+        screw_model = ScrewModel()
+        self._screw_panel = ScrewPanel(
+            screw_model, store_path=paths.own_config_path().parent / "collimation-screws.json"
+        )
+        self._left_panel.measurement_ready.connect(self._screw_panel.add_measurement)
+        self._left_panel.set_screw_advice(screw_model.hints)
 
         # Restore last session's connected camera + exposure/gain/
         # auto-exposure per panel — see module docstring's "Startup
@@ -690,6 +699,7 @@ class MainWindow(QMainWindow):
         collimation_tab = QWidget()
         collimation_layout = QVBoxLayout(collimation_tab)
         collimation_layout.addWidget(self._star_centering_panel)
+        collimation_layout.addWidget(self._screw_panel)
         collimation_layout.addWidget(self._fine_collimation_panel)
         collimation_layout.addStretch(1)
 
