@@ -497,7 +497,7 @@ def test_starting_the_stream_and_polling_measures_and_shows_overlay(qapp: object
     panel._start_button.setChecked(True)
     try:
         deadline = time.monotonic() + 2.0
-        while "Error" not in panel._recommendation_label.text():
+        while "px right of the ring centre" not in panel._recommendation_label.text():
             assert time.monotonic() < deadline, "no measurement observed in time"
             time.sleep(0.02)
             panel._poll_frame()

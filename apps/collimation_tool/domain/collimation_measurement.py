@@ -327,9 +327,23 @@ def _conic_to_ellipse(
 # ── Donut (defocused-star) measurement (ported from processing/donut_detection.py) ─
 
 _SIGNAL_SIGMA = 5.0
-_MIN_RING_SIGMA = 3.0
-_RING_FRACTION = 0.10
-_MIN_EDGES = 6
+#: The frame is binned to about this width and box-smoothed: speckle (scintillation, rough
+#: artificial-star optics) otherwise looks like thousands of edges.
+_WORK_WIDTH_PX = 960
+_SMOOTH_PX = 5
+#: Rays cast from the pattern centre to find both edges.
+_RAYS = 360
+#: An edge is where the ray reaches this share of the way up to the ring brightness.
+_EDGE_LEVEL = 0.5
+#: A ray crosses the ring when its bright level reaches this share of the pattern's peak.
+_RAY_MIN_SHARE = 0.2
+#: A ray crosses the central shadow when its darkest inner point stays below this share of the
+#: ring level (above the background).
+_SHADOW_MAX_SHARE = 0.75
+#: Share of rays that must show an edge for it to be measured.
+_MIN_RAY_SHARE = 0.5
+#: Share of rays leaving the frame while still bright from which the pattern is clipped.
+_CLIPPED_RAY_SHARE = 0.1
 
 
 @dataclass(frozen=True)
@@ -371,6 +385,100 @@ class DonutAnalysisResult:
     reason: str
 
 
+def _working_image(mono: np.ndarray) -> tuple[np.ndarray, float, int]:
+    """`mono` binned to about `_WORK_WIDTH_PX` and box-smoothed, the pixel noise of the
+    binned frame (from neighbour differences, so the pattern itself hardly counts) and the
+    binning factor."""
+    b = max(1, mono.shape[1] // _WORK_WIDTH_PX)
+    height, width = mono.shape[0] // b, mono.shape[1] // b
+    binned = np.asarray(mono, dtype=np.float64)[: height * b, : width * b]
+    binned = binned.reshape(height, b, width, b).mean(axis=(1, 3))
+    half = _SMOOTH_PX // 2
+    padded = np.pad(binned, ((half + 1, half), (half + 1, half)), mode="edge")
+    total = padded.cumsum(axis=0).cumsum(axis=1)
+    n = _SMOOTH_PX
+    smoothed = (total[n:, n:] - total[:-n, n:] - total[n:, :-n] + total[:-n, :-n]) / (n * n)
+    noise = 1.4826 * float(np.median(np.abs(np.diff(binned, axis=1)))) / math.sqrt(2.0)
+    return smoothed, max(noise, 1.0), b
+
+
+def _ray_edges(
+    image: np.ndarray, cx: float, cy: float, bg: float, peak: float
+) -> tuple[np.ndarray, np.ndarray, int]:
+    """Cast rays from (cx, cy). Returns the outer edge points (outermost half-bright sample of
+    each ray), the shadow edge points (first sample rising half way from the shadow to the
+    ring) and the number of rays still bright where they leave the frame. Each ray is judged
+    against its own ring brightness, so uneven illumination does not move the edges."""
+    height, width = image.shape
+    radii = np.arange(0.0, math.hypot(height, width))
+    outer: list[tuple[float, float]] = []
+    inner: list[tuple[float, float]] = []
+    clipped = 0
+    for angle in np.linspace(0.0, 2.0 * math.pi, _RAYS, endpoint=False):
+        xs = cx + radii * math.cos(angle)
+        ys = cy + radii * math.sin(angle)
+        inside = (xs >= 0) & (xs <= width - 1) & (ys >= 0) & (ys <= height - 1)
+        count = int(np.argmin(inside)) if not inside.all() else inside.size
+        if count < 3:
+            continue
+        columns = np.rint(xs[:count]).astype(int)
+        rows = np.rint(ys[:count]).astype(int)
+        profile = image[rows, columns]
+        ring = float(np.percentile(profile[profile > bg + _RAY_MIN_SHARE * (peak - bg)], 75)) \
+            if np.any(profile > bg + _RAY_MIN_SHARE * (peak - bg)) else bg
+        if ring <= bg:
+            continue
+        bright = np.flatnonzero(profile > bg + _EDGE_LEVEL * (ring - bg))
+        if bright.size == 0:
+            continue
+        last = int(bright[-1])
+        if last >= count - 2:
+            clipped += 1
+        else:
+            outer.append((cx + last * math.cos(angle), cy + last * math.sin(angle)))
+        first_ring = int(np.argmax(profile >= ring))
+        if first_ring == 0:
+            continue
+        floor = float(np.percentile(profile[: first_ring + 1], 10))
+        if floor - bg > _SHADOW_MAX_SHARE * (ring - bg):
+            continue
+        rising = np.flatnonzero(profile > floor + _EDGE_LEVEL * (ring - floor))
+        if rising.size and rising[0] > 0:
+            first = float(rising[0]) - 0.5
+            inner.append((cx + first * math.cos(angle), cy + first * math.sin(angle)))
+    return np.array(outer).reshape(-1, 2), np.array(inner).reshape(-1, 2), clipped
+
+
+def _fit_edge(points: np.ndarray) -> CircleEllipseFit:
+    """`fit_circle`, refitted twice without the points far off the circle (spider vanes,
+    speckle, a neighbouring reflection)."""
+    fit = fit_circle(points)
+    for _ in range(2):
+        if fit.radius_x <= 0:
+            break
+        off = np.abs(
+            np.hypot(points[:, 0] - fit.center_x, points[:, 1] - fit.center_y) - fit.radius_x
+        )
+        keep = off <= max(2.5 * 1.4826 * float(np.median(off)), 1.5)
+        if keep.sum() < _MIN_RAY_SHARE * _RAYS / 2:
+            break
+        points = points[keep]
+        fit = fit_circle(points)
+    return fit
+
+
+def _to_full_frame(fit: CircleEllipseFit, b: int) -> CircleEllipseFit:
+    offset = (b - 1) / 2.0
+    return CircleEllipseFit(
+        center_x=fit.center_x * b + offset,
+        center_y=fit.center_y * b + offset,
+        radius_x=fit.radius_x * b,
+        radius_y=fit.radius_y * b,
+        angle_deg=fit.angle_deg,
+        confidence=fit.confidence,
+    )
+
+
 class DonutAnalyzer:
     """Detect outer ring and inner shadow in a defocused star frame."""
 
@@ -379,41 +487,40 @@ class DonutAnalyzer:
         self._min_conf = min_confidence
 
     def analyze(self, plane: AnalysisPlane) -> DonutAnalysisResult:
-        data = plane.mono
-        bg, sigma = estimate_background(data)
+        image, noise, binning = _working_image(plane.mono)
+        # The darkest part of the frame: a large pattern may cover most of it.
+        bg = float(np.percentile(image, 2.0))
 
-        peak_val = float(np.max(data))
-        if peak_val < bg + self._sig_sigma * sigma:
+        peak = float(np.percentile(image, 99.8))
+        if float(image.max()) < bg + self._sig_sigma * noise:
             return DonutAnalysisResult(measurement=None, reason="no_signal")
 
-        ring_thresh = bg + max(_MIN_RING_SIGMA * sigma, (peak_val - bg) * _RING_FRACTION)
-        bright = data > ring_thresh
-        if not np.any(bright):
+        bright = image > bg + 0.25 * (peak - bg)
+        rows, columns = np.nonzero(bright)
+        if rows.size == 0:
             return DonutAnalysisResult(measurement=None, reason="no_signal")
+        cx, cy = float(columns.mean()), float(rows.mean())
 
-        bright_f = bright.astype(np.float64)
-        total = bright_f.sum()
-        rows_g = np.arange(plane.height, dtype=np.float64)[:, np.newaxis]
-        cols_g = np.arange(plane.width, dtype=np.float64)[np.newaxis, :]
-        cy = float((bright_f * rows_g).sum() / total)
-        cx = float((bright_f * cols_g).sum() / total)
-
-        dist_sq_grid = (rows_g - cy) ** 2 + (cols_g - cx) ** 2
-        rms_sq = float((bright_f * dist_sq_grid).sum() / total)
-        split_radius = float(np.sqrt(max(rms_sq, 1.0)))
-
-        all_edges = extract_edge_points(bright)
-        if len(all_edges) < _MIN_EDGES * 2:
-            return DonutAnalysisResult(measurement=None, reason="no_ring_shape")
-
-        edge_dist = np.sqrt((all_edges[:, 0] - cx) ** 2 + (all_edges[:, 1] - cy) ** 2)
-        outer_edges = all_edges[edge_dist > split_radius]
-        inner_edges = all_edges[edge_dist <= split_radius]
-        if len(outer_edges) < _MIN_EDGES or len(inner_edges) < _MIN_EDGES:
-            return DonutAnalysisResult(measurement=None, reason="no_ring_shape")
-
-        outer_fit = fit_circle(outer_edges)
-        inner_fit = fit_circle(inner_edges)
+        # Second pass from the first pass's outer centre: the rays then cross both edges
+        # squarely, whatever the first estimate was.
+        for _ in range(2):
+            outer_edges, inner_edges, clipped = _ray_edges(image, cx, cy, bg, peak)
+            if clipped > _CLIPPED_RAY_SHARE * _RAYS:
+                return DonutAnalysisResult(measurement=None, reason="clipped")
+            if len(outer_edges) < _MIN_RAY_SHARE * _RAYS:
+                return DonutAnalysisResult(measurement=None, reason="no_ring_shape")
+            outer_fit = _fit_edge(outer_edges)
+            if not (0 <= outer_fit.center_x < image.shape[1]
+                    and 0 <= outer_fit.center_y < image.shape[0]):
+                return DonutAnalysisResult(measurement=None, reason="no_ring_shape")
+            cx, cy = outer_fit.center_x, outer_fit.center_y
+        if len(inner_edges) < _MIN_RAY_SHARE * _RAYS:
+            return DonutAnalysisResult(measurement=None, reason="inner_hole_unclear")
+        inner_fit = _fit_edge(inner_edges)
+        if not 0 < inner_fit.radius_x < outer_fit.radius_x:
+            return DonutAnalysisResult(measurement=None, reason="inner_hole_unclear")
+        outer_fit = _to_full_frame(outer_fit, binning)
+        inner_fit = _to_full_frame(inner_fit, binning)
 
         _log.debug(
             "DonutAnalyzer outer=(%.1f,%.1f) r=%.1f conf=%.2f inner=(%.1f,%.1f) r=%.1f conf=%.2f",
