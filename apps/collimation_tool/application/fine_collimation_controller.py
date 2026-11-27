@@ -40,6 +40,7 @@ from astrotool_core.diffraction.symmetry_measurement import (
     SymmetryMeasurementResult,
     compute_symmetry_measurement,
 )
+from astrotool_core.focus.disc_locator import locate_main_disc
 from astrotool_core.target.frame_registration import register_frames
 from astrotool_core.target.roi import crop_to_roi
 from astrotool_core.target.stacking import RollingFrameBuffer, StackResult
@@ -74,6 +75,14 @@ _STAR_LOST_REASON = "star_lost"
 _NO_USABLE_FRAMES_REASON = "no_usable_frames"
 _CANCELLED_REASON = "cancelled"
 _NO_FRAME_REASON = "no_frame_available"
+_TOO_DEFOCUSED_REASON = "star_too_defocused"
+_TOO_DEFOCUSED_DETAIL = (
+    "the star is a {diameter:.0f} px disc: use rough collimation at this stage, then Auto "
+    "Focus, then run fine collimation"
+)
+#: Fine collimation reads the rings of a nearly focused star; a disc beyond this radius (px)
+#: is a defocused star (and takes the star search minutes, field bundle 64621320).
+_MAX_STAR_RADIUS_PX = 100.0
 #: S6.0d: prefix of a successful reacquisition's note in the log (carried to `detail`).
 _REACQUISITION_NOTE = "reacquisition_note: "
 
@@ -162,6 +171,14 @@ class FineCollimationController:
                 continue
 
             first_call = not selected
+            if first_call:
+                disc = locate_main_disc(frame)
+                if disc is not None and disc.radius_px > _MAX_STAR_RADIUS_PX:
+                    return self._fail(
+                        _TOO_DEFOCUSED_REASON,
+                        log,
+                        _TOO_DEFOCUSED_DETAIL.format(diameter=2 * disc.radius_px),
+                    )
             if first_call:
                 result = self._acquisition.select(frame)
                 selected = True

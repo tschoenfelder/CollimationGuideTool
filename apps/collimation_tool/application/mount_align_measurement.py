@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import Literal
 
 import numpy as np
+from astrotool_core.focus.disc_locator import locate_main_disc
 from astrotool_core.mount import AxisDirection, AxisResponse, MountAxis, response_from_positions
 from astrotool_core.target.detector import detect_sources
 from astrotool_core.target.translation_offset import measure_translation_offset
@@ -46,8 +47,12 @@ def measure(
 
     `artificial_star` (operator, 2026-11-22): the target is an artificial star. It still moves
     like terrestrial (tracking off), but its movement is read from the artificial star's own
-    centroid in each frame, not from whole-frame correlation."""
-    if mode == "star" or artificial_star:
+    centroid in each frame, not from whole-frame correlation. It is located as a disc (it may
+    be large and defocused, field bundle 10e89885)."""
+    if artificial_star:
+        disc = None if frame is None else locate_main_disc(frame)
+        return None if disc is None else (disc.x, disc.y)
+    if mode == "star":
         return measure_brightest_source(frame)
     return frame  # "terrestrial" -- any frame at all is usable here
 

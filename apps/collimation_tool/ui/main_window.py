@@ -199,6 +199,7 @@ from collimation_tool.ui.fov_calibrator import FovCalibrator
 from collimation_tool.ui.fov_overlay import compute_fov_overlay_rect
 from collimation_tool.ui.mount_park_panel import MountParkPanel
 from collimation_tool.ui.mount_test_move_panel import MountTestMovePanel
+from collimation_tool.ui.star_centering_panel import StarCenteringPanel
 
 _CALIBRATION_POLL_INTERVAL_MS = 200
 #: S6.0c review P-a: how often a pending Terrestrial re-enforce looks for the end of a busy
@@ -474,6 +475,19 @@ class MainWindow(QMainWindow):
         # buttons and calibration) connects and disconnects with the Mount panel.
         self._test_move_panel.follow_mount_connection()
         self._mount_panel.connection_changed.connect(self._test_move_panel.mount_connection_changed)
+        # Operator (2026-11-27): a screw change shifts the star -- bring it back by mount, for
+        # rough and fine collimation alike. Any Stop or failed centring move switches it off.
+        self._star_centering_panel = StarCenteringPanel(
+            wait_for_frame_after=self._left_panel.wait_for_frame_after,
+            cycle_s=self._left_panel.frame_cycle_s,
+            blocked=self._centering_blocker,
+            moving=lambda: (
+                self._test_move_panel.is_moving or self._motion_executor.in_flight is not None
+            ),
+            move_main=self._test_move_panel.move_main_image,
+        )
+        self._test_move_panel.stop_requested.connect(self._star_centering_panel.stop)
+        self._test_move_panel.centering_move_failed.connect(self._star_centering_panel.fail)
 
         # Restore last session's connected camera + exposure/gain/
         # auto-exposure per panel — see module docstring's "Startup
@@ -675,6 +689,7 @@ class MainWindow(QMainWindow):
 
         collimation_tab = QWidget()
         collimation_layout = QVBoxLayout(collimation_tab)
+        collimation_layout.addWidget(self._star_centering_panel)
         collimation_layout.addWidget(self._fine_collimation_panel)
         collimation_layout.addStretch(1)
 
@@ -708,6 +723,14 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(1000, 560)
         self.resize(1280, 680)
 
+    def _centering_blocker(self) -> str | None:
+        """Why the star may not be re-centred now (None = go ahead)."""
+        if self._fine_collimation_panel.is_running:
+            return "fine collimation is measuring"
+        if self._focuser_panel.is_autofocus_running:
+            return "Auto Focus is running"
+        return self._test_move_panel.centering_blocker()
+
     def _update_mount_stop_button(self) -> None:
         self._mount_stop_button.setEnabled(self._motion_executor.in_flight is not None)
 
@@ -719,6 +742,7 @@ class MainWindow(QMainWindow):
         the Stop into an idle emergency stop. The stop reaches
         the mount through the shared OnStep connection whoever holds it (the pulse adapter's
         `abort()`), so a park started from the Mount panel alone is stopped too."""
+        self._star_centering_panel.stop()  # a Stop must not be followed by a move
         self._motion_executor.abort_in_flight()
 
     def _calibration_geometry(self) -> list[CameraGeometry]:
@@ -1259,6 +1283,7 @@ class MainWindow(QMainWindow):
         # S6.6b: the GUI-side timers stop too (exposure snapshot, P-a re-enforce).
         self._exposure_snapshot_timer.stop()
         self._tracking_reenforce_timer.stop()
+        self._star_centering_panel.stop()
         # S6.8a (R8): a mount motion still in flight is stopped FIRST, lock-free -- before any
         # panel disconnects (the Mount panel's tracking-off takes the connection's operation
         # lock and would otherwise wait behind a running GOTO, up to OnStepAdapter's 30 s).
