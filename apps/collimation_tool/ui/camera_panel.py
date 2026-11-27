@@ -116,6 +116,7 @@ from PySide6.QtWidgets import (
 from collimation_tool.application.collimation_controller import CollimationController
 from collimation_tool.domain.collimation_measurement import DonutAnalysisResult
 from collimation_tool.domain.collimation_state import CollimationRecommendation
+from collimation_tool.domain.screw_guidance import ScrewHint
 from collimation_tool.ui.collimation_overlay import describe_mismatch
 from collimation_tool.ui.fov_overlay import FovOverlayRect
 from collimation_tool.ui.frame_analyzer import FrameAnalyzer
@@ -150,7 +151,7 @@ def _format_recommendation(
     if recommendation is None:
         return (
             f"{describe_mismatch(result.measurement).text()} — "
-            "no screw calibration learned yet"
+            "screw arrows appear once the screws are learned (Collimation tab)"
         )
     if not recommendation.is_actionable:
         return f"Close to collimated (confidence {recommendation.confidence:.0%})"
@@ -173,6 +174,9 @@ class CameraPanel(QWidget):
     #: to persist both panels' settings; carries no payload since the
     #: listener always re-reads current_settings() itself.
     settings_changed = Signal()
+
+    #: Every analysed frame's donut measurement (None: none measured in it).
+    measurement_ready = Signal(object)
 
     #: Issue #33 (artificial star): autofocus runs on a background thread
     #: and must never touch this panel's spin boxes directly -- it emits
@@ -782,6 +786,7 @@ class CameraPanel(QWidget):
         if outcome is not None:
             self._last_result = outcome.result
             self._last_recommendation = outcome.recommendation
+            self.measurement_ready.emit(outcome.result.measurement)
             self._live_view.set_stretched_frame(
                 outcome.stretched,
                 measurement=outcome.result.measurement,
@@ -894,6 +899,12 @@ class CameraPanel(QWidget):
         if self._last_recommendation is not None:
             context["recommendation"] = self._last_recommendation
         return context
+
+    def set_screw_advice(
+        self, advice: Callable[[tuple[float, float]], list[ScrewHint]]
+    ) -> None:
+        """Draw the screw arrows `advice` returns for each measured offset share."""
+        self._live_view.screw_advice = advice
 
     def recent_frames(self) -> list[Frame]:
         return list(self._recent_frames)

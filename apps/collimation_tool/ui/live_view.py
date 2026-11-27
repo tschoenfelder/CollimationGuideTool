@@ -10,6 +10,8 @@ this is display-facing, and the two are free to diverge.
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 import numpy as np
 from astrotool_core.frames import rgb_to_luma
 from PySide6.QtCore import QPointF, Qt
@@ -17,7 +19,8 @@ from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap, QPolygonF, QR
 from PySide6.QtWidgets import QLabel
 
 from collimation_tool.domain.collimation_measurement import DonutMeasurement
-from collimation_tool.ui.collimation_overlay import draw_collimation_overlay
+from collimation_tool.domain.screw_guidance import ScrewHint
+from collimation_tool.ui.collimation_overlay import draw_collimation_overlay, offset_share
 from collimation_tool.ui.fov_overlay import FovOverlayRect
 
 _FOV_COLOR = QColor(255, 255, 0)
@@ -165,6 +168,8 @@ class LiveViewLabel(QLabel):
         #: Whether the donut overlay also shows the mismatch arrow and label (not on Guide).
         self._show_mismatch = show_mismatch
         self._measurement: DonutMeasurement | None = None
+        #: Offset share -> the screw suggestions to draw (None: no screw arrows).
+        self.screw_advice: Callable[[tuple[float, float]], list[ScrewHint]] | None = None
         self.setMinimumSize(320, 240)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setStyleSheet("background-color: black;")
@@ -289,6 +294,7 @@ class LiveViewLabel(QLabel):
                 self._measurement,
                 scale=scaled.width() / self._base_pixmap.width(),
                 show_mismatch=self._show_mismatch,
+                screw_hints=self._screw_hints(),
             )
         self.setPixmap(scaled)
 
@@ -304,8 +310,14 @@ class LiveViewLabel(QLabel):
                 scale=1.0,
                 size=max(1.0, annotated.width() / 960.0),
                 show_mismatch=self._show_mismatch,
+                screw_hints=self._screw_hints(),
             )
         return annotated
+
+    def _screw_hints(self) -> list[ScrewHint]:
+        if self.screw_advice is None or self._measurement is None:
+            return []
+        return self.screw_advice(offset_share(self._measurement))
 
     def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802 — Qt override
         super().resizeEvent(event)

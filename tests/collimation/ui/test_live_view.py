@@ -531,7 +531,7 @@ class TestCentreCross:
             assert label._base_pixmap is not None
             base = _rgb_array(label.annotated_pixmap().toImage())  # type: ignore[union-attr]
             # Rings, FOV rect and matched point are all in the native-size diagnostic image.
-            assert ((base[..., 0] < 120) & (base[..., 1] > 180) & (base[..., 2] > 220)).any()
+            assert (np.abs(base.astype(int) - 235).max(axis=-1) <= 6).any()  # ring grey-white
             assert base[20, 100, 2] < 100  # yellow FOV top edge (centre of edge)
             assert base[70, 150, 0] > 200 and base[70, 150, 1] < 50  # red marker
 
