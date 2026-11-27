@@ -1,5 +1,6 @@
 import numpy as np
 from collimation_tool.domain.collimation_measurement import CircleEllipseFit, DonutMeasurement
+from collimation_tool.ui.collimation_overlay import draw_collimation_overlay
 from collimation_tool.ui.fov_overlay import FovOverlayRect
 from collimation_tool.ui.live_view import (
     LiveViewLabel,
@@ -528,14 +529,25 @@ class TestCentreCross:
             label.resize(*size)
             label.set_frame(_frame(*frame_shape), measurement=_ring_measurement(), **overlays)  # type: ignore[arg-type]
             assert label._base_pixmap is not None
-            base = _rgb_array(label._base_pixmap.toImage())
-            # Rings, FOV rect and matched point are still in the native frame.
+            base = _rgb_array(label.annotated_pixmap().toImage())  # type: ignore[union-attr]
+            # Rings, FOV rect and matched point are all in the native-size diagnostic image.
             assert ((base[..., 0] < 120) & (base[..., 1] > 180) & (base[..., 2] > 220)).any()
             assert base[20, 100, 2] < 100  # yellow FOV top edge (centre of edge)
             assert base[70, 150, 0] > 200 and base[70, 150, 1] < 50  # red marker
 
             shown = self._shown(label)
-            expected = self._scaled_base(label)
+            scaled = label._base_pixmap.scaled(
+                label.size(),
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+            # The donut overlay is drawn in screen pixels, after scaling.
+            draw_collimation_overlay(
+                scaled,
+                _ring_measurement(),
+                scale=scaled.width() / label._base_pixmap.width(),
+            )
+            expected = _rgb_array(scaled.toImage())
             height, width, _ = shown.shape
             keep = np.ones((height, width), dtype=bool)
             keep[self._cross_lines(height), :] = False

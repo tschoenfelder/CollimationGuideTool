@@ -16,12 +16,10 @@ from PySide6.QtCore import QPointF, Qt
 from PySide6.QtGui import QColor, QImage, QPainter, QPen, QPixmap, QPolygonF, QResizeEvent
 from PySide6.QtWidgets import QLabel
 
-from collimation_tool.domain.collimation_measurement import CircleEllipseFit, DonutMeasurement
+from collimation_tool.domain.collimation_measurement import DonutMeasurement
+from collimation_tool.ui.collimation_overlay import draw_collimation_overlay
 from collimation_tool.ui.fov_overlay import FovOverlayRect
 
-_OUTER_COLOR = QColor(80, 220, 255)
-_INNER_COLOR = QColor(255, 210, 60)
-_ERROR_COLOR = QColor(255, 90, 90)
 _FOV_COLOR = QColor(255, 255, 0)
 #: Issue #37: the artificial-star registration's own matched-point
 #: marker -- a true red, distinct from every other marker color in this
@@ -141,20 +139,6 @@ def stretch_rgb_to_uint8(
     return result
 
 
-def _draw_ring(painter: QPainter, ring: CircleEllipseFit, color: QColor) -> None:
-    painter.setPen(QPen(color, 2))
-    painter.drawEllipse(
-        int(ring.center_x - ring.radius_x),
-        int(ring.center_y - ring.radius_y),
-        int(ring.radius_x * 2),
-        int(ring.radius_y * 2),
-    )
-    cross = 6
-    cx, cy = int(ring.center_x), int(ring.center_y)
-    painter.drawLine(cx - cross, cy, cx + cross, cy)
-    painter.drawLine(cx, cy - cross, cx, cy + cross)
-
-
 def _draw_marker(painter: QPainter, point: tuple[float, float], color: QColor) -> None:
     painter.setPen(QPen(color, 2))
     cx, cy = int(point[0]), int(point[1])
@@ -176,8 +160,11 @@ class LiveViewLabel(QLabel):
     layout, where the two panels aren't the same size).
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, show_mismatch: bool = True) -> None:
         super().__init__()
+        #: Whether the donut overlay also shows the mismatch arrow and label (not on Guide).
+        self._show_mismatch = show_mismatch
+        self._measurement: DonutMeasurement | None = None
         self.setMinimumSize(320, 240)
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setStyleSheet("background-color: black;")
@@ -188,6 +175,7 @@ class LiveViewLabel(QLabel):
         """Drop the displayed image (e.g. after a camera switch, so nothing
         from the previous camera stays on screen)."""
         self._base_pixmap = None
+        self._measurement = None
         self.clear()
         self.setText("No frame yet")
 
@@ -251,24 +239,9 @@ class LiveViewLabel(QLabel):
             ).copy()
         pixmap = QPixmap.fromImage(image)
 
-        if (
-            measurement is not None
-            or fov_rect is not None
-            or fov_polygon is not None
-            or matched_point is not None
-        ):
+        if fov_rect is not None or fov_polygon is not None or matched_point is not None:
             painter = QPainter(pixmap)
             try:
-                if measurement is not None:
-                    _draw_ring(painter, measurement.outer_ring, _OUTER_COLOR)
-                    _draw_ring(painter, measurement.inner_hole, _INNER_COLOR)
-                    painter.setPen(QPen(_ERROR_COLOR, 2))
-                    painter.drawLine(
-                        int(measurement.outer_ring.center_x),
-                        int(measurement.outer_ring.center_y),
-                        int(measurement.inner_hole.center_x),
-                        int(measurement.inner_hole.center_y),
-                    )
                 if fov_polygon is not None:
                     # A real calibrated match (see fov_registration) —
                     # drawn as an arbitrary quadrilateral so a genuine
@@ -295,6 +268,7 @@ class LiveViewLabel(QLabel):
                 painter.end()
 
         self._base_pixmap = pixmap
+        self._measurement = measurement
         self._update_scaled_pixmap()
 
     def _update_scaled_pixmap(self) -> None:
@@ -306,9 +280,32 @@ class LiveViewLabel(QLabel):
             Qt.TransformationMode.SmoothTransformation,
         )
         # `scaled()` returns a new pixmap, so the cross never reaches
-        # `_base_pixmap` (the native frame the diagnostic snapshot saves).
+        # `_base_pixmap`.
         _draw_centre_cross(scaled)
+        if self._measurement is not None:
+            # In screen pixels, so it stays readable whatever the sensor size.
+            draw_collimation_overlay(
+                scaled,
+                self._measurement,
+                scale=scaled.width() / self._base_pixmap.width(),
+                show_mismatch=self._show_mismatch,
+            )
         self.setPixmap(scaled)
+
+    def annotated_pixmap(self) -> QPixmap | None:
+        """The native-size displayed frame with its overlays (for diagnostics)."""
+        if self._base_pixmap is None or self._base_pixmap.isNull():
+            return None
+        annotated = self._base_pixmap.copy()
+        if self._measurement is not None:
+            draw_collimation_overlay(
+                annotated,
+                self._measurement,
+                scale=1.0,
+                size=max(1.0, annotated.width() / 960.0),
+                show_mismatch=self._show_mismatch,
+            )
+        return annotated
 
     def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802 — Qt override
         super().resizeEvent(event)

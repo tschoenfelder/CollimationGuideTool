@@ -116,6 +116,7 @@ from PySide6.QtWidgets import (
 from collimation_tool.application.collimation_controller import CollimationController
 from collimation_tool.domain.collimation_measurement import DonutAnalysisResult
 from collimation_tool.domain.collimation_state import CollimationRecommendation
+from collimation_tool.ui.collimation_overlay import describe_mismatch
 from collimation_tool.ui.fov_overlay import FovOverlayRect
 from collimation_tool.ui.frame_analyzer import FrameAnalyzer
 from collimation_tool.ui.live_view import LiveViewLabel
@@ -148,7 +149,7 @@ def _format_recommendation(
         return f"No measurement — {result.reason}"
     if recommendation is None:
         return (
-            f"Error {result.measurement.error_magnitude_px:.1f}px — "
+            f"{describe_mismatch(result.measurement).text()} — "
             "no screw calibration learned yet"
         )
     if not recommendation.is_actionable:
@@ -269,7 +270,7 @@ class CameraPanel(QWidget):
         self._target_mode_label: str | None = None
 
         self._title_label = QLabel(f"<b>{title}</b>")
-        self._live_view = LiveViewLabel()
+        self._live_view = LiveViewLabel(show_mismatch=shows_collimation)
         self._recommendation_label = QLabel("Start the stream to begin.")
         self._start_button = QPushButton("Start stream")
         self._start_button.setCheckable(True)
@@ -908,8 +909,8 @@ class CameraPanel(QWidget):
         can't show — no stretch, no color, no overlay at all. None if
         nothing has been displayed yet.
         """
-        pixmap = self._live_view._base_pixmap
-        if pixmap is None or pixmap.isNull():
+        pixmap = self._live_view.annotated_pixmap()
+        if pixmap is None:
             return None
         buffer = QBuffer()
         buffer.open(QIODevice.OpenModeFlag.WriteOnly)
