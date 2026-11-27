@@ -299,7 +299,9 @@ OnStepAdapter could own the serial port exclusively). After upgrading
 OnStepAdapter, update the Pi's venv:
 `.venv/bin/pip install <release wheel URL from pyproject.toml>`.
 
-**Upgrading the Pi to the pinned OnStepAdapter build** (0.7.25, OnStepAdapter#53: close enough
+**Upgrading the Pi to the pinned OnStepAdapter build** (0.7.29, OnStepAdapter#57: driver messages no longer pile up
+and stall commands; 0.7.28, OnStepAdapter#56: connect waits for the driver's UTC time;
+0.7.25, OnStepAdapter#53: close enough
 needs no second move; 0.7.24, OnStepAdapter#52: no step ends
 mid-coast; 0.7.23, OnStepAdapter#51: a 1° step in
 ~3 s; 0.7.22, OnStepAdapter#50: quicker small
@@ -327,9 +329,9 @@ DEC; a finite axis move holds the other axis's hour angle and turns tracking
 off as soon as the slew is seen). From the CollimationGuideTool checkout on the Pi, with the app closed:
 
 ```bash
-.venv/bin/pip install --force-reinstall --no-deps "git+https://github.com/tschoenfelder/OnStepAdapter.git@ee70e915001cdf3db5feb54b460ddbb406c50769"
+.venv/bin/pip install --force-reinstall --no-deps "git+https://github.com/tschoenfelder/OnStepAdapter.git@cc9dda7fbb7fc9548af2b4ad0086912228a09625"
 .venv/bin/python -c "import onstep_adapter, onstep_mock, onstep_adapter.capture, onstep_adapter.indi_motion, onstep_adapter.indi_jog; print(onstep_adapter.__version__)"
-# must print: 0.7.28   (an ImportError means the v0.6.11 tag build, 0.6.2 or 0.5.0 is still installed)
+# must print: 0.7.29   (an ImportError means the v0.6.11 tag build, 0.6.2 or 0.5.0 is still installed)
 ```
 
 `--force-reinstall` makes pip replace whatever OnStepAdapter build is
