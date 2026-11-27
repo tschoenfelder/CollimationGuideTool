@@ -16,11 +16,9 @@ from astrotool_core.registration.alignment import transform_point_a_to_b
 from astrotool_core.registration.artificial_star_registrar import (
     _EDGE_MARGIN_PX,
     ArtificialStarRegistrar,
-    _filter_usable,
 )
 from astrotool_core.registration.optical_prior import OpticalPrior
 from astrotool_core.registration.result import RegistrationMethod, RegistrationStatus
-from astrotool_core.target.point_source import PointSource
 from astrotool_core.testing.frame_factory import StarSpec, single_star_image, star_field_image
 
 _registrar = ArtificialStarRegistrar()
@@ -149,49 +147,25 @@ class TestEdgeCase:
         assert result.ok
 
 
-class TestFilterUsable:
-    """Direct coverage of the saturated-rejection rule -- constructing a
-    hand-built PointSource here rather than fighting the real detector's
-    own saturation threshold, same precedent as terrestrial_registrar's
-    own tests importing private helpers directly."""
+class TestEdgeAndSaturation:
+    def test_a_star_cut_by_the_frame_edge_is_rejected(self) -> None:
+        frame_a = single_star_image(_MAIN_SHAPE, x=1.0, y=60.0, peak=5000.0, sigma=2.0)
+        frame_b = single_star_image(_GUIDE_SHAPE, x=200.0, y=200.0, peak=5000.0, sigma=2.0)
 
-    def test_a_saturated_source_is_rejected(self) -> None:
-        sources = (
-            PointSource(x=60.0, y=60.0, peak=65000.0, area=20, kind="saturated_star",
-                        saturated=True),
+        result = _registrar.register(frame_a, frame_b, _MAIN, _GUIDE)
+
+        assert result.status is RegistrationStatus.INSUFFICIENT_STARS
+
+    def test_a_clipped_artificial_star_is_still_located(self) -> None:
+        frame_a = np.minimum(
+            single_star_image(_MAIN_SHAPE, x=60.0, y=60.0, peak=200000.0, sigma=4.0), 65535.0
         )
+        frame_b = single_star_image(_GUIDE_SHAPE, x=220.0, y=190.0, peak=5000.0, sigma=2.0)
 
-        usable = _filter_usable(sources, image_shape=_MAIN_SHAPE)
+        result = _registrar.register(frame_a, frame_b, _MAIN, _GUIDE)
 
-        assert usable == []
-
-    def test_a_donut_like_source_is_rejected(self) -> None:
-        sources = (
-            PointSource(x=60.0, y=60.0, peak=3000.0, area=200, kind="defocus_candidate",
-                        donut_like=True),
-        )
-
-        usable = _filter_usable(sources, image_shape=_MAIN_SHAPE)
-
-        assert usable == []
-
-    def test_a_source_too_close_to_the_edge_is_rejected(self) -> None:
-        sources = (
-            PointSource(x=_EDGE_MARGIN_PX - 1.0, y=60.0, peak=3000.0, area=20, kind="normal_star"),
-        )
-
-        usable = _filter_usable(sources, image_shape=_MAIN_SHAPE)
-
-        assert usable == []
-
-    def test_a_normal_well_placed_source_is_kept(self) -> None:
-        sources = (
-            PointSource(x=60.0, y=60.0, peak=3000.0, area=20, kind="normal_star"),
-        )
-
-        usable = _filter_usable(sources, image_shape=_MAIN_SHAPE)
-
-        assert usable == list(sources)
+        assert result.ok, (result.status, result.diagnostics)
+        assert result.diagnostics["reference_point"] == pytest.approx((60.0, 60.0), abs=1.0)
 
 
 class TestNoUsableReferenceSource:
@@ -220,6 +194,17 @@ class TestNoUsableReferenceSource:
         assert result.status is RegistrationStatus.INSUFFICIENT_STARS
 
 
+class TestOnlyOneGuideSource:
+    def test_the_only_guide_source_is_the_star_even_far_from_the_prediction(self) -> None:
+        frame_a = single_star_image(_MAIN_SHAPE, x=60.0, y=60.0, peak=5000.0, sigma=2.0)
+        frame_b = single_star_image(_GUIDE_SHAPE, x=370.0, y=370.0, peak=5000.0, sigma=2.0)
+
+        result = _registrar.register(frame_a, frame_b, _MAIN, _GUIDE)
+
+        assert result.ok, (result.status, result.diagnostics)
+        assert result.diagnostics["matched_point"] == pytest.approx((370.0, 370.0), abs=1.0)
+
+
 class TestNoCorrespondingGuideSource:
     def test_a_blank_guide_frame_reports_no_valid_registration(self) -> None:
         frame_a = single_star_image(_MAIN_SHAPE, x=60.0, y=60.0, peak=5000.0, sigma=2.0)
@@ -230,13 +215,19 @@ class TestNoCorrespondingGuideSource:
         assert not result.ok
         assert result.status is RegistrationStatus.NO_VALID_REGISTRATION
 
-    def test_a_guide_source_far_outside_the_match_tolerance_reports_no_valid_registration(
+    def test_several_guide_sources_all_far_from_the_prediction_are_not_matched(
         self,
     ) -> None:
         frame_a = single_star_image(_MAIN_SHAPE, x=60.0, y=60.0, peak=5000.0, sigma=2.0)
         # Predicted point is guide-center (200, 200); this is well beyond
         # the tolerance window.
-        frame_b = single_star_image(_GUIDE_SHAPE, x=390.0, y=390.0, peak=5000.0, sigma=2.0)
+        frame_b = star_field_image(
+            _GUIDE_SHAPE,
+            [
+                StarSpec(x=370.0, y=370.0, peak=5000.0, sigma=2.0),
+                StarSpec(x=370.0, y=30.0, peak=5000.0, sigma=2.0),
+            ],
+        )
 
         result = _registrar.register(frame_a, frame_b, _MAIN, _GUIDE)
 

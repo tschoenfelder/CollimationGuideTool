@@ -16,6 +16,11 @@ rotation as an explicit assumption" precedent `alignment.
 nominal_registration` already established, just refined here with a
 real single-point-measured translation instead of a centered guess.
 
+The star is located with `find_star_candidates` (one candidate per blob), not the generic
+detector: field bundle 10e89885, a large defocused disc was split into 7953 "stars" after
+minutes of search. A clipped or donut-shaped blob is a valid artificial star; its position
+is the middle of the lit disc.
+
 Deliberately takes in-memory arrays with a no-arg constructor (like
 `TerrestrialRegistrar`, unlike `StarFieldRegistrar`) -- structurally
 cannot depend on ASTAP.
@@ -33,6 +38,12 @@ import math
 
 import numpy as np
 
+from astrotool_core.focus.star_candidates import (
+    StarCandidate,
+    find_star_candidates,
+    frame_statistics,
+    remove_hot_pixels,
+)
 from astrotool_core.registration.alignment import transform_point_a_to_b
 from astrotool_core.registration.geometry import overlap_polygon, rect_polygon
 from astrotool_core.registration.optical_prior import OpticalPrior, scale_ratio
@@ -41,8 +52,6 @@ from astrotool_core.registration.result import (
     RegistrationMethod,
     RegistrationStatus,
 )
-from astrotool_core.target.detector import detect_sources
-from astrotool_core.target.point_source import PointSource
 
 #: A candidate this close to any frame edge is rejected -- an
 #: implementation decision (the issue gives no exact number), mirroring
@@ -50,12 +59,22 @@ from astrotool_core.target.point_source import PointSource
 #: approach for a different (ring-fit) use case.
 _EDGE_MARGIN_PX = 10.0
 
+#: A dip between two bright parts shallower than this share of their brightness does not
+#: separate them: rings, spider shadows and speckle stay one disc, while two separate stars
+#: (background between them) stay two.
+_BLOB_PROMINENCE_FRACTION = 0.9
+#: The disc is every pixel above this share of the way from background to its bright level,
+#: within this many blob radii of the blob.
+_DISC_LEVEL_FRACTION = 0.25
+_DISC_WINDOW_RADII = 1.2
+
 #: Search radius (in B/larger-FOV pixels) around the predicted position
 #: within which a Guide candidate is considered a plausible match -- a
 #: fraction of Guide's own smaller sensor dimension. An implementation
 #: decision, generous enough to tolerate real-world Main/Guide
 #: misalignment (the whole point of this mode is to help fix that),
-#: tight enough to still reject an unrelated far-away source.
+#: tight enough to pick the right one of several sources. A single source in B is the
+#: artificial star wherever it is (field bundle 10e89885: 0.6 deg from the prediction).
 _MATCH_TOLERANCE_FRACTION = 0.35
 
 
@@ -65,22 +84,49 @@ def _failure(status: RegistrationStatus, **diagnostics: object) -> CrossCameraRe
     )
 
 
-def _filter_usable(
-    sources: tuple[PointSource, ...], *, image_shape: tuple[int, int]
-) -> list[PointSource]:
-    """Non-donut, non-saturated, not within `_EDGE_MARGIN_PX` of any
-    edge -- `select_target`'s own brightest-non-donut heuristic doesn't
-    reject saturated sources and has no "how many candidates" concept
-    at all, so this mode needs its own filter rather than reusing it."""
-    height, width = image_shape
-    return [
-        source
-        for source in sources
-        if not source.donut_like
-        and not source.saturated
-        and _EDGE_MARGIN_PX <= source.x <= width - _EDGE_MARGIN_PX
-        and _EDGE_MARGIN_PX <= source.y <= height - _EDGE_MARGIN_PX
+def _disc_center(
+    image: np.ndarray, background: float, candidate: StarCandidate
+) -> tuple[float, float]:
+    """The middle of the lit area around `candidate` (unweighted, so an uneven brightness
+    does not pull it towards the bright side)."""
+    reach = int(candidate.radius_px * _DISC_WINDOW_RADII) + 2
+    x0 = max(0, int(candidate.x) - reach)
+    y0 = max(0, int(candidate.y) - reach)
+    window = image[y0 : int(candidate.y) + reach + 1, x0 : int(candidate.x) + reach + 1]
+    bright = float(np.percentile(window, 99.5))
+    ys, xs = np.nonzero(window > background + _DISC_LEVEL_FRACTION * (bright - background))
+    if xs.size == 0:
+        return (candidate.x, candidate.y)
+    left, right = np.percentile(xs, (0.5, 99.5))
+    top, bottom = np.percentile(ys, (0.5, 99.5))
+    return (x0 + float(left + right) / 2.0, y0 + float(top + bottom) / 2.0)
+
+
+def _locate_stars(frame: np.ndarray) -> list[tuple[float, float]]:
+    """The centre of every star blob that stays clear of the frame edge."""
+    pixels = np.asarray(frame, dtype=np.float32)
+    candidates = find_star_candidates(pixels, prominence_fraction=_BLOB_PROMINENCE_FRACTION)
+    if not candidates:
+        return []
+    stats = frame_statistics(pixels)
+    cleaned = remove_hot_pixels(pixels, stats.pixel_background, stats.pixel_noise)
+    height, width = pixels.shape
+    centers = [
+        _disc_center(cleaned, stats.pixel_background, candidate)
+        for candidate in candidates
+        if not candidate.touches_edge
     ]
+    stars: list[tuple[float, float]] = []
+    for x, y in centers:
+        if not (
+            _EDGE_MARGIN_PX <= x <= width - _EDGE_MARGIN_PX
+            and _EDGE_MARGIN_PX <= y <= height - _EDGE_MARGIN_PX
+        ):
+            continue
+        # A core and its diffraction ring can be two blobs with the same disc.
+        if all(_distance((x, y), star) > _EDGE_MARGIN_PX for star in stars):
+            stars.append((x, y))
+    return stars
 
 
 def _distance(a: tuple[float, float], b: tuple[float, float]) -> float:
@@ -110,17 +156,14 @@ class ArtificialStarRegistrar:
                 prior_b_fov_arcsec=(prior_b.fov_width_arcsec, prior_b.fov_height_arcsec),
             )
 
-        candidates_a = _filter_usable(
-            detect_sources(frame_a).sources, image_shape=frame_a.shape
-        )
+        candidates_a = _locate_stars(frame_a)
         if len(candidates_a) != 1:
             return _failure(
                 RegistrationStatus.INSUFFICIENT_STARS,
                 candidate_count_a=len(candidates_a),
-                candidates_a=[(source.x, source.y) for source in candidates_a],
+                candidates_a=candidates_a,
             )
-        reference = candidates_a[0]
-        reference_point = (reference.x, reference.y)
+        reference_point = candidates_a[0]
 
         scale = scale_ratio(prior_a, prior_b)
         center_b = (prior_b.sensor_width_px / 2.0, prior_b.sensor_height_px / 2.0)
@@ -142,13 +185,11 @@ class ArtificialStarRegistrar:
         match_tolerance_px = _MATCH_TOLERANCE_FRACTION * min(
             prior_b.sensor_width_px, prior_b.sensor_height_px
         )
-        candidates_b = _filter_usable(
-            detect_sources(frame_b).sources, image_shape=frame_b.shape
-        )
+        candidates_b = _locate_stars(frame_b)
         nearby = [
-            source
-            for source in candidates_b
-            if _distance((source.x, source.y), predicted_point) <= match_tolerance_px
+            point
+            for point in candidates_b
+            if len(candidates_b) == 1 or _distance(point, predicted_point) <= match_tolerance_px
         ]
         if len(nearby) == 0:
             return _failure(
@@ -163,12 +204,10 @@ class ArtificialStarRegistrar:
                 predicted_point=predicted_point,
                 match_tolerance_px=match_tolerance_px,
                 candidates_b=[
-                    (source.x, source.y, _distance((source.x, source.y), predicted_point))
-                    for source in nearby
+                    (*point, _distance(point, predicted_point)) for point in nearby
                 ],
             )
-        matched = nearby[0]
-        matched_point = (matched.x, matched.y)
+        matched_point = nearby[0]
 
         # Refine the nominal (centered) polygon so the reference point
         # maps EXACTLY onto the real, measured matched point -- the
