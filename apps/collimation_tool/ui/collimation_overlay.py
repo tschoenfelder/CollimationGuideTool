@@ -17,7 +17,7 @@ from PySide6.QtCore import QPointF, QRectF, Qt
 from PySide6.QtGui import QColor, QFont, QFontMetricsF, QPainter, QPen, QPixmap, QPolygonF
 
 from collimation_tool.domain.collimation_measurement import CircleEllipseFit, DonutMeasurement
-from collimation_tool.domain.screw_guidance import Screw, ScrewHint
+from collimation_tool.domain.screw_guidance import END_STOP_ADVICE, Screw, ScrewHint
 
 OUTER_COLOR = QColor(235, 235, 235)
 INNER_COLOR = QColor(190, 190, 190)
@@ -199,6 +199,8 @@ def draw_collimation_overlay(
             return
         lines = [(mismatch.text(), CENTRED_COLOR if mismatch.centred else ARROW_COLOR)]
         lines += [(hint.text(), SCREW_COLORS[hint.screw]) for hint in hints]
+        if hints:
+            lines.append((END_STOP_ADVICE, OUTER_COLOR))
         top = 0.0
         for text, color in lines:
             top += _label(painter, text, color, float(pixmap.width()), size, top)

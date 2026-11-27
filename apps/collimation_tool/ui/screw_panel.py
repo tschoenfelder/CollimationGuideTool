@@ -1,4 +1,5 @@
-"""Teaching the three collimation screws: the operator turns one, then says which and how.
+"""Teaching the three collimation screws: the operator turns one, then says which. Which way
+it was turned does not matter (see `screw_guidance`).
 
 Each click compares the picture now (median of the next few Main measurements) with the
 picture at the previous click, and learns what that turn did.
@@ -15,7 +16,13 @@ from pathlib import Path
 from PySide6.QtWidgets import QComboBox, QGridLayout, QLabel, QPushButton, QWidget
 
 from collimation_tool.domain.collimation_measurement import DonutMeasurement
-from collimation_tool.domain.screw_guidance import TURN_SIZES, Offset, Screw, ScrewModel
+from collimation_tool.domain.screw_guidance import (
+    END_STOP_ADVICE,
+    TURN_SIZES,
+    Offset,
+    Screw,
+    ScrewModel,
+)
 from collimation_tool.ui.collimation_overlay import SCREW_COLORS, offset_share
 
 _log = logging.getLogger(__name__)
@@ -32,14 +39,15 @@ class ScrewPanel(QWidget):
         #: The picture the next turn is compared with.
         self._reference: Offset | None = None
         #: The turn being read (None = only remembering the picture), and its readings.
-        self._turn: tuple[Screw, bool, float] | None = None
+        self._turn: tuple[Screw, float] | None = None
         self._readings: list[Offset] | None = None
 
         layout = QGridLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         intro = QLabel(
-            "<b>Screws</b>: press Remember picture once. Then turn ONE screw, take your hand "
-            "off, and press what you turned."
+            "<b>Screws</b>: press Remember picture once. Then turn ONE screw (either way), "
+            "take your hand off, and press which one. "
+            f"{END_STOP_ADVICE} After turning two screws, press Remember picture again."
         )
         intro.setWordWrap(True)
         layout.addWidget(intro, 0, 0, 1, 4)
@@ -51,17 +59,16 @@ class ScrewPanel(QWidget):
         layout.addWidget(self._remember_button, 1, 0, 1, 2)
         layout.addWidget(QLabel("Turned by:"), 1, 2)
         layout.addWidget(self._size_combo, 1, 3)
-        self._turn_buttons: dict[tuple[Screw, bool], QPushButton] = {}
+        self._turn_buttons: dict[Screw, QPushButton] = {}
         self._learned_labels: dict[Screw, QLabel] = {}
         for row, screw in enumerate(Screw, start=2):
             name = QLabel(f"<b>{screw.value.capitalize()}</b>")
             name.setStyleSheet(f"color: {SCREW_COLORS[screw].name()};")
             layout.addWidget(name, row, 0)
-            for column, (clockwise, text) in enumerate(((True, "↻ cw"), (False, "↺ ccw")), 1):
-                button = QPushButton(text)
-                button.clicked.connect(partial(self._on_turned, screw, clockwise))
-                self._turn_buttons[(screw, clockwise)] = button
-                layout.addWidget(button, row, column)
+            button = QPushButton(f"I turned {screw.value}")
+            button.clicked.connect(partial(self._on_turned, screw))
+            self._turn_buttons[screw] = button
+            layout.addWidget(button, row, 1, 1, 2)
             learned = QLabel("")
             self._learned_labels[screw] = learned
             layout.addWidget(learned, row, 3)
@@ -100,9 +107,9 @@ class ScrewPanel(QWidget):
         if turn is None or self._reference is None:
             self._status.setText("Picture remembered. Turn one screw.")
         else:
-            screw, clockwise, size = turn
+            screw, size = turn
             learned, text = self._model.observe(
-                screw, clockwise=clockwise, size=size, before=self._reference, after=picture
+                screw, size=size, before=self._reference, after=picture
             )
             if learned:
                 self._save()
@@ -115,8 +122,8 @@ class ScrewPanel(QWidget):
         self._status.setText("Reading the picture…")
         self._refresh()
 
-    def _on_turned(self, screw: Screw, clockwise: bool) -> None:
-        self._turn = (screw, clockwise, float(self._size_combo.currentData()))
+    def _on_turned(self, screw: Screw) -> None:
+        self._turn = (screw, float(self._size_combo.currentData()))
         self._readings = []
         self._status.setText("Reading the picture…")
         self._refresh()
