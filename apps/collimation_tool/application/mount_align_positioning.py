@@ -348,8 +348,37 @@ def plan_screen_move(
     dx_sign, dy_sign = screen_direction.value
     # Operator (2026-11-24): an arrow moves the VIEW that way, so the image content moves the
     # opposite way (it used to move the content in the arrow's direction, which read as inverted).
-    target_dx_px = -dx_sign * fraction * frame_width
-    target_dy_px = -dy_sign * fraction * frame_height
+    return plan_image_shift(
+        settings=settings,
+        camera_key=camera_key,
+        matrix=matrix,
+        target_dx_px=-dx_sign * fraction * frame_width,
+        target_dy_px=-dy_sign * fraction * frame_height,
+        angular_only=angular_only,
+        floor_arcsec=floor_arcsec,
+        primitive=primitive,
+        guide_min_ms=guide_min_ms,
+        arcsec_per_px=arcsec_per_px,
+    )
+
+
+def plan_image_shift(
+    *,
+    settings: MountAlignmentSettings,
+    camera_key: str,
+    matrix: CalibrationMatrix,
+    target_dx_px: float,
+    target_dy_px: float,
+    angular_only: Callable[[], bool],
+    floor_arcsec: Callable[[], float],
+    primitive: MountAlignPrimitive = MountAlignPrimitive.AXIS,
+    guide_min_ms: int = 1,
+    arcsec_per_px: float | None = None,
+) -> ScreenMovePlan:
+    """The sequence that moves this camera's image content by (`target_dx_px`,
+    `target_dy_px`), capped and floored as described in `plan_screen_move`."""
+    if (mismatch := unit_mismatch(matrix.unit, primitive)) is not None:
+        return ScreenMovePlan(error=mismatch)
     try:
         steps = solve_screen_move(matrix, target_dx_px=target_dx_px, target_dy_px=target_dy_px)
     except ValueError as exc:

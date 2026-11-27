@@ -682,6 +682,10 @@ class FocuserPanel(QWidget):
             ],
         }
 
+    @property
+    def is_autofocus_running(self) -> bool:
+        return self._autofocus_running
+
     def stop(self) -> None:
         """Stop polling and disconnect. Safe to call whether or not connected.
 

@@ -276,7 +276,7 @@ from astrotool_core.mount.operating_mode import OperatingMode, TrackingEnforcer
 from astrotool_core.mount.port import RA_NEEDS_DEC_FIRST
 from astrotool_core.session import DeviceConnectionService
 from astrotool_core.timing import SYSTEM_CLOCK, Clock, Deadline
-from PySide6.QtCore import QTimer
+from PySide6.QtCore import QTimer, Signal
 from PySide6.QtWidgets import (
     QButtonGroup,
     QHBoxLayout,
@@ -343,12 +343,14 @@ from collimation_tool.application.mount_align_plan import (
     step_label,
 )
 from collimation_tool.application.mount_align_positioning import (
+    ScreenMovePlan,
     cap_text,
     check_nudge_motion,
     nudge_angle_arcsec,
     nudge_cap_arcsec,
     nudge_fraction,
     nudge_tracking_warning,
+    plan_image_shift,
     plan_nudge,
     plan_screen_move,
     screen_move_floor_refusals,
@@ -366,6 +368,7 @@ from collimation_tool.application.mount_motion import (
     MountMotionExecutor,
     choose_mount_align_primitive,
 )
+from collimation_tool.application.star_centering import BELOW_SMALLEST_MOVE
 from collimation_tool.domain.target_mode import sizing_seed_distance_m
 from collimation_tool.ui.flow_layout import FlowLayout
 from collimation_tool.ui.mount_hold_jog import HoldToJog
@@ -403,6 +406,8 @@ FrameGetter = Callable[[], np.ndarray | None]
 _log = logging.getLogger(__name__)
 
 _POLL_INTERVAL_MS = 250
+#: The screen-move label of a star-centring move (its failure switches centring off).
+_CENTERING_LABEL = "Main centring"
 
 
 #: Real request: the direction pad used to be screen-relative
@@ -455,6 +460,11 @@ _SIZE_BUTTONS: tuple[tuple[str, MovementSize], ...] = (
 
 
 class MountTestMovePanel(QWidget):
+    #: The panel's own Stop was pressed.
+    stop_requested = Signal()
+    #: A star-centring move did not complete (the reason).
+    centering_move_failed = Signal(str)
+
     def __init__(
         self,
         mount: MountPort,
@@ -2325,6 +2335,67 @@ class MountTestMovePanel(QWidget):
         if plan.motion is None:
             self._result_label.setText(plan.notice or "")
             return
+        size_label = self._screen_move_size().value.capitalize()
+        label = f"{CAMERA_LABELS[camera_key]} {screen_direction.name.lower()} ({size_label})"
+        self._submit_image_move(plan, primitive, label)
+
+    @property
+    def is_moving(self) -> bool:
+        """A calibration, nudge or screen move is running."""
+        return (
+            self._runner.is_busy
+            or self._capture_job is not None
+            or self._hold_jog.active
+            or self._pending is not None
+            or bool(self._calibration_queue)
+        )
+
+    def centering_blocker(self) -> str | None:
+        """Why the Main star cannot be centred by the mount now, else None."""
+        if not self.interface_state().available:
+            return "connect the mount first"
+        if "left" not in self._calibration:
+            return "run the Mount Align calibration with the Main camera first"
+        return None
+
+    def move_main_image(self, dx_px: float, dy_px: float) -> str | None:
+        """Move the Main image content by (dx, dy) px using its calibration (star centring).
+        Returns why nothing was sent, else None once the move runs."""
+        if (blocker := self.centering_blocker()) is not None:
+            return blocker
+        if self.is_moving:
+            return "the mount is already moving"
+        primitive = self._mount_align_primitive()
+        plan = plan_image_shift(
+            settings=self._settings,
+            camera_key="left",
+            matrix=self._calibration["left"],
+            target_dx_px=dx_px,
+            target_dy_px=dy_px,
+            angular_only=self._mount_is_angular_only,
+            floor_arcsec=self._min_angular_arcsec,
+            primitive=primitive,
+            guide_min_ms=(
+                self._sizing.min_guide_ms()
+                if primitive is MountAlignPrimitive.GUIDE_PULSE
+                else 1
+            ),
+            arcsec_per_px=self._arcsec_per_px("left"),
+        )
+        if plan.below_floor:
+            return BELOW_SMALLEST_MOVE
+        if plan.error is not None:
+            return plan.error
+        if plan.motion is None:
+            return plan.notice or "the move is too small to send"
+        if not self._submit_image_move(plan, primitive, _CENTERING_LABEL):
+            return "the mount is already moving"
+        return None
+
+    def _submit_image_move(
+        self, plan: ScreenMovePlan, primitive: MountAlignPrimitive, label: str
+    ) -> bool:
+        assert plan.motion is not None
         skipped_note = (
             f" (skipped a {plan.skipped} component below the mount's smallest move)"
             if plan.skipped
@@ -2337,11 +2408,9 @@ class MountTestMovePanel(QWidget):
             primitive=primitive,
         )
         if not started:
-            return  # a move is already running
+            return False  # a move is already running
         self._move_primitive = primitive
         clamped = plan.clamped
-        size_label = self._screen_move_size().value.capitalize()
-        label = f"{CAMERA_LABELS[camera_key]} {screen_direction.name.lower()} ({size_label})"
         self._pending = PendingAction(
             kind="screen_move", before={}, mode=self._target_mode(), label=label, clamped=clamped,
             motion_axes=tuple(step[0] for step in plan.motion),
@@ -2349,6 +2418,7 @@ class MountTestMovePanel(QWidget):
         suffix = f" (safety-capped at {self._cap_text()}/step)" if clamped else ""
         self._result_label.setText(f"Moving {label}…{suffix}{skipped_note}")
         self._update_buttons_enabled()
+        return True
 
     def _finish_screen_move(
         self,
@@ -2370,6 +2440,8 @@ class MountTestMovePanel(QWidget):
                 partial_move_text(pending.motion_axes, attempted, error) or error
             )
             self._result_label.setText(f"Move failed: {self._last_error}")
+            if pending.label == _CENTERING_LABEL:
+                self.centering_move_failed.emit(self._last_error)
             return
         self._last_pulse_completed_at = completed_at
         self._last_error = None  # a completed move must not keep an earlier move's error
@@ -2382,6 +2454,7 @@ class MountTestMovePanel(QWidget):
         self._result_label.setText(f"{pending.label} — done.{suffix}")
 
     def _on_stop(self) -> None:
+        self.stop_requested.emit()
         # S6.0c: every call here returns at once -- the runner sends no further step, and the
         # mount adapter's abort() hands OnStep's stop to a worker (it never queues behind the
         # GOTO it stops). S6.8a: both through the one motion executor (it owns the Stop-latch

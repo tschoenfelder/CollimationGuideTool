@@ -428,6 +428,10 @@ class FineCollimationPanel(QWidget):
             )
 
     @property
+    def is_running(self) -> bool:
+        return self._running
+
+    @property
     def target_mode(self) -> CollimationTargetMode:
         return self._target_mode
 
